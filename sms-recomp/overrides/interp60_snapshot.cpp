@@ -264,6 +264,7 @@ constexpr u32 OFF_PREENTRY = 0x34;
 bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
 u32   g_display = 0;             // TDisplay*, captured at endRendering (see the override below)
 u32   g_camObj = 0;              // the layout-verified camera, for the survive-the-re-issue probe
+u32   g_curList = 0;             // outermost perform list currently running (SBR_INTERP60_VCLIST)
 u32   g_subframeGfx = 0;         // the TGraphics the current sub-frame is passing
 float g_camWrote[3] = {0, 0, 0}; // what the lerp wrote into it
 float g_camCur[3] = {0, 0, 0};   // its tick-N pose
@@ -982,7 +983,9 @@ void list_perform(CPUState& cpu) {
     note_seen(list);
     g_listDispatches = 0;
     ++g_listDepth;
+    g_curList = list;
     sbr_tick_split_call(cpu);
+    g_curList = 0;
     --g_listDepth;
     record_draw_list(list, mask, gfx);
 
@@ -2099,6 +2102,40 @@ void mtx_census(u32 model) {
 // geometry can move. Buckets are keyed on the view's y translation, which separates the main camera
 // (~+590) from the mirror (~-1177) unambiguously at this scene.
 float g_subframeCamY = 0.0f;   // the interpolated camera view's y, captured at sub-frame start
+
+// SBR_INTERP60_VCLIST=1 — attribute the TICK's viewCalc calls to the outermost perform list that was
+// running. The sub-frame re-issues a recorded set of lists; if the background's viewCalc happens in a
+// list that set does not include, the name of that list IS the fix. Choosing a list to re-issue by
+// elimination is what produced the "calc-anim rebuilds everything" error, so this names it instead.
+struct ListVC { u32 list; long n; };
+ListVC g_listVC[16];
+int    g_listVCN = 0;
+
+void list_vc_note(u32 list) {
+    for (int i = 0; i < g_listVCN; ++i) if (g_listVC[i].list == list) { ++g_listVC[i].n; return; }
+    if (g_listVCN < 16) { g_listVC[g_listVCN].list = list; g_listVC[g_listVCN].n = 1; ++g_listVCN; }
+}
+
+// The director's own field names for its lists, so the report says "CalcAnim" rather than a pointer.
+const char* list_name(u32 list) {
+    if (!g_mardir) return "?";
+    for (size_t i = 0; i < sizeof(kListSlots) / sizeof(kListSlots[0]); ++i)
+        if (sb_r32(g_mardir + kListSlots[i]) == list) return kListNames[i];
+    return "(not one of the director's lists)";
+}
+
+void list_vc_report() {
+    if (!std::getenv("SBR_INTERP60_VCLIST") || g_listVCN == 0) return;
+    static int n = 0;
+    if (++n > 2) { g_listVCN = 0; return; }
+    lucent::info("i60vclist", "=== tick viewCalc calls, by the outermost perform list running ===");
+    for (int i = 0; i < g_listVCN; ++i)
+        lucent::info("i60vclist", "    {:<16} 0x{:08x}  ->  {} call(s)",
+                     list_name(g_listVC[i].list), g_listVC[i].list, g_listVC[i].n);
+    lucent::info("i60vclist", "  (the sub-frame re-issues only the recorded DRAW block; any list "
+                              "above that is not in it cannot rebuild its models' matrices)");
+    g_listVCN = 0;
+}
 struct ViewBucket { float y; long n; };
 ViewBucket g_vcBuckets[8];
 int  g_vcBucketN = 0;
@@ -2133,7 +2170,11 @@ void viewcalc_hook(CPUState& cpu) {
     if (g_inSubframe) {
         ++g_vcSub;
         if (viewcalc_on()) vc_bucket(guest_f32(J3DSYS_VIEWMTX + 7 * 4));
-    } else ++g_vcTick;
+    } else {
+        ++g_vcTick;
+        if (std::getenv("SBR_INTERP60_VCLIST") && (long)VIGetRetraceCount() >= viewseq_at())
+            list_vc_note(g_curList);
+    }
     const u32 model = (u32)cpu.gpr[3];
     mtx_census(model);
     if (mtxtrace_on() && (long)VIGetRetraceCount() >= viewseq_at()) {
@@ -2399,6 +2440,35 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                         guest_f32(camSave.obj + OFF_CPSC_VIEWMTX + (u32)i * 4));
     }
 
+    // SBR_INTERP60_PREENTRY_VC=1 — re-issue PreEntry with the VIEW-CALC bit ONLY.
+    //
+    // This is the fix the whole arc was looking for, and it is only writable because the phase is now
+    // NAMED rather than guessed. SBR_INTERP60_VCLIST attributes the tick's viewCalc calls to the
+    // outermost list running:
+    //
+    //     GX        ->  14 calls      (the ortho pass, the only ones a sub-frame currently gets)
+    //     PreEntry  -> 105 calls      <- the background's model-view rebuild
+    //
+    // The sub-frame skips PreEntry on purpose: re-running it appends a SECOND entry set into buffers
+    // that are already full and the following draw never finishes (measured; SBR_INTERP60_PREENTRY=1
+    // keeps that fault reproducible). But entry and view-calc are SEPARATE bits in the same perform
+    // (liveactor.cpp:418-421):
+    //
+    //     if (cue & 4)     mMActor->viewCalc();     <- rebuild model-view from j3dSys
+    //     if (cue & 0x200) drawObject(param_2);     <- ENTER into the draw buffers
+    //
+    // so PreEntry issued with 0x4 and WITHOUT 0x200 rebuilds the matrices and enters nothing. Same
+    // shape as the calc-anim re-issue at cue 0x4, which kept identity exactly.
+    //
+    // It runs here — after j3dSys has been seeded with the interpolated view and before the draw
+    // lists — because viewCalc reads j3dSys at the moment it is called. That ordering is the reason
+    // the earlier calc-anim attempt rebuilt matrices under the wrong view.
+    static const bool preEntryVC = std::getenv("SBR_INTERP60_PREENTRY_VC") != nullptr;
+    if (preEntryVC && preEntry && sb_ram_fast(preEntry)) {
+        // 0x1 movement, 0x2 calc-anim (advances animation), 0x200 entry — all cleared. 0x4 survives.
+        perform_list(cpu, preEntry, cue & ~0x203u, gfx);
+    }
+
     static const bool calcAnim = std::getenv("SBR_INTERP60_CALCANIM") != nullptr;
     if (calcAnim) {
         const u32 ca = sb_r32(g_mardir + 0x2C);
@@ -2555,6 +2625,17 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     if (j3dViewSaved)
         for (int i = 0; i < 12; ++i)
             guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4, j3dViewSave[i]);
+
+    // BALANCE THE SWAP. viewCalc begins with swapDrawMtx()/swapNrmMtx(), so the PreEntry view-calc
+    // pass above left every one of its ~105 models with an ODD number of extra swaps for the tick —
+    // buffers transposed, which is precisely what the earlier seam-level bisect measured as
+    // viewCalc's 340,509-pixel leak. Issuing the same pass a second time, now that j3dSys holds the
+    // tick's own view again, returns each model to an EVEN count AND leaves the matrices recomputed
+    // from the true view. Same shape as the actor seam's post-restore recompute: not an undo, a
+    // recompute of the right value.
+    if (preEntryVC && preEntry && sb_ram_fast(preEntry))
+        perform_list(cpu, preEntry, cue & ~0x203u, gfx);
+
     player_apply(cpu, gfx, false);
     actors_calc_root(cpu, g_lastSnapTick, false, false);
     player_restore();
@@ -2588,6 +2669,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     }
 
     vc_buckets_report();
+    list_vc_report();
     if (viewcalc_on()) {
         static long n = 0;
         if (++n <= 4 || (n % 900) == 0)

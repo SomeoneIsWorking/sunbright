@@ -3387,3 +3387,51 @@ buffer, so the call count per model per tick has to stay balanced.
 Both are now concrete engineering with a measurement that will show whether they worked (the bucket
 report, plus the leak gate for the swap parity). That is a different position from the last several
 entries, which each had a plausible story and no way to tell it from the alternatives.
+
+## THE FIX: re-issue PreEntry with the view-calc bit only, twice
+
+Naming the phase made the fix writable. `SBR_INTERP60_VCLIST` attributed the tick's viewCalc calls to
+the outermost list running:
+
+    GX        ->  14 calls     the ortho pass — the only ones a sub-frame was getting
+    PreEntry  -> 105 calls     <- the background's model-view rebuild
+
+The sub-frame skips PreEntry deliberately, because re-running it appends a second entry set into
+buffers that are already full and the following draw never finishes. But entry and view-calc are
+SEPARATE bits of the same perform (`liveactor.cpp:418-421`):
+
+    if (cue & 4)     mMActor->viewCalc();     // rebuild model-view from j3dSys
+    if (cue & 0x200) drawObject(param_2);     // ENTER into the draw buffers
+
+So PreEntry issued with `cue & ~0x203` — no movement, no calc-anim, no entry, only view-calc —
+rebuilds the matrices and enters nothing. It runs after j3dSys is seeded with the interpolated view
+and before the draw lists, because viewCalc reads j3dSys at the moment it is called.
+
+**And it is issued TWICE.** viewCalc begins with `swapDrawMtx()`/`swapNrmMtx()`, so one extra pass
+leaves ~105 models with an odd number of swaps for the tick — the transposed-buffer state that the
+seam-level bisect had already measured as viewCalc's 340,509-pixel leak. A second pass, after
+j3dSys is restored to the tick's own view, returns every model to an even count and leaves the
+matrices recomputed from the true view. Not an undo — a recompute of the right value, the same shape
+as the actor seam's post-restore pass.
+
+    configuration                      asymmetry   identity   leak
+    no PreEntry view-calc (baseline)      74.5%      0.066      0 px
+    PreEntry view-calc, one pass          25.6%      0.228     14,503 / 16,185 px
+    PreEntry view-calc, swap balanced     20.4%      0.228      0 / 0 px
+
+At alpha=0.5 the sub-frame now measures full tick 8.782, sub->prev 6.834, sub->next 5.046 against an
+ideal half of 4.391. **The background interpolates**, the main-frame invariant holds exactly, and the
+sub-frame sits between its neighbours instead of duplicating one of them.
+
+### What is left, stated plainly
+
+Identity at alpha=1.0 went from 0.066 to 0.228. That is the next defect: at alpha=1 the substituted
+pose IS the game's pose, so the sub-frame should still reproduce the following main frame to the
+0.066 it reached before. Something in the double pass is not bit-exact — most likely that a matrix
+recomputed from a restored view is not bit-identical to the one the tick computed, which is exactly
+the reason `camera_restore` restores its cached matrix rather than rebuilding it.
+
+The asymmetry is 20.4% rather than 0%, so the midpoint is closer but not centred. Whether that
+residual is the same non-transform state as before (animation phase, particles) or a second
+population is a question for the instruments that now exist — the view bucket, the spatial diff, and
+the leak gate — rather than for another hypothesis.
