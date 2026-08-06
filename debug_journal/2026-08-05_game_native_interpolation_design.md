@@ -3129,3 +3129,51 @@ same tool pointed one pointer deeper, which is cheaper and more reliable than a 
 
 Until the leak is zero, `SBR_INTERP60_PLAYER` and `_ACTORS` stay opt-in, cross-run comparisons with
 them on stay invalid, and the reopened sub-pixel question stays camera-only.
+
+## TWO WINDOWS, ONE STORY: only Mario responds to alpha; the background never does
+
+The camera-only configuration is leak-free (main frames byte-identical across alpha, verified for
+both windows), so these numbers are valid, and the DROPLAST control passes at BOTH windows
+(1,228,799 of 1,228,800 px change when a draw list is dropped) — the dumps are the sub-frame's own
+render in both.
+
+    window          camera speed   full tick   sub@0 vs sub@1   gain
+    slow (~2798)     3.9 u/tick      11.07       3.124          28%
+    fast (~820)     28.1 u/tick       9.27       0.048           0.5%
+
+**Seven times the camera speed, and the response nearly vanishes.** That is the opposite of what
+sub-pixel quantisation predicts, and it settles that question for good: the sub-pixel explanation is
+dead, and this time on a leak-free measurement rather than the retracted one.
+
+### What actually distinguishes the two windows — and it is not the camera
+
+Looking at the frame, which should have happened many entries ago: the fast window is real Delfino
+gameplay (HUD, statue, NPCs, Mario at the shine gate) with the intro camera pulling in — and
+**Mario is standing still**. The slow window is Mario walking.
+
+Put beside the spatial diff, which found the alpha-sensitive region to be a compact Mario-shaped blob
+at screen centre, both windows say the same thing:
+
+* Mario moving  -> the sub-frame responds, in Mario's region, at 28% of a tick.
+* Mario still   -> the sub-frame barely responds at all, even with the camera sweeping 28 units.
+* The background -> never responds, at either camera speed.
+
+So the consistent finding across every valid measurement in this arc is: **the interpolated view
+reaches j3dSys, 140 drawables rebuild their model-view matrices from it, and the background renders
+in the same place regardless.** Only geometry whose own transform was substituted moves.
+
+### The one experiment that is left, and it is not another hypothesis
+
+Every probe so far reads state that is supposed to FEED the matrices, or reads pixels. Nothing has
+read the matrices themselves. So: pick one background drawable, and dump its model-view matrix out of
+the guest draw-matrix array during the sub-frame at alpha=0 and alpha=1.
+
+* If the two matrices DIFFER, the geometry is being transformed differently and lands in the same
+  pixels anyway — which would mean the difference is lost at rasterisation or in the copy, and the
+  whole search moves downstream of GX.
+* If they are EQUAL, viewCalc is not writing what its name implies for that drawable, and the search
+  moves into J3D's matrix bookkeeping.
+
+Those are opposite halves of the remaining space and one measurement separates them. It is the same
+"read the artifact, not the state that should produce it" step that the stream hash was, one level
+further in.
