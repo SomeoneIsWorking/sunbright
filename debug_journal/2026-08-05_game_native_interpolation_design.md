@@ -2485,3 +2485,52 @@ nothing draws.
 The claim is recorded as C027 with the kick as its falsifier. The camera-side result stands on its
 own and is unaffected: `SBR_INTERP60` today is a working CAMERA interpolator, and that is what the
 codemap now says.
+
+## The census, and where the actor path actually breaks
+
+`SBR_INTERP60_ACTCENSUS=1` names the COMPLETE substitution set of one sub-frame (400 objects, not a
+sample). Counted by name:
+
+    82  コイン（モデルなし）   coin, NO MODEL      20  コイン        19  水ヒットコイン
+    18  palm      13  manhole      12  青コイン      11  鳥      10  ジュースブロック
+    10  ゲーム木箱      10  エフェクト水柱       9  やしの実（無限）  ...
+
+It is Delfino's scenery: coins (82 of them explicitly modelless), manholes, palms, fruit, crates,
+birds. Almost all report `moved 0.000`. The eight that move are the NPCs and the player:
+
+    モンテＥ   20.000      キノピオＢ  6.000      モンテＪ   4.800      モンテＣ  4.799
+    モンテＩ    1.080      マリオ      2.421      キノピオＡ 0.200      camera 1  0.235
+
+**マリオ at 0x8136383c IS in the set and IS substituted.** The player-coverage probe's verdict —
+"the player's vtable is NOT in kTActorVtables, he is never snapshotted" — is WRONG, and its own
+`vptr=0x00000000` said so: `gpMarioOriginal` holds 0x8136384c, which is the player object **+0x10**,
+i.e. it points at `mPosition` itself, not at the object. The probe dereferenced a float as a vptr.
+That line must be fixed before it is believed again; it is exactly the shape of diagnostic that
+reports a confident negative its method could never have contradicted.
+
+### The kick, in all four cells
+
+`calcRootMatrix` reads `mPosition`/`mRotation` (decomp `liveactor.cpp:259`) and is called ONLY from
+`TLiveActor::perform`'s 0x2 branch, which the director dispatches from its calc-anim list. So the
+kick and the calc-anim re-issue had to be crossed, and were not:
+
+    kick=3000, no calc-anim re-issue :      0 of 1,228,800 px   (0.00%)
+    kick=3000, calc-anim re-issued   :  2,477 of 1,228,800 px   (0.20%)
+
+So the boundary IS real — re-issuing calc-anim opens the path, and the earlier "calc-anim changes
+nothing" reading was measuring the alpha pair, which has its own reason to be flat. But 0.2% is not
+reach. A 3000-unit displacement of 400 objects including the player should evacuate a large part of
+the screen; it moves what looks like a couple of on-screen props.
+
+Two things follow, and neither is yet measured:
+
+* Most of the 400 are not drawn — 82 are named "coin, no model", and the静 props report zero motion
+  because they have none. The substitution set is scenery, and the set that MATTERS on screen (the
+  player, his effects, the NPCs near the camera) is a handful of objects inside it.
+* **The player's draw does not follow his substituted `mPosition` even with calc-anim re-issued.**
+  Kicking マリオ 3000 units should remove him from the frame. That is the next thing to measure, and
+  the likely reason is that `TMario` does not reach `TLiveActor::calcRootMatrix` on that cue — the
+  player is drawn through his own path, and the seam for him is not the one that works for a crate.
+
+The camera result is unaffected by any of this and remains the one solid piece: `SBR_INTERP60`
+interpolates the camera exactly, in both directions, via the game's own prev/cur and C_MTXLookAt.

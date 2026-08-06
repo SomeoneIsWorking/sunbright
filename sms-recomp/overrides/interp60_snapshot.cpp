@@ -661,6 +661,33 @@ void apply_all(u32 tick, float alpha) {
         ++g_applied;
     }
 
+    // SBR_INTERP60_ACTCENSUS=1: NAME every object in one sub-frame's substitution set.
+    //
+    // "400 entries substituted, 8 moved, and no pixel changed" has one simple explanation the
+    // aggregates cannot rule out: the 400 are not things that get drawn. A count cannot say that
+    // and neither can a maximum -- only the names can. Dumped for ONE sub-frame, uncapped, because
+    // the interesting case here is the whole population and a truncated list would be read as the
+    // population. Names are Shift-JIS; pipe the log through `iconv -f SHIFT_JIS -t UTF-8`.
+    if (std::getenv("SBR_INTERP60_ACTCENSUS") && (long)VIGetRetraceCount() >= viewseq_at()) {
+        static bool done = false;
+        if (!done) { done = true;
+            lucent::info("i60census", "=== the substitution set of ONE sub-frame: {} objects ===",
+                         nApplied);
+            for (int i = 0; i < TABLE_SIZE; ++i) {
+                const Entry& e = g_tab[i];
+                if (e.obj == 0 || e.tick != tick) continue;
+                const u32 vptr = sb_ram_fast(e.obj) ? sb_r32(e.obj) : 0;
+                char nm[48]; guest_name(e.obj, nm, sizeof nm);
+                const float dx = e.cur[0]-e.pos[0], dy = e.cur[1]-e.pos[1], dz = e.cur[2]-e.pos[2];
+                lucent::info("i60census", "  0x{:08x} vptr=0x{:08x} moved {:8.3f}  pos=({:.1f},"
+                                          "{:.1f},{:.1f})  \"{}\"",
+                             e.obj, vptr, (double)std::sqrt(dx*dx+dy*dy+dz*dz),
+                             (double)e.cur[0], (double)e.cur[1], (double)e.cur[2], nm);
+            }
+            lucent::info("i60census", "=== end of set (this is the COMPLETE set, not a sample) ===");
+        }
+    }
+
     // The negative, written before the positive: an empty tally must not be able to read as "the
     // actors simply were not moving". It carries its denominator and names its largest mover.
     if (std::getenv("SBR_INTERP60_ACTTALLY") && (long)VIGetRetraceCount() >= viewseq_at()) {
