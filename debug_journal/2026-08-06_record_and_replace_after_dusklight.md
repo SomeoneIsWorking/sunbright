@@ -42,32 +42,78 @@ a control that MUST fire. At 400 units the whole plaza is thrown out of frame
 (`scratch/render/kick_sub-t2612.png`). So `mDrawMtxBuf[1][viewNo]` is what the hardware reads for
 essentially the entire visible frame, and the save/write/restore is fully connected.
 
-## THE FINDING: the drawn matrices are WORLD matrices, so this covers OBJECT motion only
+## RETRACTED, then measured properly: the drawn matrices DO carry the view
 
-Alpha moves only ~0.8% of pixels while a tick moves ~22%. The cause is not plumbing. Per-tick
-displacement of translation elements, 12.2M samples, taken with the camera swinging **49
-units/tick**:
+The first reading of the displacement histogram was wrong and is recorded here because the mistake
+is the instructive part. Cumulative over a whole run, 12.2M translation elements with the camera
+swinging 49 units/tick:
 
 ```
 zero 4,466,100 (37%) | <0.01 496,866 | <1 2,291,466 | <10 1,937,900 | <100 1,787,771 | <1e4 1,214,645 | >=1e4 9,273
 ```
 
-If the view were baked into these matrices every translation would move by tens of units. 37% move
-EXACTLY zero — which is what a static prop's WORLD matrix does. This independently confirms commit
-`a338b88` ("the drawn matrices are WORLD matrices, alpha-invariant") from a different instrument.
+I read "37% move exactly zero, so these are WORLD matrices and the camera is not covered", and took
+it as confirming `a338b88`. That inference does not follow: a cumulative histogram averages the
+parked-camera phase of the run together with the moving one, and a fraction with no control says
+nothing about what the camera contributes.
 
-Consequences:
+So the histogram was made PER-WINDOW (it resets every report) and run against BOTH classes — same
+scenario, same window (sub-frames 2400–2700), differing only in the pad script:
 
-- record-and-replace on `mDrawMtxBuf` interpolates **object** motion. In Delfino that is Mario and a
-  few NPCs — a small share of the screen, hence 0.8%.
-- the CAMERA needs its own mechanism. dusklight already splits exactly this way: `interp_view()`
-  lerps the camera as a POSE (eye/center/up/bank/fovy, bank via `remainderf`) and rebuilds the
-  matrices, separately from `record_final_mtx()`. Its `record_final_mtx` covers per-object matrices
-  for the same reason ours does.
-- seeding the interpolated view into `j3dSys` AND into the seam's `TGraphics` (`+0xB4`, the field
-  `TSmJ3DScn::perform` copies into j3dSys) changed **zero** pixels — verified by two runs producing
-  byte-identical output. So the sub-frame's draw consumes the view from neither. WHERE the view
-  reaches GX during the re-issue is the open question, and it is the next thing to instrument.
+| bucket | camera moving, 49 u/tick | camera parked, 0.25 u/tick |
+|---|---|---|
+| zero | 194,607 (29.2%) | 147,877 (29.2%) |
+| <100 | 127,914 | 17,902 |
+| <1e4 | **123,764** | **479** |
+
+Large displacements appear only when the camera moves — a factor of 258 in the top finite bucket —
+and the frozen fraction is IDENTICAL either way. So the view IS reflected in the drawn matrices for
+the bulk of the population, and the ~29% frozen entries are a static population (unused matrix
+slots, identity entries) that is invariant to the camera and was never evidence about the view.
+
+A discriminator must be run against both classes before it is trusted. Run against one, this one
+scored a confident wrong answer.
+
+Still true and still unexplained: seeding the interpolated view into `j3dSys` AND into the seam's
+`TGraphics` (`+0xB4`, the field `TSmJ3DScn::perform` copies into j3dSys) changed **zero** pixels,
+verified by two runs producing byte-identical output.
+
+## FOUR CLOCKS, and a whole afternoon of runs that sampled the wrong instant
+
+`DUMP_AFTER` is in PRESENTS. The pad script is in PAD READS (one per game tick). The dump label is
+the RETRACE counter (+2 per game tick). `camera_apply #N` counts SUB-FRAMES (one per game tick).
+So with two presents per game tick:
+
+```
+sub-frame N  ==  pad read N  ==  game tick N  ==  retrace 2N  ==  present 2N
+```
+
+`DUMP_AFTER=2600` therefore samples game tick ~1305 — while a pad step written `2000:CSTICK=...`
+does not take effect until game tick 2000. Several runs in this session set up a camera motion and
+then dumped from BEFORE it started. The tell was that a "camera moving" run and a "camera parked"
+run produced BYTE-IDENTICAL main frames (`d8064db3…`), which is impossible unless the sampled
+instant is the same in both. Always confirm the condition holds AT THE DUMPED MOMENT — the runner's
+CAMTRACE block exists for that and it must not be skipped.
+
+## The camera probes are blind outside the intro — do not read "parked" from them
+
+Three instruments reported the camera still at gameplay moments. All three are looking at the wrong
+thing, and none of them says so:
+
+- `camera_apply` / CAMTRACE follow `g_camObj` = `0x81588cd0` ("camera 1"). Scanned across a whole
+  run with `SBR_INTERP60_VIEWSEQ_AT=1`, its eye moves only in the first ~90 presents (19.66
+  units/tick, the boot/logo phase) and reads 0.000 for the entire remainder — while the filmstrip
+  plainly shows the viewpoint changing during gameplay. So this object is not the active gameplay
+  camera, and every "the camera did not move this tick" line it prints is really "the object I watch
+  did not move".
+- `SBR_INTERP60_MTXTRACE` auto-pins the first model viewCalc'd, which prints
+  `j3dSys view t=(0.56,-1177.13,-5547.42)`, constant over all 40 lines. y = -1177 is the MIRROR
+  camera's view — the same trap the census already documented. It is not watching the scene view.
+
+Finding the object the gameplay camera actually is, and pointing these probes at it, is the
+prerequisite for grading camera interpolation at all. Until then, any camera-motion claim in this
+arc — including the 49 units/tick used in the table above, which IS supported by `camera_apply`'s
+own log for that run — should be checked against the dumped moment rather than assumed.
 
 ## Measurement conditions — read before taking any reading here
 

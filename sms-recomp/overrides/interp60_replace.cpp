@@ -392,17 +392,21 @@ void sbr_i60r_report() {
     if (!sbr_i60r_enabled()) return;
     static unsigned long last = 0;
     if (g_st.subframes - last < 300) return;
+    const unsigned long window = g_st.subframes - last;
     last = g_st.subframes;
 
     lucent::info("i60r",
                  "record-and-replace: {} sub-frames, {} models recorded over {} ticks | "
                  "matched {} (of which {} actually MOVED), unmatched {}, joint-count changed {}, "
                  "bad pointer {}, CLOBBERED mid-draw {} | per-tick translation displacement over {} "
-                 "elements ({} non-finite, EXCLUDED): zero {} | <0.01 {} | <1 {} | <10 {} | <100 {} "
+                 "elements ({} non-finite, EXCLUDED) IN THE LAST {} SUB-FRAMES ONLY (the buckets "
+                 "reset every report, because a cumulative histogram averages a parked camera "
+                 "together with a moving one and cannot answer which): zero {} | <0.01 {} | <1 {} "
+                 "| <10 {} | <100 {} "
                  "| <1e4 {} | >=1e4 {} (max {:.3g} on model 0x{:08x}){}",
                  g_st.subframes, g_st.recorded, g_st.ticks, g_st.matched, g_st.moved,
                  g_st.unmatched, g_st.recount, g_st.badPtr, g_st.clobbered,
-                 g_st.transN, g_st.nonFinite,
+                 g_st.transN, g_st.nonFinite, window,
                  g_st.bucket[0], g_st.bucket[1], g_st.bucket[2], g_st.bucket[3], g_st.bucket[4],
                  g_st.bucket[5], g_st.bucket[6], (double)g_st.maxDelta, g_st.maxModel,
                  g_st.matched == 0
@@ -418,4 +422,7 @@ void sbr_i60r_report() {
                  "(fovy/zoom), texture and bump matrices, J2D/ortho HUD, JPA particles, "
                  "immediate-mode geometry.{}",
                  nrm_disabled() ? " Normal matrices ablated OFF by SBR_INTERP60_REPLACE_NONRM." : "");
+    for (int i = 0; i < 7; ++i) g_st.bucket[i] = 0;
+    g_st.transN = 0;
+    g_st.nonFinite = 0;
 }
