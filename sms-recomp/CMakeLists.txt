@@ -35,7 +35,7 @@ target_compile_options(sms-recomp-guest PRIVATE -w)
 file(GLOB SB_OVERRIDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/overrides/*.cpp")
 add_library(sms-recomp-overrides OBJECT ${SB_OVERRIDES})
 target_include_directories(sms-recomp-overrides PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/devices" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/render" "${CMAKE_CURRENT_SOURCE_DIR}/overrides"
     "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
 target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx aurora::pad)
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
@@ -54,7 +54,7 @@ target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 file(GLOB SB_FRAME_INTERP CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp/*.cpp")
 add_library(sms-recomp-frame-interp OBJECT ${SB_FRAME_INTERP})
 target_include_directories(sms-recomp-frame-interp PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/devices" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/render" "${CMAKE_CURRENT_SOURCE_DIR}/overrides"
     "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
 target_link_libraries(sms-recomp-frame-interp PUBLIC nod::nod aurora::gx aurora::pad lucent::lucent)
 
@@ -65,7 +65,7 @@ target_link_libraries(sms-recomp-frame-interp PUBLIC nod::nod aurora::gx aurora:
 # Aurora provides the GX implementation. aurora_fifo_replay() consumes a raw GX command
 # stream, which is exactly what the guest writes to the gather pipe, so no translation layer
 # is needed for the command stream itself — only for pointers (see dev_gxfifo.cpp).
-# DVD stays OFF: this runtime serves the disc itself through nod (runtime/disc.cpp).
+# DVD stays OFF: this runtime serves the disc itself through nod (runtime/devices/disc.cpp).
 set(AURORA_ENABLE_GX ON CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_DVD OFF CACHE BOOL "" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora" aurora-build EXCLUDE_FROM_ALL)
@@ -75,24 +75,24 @@ set(AURORA_NOD_LINKAGE "static" CACHE STRING "")
 set(AURORA_NOD_VERSION "v2.0.0-alpha.10" CACHE STRING "")
 include("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/cmake/AuroraNodProvider.cmake")
 
-add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
-                                 runtime/dev_aram.cpp
-                                 runtime/dev_aid.cpp
-                                 runtime/dev_dsp.cpp
-                                 runtime/dev_ai.cpp
-                                 runtime/dev_exi.cpp
-                                 runtime/dev_vi.cpp
-                                 runtime/dev_si.cpp
-                                 runtime/dev_sram.cpp
-                                 runtime/dev_di.cpp
-                                 runtime/dev_pi.cpp
-                                 runtime/disc.cpp
-                                 runtime/dev_mi.cpp
-                                 runtime/dev_gxregs.cpp
-                                 runtime/dev_gxfifo.cpp
+add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/devices/mmio.cpp
+                                 runtime/devices/dev_aram.cpp
+                                 runtime/devices/dev_aid.cpp
+                                 runtime/devices/dev_dsp.cpp
+                                 runtime/devices/dev_ai.cpp
+                                 runtime/devices/dev_exi.cpp
+                                 runtime/devices/dev_vi.cpp
+                                 runtime/devices/dev_si.cpp
+                                 runtime/devices/dev_sram.cpp
+                                 runtime/devices/dev_di.cpp
+                                 runtime/devices/dev_pi.cpp
+                                 runtime/devices/disc.cpp
+                                 runtime/devices/dev_mi.cpp
+                                 runtime/devices/dev_gxregs.cpp
+                                 runtime/devices/dev_gxfifo.cpp
                                  runtime/boot_env.cpp
                                  runtime/guest_sched.cpp)
-target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
+target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/devices" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/render" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
 target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx aurora::audio)
 
 # Host harness: loads the DOL into guest RAM and runs the entry point.
@@ -101,9 +101,9 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # member out of a static archive — nothing strongly references sb_log.o, so from a library it is
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
-add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/tev_eval.cpp runtime/probe_server.cpp
-                           runtime/native_render.cpp runtime/scene.cpp runtime/j3d_decode.cpp runtime/gx_texture.cpp runtime/state_oracle.cpp
-                           runtime/render_compare.cpp runtime/frame_smoothness.cpp)
+add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
+                           runtime/render/native_render.cpp runtime/render/scene.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
+                           runtime/render/render_compare.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
 # is the guest call stack — but only if the names resolve.
@@ -121,12 +121,12 @@ target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
 # frame and no game — which is the whole point: before this the pixel pipeline existed only as a
 # shader and could not be asked a question except by rendering a frame and inferring backwards.
 enable_testing()
-add_executable(tev_eval_test tests/tev_eval_test.cpp runtime/tev_eval.cpp)
+add_executable(tev_eval_test tests/tev_eval_test.cpp runtime/render/tev_eval.cpp)
 target_link_libraries(tev_eval_test PRIVATE lucent::lucent)
 target_include_directories(tev_eval_test PRIVATE runtime)
 add_test(NAME tev_eval COMMAND tev_eval_test)
 
-add_executable(gx_light_test tests/gx_light_test.cpp runtime/gx_light.cpp)
+add_executable(gx_light_test tests/gx_light_test.cpp runtime/render/gx_light.cpp)
 target_link_libraries(gx_light_test PRIVATE lucent::lucent)
-target_include_directories(gx_light_test PRIVATE runtime)
+target_include_directories(gx_light_test PRIVATE runtime runtime/render runtime/devices)
 add_test(NAME gx_light COMMAND gx_light_test)

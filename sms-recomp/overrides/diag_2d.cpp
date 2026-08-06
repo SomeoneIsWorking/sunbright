@@ -15,7 +15,7 @@
 #include "overrides.h"
 
 #include "../runtime/probe_server.h"
-#include "../runtime/scene.h"
+#include "../runtime/render/scene.h"
 
 #include <intrinsics.h>
 

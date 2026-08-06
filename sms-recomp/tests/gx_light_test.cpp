@@ -1,7 +1,7 @@
 // gx_light_test — the colour-channel evaluation checked against the SDK's own encoding and the
 // GX lighting equation, not against another run of the same code.
 
-#include "../runtime/gx_light.h"
+#include "../runtime/render/gx_light.h"
 
 #include <cmath>
 #include <cstdio>

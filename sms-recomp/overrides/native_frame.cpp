@@ -11,9 +11,9 @@
 #include "overrides.h"
 #include "../runtime/probe_server.h"
 #include "../frame_interp/effects.h"
-#include "../runtime/native_render.h"
-#include "../runtime/state_oracle.h"
-#include "../runtime/scene.h"
+#include "../runtime/render/native_render.h"
+#include "../runtime/render/state_oracle.h"
+#include "../runtime/render/scene.h"
 #include "../frame_interp/stream_interp.h"
 #include "../frame_interp/frame_interp.h"
 
@@ -26,7 +26,7 @@ namespace interp {
 long tick_index();
 }
 } // namespace aurora::gfx
-#include "../runtime/render_compare.h"
+#include "../runtime/render/render_compare.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>

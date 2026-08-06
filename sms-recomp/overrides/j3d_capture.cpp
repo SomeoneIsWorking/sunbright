@@ -19,11 +19,11 @@
 #include "overrides.h"
 
 #include "../runtime/probe_server.h"
-#include "../runtime/scene.h"
-#include "../runtime/j3d_decode.h"
-#include "../runtime/state_oracle.h"
+#include "../runtime/render/scene.h"
+#include "../runtime/render/j3d_decode.h"
+#include "../runtime/render/state_oracle.h"
 #include "../frame_interp/stream_interp.h"
-#include "../runtime/native_render.h"
+#include "../runtime/render/native_render.h"
 
 void sbr_mtx_begin_shape(u32 shape);
 void sbr_mtx_end_shape();

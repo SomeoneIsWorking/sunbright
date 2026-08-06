@@ -917,7 +917,7 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             l.flush(lucent::Level::Info, "nrender");
         }
         // SBR_TEV_TRACE=<tick>: for the first few drawables of that tick, EXPLAIN the pixel — run
-        // the reference TEV evaluator (runtime/tev_eval.cpp, unit-tested against the SDK) on this
+        // the reference TEV evaluator (runtime/render/tev_eval.cpp, unit-tested against the SDK) on this
         // drawable's real state and its real decoded texels, and print every stage's inputs and
         // output. "This surface is black" becomes "stage 3 wrote 0 to PREV because C2 was 0".
         // No frame score, no inference, no GPU.

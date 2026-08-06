@@ -28,7 +28,7 @@
 
 #include "overrides.h"
 
-#include "../runtime/scene.h"
+#include "../runtime/render/scene.h"
 
 #include <aurora/aurora.h>
 #include <intrinsics.h>

@@ -7,7 +7,7 @@ created: 2026-07-28
 
 ## Instrument
 
-SBR_STATE_DIFF=<n> — per-draw state oracle vs aurora (runtime/state_oracle.cpp)
+SBR_STATE_DIFF=<n> — per-draw state oracle vs aurora (runtime/render/state_oracle.cpp)
 
 ## Validated by
 

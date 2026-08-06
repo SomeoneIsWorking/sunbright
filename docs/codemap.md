@@ -44,19 +44,19 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | Subsystem | Status | Where | Gap / next |
 |---|---|---|---|
 | core dispatch / SPRs / call_ppc | ✅ | `sms-recomp/runtime/rt_core.cpp` | SPRs are MACHINE-wide (not per-CPUState) — the locked-cache/THP fix |
-| memory + MMIO | ✅ | `sms-recomp/runtime/mmio.cpp`, `intrinsics.h` | flat MEM1 fast path + locked-cache @0xE0000000 |
+| memory + MMIO | ✅ | `sms-recomp/runtime/devices/mmio.cpp`, `intrinsics.h` | flat MEM1 fast path + locked-cache @0xE0000000 |
 | HW devices | ✅ | `sms-recomp/runtime/dev_*.cpp` (gxfifo, vi, ai, si, exi, dsp, aram, mi, pi, di, sram) | `dev_gxfifo.cpp` = GX stream → aurora (EFB copies incl. R8→I8) |
 | guest scheduler | ✅ | `sms-recomp/runtime/guest_sched.cpp` | host thread per guest thread, single token; `gsched_cancel` (OSCancelThread) |
-| disc (nod) | ✅ | `sms-recomp/runtime/disc.cpp` | serves the disc directly, no DVD worker |
+| disc (nod) | ✅ | `sms-recomp/runtime/devices/disc.cpp` | serves the disc directly, no DVD worker |
 | probe server | ✅ | `sms-recomp/runtime/probe_server.cpp` | `SBR_PROBE=1`, frame-seam dispatch; `/r /w /help` + module endpoints |
-| J3D geometry decode | 🟡 | `sms-recomp/runtime/j3d_decode.cpp` (+ `sms-recomp/overrides/j3d_capture.cpp`) | shape layout + display-list -> triangles; POS/NRM/CLR0 + 4 texcoord sets; 370342/370342 elements, 0 desyncs. Gaps: TEX4-7 sets, per-vertex TEXnMTXIDX |
-| interpolated scene | 🟡 | `sms-recomp/runtime/scene.cpp` | wall-clock alpha, stable-key matching, never extrapolates; per-bone skinning split; evaluates the GX colour channel + texgen per vertex. Gaps: specular, channel 1, EMBOSS |
-| native renderer (SDL3 GPU) | 🟡 | `sms-recomp/runtime/native_render.cpp` (+ `sms-recomp/runtime/shaders/`, `gx_texture.cpp`, `scene.cpp`, `state_oracle.cpp`) | geometry, per-material depth/blend, textures, full TEV incl. COMPARE mode, alpha test, wrap modes, colour channels 0 AND 1 with the per-stage RAS selector and swap tables, all 8 texmaps, GX cull, per-draw scissor, colorUpdate/alphaUpdate write masks, and EFB copy -> texture (render-to-texture, copies ordered by FIFO stream offset). edgeIoU 32.2% / lumaCorr +0.688 vs the aurora oracle at N=59; the Delfino background renders crisp. Per-draw state matches aurora EXACTLY on textures, raster, blend, scissor, cull, channels, combiner, ksel and konst (0 disagreements of ~29400); only `tevreg` differs on 41 draws, where aurora is holding register DEFAULTS (see C012/journal). KNOWN GAP: the frontend captures only `J3DShape::draw`, so 2D/J2D geometry — the HUD — is NEVER CAPTURED (0 orthographic drawables of 839). Fork to decide: hook J2D, or capture geometry from the FIFO vertex stream. See `debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md` |
+| J3D geometry decode | 🟡 | `sms-recomp/runtime/render/j3d_decode.cpp` (+ `sms-recomp/overrides/j3d_capture.cpp`) | shape layout + display-list -> triangles; POS/NRM/CLR0 + 4 texcoord sets; 370342/370342 elements, 0 desyncs. Gaps: TEX4-7 sets, per-vertex TEXnMTXIDX |
+| interpolated scene | 🟡 | `sms-recomp/runtime/render/scene.cpp` | wall-clock alpha, stable-key matching, never extrapolates; per-bone skinning split; evaluates the GX colour channel + texgen per vertex. Gaps: specular, channel 1, EMBOSS |
+| native renderer (SDL3 GPU) | 🟡 | `sms-recomp/runtime/render/native_render.cpp` (+ `sms-recomp/runtime/shaders/`, `gx_texture.cpp`, `scene.cpp`, `state_oracle.cpp`) | geometry, per-material depth/blend, textures, full TEV incl. COMPARE mode, alpha test, wrap modes, colour channels 0 AND 1 with the per-stage RAS selector and swap tables, all 8 texmaps, GX cull, per-draw scissor, colorUpdate/alphaUpdate write masks, and EFB copy -> texture (render-to-texture, copies ordered by FIFO stream offset). edgeIoU 32.2% / lumaCorr +0.688 vs the aurora oracle at N=59; the Delfino background renders crisp. Per-draw state matches aurora EXACTLY on textures, raster, blend, scissor, cull, channels, combiner, ksel and konst (0 disagreements of ~29400); only `tevreg` differs on 41 draws, where aurora is holding register DEFAULTS (see C012/journal). KNOWN GAP: the frontend captures only `J3DShape::draw`, so 2D/J2D geometry — the HUD — is NEVER CAPTURED (0 orthographic drawables of 839). Fork to decide: hook J2D, or capture geometry from the FIFO vertex stream. See `debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md` |
 | 2D / HUD overrides | 🟡 | `sms-recomp/overrides/diag_2d.cpp`, `sms-recomp/overrides/hud.cpp` | `diag_2d.cpp` is a CENSUS over the J2D draw entry points (J2DPicture::draw/drawSelf, J2DTextBox::draw/drawSelf, J2DScreen::drawSelf) — all observe-only, real body always runs. `hud.cpp` ports TGCConsole2's widescreen corner layout. NOTE for anyone adding 2D capture to the native renderer: these addresses are ALREADY claimed, so extend `diag_2d.cpp` rather than registering a second override for the same address (attempted 2026-07-30; the duplicate was silently shadowed by the existing one). |
 | GX TEV reference + tests | ✅ | `sms-recomp/runtime/tev_eval.{h,cpp}`, `sms-recomp/tests/tev_eval_test.cpp` | the TEV pipeline as testable C++ and the DEFINITION of it — the shader mirrors it. Expectations hand-derived from the SDK (`GXSetTevColorOp` packing, `GXTevOp`, konst ramp, `GXCompare`); negative-control verified. `SBR_TEV_TRACE=<tick>` + `SBR_TEV_TRACE_BLACK=1` explain one drawable's pixel stage by stage |
 | GX lighting reference + tests | 🟡 | `sms-recomp/runtime/gx_light.{h,cpp}`, `sms-recomp/tests/gx_light_test.cpp` | colour-channel evaluation as testable C++; attnFn decode asserted against `GXSetChanCtrl`, the three diffuse fns, distance/angle attenuation, dead-light NaN guard. NOT WIRED IN YET — deliberately: the first wiring attempt regressed and could not be attributed |
 | per-draw state oracle | ✅ | `sms-recomp/runtime/state_oracle.{h,cpp}` (+ weak hooks in aurora's `command_processor.cpp`) | `SBR_STATE_DIFF=<n>` compares this port's parsed GX state against aurora's live state PER DRAW, paired by stream byte offset. 99.55% agreement — the parse is not the problem |
-| render A/B harness | ✅ | `sms-recomp/runtime/render_compare.cpp` | in-process scoring of the native frame against the aurora oracle (geom%, edgeIoU, lumaCorr) + a running mean/best over scored frames; `SBR_AB=1`, `SBR_AB_EVERY=N`, `SBR_AB_SELFTEST=1`. Compare runs at the SAME sample count |
+| render A/B harness | ✅ | `sms-recomp/runtime/render/render_compare.cpp` | in-process scoring of the native frame against the aurora oracle (geom%, edgeIoU, lumaCorr) + a running mean/best over scored frames; `SBR_AB=1`, `SBR_AB_EVERY=N`, `SBR_AB_SELFTEST=1`. Compare runs at the SAME sample count |
 | screen-effect registry | ✅ | `sms-recomp/runtime/screen_effects.h` (+ `sms-recomp/overrides/screen_effects.cpp`) | names the per-frame screen-sampling set; `/screenfx`; for the interpolated in-between frame |
 | SB_LOG channels | ✅ | `sms-recomp/runtime/sb_log.cpp` | linked into the executable (weak-undef trap) |
 
@@ -64,12 +64,12 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | Subsystem | Status | Where | Gap / next |
 |---|---|---|---|
 | frame seam / present | ✅ | `sms-recomp/overrides/native_frame.cpp` | present + pace + SIGTERM/window-close + scene tick/render + `sbr_audio_frame` |
-| GX seam | ✅ | `sms-recomp/overrides/native_gx.cpp`, `sms-recomp/runtime/dev_gxfifo.cpp` | GXWaitDrawDone/DrawDone; stream handed to aurora |
+| GX seam | ✅ | `sms-recomp/overrides/native_gx.cpp`, `sms-recomp/runtime/devices/dev_gxfifo.cpp` | GXWaitDrawDone/DrawDone; stream handed to aurora |
 | CARD | ✅ | `sms-recomp/overrides/native_card.cpp` | host Dolphin card image, inline |
 | DVD / ARQ / THP | 🟡 | `sms-recomp/overrides/native_dvd.cpp`, `native_arq.cpp`, `native_thp.cpp` | THP decodes; session reopen faults (`SBR_THP`) |
 | PAD | ✅ | `sms-recomp/overrides/native_pad.cpp` | keyboard 12/12 bound (calls aurora PADInit); `SBR_PAD_SCRIPT` |
 | OS threads / MMU | ✅ | `sms-recomp/overrides/native_os_thread.cpp`, `native_os_mmu.cpp` | token hand-off; OSCancelThread |
-| AID audio-DMA engine | ✅ | `sms-recomp/runtime/dev_aid.cpp` | 0xCC005030-3C its own device (was swallowed by dev_aram as inert halfwords — the dead link). Latch/wrap/re-arm, `__AID_Callback` delivered 57/s = 32000/560, paced to a 100 ms host backlog. Verified 2026-07-23 |
+| AID audio-DMA engine | ✅ | `sms-recomp/runtime/devices/dev_aid.cpp` | 0xCC005030-3C its own device (was swallowed by dev_aram as inert halfwords — the dead link). Latch/wrap/re-arm, `__AID_Callback` delivered 57/s = 32000/560, paced to a 100 ms host backlog. Verified 2026-07-23 |
 | DSP voice mixer | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | the heartbeat now beats but every delivered sample is ZERO — nothing fills the buffer. AX/Zelda ucode HLE = step 4 of `docs/audio/recomp_plan.md` |
 | fastboot | ✅ | `sms-recomp/overrides/fastboot_native.cpp` | `SBR_FASTBOOT`/`SBR_STAGE`/`SBR_SCENARIO`; ported from git 9283f44^ |
 | widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
@@ -128,13 +128,13 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 ## Where is X?
 
 - boot destination / fastboot → `sms-recomp/overrides/fastboot_native.cpp` (`SBR_FASTBOOT`/`SBR_STAGE`)
-- GX stream → aurora → `sms-recomp/runtime/dev_gxfifo.cpp` (`gxfifo_flush`, `emit_arraybase`, EFB copies)
+- GX stream → aurora → `sms-recomp/runtime/devices/dev_gxfifo.cpp` (`gxfifo_flush`, `emit_arraybase`, EFB copies)
 - widescreen aspect → `sms-recomp/overrides/widescreen.cpp` (`ov_c_mtx_perspective`)
 - a screen effect (heat haze etc.) → `docs/60fps/screen_effects.md` + `sms-recomp/overrides/screen_effects.cpp`
 - **60fps, ANY part of it → `docs/60fps/README.md`** — the map of all three implementations, every hook by
   guest address, every switch by path, and the unification target. Do not start from the source:
   the hooks are spread over eight files under three different names (`lerp60`, `interp60`,
-  `interp60_replace`). The stale entry this replaces pointed at `runtime/scene.cpp`, which has not
+  `interp60_replace`). The stale entry this replaces pointed at `runtime/render/scene.cpp`, which has not
   held a 60fps path for some time — the switch it named lives in `runtime/lerp60.cpp`.
 - which perform list is which → `SBR_INTERP60_LISTS=1` (resolves `gpMarDirector` by scan, names every slot)
 - whether a sub-frame is real or the same image twice → `tools/interp/subframe_gate.py` on a consecutive-present series
@@ -148,13 +148,16 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 ```
 sms-recomp/  —  the recomp runtime
 ├─ generated/     PPC→C++ (2.79M lines, regenerated by tools/recompiler); never hand-edited
-├─ runtime/       12.7k lines  50 files   dispatch, MMIO, HW devices, scheduler, probe server
+├─ runtime/                    11 files   dispatch (rt_core), guest scheduler, boot env, probe
+│  ├─ devices/                 19 files   the GC hardware model — one file per device
+│  └─ render/                  18 files   the native SDL3-GPU renderer + its oracle harnesses
 ├─ overrides/      4.9k lines  25 files   native HW/OS seams + widescreen/HUD/j3d capture
 ├─ frame_interp/   4.3k lines  11 files   ALL interpolated-60fps code — one API (docs/60fps/)
 └─ host/          main.cpp
 extern/aurora/    the GC platform surface (SDL3 + WebGPU/Dawn), shared by both runtimes
 sms-boot/         the decomp+Aurora runtime (the oracle)
 decomp/sms/       the reference decompilation (submodule)
+reference/        the US/JP symbol + function-address lists every RE note cites
 tools/            every tool lives under a subject directory; only diag_registry.py,
                   scratch_clean.py and selftest_all.py are repo-wide and sit at the root
 ├─ recompiler/  render/  oracle/  interp/  re/  audio/  perf/  ghidra_scripts/

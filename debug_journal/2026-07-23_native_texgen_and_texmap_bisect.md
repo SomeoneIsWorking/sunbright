@@ -1,6 +1,6 @@
 # Native SDL3-GPU render: texgen lands, multi-texmap regresses (bisected)
 
-2026-07-23, recomp native renderer (`sms-recomp/runtime/native_render.cpp` + `scene.cpp`).
+2026-07-23, recomp native renderer (`sms-recomp/runtime/render/native_render.cpp` + `scene.cpp`).
 
 ## The harness change that made this session's conclusions possible
 

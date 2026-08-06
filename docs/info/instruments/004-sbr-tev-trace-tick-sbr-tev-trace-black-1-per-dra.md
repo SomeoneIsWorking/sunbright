@@ -8,7 +8,7 @@ distrusted_on: 2026-07-29
 
 ## Instrument
 
-SBR_TEV_TRACE=<tick> / SBR_TEV_TRACE_BLACK=1 — per-drawable pixel explanation (runtime/scene.cpp)
+SBR_TEV_TRACE=<tick> / SBR_TEV_TRACE_BLACK=1 — per-drawable pixel explanation (runtime/render/scene.cpp)
 
 ## Validated by
 

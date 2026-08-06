@@ -3,7 +3,7 @@
 > **HISTORICAL — this is NOT the current architecture.** It describes an object-model renderer
 > reading engine objects from guest-layout RAM and drawing them with a bespoke Vulkan backend. The
 > live renderer is the opposite: it is driven from the **GX FIFO parse**
-> (`sms-recomp/runtime/dev_gxfifo.cpp` -> `scene.cpp` -> `native_render.cpp`) on **SDL3 GPU**, with
+> (`sms-recomp/runtime/devices/dev_gxfifo.cpp` -> `scene.cpp` -> `native_render.cpp`) on **SDL3 GPU**, with
 > aurora as the in-process parity oracle. See `docs/codemap.md` and `CLAUDE.md`'s renderer
 > doctrine. Kept ONLY for the GX/VAT vertex-decode spec in section 3a, which is still accurate;
 > treat the staging plan (N0-N8) and every architectural claim here as superseded. Contents: the stage breakdown (N0–N8), the GX/VAT vertex-decode spec (§3a),

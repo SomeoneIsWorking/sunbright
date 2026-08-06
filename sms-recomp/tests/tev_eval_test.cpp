@@ -6,7 +6,7 @@
 // change-detector — a test whose expected value came from running the implementation only tells you
 // the implementation has not changed.
 
-#include "../runtime/tev_eval.h"
+#include "../runtime/render/tev_eval.h"
 
 #include <cmath>
 #include <cstdio>

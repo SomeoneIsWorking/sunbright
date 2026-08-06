@@ -104,7 +104,7 @@ third-party GX interpreter.
 `9283f44^:native/render/gx_sdlgpu.cpp` (reached P3 = real per-material TEV combiners). Its
 BACKEND (batches → GPU) resurrects; its FRONTEND (GX state → transformed verts + TEV
 shaders) was built for the decomp runtime's GX-call capture and must instead be driven from
-the recomp's FIFO parse (`sms-recomp/runtime/dev_gxfifo.cpp`) — the job aurora's
+the recomp's FIFO parse (`sms-recomp/runtime/devices/dev_gxfifo.cpp`) — the job aurora's
 `command_processor.cpp` does today.
 
 **Aurora is the PARITY ORACLE during the build, not deleted early.** Build the native path

@@ -39,7 +39,7 @@ Licensing is a non-issue for this project (user directive).
 
 ## STATUS — steps 0-3 LANDED and measured (2026-07-23)
 
-`sms-recomp/runtime/dev_aid.cpp` is the AID engine + delivery + output tap; `dev_aram.cpp` now
+`sms-recomp/runtime/devices/dev_aid.cpp` is the AID engine + delivery + output tap; `dev_aram.cpp` now
 stops at 0xCC005030 and chains `aid_device_init()`. `sbr_audio_frame()` (the weak seam in
 `overrides/native_frame.cpp`) has a strong definition there. **Measured, SBR_FASTBOOT, 65 s:**
 

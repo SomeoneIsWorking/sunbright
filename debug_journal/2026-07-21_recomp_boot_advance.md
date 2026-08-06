@@ -235,7 +235,7 @@ registers, a byte count — so modelling it lets the game's OWN init and sizing 
 *compute* those globals instead of us fabricating them.
 
 New: `runtime/mmio.h` + `mmio.cpp` (device router; overlapping ranges abort, unclaimed
-addresses stay loud) and `runtime/dev_aram.cpp`. The router is where DI/VI/SI/EXI will hang
+addresses stay loud) and `runtime/devices/dev_aram.cpp`. The router is where DI/VI/SI/EXI will hang
 off later.
 
 **DMA is synchronous** — the copy completes inside the register write that starts it, so the
@@ -985,7 +985,7 @@ Next: GX FIFO out of `0xCC008000` and into aurora.
 
 ## GX FIFO: the command stream is now framed and measurable
 
-`runtime/dev_gxfifo.cpp` claims the write-gather pipe (`0xCC008000`) and parses the GX
+`runtime/devices/dev_gxfifo.cpp` claims the write-gather pipe (`0xCC008000`) and parses the GX
 command stream instead of discarding it.
 
 Why a parser and not SDK overrides: GX is not a function-call API at the metal. The SDK's
