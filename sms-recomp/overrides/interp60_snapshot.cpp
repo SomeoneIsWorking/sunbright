@@ -1477,8 +1477,19 @@ CamSave camera_apply(CPUState& cpu, u32 obj, float alpha) {
         }
         g_camSep = std::sqrt(d);
         if (trace) {
+            // SBR_INTERP60_CAMFAST=<units>: report only ticks where the camera moved at least this
+            // far. A flat 12-line cap answers "what is the camera doing at the start", which is the
+            // BORING case — the run opens with the camera parked, so twelve lines of 0.000 is all it
+            // ever showed. Capping by novelty instead is the rule this project already has for
+            // diagnostics; here the novelty is speed, because the whole question is where a large
+            // camera motion happens.
+            static const float fast = [] {
+                const char* e = std::getenv("SBR_INTERP60_CAMFAST");
+                return e ? (float)std::atof(e) : -1.0f;
+            }();
             static int lines = 0;
-            if (lines < 12) { ++lines;
+            const bool want = fast >= 0.0f ? (g_camSep >= fast) : (lines < 12);
+            if (want && lines < 40) { ++lines;
                 lucent::info("i60cam",
                              "CAMTRACE present {} alpha={:.2f}: cached view t BEFORE=({:.2f},"
                              "{:.2f},{:.2f})  AFTER=({:.2f},{:.2f},{:.2f})  |eye cur-prev|={:.3f}",
@@ -2069,6 +2080,29 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // this file already records. That is why this is a switch and not a default: it answers whether
     // the boundary is the cause, and the fix (suppressing only the frame ADVANCE) is a narrower
     // seam that should be built only once the cause is confirmed rather than assumed.
+    // ORDERING: j3dSys must already hold the INTERPOLATED view before anything recomputes a
+    // model-view matrix from it.
+    //
+    // This is what the fast-camera measurement exposed. viewCalc concatenates j3dSys's view into
+    // each drawable's matrices, and the calc-anim re-issue below runs BEFORE the draw lists — but
+    // it is the draw lists that contain the camera's view path, so at that moment j3dSys still
+    // holds the view the PREVIOUS tick left, i.e. the endpoint. Running viewCalc there baked the
+    // endpoint view into all 140 drawables, and the scene's own later entry rebuilt only 14 of them
+    // from the interpolated view. The sub-frame therefore rendered its background at the endpoint
+    // no matter what alpha said, at any camera speed — measured at 3.9 units/tick (74% asymmetry)
+    // and again at 28 units/tick, where it got WORSE (99.5%), which is what killed the sub-pixel
+    // explanation.
+    //
+    // Seeding j3dSys from the camera's own freshly-built cached matrix is not a shortcut around the
+    // game: TSmJ3DScn::perform does exactly this copy (MTXCopy(param_2->mViewMtx, j3dSys view)),
+    // and camera_apply has just rebuilt that matrix with the game's own C_MTXLookAt. This only
+    // moves the copy earlier so the recompute sees the view it is supposed to.
+    if (camSave.obj && sb_ram_fast(camSave.obj + OFF_CPSC_VIEWMTX)) {
+        for (int i = 0; i < 12; ++i)
+            guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4,
+                        guest_f32(camSave.obj + OFF_CPSC_VIEWMTX + (u32)i * 4));
+    }
+
     static const bool calcAnim = std::getenv("SBR_INTERP60_CALCANIM") != nullptr;
     if (calcAnim) {
         const u32 ca = sb_r32(g_mardir + 0x2C);

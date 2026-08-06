@@ -2921,3 +2921,67 @@ at present 2796 — enough to move the background several pixels, well clear of 
 asymmetry falls toward 50/50 there, the interpolation has been correct for some time and this whole
 sub-arc was measuring the metric. If it stays at 74%, there is a real defect and the sub-pixel
 explanation is dead too.
+
+## A VERIFIED CHAIN THAT CONTRADICTS ITS OWN OUTPUT — state it, do not guess past it
+
+`SBR_INTERP60_CAMFAST=<units>` reports only ticks where the camera moved at least that far. The flat
+12-line CAMTRACE cap was answering "what is the camera doing at the start of the run", which is the
+BORING case — the run opens with the camera parked and twelve lines of `0.000` was all it ever
+showed. Capping by novelty found the fast window immediately: presents 800-826, ramping 12.7 -> 28.1
+units per tick, seven times the 3.868 at present 2796.
+
+At that window, EVERY LINK of the camera chain is verified, each from the runtime:
+
+    camera_apply builds the midpoint   AFTER(802) = 1095.64, exactly between BEFORE(802) 1087.95
+                                       and BEFORE(800) 1103.38
+    the camera writes it               VIEWSEQ: camera 1 writes t=(0.00, 966.67, -7847.08)
+    CAMTRACE says that IS the value    AFTER(816) = (0.00, 966.67, -7847.08)   -- identical
+    j3dSys receives it                 VIEWSEQ: SCENE view <- the same, dominant 1542 KB pass
+    every drawable rebuilds from it    140 viewCalc inside vs 139 in the tick
+    the sub-frame renders its own      DROPLAST: 1,228,800 of 1,228,800 px change
+    alpha reaches the frame            sub@0.0 vs sub@1.0 = 176,576 px / mean 1.738
+
+And the output is the ENDPOINT:
+
+    full tick  9.408 | sub->prev  9.423 | sub->next 0.062 | asymmetry 99.5%   (alpha 0.5)
+    identity alpha=1                              -> 0.064
+
+The sub-frame at alpha=0.5 is as close to the following main frame as the alpha=1.0 identity is.
+
+### What this kills
+
+**The sub-pixel explanation is dead.** At 28 units per tick the background moves several pixels, and
+the asymmetry got WORSE (74.5% -> 99.5%), not better.
+
+**The ordering fix did not do it either.** viewCalc concatenates j3dSys's view, and the calc-anim
+re-issue runs before the draw lists that contain the camera's view path — so it was baking the
+ENDPOINT view into all 140 drawables. Seeding j3dSys from the camera's freshly-built cached matrix
+first (the same copy `TSmJ3DScn::perform` does, only earlier) is correct and is kept: identity
+unchanged at 0.064. It changed the midpoint by 0.003.
+
+### The shape of the residual, stated honestly
+
+The alpha response at this window is not linear and not a midpoint:
+
+    alpha 0.0 -> ~1.8 from the next main    (19% of the 9.4 full tick)
+    alpha 0.5 -> 0.059                      (already at the endpoint)
+    alpha 1.0 -> 0.064
+
+Almost the entire response happens between 0.0 and 0.5, and from 0.5 upward the sub-frame is the
+endpoint frame. At present 2798 the same shape appeared with a gain of 28%. So across two moments
+seven times apart in camera speed, the sub-frame reaches roughly a fifth to a quarter of the way and
+then saturates.
+
+### The next diagnostic, and why it is the right bisect
+
+Every link above is measured at the level of GAME STATE. None of them measures what was EMITTED. The
+remaining space is exactly: does the sub-frame's GX stream differ between alphas the way the game
+state does? Hash the sub-frame's emitted stream at alpha=0 and alpha=1 and compare — if the streams
+differ substantially, the emission is right and the difference is being lost in rendering or
+presentation; if the streams are nearly identical, the interpolated state never reached the stream
+and every state-level verification above is measuring something the emitter does not read.
+
+That is one bisect of the whole remaining space, and it is the first measurement in this arc that
+looks at the artifact rather than at the state that is supposed to produce it. It must come before
+any further change — the last four explanations were each reasoned from verified state and each was
+wrong about the pixels.
