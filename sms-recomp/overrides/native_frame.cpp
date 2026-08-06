@@ -359,6 +359,9 @@ extern "C" void aurora_replay_midpoint() {
     nanosleep(&ts, nullptr);
 }
 
+void sbr_tag_shadow_begin_tick();
+void sbr_tag_shadow_report();
+
 extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
 extern "C" int  sbr_interp60_in_subframe();
@@ -528,6 +531,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     // Interpolation tag coverage, on a slow cadence. Inert unless SBR_LERP60 is set.
     if (sbr_lerp_enabled() && (g_present_count % 300) == 0) {
         sb::frame_interp::report();
+        sbr_tag_shadow_report();
         sbr_lerp_report_tag_coverage();
         sbr_camera_cut_report();
         sbr_afterimage_report();
@@ -747,6 +751,7 @@ void present_tail(CPUState& cpu) {
     // ONE SIMULATION TICK ENDS HERE. begin_sim_tick() clears the interpolation-callback registry,
     // so it must run once per tick and before anything registers for the NEXT in-between frame.
     sb::frame_interp::begin_sim_tick();
+    sbr_tag_shadow_begin_tick();
     if (sbr_lerp_enabled()) sbr_afterimage_tick();
     if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
     // The camera cut goes through the unified API rather than straight to aurora's snap: a cut is

@@ -1457,7 +1457,13 @@ void sbr_gxfifo_view_matrix() {
     g_out.insert(g_out.end(), g_ram_base + off, g_ram_base + off + 48);
 }
 
+// The tag currently in force, mirrored on this side so a seam can ask "is what I am about to emit
+// going to be attributable at all?" without parsing the stream back.
+static uint64_t g_pendingTagState = 0;
+uint64_t sbr_gxfifo_pending_tag() { return g_pendingTagState; }
+
 void sbr_gxfifo_draw_tag(uint64_t tag) {
+    g_pendingTagState = tag;
     gxfifo_drain_pending();
     put_u8 (g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_DRAW_TAG);
