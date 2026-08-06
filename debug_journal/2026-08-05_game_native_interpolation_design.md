@@ -2586,3 +2586,64 @@ exonerate across cutscenes, Yoshi, water and the Torocco path (`calcBaseMtx` has
 branches, only one of which was exercised here). Default-on wants the gate run across several
 moments first. The remaining 400-object scenery set is still gated behind the calc-anim boundary
 and its own cost — that is the next piece, and it is separate from the player.
+
+## The scenery actors: the seam works, and the NPCs need one more address that is NOT slot 46
+
+Third instance of the same seam — substituted pose, then the game's own function. For a generic
+actor that is `TLiveActor::calcRootMatrix` (`MsMtxSetXYZRPH` of mPosition/mRotation into the model's
+base TR matrix, `src/Strategic/liveactor.cpp:259`), which is VIRTUAL, so the sub-frame dispatches
+through each object's own vtable. `SBR_INTERP60_ACTORS=1`.
+
+### The slot is 46, and the static derivation said 37
+
+`us_vtables.py` reports slot 37: 254 of its recovered vtables put a `calcRootMatrix__*` there
+against one each at 72 and 67. That agreement is real and BIASED — the scan keys on runs of
+consecutive plausible `.text` pointers, so one non-text word truncates a vtable, and **every vptr
+seen on a live Delfino frame resolves in that scan to seven slots**, including `0x803c2ab8`, which
+this port's own notes record as TMapObjBase's 89-slot vtable. The 254 that agreed were the subset
+well-formed enough to be scanned past.
+
+Guest memory has no such problem. `SBR_INTERP60_CALCROOT_SCAN=1` walks each live actor's vtable for
+a known calcRootMatrix address:
+
+    slot 46 : 336 objects   (unanimous; none elsewhere, none with two)
+    no hit  :  63 objects
+
+Slot **46**. The static answer was wrong, and it was wrong in the direction that would have been
+invisible: dispatching at 37 called nothing at all, because the call-site check refused every object.
+
+### Three things the loud negatives caught, in order
+
+1. **`called on 0 of the substituted actors, skipped 399`** — the first run with slot 37. Designed to
+   say so rather than silently do nothing, and it is the only reason the slot got re-derived.
+2. **An abort on frame one** once the slot was right: `TMapObjBase::calcRootMatrix` (0x801af9a0)
+   took `getModel()` off a null `mMActor` and dereferenced guest 0x00000004. `TLiveActor::perform`
+   does not call it unconditionally (`liveactor.cpp:404`) — `if (mMActor) { if (!(mLiveFlag &
+   (HIDDEN|CLIPPED_OUT))) { if (cue & 2) calcRootMatrix(); ... } }`. **Calling the game's own
+   function is only faithful under the game's own preconditions**; an unguarded call is a different
+   operation that happens to share a name. With the guards reproduced: 110 dispatched, 226 skipped
+   on the guards, 63 with no known override, no crash.
+3. **The near-miss that matters most.** The dispatched actors changed no pixels, and the per-mover
+   report says why: of the 6–11 objects that actually move each tick, 0–4 are dispatched, and every
+   NPC — モンテ, キノピオ, アロハモンテ — shares vptr `0x803d8448` whose slot 46 holds `0x80206ddc`,
+   which is in no known list. The obvious "fix" is to add that address. **It is not a
+   calcRootMatrix.** Disassembled, `0x80206ddc` calls `setKeepAnm__8TBaseNPC`,
+   `execMotionBlend__13TNpcInbetween` and `setGroundCollision__10TLiveActor` — it is TBaseNPC's
+   per-frame motion-blend routine. Adding it because it sat at the expected slot would have run
+   NPC motion blending every sub-frame, and nothing in the pixel numbers would have said so.
+
+So TBaseNPC does not share the layout: its calcRootMatrix is elsewhere AND weak (the 0..127 scan
+found no known override anywhere in its vtable). Resolving it is a `vtable_re.py` job — align
+TBaseNPC's vtable against a subclass that IS listed — and it is the next step, not a constant to
+guess.
+
+### State
+
+    identity  alpha=1, player + actors : 3,257 px / mean 0.066   (unchanged — no side effect)
+    actor alpha 1.0 vs 0.0             : 5,608 px / 0.0696       (unchanged — the movers are NPCs)
+
+`SBR_INTERP60_ACTORS` is safe and inert at this moment: it dispatches 110 crates and props, none of
+which are both moving and on screen here. It is worth keeping on because the mechanism is right and
+the coverage grows with each weak override resolved; it is opt-in because the benefit is so far
+unmeasured. The generator `tools/re/calcroot_addrs.py` prints its coverage gap on every run rather
+than leaving it to be discovered as "some props still step at 30 Hz".

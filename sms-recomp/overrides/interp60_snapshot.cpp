@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
+#include "../generated/calcroot_addrs.h"
 
 extern "C" void func_802fcc94(CPUState&);      // JDrama::TViewObj::testPerform(u32, TGraphics*)
 extern "C" unsigned VIGetRetraceCount(void);
@@ -1550,6 +1551,190 @@ void player_apply(CPUState& cpu, u32 gfx) {
                      (double)guest_f32(obj + OFF_POSITION + 8));
 }
 
+// ── the SCENERY actors, rebuilt in the game's own terms ──────────────────────
+//
+// Same seam as the player and the camera, third instance: the substituted pose is turned into a
+// matrix by calling the GAME'S OWN function. For a generic actor that is
+// TLiveActor::calcRootMatrix, which MsMtxSetXYZRPH's mPosition/mRotation into the model's base TR
+// matrix (decomp src/Strategic/liveactor.cpp:259).
+//
+// It is VIRTUAL and overridden by dozens of classes, so this dispatches through each object's own
+// vtable at slot 37 (established in tools/re/calcroot_addrs.py from the recovered US vtables: 254
+// of them put a calcRootMatrix override there, against one each at 72 and 67).
+//
+// AND IT VALIDATES THE POINTER IT IS ABOUT TO CALL, not the class of the object. Slot 37 of a
+// non-TLiveActor is some other virtual with some other signature; calling it would be a
+// wrong-signature call on the game thread. So the address read out of the slot must itself be a
+// KNOWN calcRootMatrix (kCalcRootAddrs). If the object is not an actor, or the slot index is wrong,
+// the address is not in the set and the actor is SKIPPED. A skipped actor does not interpolate; a
+// wrong call corrupts memory — the failure modes are asymmetric and the check follows the asymmetry.
+//
+// This is why re-issuing the director's calc-anim list was the wrong instrument for the same idea:
+// that list also runs MActor::frameUpdate and updateAnmSound, advancing every animation a second
+// time (measured at mean |d| 21.9 against both neighbours). Calling calcRootMatrix alone is the
+// narrow seam the journal named — matrices recomputed, nothing advanced.
+bool actors_on() {
+    static const bool v = std::getenv("SBR_INTERP60_ACTORS") != nullptr;
+    return v;
+}
+
+long g_calcRootCalls = 0, g_calcRootSkipped = 0;
+
+// SBR_INTERP60_CALCROOT_SCAN=1 — find the slot from LIVE objects instead of from a static scan.
+//
+// The static derivation (slot 37, from us_vtables.py's recovered vtables) does not survive contact
+// with the objects that actually exist: every vptr the census named resolves, in that scan, to a
+// vtable of just SEVEN slots — including 0x803c2ab8, which the port's own notes record as
+// TMapObjBase's 89-slot vtable. The scan finds runs of consecutive plausible .text pointers, so any
+// vtable containing a single non-.text word (a null slot) is truncated there, and the 254 vtables
+// that agreed on slot 37 were the subset well-formed enough to be scanned past it. An index agreed
+// on by a biased subset is not the index.
+//
+// Guest memory has no such problem: the vtable is simply there. So walk each live actor's vtable and
+// report WHICH slot holds a known calcRootMatrix, as a histogram over real objects. A single
+// dominant index is the answer and its dominance is the evidence; a scatter means there is no shared
+// slot and the whole dispatch-by-index approach is wrong, which is equally worth knowing.
+//
+// Objects whose calcRootMatrix is weak/inlined carry an address that is in no list, so they cannot
+// contribute — that is the coverage gap, and the "no hit" count reports it rather than hiding it.
+constexpr int kVtScanSlots = 128;
+
+// TLiveActor layout (decomp include/Strategic/LiveActor.hpp:148, :173, :22-23). These gate the
+// dispatch below exactly as TLiveActor::perform gates its own call.
+constexpr u32 OFF_LA_MACTOR   = 0x74;   // MActor* mMActor
+constexpr u32 OFF_LA_LIVEFLAG = 0xF0;   // u32 mLiveFlag
+constexpr u32 kLiveFlagHidden     = 0x2;
+constexpr u32 kLiveFlagClippedOut = 0x4;
+
+void calcroot_scan(u32 tick) {
+    static bool done = false;
+    if (done || !std::getenv("SBR_INTERP60_CALCROOT_SCAN")) return;
+    done = true;
+    int hist[kVtScanSlots] = {0};
+    int objs = 0, noHit = 0, multi = 0;
+    for (int i = 0; i < TABLE_SIZE; ++i) {
+        const Entry& e = g_tab[i];
+        if (e.obj == 0 || e.tick != tick || e.posOnly || !sb_ram_fast(e.obj)) continue;
+        ++objs;
+        const u32 vptr = sb_r32(e.obj);
+        int found = -1, nFound = 0;
+        for (int k = 0; k < kVtScanSlots; ++k) {
+            const u32 ea = vptr + 8u + (u32)k * 4u;
+            if (!sb_ram_fast(ea)) break;
+            if (in_sorted(kCalcRootAddrs, kCalcRootAddrCount, sb_r32(ea))) {
+                if (found < 0) found = k;
+                ++nFound;
+            }
+        }
+        if (found < 0) { ++noHit; continue; }
+        if (nFound > 1) ++multi;
+        ++hist[found];
+    }
+    lucent::info("i60actors", "=== calcRootMatrix slot scan over {} live substituted actors ===", objs);
+    lucent::info("i60actors", "  {} carried NO known calcRootMatrix in their first {} slots "
+                              "(weak/inlined override, or not an actor)", noHit, kVtScanSlots);
+    if (multi)
+        lucent::info("i60actors", "  {} carried MORE THAN ONE known calcRootMatrix address -- the "
+                                  "first is reported, and that ambiguity is a reason to distrust a "
+                                  "single index", multi);
+    int best = -1;
+    for (int k = 0; k < kVtScanSlots; ++k)
+        if (hist[k] && (best < 0 || hist[k] > hist[best])) best = k;
+    for (int k = 0; k < kVtScanSlots; ++k)
+        if (hist[k]) lucent::info("i60actors", "    slot {:>3} : {} object(s){}", k, hist[k],
+                                  k == best ? "   <- dominant" : "");
+    if (best < 0)
+        lucent::info("i60actors", "  NO SLOT FOUND IN ANY OBJECT. Either every live actor's "
+                                  "calcRootMatrix is weak, or the address set is wrong. Nothing "
+                                  "here supports dispatching by index.");
+    else
+        lucent::info("i60actors", "  static derivation said slot {}; live objects say slot {}",
+                     kCalcRootSlot, best);
+}
+
+// One line per MOVER, with the reason. A count of dispatched movers says coverage is the problem;
+// only the name and reason say which gap to close, and the names are the difference between "some
+// props" and "every NPC in the scene".
+void note_mover(bool moved, u32 obj, const char* why) {
+    if (!moved || !std::getenv("SBR_INTERP60_MOVERS")) return;
+    static int lines = 0;
+    if (lines >= 24) return;
+    ++lines;
+    char nm[48]; guest_name(obj, nm, sizeof nm);
+    const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
+    lucent::info("i60movers", "  mover 0x{:08x} vptr=0x{:08x} \"{}\": {}", obj, vptr, nm, why);
+}
+
+void actors_calc_root(CPUState& cpu, u32 tick) {
+    calcroot_scan(tick);
+    if (!actors_on()) return;
+    const u32 savedSp = (u32)cpu.gpr[1];
+    long called = 0, skipped = 0, skippedGuard = 0;
+    long movedTotal = 0, movedCalled = 0;
+    for (int i = 0; i < TABLE_SIZE; ++i) {
+        const Entry& e = g_tab[i];
+        if (e.obj == 0 || e.tick != tick || !e.applied) continue;
+        if (e.posOnly) continue;                       // cameras and other non-actors
+        if (!sb_ram_fast(e.obj)) continue;
+        // Only an actor whose prev differs from cur can change a pixel, so the counts that matter
+        // are the MOVERS. "110 actors dispatched" and "the alpha still changes nothing" are
+        // perfectly consistent if all 110 were stationary — an aggregate over the whole set cannot
+        // tell those apart, and the set is 97% stationary scenery.
+        const bool moved = e.cur[0] != e.pos[0] || e.cur[1] != e.pos[1] || e.cur[2] != e.pos[2];
+        movedTotal += moved ? 1 : 0;
+        const u32 vptr = sb_r32(e.obj);
+        const u32 slotEA = vptr + 8u + (u32)kCalcRootSlot * 4u;
+        if (!sb_ram_fast(slotEA)) { ++skipped; note_mover(moved, e.obj, "vtable slot unreadable"); continue; }
+        const u32 fnAddr = sb_r32(slotEA);
+        if (!in_sorted(kCalcRootAddrs, kCalcRootAddrCount, fnAddr)) { ++skipped;
+            { char w[96]; std::snprintf(w, sizeof w, "slot %d holds 0x%08x, which is in no known "
+                          "calcRootMatrix list (weak/inlined override)", kCalcRootSlot, fnAddr);
+              note_mover(moved, e.obj, w); }
+            continue; }
+        // THE GAME'S OWN GUARDS, reproduced. TLiveActor::perform does not call calcRootMatrix
+        // unconditionally (decomp src/Strategic/liveactor.cpp:404):
+        //
+        //     if (mMActor) { ... if (!(mLiveFlag & (HIDDEN|CLIPPED_OUT))) { if (cue & 2)
+        //                            calcRootMatrix(); ... } }
+        //
+        // Dispatching without them aborted the run on the first frame: TMapObjBase::calcRootMatrix
+        // (0x801af9a0) takes getModel() off a null mMActor and dereferences guest 0x00000004.
+        // Calling the game's own function is only faithful if it is called under the game's own
+        // preconditions — an unguarded call is a different operation that happens to share a name.
+        const u32 mActor = sb_ram_fast(e.obj + OFF_LA_MACTOR) ? sb_r32(e.obj + OFF_LA_MACTOR) : 0;
+        if (!mActor || !sb_ram_fast(mActor)) { ++skippedGuard;
+            note_mover(moved, e.obj, "no MActor -- the game would not call it either"); continue; }
+        const u32 liveFlag = sb_ram_fast(e.obj + OFF_LA_LIVEFLAG) ? sb_r32(e.obj + OFF_LA_LIVEFLAG) : 0;
+        if (liveFlag & (kLiveFlagHidden | kLiveFlagClippedOut)) { ++skippedGuard;
+            note_mover(moved, e.obj, "hidden or clipped out -- the game would not call it either");
+            continue; }
+        // call_ppc, not a raw table lookup: it is the one path the generated code routes every
+        // bl and bctrl through, so an OVERRIDDEN calcRootMatrix is honoured here exactly as it
+        // would be during the tick. Dispatching around it would silently run the recomp body of a
+        // function the port has deliberately replaced.
+        cpu.gpr[3] = e.obj;
+        call_ppc(cpu, fnAddr);
+        cpu.gpr[1] = savedSp;
+        ++called;
+        movedCalled += moved ? 1 : 0;
+        note_mover(moved, e.obj, "DISPATCHED");
+    }
+    g_calcRootCalls += called;
+    g_calcRootSkipped += skipped;
+    static long n = 0;
+    if (++n <= 3 || (n % 900) == 0)
+        lucent::info("i60actors",
+                     "calcRootMatrix #{}: called on {} of the substituted actors; skipped {} "
+                     "(slot {} held no known calcRootMatrix) and {} on the game's own guards "
+                     "(no MActor, or hidden/clipped); of the {} that actually MOVED this tick, {} "
+                     "were dispatched{}",
+                     n, called, skipped, kCalcRootSlot, skippedGuard,
+                     movedTotal, movedCalled,
+                     called == 0 ? "   <-- NONE dispatched: no substituted actor's vtable carried a "
+                                   "recognised calcRootMatrix, so this run interpolates no scenery"
+                                 : "");
+}
+
 void camera_restore(const CamSave& sv) {
     if (!sv.obj) return;
     for (int k = 0; k < 3; ++k) {
@@ -1723,6 +1908,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         }
     }
     player_apply(cpu, gfx);
+    actors_calc_root(cpu, g_lastSnapTick);
     viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.

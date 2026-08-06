@@ -174,10 +174,7 @@ inline f64 frsqrte(f64 v) { return 1.0 / std::sqrt(v); }
 // OS HLE call — implemented in runtime/os_hle.cpp
 extern void os_hle_call(CPUState& cpu, u32 address);
 
-// Indirect branch resolution — look up recompiled function by address
-// Returns nullptr if not recompiled (Dolphin JIT will handle it)
 using RecompFunc = void (*)(CPUState&);
-extern RecompFunc recomp_lookup(u32 address);
 
 // Call a PPC address (bl/bctrl) — dispatches to recompiled or JIT. In the C-call
 // model the callee returns and execution continues inline in the caller.
