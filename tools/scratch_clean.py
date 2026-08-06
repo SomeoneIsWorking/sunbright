@@ -15,6 +15,26 @@ Usage (from repo root or anywhere):
 
 Always leaves each target as an existing, empty directory (ready for a fresh run).
 Agents and delegated subagent prompts should call this rather than `rm -rf <scratch dir>`.
+
+STALE CMAKE BUILD TREES — the same problem one directory up:
+
+    python3 tools/scratch_clean.py --build-dirs                 # LIST what it would remove
+    python3 tools/scratch_clean.py --build-dirs --yes           # remove them
+    python3 tools/scratch_clean.py --build-dirs --yes --keep-dir build-sms-recomp
+
+A repo that has been through several architectures accumulates build trees — this one had eight,
+2.7 GB, seven of them months stale. They are gitignored, so nothing notices, and `rm -rf build-*`
+is exactly the command that is one typo away from removing something else. So the same refusal
+discipline applies, with FOUR guards, all of which must pass:
+
+  1. the directory is a DIRECT child of the repo root (no nesting, no traversal);
+  2. its name starts with "build";
+  3. it CONTAINS CMakeCache.txt — proof it is a generated build tree and not a source directory
+     someone happened to name `build`;
+  4. git says it is ignored or untracked — so a tracked file can never be inside it.
+
+`--keep-dir` protects a tree by name; the default protects nothing, and the default action is to
+LIST rather than delete. Nothing is removed without `--yes`.
 """
 import argparse
 import os
@@ -90,12 +110,106 @@ def _rmtree_counted(path: str) -> tuple[int, int]:
     return n_files, n_bytes
 
 
+def _dir_size(path: str) -> tuple[int, int]:
+    n_files = 0
+    n_bytes = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            n_files += 1
+            try:
+                n_bytes += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return n_files, n_bytes
+
+
+def _git_ignored(path: str) -> bool:
+    """True only if git positively says this path is ignored or untracked.
+
+    An ERROR from git counts as NOT ignored. The check exists to prove nothing tracked is inside
+    the tree, and a check that treats its own failure as a pass is not a check.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", REPO_ROOT, "status", "--porcelain", "--ignored", "--", path],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return False
+        rel = os.path.relpath(os.path.realpath(path), REPO_ROOT)
+        for line in r.stdout.splitlines():
+            code, _, name = line.partition(" ")
+            name = line[3:].strip().rstrip("/")
+            if name in (rel, rel + "/") and line.startswith("!!"):
+                return True
+        # Nothing reported at all also means nothing tracked and nothing modified inside it.
+        return r.stdout.strip() == ""
+    except Exception:
+        return False
+
+
+def clean_build_dirs(do_it: bool, keep: list[str]) -> int:
+    """List, and with --yes remove, stale CMake build trees at the repo root."""
+    victims = []
+    skipped = []
+    for name in sorted(os.listdir(REPO_ROOT)):
+        path = os.path.join(REPO_ROOT, name)
+        if not os.path.isdir(path) or os.path.islink(path):
+            continue
+        if not name.startswith("build"):
+            continue
+        if name in keep:
+            skipped.append((name, "protected by --keep-dir"))
+            continue
+        if not os.path.isfile(os.path.join(path, "CMakeCache.txt")):
+            skipped.append((name, "no CMakeCache.txt — NOT a generated build tree, refusing"))
+            continue
+        if not _git_ignored(path):
+            skipped.append((name, "git does not report it as ignored/clean — refusing"))
+            continue
+        victims.append(path)
+
+    for name, why in skipped:
+        sys.stderr.write(f"[scratch_clean] SKIP {name}: {why}\n")
+    if not victims:
+        sys.stderr.write("[scratch_clean] no removable build tree found. Nothing was done.\n")
+        return 0
+
+    total_f = total_b = 0
+    for path in victims:
+        f, b = _dir_size(path)
+        total_f += f
+        total_b += b
+        age = ""
+        try:
+            import time
+            age = time.strftime(" (last written %Y-%m-%d)", time.localtime(os.path.getmtime(path)))
+        except OSError:
+            pass
+        sys.stderr.write(f"[scratch_clean] {'REMOVE' if do_it else 'would remove'} "
+                         f"{os.path.basename(path)}: {f} file(s), {b/1e9:.2f} GB{age}\n")
+        if do_it:
+            shutil.rmtree(path, ignore_errors=True)
+    sys.stderr.write(f"[scratch_clean] total: {total_f} file(s), {total_b/1e9:.2f} GB"
+                     f"{'' if do_it else ' — nothing removed, pass --yes'}\n")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Safe scratch-dir cleaner (use instead of rm -rf).")
-    ap.add_argument("dirs", nargs="+", help="scratch/ subdirectories to empty")
+    ap.add_argument("dirs", nargs="*", help="scratch/ subdirectories to empty")
+    ap.add_argument("--build-dirs", action="store_true",
+                    help="operate on stale CMake build trees at the repo root instead")
+    ap.add_argument("--yes", action="store_true", help="actually delete (--build-dirs lists by default)")
+    ap.add_argument("--keep-dir", action="append", default=[],
+                    help="build tree to protect by name; repeatable")
     ap.add_argument("--glob", default=None, help="only remove entries matching this glob (e.g. '*.png')")
     ap.add_argument("--keep", action="store_true", help="(default behavior) keep the dir node, just empty it")
     args = ap.parse_args()
+
+    if args.build_dirs:
+        return clean_build_dirs(args.yes, args.keep_dir)
+    if not args.dirs:
+        ap.error("give at least one scratch/ directory, or --build-dirs")
 
     total_f = 0
     total_b = 0
