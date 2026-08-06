@@ -66,6 +66,26 @@ bool presentation_sync_active();
 //
 // `is_sim_frame` is false for the in-between frame and true for the tick's own frame, matching
 // dusklight, so one callback body can handle both.
+//
+// ⚠ WHAT A CALLBACK CAN AND CANNOT DO, because getting this wrong produces a silent no-op.
+//
+// The dispatch is `aurora_replay_midpoint()`, which aurora calls from `end_frame()` BEFORE
+// `begin_frame()` and `install_replay_snapshot()` (extern/aurora/lib/aurora.cpp:876) — so a
+// callback genuinely runs ahead of the in-between present. It does NOT follow that a callback can
+// draw into that frame: the in-between image is a SNAPSHOT of the tick's recorded passes, and
+// install_replay_snapshot() throws away the pass begin_frame() just created and substitutes the
+// snapshot's. GX emitted from a callback lands in the NEXT tick's stream, where it will be drawn
+// once, late, and at the wrong pose.
+//
+// So a callback may do host-side work — read state, update a classifier, decide how the
+// interpolator should treat something. It may NOT issue geometry, and it may not re-run a guest
+// draw and expect the result to appear. That is dusklight's one structural advantage here: they own
+// decomp source and edit the draw site itself; we recompile retail PPC and the in-between frame is
+// a replayed stream.
+//
+// Correcting an effect on the in-between frame therefore means PATCHING THE RECORDED STREAM (see
+// docs/60fps/effects.md — the water refraction is identifiable by its texmtx-slot-0x1e load marker
+// and needs an eye-space reprojection, not a matrix lerp), not re-issuing the effect here.
 using Callback = void (*)(bool is_sim_frame, void* user);
 void add_interpolation_callback(Callback cb, void* user);
 

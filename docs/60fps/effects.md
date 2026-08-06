@@ -113,8 +113,30 @@ the same path, not to patch the difference.
 `sms-recomp/frame_interp/` (see `docs/60fps/README.md` for the map):
 
 - `add_interpolation_callback(cb, user)` is the seam this document argues for. It is live, it is
-  dispatched from `aurora_replay_midpoint()` — genuinely between a tick's two presents — and
-  **nothing registers on it yet**. The per-run report says so in those words.
+  dispatched from `aurora_replay_midpoint()` — genuinely between a tick's two presents, and
+  verified to run BEFORE the in-between frame is built (`extern/aurora/lib/aurora.cpp:876`, ahead of
+  `begin_frame()` and `install_replay_snapshot()`) — and **nothing registers on it yet**. The
+  per-run report says so in those words.
+
+  **But a callback cannot draw into that frame**, and this changes what the fix has to be. The
+  in-between image is a snapshot of the tick's recorded passes; `install_replay_snapshot()` discards
+  the pass `begin_frame()` created and substitutes the snapshot's, so GX emitted from a callback
+  lands in the NEXT tick's stream. The "re-issue `TModelWaterManager::perform` with a fabricated
+  view" fix above was written for the retired era, where the in-between frame was produced by a
+  replay that the host drove and could interleave guest calls with. It does not transfer as written.
+
+### So the water fix, restated for the current mechanism
+
+Patch the RECORDED STREAM rather than re-issue the draw. The refraction quad is identifiable in the
+stream by its **texmtx slot `0x1e` load marker**, and the correction is an eye-space reprojection —
+substitute `PNMTX0 = view(N½) · view(N)⁻¹` for that draw, so the tick-N quad is carried to the
+interpolated camera and quad and screen-texture agree again. This is targeted (it touches only draws
+carrying the marker, so it cannot repeat the HUD-mangling of the blanket direct-XF attempt) and it
+belongs in `aurora::gfx::interpolate_recorded_frame`, beside the matrix rewrite that already runs
+there.
+
+It needs the eye-space delta math and, per the standing directive, HEADED verification by the user —
+a swimming reflection is motion-dependent and a still cannot show it.
 - `effects.h` / `effects_screen.cpp` already IDENTIFY the screen-sampling effects by name
   (shimmer, water refraction, bath mist, mirror pre-render) and record which fired each frame. That
   identification is the input the callback work needs; it is not yet wired to anything that acts.
