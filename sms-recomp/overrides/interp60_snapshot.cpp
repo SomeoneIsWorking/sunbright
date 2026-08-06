@@ -58,6 +58,10 @@ extern "C" void func_80244800(CPUState&);
 // 0x2 branch runs the pair, and running only the first is measurably a no-op (a 3000-unit kick on
 // every dispatched actor moved 0 of 1,228,800 pixels until calc() was added).
 extern "C" void func_80239770(CPUState&);
+// MActor::getFrameCtrl(int) — US 0x80238f08. Returns the J3DFrameCtrl for one animation type
+// (BCK/BLK/BPK/BTP/BTK/BRK), or null. Used rather than walking MActor's layout: the game's own
+// accessor already knows which of its animation objects exists.
+extern "C" void func_80238f08(CPUState&);
 extern "C" void func_80349f5c(CPUState&);      // C_MTXLookAt(Mtx dst, const Vec* eye, const Vec* up,
                                                //             const Vec* target)
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
@@ -110,6 +114,9 @@ float alpha_cam() { static const float a = alpha_of("SBR_INTERP60_ALPHA_CAM"); r
 float alpha_act() { static const float a = alpha_of("SBR_INTERP60_ALPHA_ACT"); return a; }
 
 long viewseq_at();   // defined with the view-sequence probe; the arming present is shared
+void anim_apply(CPUState& cpu, u32 mActor, float alpha);   // defined with the animation-phase seam
+void anim_restore();
+float alpha_act();
 
 bool enabled() {
     static const bool on = std::getenv("SBR_INTERP60") != nullptr;
@@ -1756,6 +1763,7 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
         // without calc() that never reaches the node matrices the packets reference, and the
         // substitution is invisible however correctly it was written. Measured: kick=3000 on every
         // dispatched actor moved 0 pixels with calcRootMatrix alone.
+        anim_apply(cpu, mActor, alpha_act());
         cpu.gpr[3] = mActor;
         func_80239770(cpu);
         cpu.gpr[1] = savedSp;
@@ -1778,6 +1786,92 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
                      called == 0 ? "   <-- NONE dispatched: no substituted actor's vtable carried a "
                                    "recognised calcRootMatrix, so this run interpolates no scenery"
                                  : "");
+}
+
+// ── ANIMATION PHASE, interpolated ────────────────────────────────────────────
+//
+// THE MEASUREMENT THAT MOTIVATES IT. At alpha=0.5 the sub-frame sits 83% of the way toward the
+// FOLLOWING main frame rather than halfway (sub->prev 10.27, sub->next 1.94, full tick 11.19 mean
+// |d|/channel). The camera provably traverses a full tick, so ~72% of a frame's temporal change
+// comes from things that advance with the ANIMATION FRAME, not with a transform — skeletons,
+// BCK/BTK scrolls, water. The sub-frame renders all of it at tick N's phase.
+//
+// THE SEAM IS ALREADY OPEN. MActor::calcAnm() is frameUpdate() + calc(); MActor::calc() ALONE
+// evaluates every animation at the CURRENT frame values without advancing them (MActor.cpp:299,
+// :308). calc() is already called for every dispatched actor, so interpolating animation costs one
+// substitution before a call that is happening anyway — and nothing is ever advanced, so the 30 Hz
+// flicker that killed the calc-anim re-issue cannot arise here.
+//
+// WHERE (prev) COMES FROM. J3DFrameCtrl::update() is `mFrame += mRate` followed by clamp/wrap
+// (J3DAnimation.cpp:142), so the previous frame is `mFrame - mRate` BY DEFINITION — the game's own
+// rate, not a reconstruction. The exception is a tick whose update clamped or wrapped, and the
+// controller SAYS SO: mState is reset every update and set to STATE_COMPLETED_ONCE /
+// STATE_LOOPED_ONCE exactly then. Stepping back linearly across that discontinuity would be
+// meaningless, so such a controller is left at cur for that tick. That is the game's own signal,
+// not a tolerance.
+constexpr u32 OFF_FC_STATE = 0x5;    // u8  mState  (reset each update; nonzero = wrapped/clamped)
+constexpr u32 OFF_FC_RATE  = 0xC;    // f32 mRate
+constexpr u32 OFF_FC_FRAME = 0x10;   // f32 mFrame
+constexpr int kAnmTypes = 6;         // BCK, BLK, BPK, BTP, BTK, BRK
+
+bool anim_on() {
+    static const bool v = std::getenv("SBR_INTERP60_ANIM") != nullptr;
+    return v;
+}
+
+struct FrameSave { u32 ctrl; float frame; };
+FrameSave g_frameSaves[4096];
+int  g_frameSaveN = 0;
+long g_animSubst = 0, g_animHeld = 0;
+
+// Substitute lerp(prev, cur, alpha) into every frame controller of one MActor.
+void anim_apply(CPUState& cpu, u32 mActor, float alpha) {
+    if (!anim_on()) return;
+    const u32 savedSp = (u32)cpu.gpr[1];
+    for (int t = 0; t < kAnmTypes; ++t) {
+        cpu.gpr[3] = mActor;
+        cpu.gpr[4] = (u32)t;
+        func_80238f08(cpu);
+        cpu.gpr[1] = savedSp;
+        const u32 fc = (u32)cpu.gpr[3];
+        if (!fc || !sb_ram_fast(fc + OFF_FC_FRAME)) continue;
+        if (sb_r8(fc + OFF_FC_STATE) != 0) { ++g_animHeld; continue; }   // wrapped this tick
+        const float rate = guest_f32(fc + OFF_FC_RATE);
+        if (rate == 0.0f) continue;                                      // stopped: nothing to lerp
+        const float cur = guest_f32(fc + OFF_FC_FRAME);
+        if (g_frameSaveN >= (int)(sizeof(g_frameSaves) / sizeof(g_frameSaves[0]))) return;
+        g_frameSaves[g_frameSaveN].ctrl  = fc;
+        g_frameSaves[g_frameSaveN].frame = cur;
+        ++g_frameSaveN;
+        // prev = cur - rate, so lerp(prev, cur, alpha) = cur - (1 - alpha) * rate.
+        guest_w_f32(fc + OFF_FC_FRAME, cur - (1.0f - alpha) * rate);
+        ++g_animSubst;
+    }
+}
+
+// Put every frame back EXACTLY as the game left it. Restoring the saved value rather than adding
+// the delta back keeps this bit-exact, which is what lets alpha=1.0 stay an exact identity.
+void anim_restore() {
+    // The negative FIRST. "the midpoint did not move" is equally consistent with a correct
+    // substitution that reached nothing visible and with a substitution that never fired, and only
+    // the counters separate them. Reported with the denominators.
+    if (anim_on()) {
+        static long n = 0;
+        if (++n <= 3 || (n % 900) == 0)
+            lucent::info("i60anim",
+                         "sub-frame #{}: {} frame controllers substituted, {} held at cur because "
+                         "the controller wrapped or clamped this tick{}",
+                         n, g_animSubst, g_animHeld,
+                         g_animSubst == 0
+                             ? "   <-- NOTHING was substituted: no dispatched actor had a running "
+                               "animation (null controller, or rate 0), so animation phase cannot "
+                               "have changed this sub-frame"
+                             : "");
+        g_animSubst = 0; g_animHeld = 0;
+    }
+    for (int i = 0; i < g_frameSaveN; ++i)
+        guest_w_f32(g_frameSaves[i].ctrl + OFF_FC_FRAME, g_frameSaves[i].frame);
+    g_frameSaveN = 0;
 }
 
 void camera_restore(const CamSave& sv) {
@@ -2027,6 +2121,11 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     present();
 
     camera_restore(camSave);
+    // Animation frames go back with everything else: they were substituted for the sub-frame's
+    // render only, and the next tick's frameUpdate must advance from the value the GAME computed,
+    // not from a midpoint. Restoring the saved value (rather than adding the delta back) is what
+    // keeps alpha=1.0 an exact identity.
+    anim_restore();
 
     // Pass 2: the true pose, entered again so the NEXT tick's draw lists consume tick N and not the
     // midpoint. This is the pass that makes the substitution self-cancelling by construction.

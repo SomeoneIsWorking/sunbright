@@ -2760,3 +2760,49 @@ Two things to establish first, by reading rather than by trying: where J3DFrameC
 lives relative to an MActor, and whether the game keeps its own previous frame value (as
 CPolarSubCamera keeps its previous pose) or whether a snapshot is needed. The camera turned out to
 keep its own, and using the game's pair was what made that interpolation exact.
+
+## Animation phase: the seam is built and fires; it reaches nothing at this moment
+
+`SBR_INTERP60_ANIM=1`. `MActor::calcAnm()` is `frameUpdate() + calc()`, and `MActor::calc()` ALONE
+evaluates every animation at the CURRENT frame values without advancing them (`MActor.cpp:299`,
+`:308`) — and `calc()` is already called for every dispatched actor. So interpolating animation costs
+one substitution before a call that was happening anyway, and nothing is ever advanced, so the 30 Hz
+flicker that killed the calc-anim re-issue cannot arise.
+
+(prev) is not reconstructed: `J3DFrameCtrl::update()` is `mFrame += mRate` plus clamp/wrap
+(`J3DAnimation.cpp:142`), so the previous frame is `mFrame - mRate` by definition, using the game's
+own rate. The exception is a tick that clamped or wrapped, and the controller SAYS SO — `mState` is
+reset every update and set to `STATE_COMPLETED_ONCE`/`STATE_LOOPED_ONCE` exactly then. Those are
+held at cur, because stepping back linearly across a discontinuity is meaningless. Frames are
+substituted through `MActor::getFrameCtrl(int)` (US `0x80238f08`), the game's own accessor, rather
+than by walking MActor's layout.
+
+It fires, and the wrap guard fires too:
+
+    sub-frame #1: 236 frame controllers substituted, 0 held
+    sub-frame #3: 235 frame controllers substituted, 1 held (wrapped this tick)
+
+And the result is **byte-identical output** (`cmp`), with the midpoint numbers unchanged to three
+decimals: full tick 11.187, sub->prev 10.270, sub->next 1.939. Identity at alpha=1 is also unchanged
+at 0.066, so the substitution has no side effect either.
+
+So 236 running animations on dispatched actors reach no pixel at this camera position — the same
+verdict the transform substitution got, for the same reason: **the substitution set is scenery that
+is not on screen here.** Three seams now exist, each verified correct by its own controls, and each
+measured to reach nothing at this one moment; only the camera and the player move pixels.
+
+### Stop guessing which population it is — attribute it spatially
+
+The remaining 72% has been attributed by elimination three times now, and elimination keeps naming
+populations that turn out to be invisible. The next measurement should not be another candidate: it
+should be a SPATIAL diff — which REGIONS of the frame differ between the sub-frame and each
+neighbour. "The whole background shifts" and "only Mario changes" are the same mean |d| at very
+different distributions, and the bounding-box technique that positively identified Mario in the kick
+test (113x238 at screen centre, aspect 2.11) already exists and answers it directly.
+
+There is also a pairing question that must be MEASURED, not argued, before any more of this is
+attributed: a main frame draws geometry entered at tick N-1 through the camera view written during
+tick N's draw lists, while the sub-frame draws geometry re-entered at the interpolated pose through
+the interpolated view. Those are different (entry, view) pairings, and the previous entries in this
+file were written as though a main frame and a sub-frame differ only in alpha. Every pairing assumed
+rather than read from the runtime in this project has so far been wrong.
