@@ -361,6 +361,7 @@ extern "C" void aurora_replay_midpoint() {
 
 void sbr_tag_shadow_begin_tick();
 void sbr_tag_shadow_report();
+void sbr_tag_particle_report();
 
 extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
@@ -532,6 +533,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     if (sbr_lerp_enabled() && (g_present_count % 300) == 0) {
         sb::frame_interp::report();
         sbr_tag_shadow_report();
+        sbr_tag_particle_report();
         sbr_lerp_report_tag_coverage();
         sbr_camera_cut_report();
         sbr_afterimage_report();

@@ -99,3 +99,38 @@ about the quad centre; a particle whose scale changes materially between two tic
 
 This does not help the flags or the wave grid, which really do deform. It does cover both particle
 paths — 22.7% of immediate-mode draws, and the fountain.
+
+
+---
+
+## LANDED (2026-08-06) — particles interpolate
+
+`frame_interp/tag_particle.cpp` + `aurora::gfx::interp::{set_tag_world_pos,patch_billboard}`.
+
+Measured on a plaza run with the camera rotating:
+
+* 517,119 billboard draws tagged and positioned; **200,122 had their own displacement applied**
+  (95.2% of those reaching the patch), 10,194 correctly fell back to the camera delta alone because
+  they were new particles or had skipped a tick.
+* **The control fires:** with the path on vs off at the same guest tick, 0.588% and 0.507% of pixels
+  differ on the in-between presents (max channel-sum delta 539 of 765) while the game's own main
+  frames are **byte-identical**. So the write reaches the screen and does not leak into the frames
+  the game renders.
+* Mispairing unchanged: the 100–1k bucket reads 54, against 98 for the shadow default and 4 for a
+  no-tagging control.
+
+### Two instruments earned their keep
+
+**`FLAG_JUST_BORN` is useless at the draw seam.** It was the obvious generation signal and measured
+**0 bumps over 517,119 draws across 268 addresses** — because the flag is set at creation and
+cleared during the particle's update, which runs before the draw pass. A zero meaning "always clear
+by the time I look" is indistinguishable from "no particle was ever born"; it was caught only
+because 268 addresses serving half a million draws obviously implies reuse. `mAge` replaces it: it
+increases monotonically for a given particle, so for the same address a NON-INCREASE is a definitive
+reuse test rather than a threshold. It reports 17,877 reuses.
+
+**The tick stamp is one behind `g_tickIndex`.** `set_tag_world_pos` is called while the GUEST is
+drawing; `g_tickIndex` is not incremented until `begin_camera_delta` at the frame seam after it. The
+first version required `stampCur == g_tickIndex`, which is never true — it reported **0 patched and
+375,451 unpaired**, caught in one run because that line prints both numbers instead of just the
+successes.
