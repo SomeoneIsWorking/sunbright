@@ -125,18 +125,54 @@ the same path, not to patch the difference.
   view" fix above was written for the retired era, where the in-between frame was produced by a
   replay that the host drove and could interleave guest calls with. It does not transfer as written.
 
-### So the water fix, restated for the current mechanism
+### The water fix IS ALREADY IMPLEMENTED — do not write it again
 
-Patch the RECORDED STREAM rather than re-issue the draw. The refraction quad is identifiable in the
-stream by its **texmtx slot `0x1e` load marker**, and the correction is an eye-space reprojection —
-substitute `PNMTX0 = view(N½) · view(N)⁻¹` for that draw, so the tick-N quad is carried to the
-interpolated camera and quad and screen-texture agree again. This is targeted (it touches only draws
-carrying the marker, so it cannot repeat the HUD-mangling of the blanket direct-XF attempt) and it
-belongs in `aurora::gfx::interpolate_recorded_frame`, beside the matrix rewrite that already runs
-there.
+This section previously prescribed patching the recorded stream to substitute
+`PNMTX0 = view(N½) · view(N)⁻¹` for the refraction quad. That was written from the retired-era
+handoff without checking the current mechanism, and **the current mechanism already does exactly
+that, for every draw of that kind, unconditionally.**
 
-It needs the eye-space delta math and, per the standing directive, HEADED verification by the user —
-a swimming reflection is motion-dependent and a still cannot show it.
+`aurora::gfx::interp::begin_camera_delta` computes
+
+    g_camDelta = V_lerp · V_cur⁻¹
+
+once per tick (`extern/aurora/lib/gfx/interp.cpp`), and `interpolate_recorded_frame` applies it via
+`patch_camera_only` to every draw that is **perspective and unpaired** — which is precisely the
+water refraction: an immediate-mode `TDLTexQuad`, so it carries no `J3DShape::draw` tag, and its
+`PNMTX0` is identity, so composing the delta onto it yields the eye-space reprojection verbatim.
+The prescription and the implementation are the same matrix.
+
+**Measured**, path A, camera rotating, per-region alternation (1.00 = both presents advance the
+region equally; higher = that share moves on only one of the two):
+
+| region | A — stream interpolation | C — record-and-replace (the CONTROL) |
+|---|---|---|
+| **sea / water** | **1.03** | **4.99** |
+| sky | 1.02 | 5.27 |
+| ground | 1.02 | 1.08 |
+| buildings + palms | 1.11 | 1.15 |
+
+The control is what makes this readable. Path C covers `J3DModel` draw matrices only, so
+immediate-mode water and the background MUST snap under it — and they do, at ~5. Had the metric
+returned ~1 for both paths it would have been blind, and "the water interpolates" would have been a
+statement about the instrument.
+
+**What this does NOT establish.** Alternation near 1.0 rules out the water SNAPPING — moving on one
+present and not the other. It does not prove the reflection TRACKS the surface: a reflection that
+swims coherently can still produce balanced step magnitudes. Per the standing directive that remains
+a headed check, and it is the specific thing to look at: watch the tower reflection in the plaza
+water while rotating the camera with the C-stick.
+
+### What IS still missing
+
+The honest gap is the one the coverage line names, not the water: **~9.5% of all draws are untagged
+PERSPECTIVE INDEXED** — display-list geometry drawn from a persistent vertex array, which HAS a
+stable cross-tick identity and should therefore be paired and lerped, but instead falls through to
+`patch_camera_only` and receives the camera delta alone. That is correct for static scenery and
+wrong for anything that moves in the world: such an object follows the camera but not its own
+motion, so it snaps in object space inside an otherwise smooth frame. Each one is a tagging seam
+that `j3d_capture.cpp` does not cover.
+
 - `effects.h` / `effects_screen.cpp` already IDENTIFY the screen-sampling effects by name
   (shimmer, water refraction, bath mist, mirror pre-render) and record which fired each frame. That
   identification is the input the callback work needs; it is not yet wired to anything that acts.
