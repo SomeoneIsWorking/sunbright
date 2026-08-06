@@ -30,6 +30,18 @@ between them.
 | status | **most complete**; the one whose effects work | superseded | best-measured, worst-covered |
 | **JUDDER** (measured, matched ticks) | **1.10** | — | **2.33** |
 
+### ⚠ PRESENT MODE IS PART OF THE MECHANISM
+
+An interpolated run MUST use a queued present mode. aurora's `vsync = false` selects **Mailbox**,
+whose defining behaviour is that a newer present REPLACES the pending image — so a tick emitting two
+images inside one display refresh has its in-between frame **discarded by the swapchain**, while
+every counter still reads 60 fps. Interpolated runs therefore select `vsync = true` →
+`FifoRelaxed`, where each presented image is queued and shown for at least one refresh.
+`debug_journal/2026-08-06_interp60_mailbox_discards_the_inbetween.md`.
+
+The corollary is that the frame-loop sleep which used to space the two presents is obsolete: the
+display's refresh does the spacing. It is kept behind `SBR_MIDPOINT_SLACK` for comparison.
+
 ### Measured, on the axis that matches the complaint
 
 `tools/interp/cadence.py` scores what a player reports. It labels no present as "main" or "sub" —

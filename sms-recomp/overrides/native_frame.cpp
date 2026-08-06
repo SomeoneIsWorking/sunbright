@@ -220,6 +220,22 @@ extern "C" void aurora_replay_midpoint() {
     // interpolation callbacks are dispatched (frame_interp.h). It runs before the sleep, so a
     // callback's work lands in the in-between image rather than after it has been shown.
     sb::frame_interp::present_interpolated_frame();
+    // THE SLEEP BELOW IS OBSOLETE WHEN THE PRESENT QUEUE DOES THE SPACING.
+    //
+    // Its entire purpose was to put the two presents of a tick a half-tick apart, because in
+    // Mailbox mode nothing else would — and in Mailbox mode it could not succeed either, since a
+    // second present inside one refresh DISCARDS the first by design. Interpolated runs now select
+    // FifoRelaxed (host/main.cpp), where every presented image is queued and displayed for at least
+    // one refresh, so the display's own refresh spaces them and a sleep here only adds latency to
+    // the tick's own image and throughput the game cannot spare.
+    //
+    // Kept behind SBR_MIDPOINT_SLACK so the two policies remain comparable — the in-run A/B that
+    // measured the sleep is still the right instrument if the present mode ever changes back.
+    // Callbacks are dispatched ABOVE this line and are unaffected: they must fire every tick.
+    static const bool s_queuedPresent = std::getenv("SBR_60FPS") != nullptr ||
+                                        std::getenv("SBR_LERP60") != nullptr;
+    static const bool s_slackForced = std::getenv("SBR_MIDPOINT_SLACK") != nullptr;
+    if (s_queuedPresent && !s_slackForced) return;
     if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0) return;
     const int64_t midpoint = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs / 2;
     const int64_t now = now_ns();

@@ -85,7 +85,25 @@ int main(int argc, char** argv) {
     acfg.appName        = "sunbright-recomp";
     acfg.desiredBackend = BACKEND_VULKAN;
     acfg.msaa           = 1;
-    acfg.vsync          = false;
+    // PRESENT MODE, and why interpolated 60fps REQUIRES vsync on.
+    //
+    // aurora maps vsync=false to Mailbox (or Immediate). Mailbox's defining behaviour is that the
+    // swapchain holds ONE pending image and a newer present REPLACES it — the older one is
+    // discarded, never scanned out. That is the correct trade for a single-image-per-tick renderer
+    // chasing lowest latency, and it is fatal for interpolation: a tick emits two images, and if
+    // they are issued inside one display refresh — which is most ticks, measured at 94% on this
+    // machine — Mailbox throws the in-between away BY DESIGN. Every counter still reads 60 fps
+    // because both were presented; the display simply never saw the first.
+    //
+    // vsync=true maps to FifoRelaxed (else Fifo), where every presented image is QUEUED and shown
+    // for at least one refresh. Nothing is discarded, and the display's own refresh does the
+    // spacing that the frame loop was trying and failing to do with a sleep. This is the fix for
+    // "it drops the interpolated frames"; the pacing work that preceded it was tuning a policy
+    // whose output was being thrown away downstream.
+    //
+    // Off (Mailbox) when interpolation is off, because then there IS only one image per tick and
+    // the latency trade goes the other way.
+    acfg.vsync          = std::getenv("SBR_60FPS") != nullptr || std::getenv("SBR_LERP60") != nullptr;
     acfg.windowWidth    = std::getenv("SB_W") ? (u32)std::strtoul(std::getenv("SB_W"), nullptr, 0) : 1280u;
     acfg.windowHeight   = std::getenv("SB_H") ? (u32)std::strtoul(std::getenv("SB_H"), nullptr, 0) : 960u;
     acfg.mem1Size       = 0;
