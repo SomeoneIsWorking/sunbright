@@ -80,8 +80,25 @@ def metrics(a, b):
 
 
 def role_of(path):
+    """'main' or 'sub' from the runtime's stamp. The stamp is 'main-t<guest tick>'; older dumps
+    carry a bare 'main'/'sub' and are still read, without a tick."""
     tail = path.rsplit(".", 1)[-1]
-    return tail if tail in ("main", "sub") else None
+    role = tail.split("-", 1)[0]
+    return role if role in ("main", "sub") else None
+
+
+def tick_of(path):
+    """The GUEST retrace count the runtime stamped on this dump, or None on an older unstamped one.
+
+    THE PRESENT INDEX IS NOT A MOMENT. Three configurations of the sub-frame dumped at present 60
+    sat at tick motions of 10.6, 76.5 and 27.7 — the same index, three different game states — so a
+    cross-configuration comparison keyed on the index compares two different moments and reports
+    the difference as a finding. The tick is the number the two runs genuinely share."""
+    tail = path.rsplit(".", 1)[-1]
+    parts = tail.split("-t", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+    return int(parts[1])
 
 
 def seq_of(p):
@@ -110,12 +127,30 @@ def report(files, imgs):
 
     triples = [k for k in range(len(imgs) - 2)
                if roles[k] == 'main' and roles[k + 1] == 'sub' and roles[k + 2] == 'main']
-    print(f"series : {len(files)} presents, roles {' '.join(roles)}")
+    ticks = [tick_of(f) for f in files]
+    if all(t is not None for t in ticks):
+        print(f"series : {len(files)} presents, roles {' '.join(roles)}, guest ticks "
+              f"{ticks[0]}..{ticks[-1]}")
+    else:
+        print(f"series : {len(files)} presents, roles {' '.join(roles)} (no guest-tick stamp)")
     if not triples:
         print(f"REFUSED: no main->sub->main triple in this series (scanned {max(0, len(imgs)-2)} "
               f"positions). NOTHING was scored — this is not a symmetry of 0.")
         return 1
 
+    # ABSOLUTE BRIGHTNESS, per present. Every other number in this file is a DIFFERENCE between two
+    # frames of the same run, and a difference is blind to a fault that moves the whole run: the
+    # PreEntry view-calc re-issue rendered the entire game ~20x darker (mean RGB 2.8/11.6/14.6
+    # against 62.8/75.6/64.4) and not one relative metric here changed sign. It showed up only as a
+    # large off-segment, which names the symptom and not the kind. One absolute number per present
+    # makes it obvious at a glance and costs nothing.
+    print("brightness (mean RGB per present — an ABSOLUTE number; the relative scores below cannot")
+    print("            see a fault that darkens or washes the whole run):")
+    for f, im in zip(files, imgs):
+        rgb = im.reshape(-1, 4)[:, :3]
+        print(f"    {os.path.basename(f):<34} {rgb[:, 0].mean():6.1f} {rgb[:, 1].mean():6.1f} "
+              f"{rgb[:, 2].mean():6.1f}")
+    print()
     print(f"triples: {len(triples)} scored"
           f"   [px = share of pixels differing | mad = mean abs channel difference, both %]")
     print()
@@ -291,7 +326,23 @@ def compare(pa, pb):
     if ra != rb or any(r is None for r in ra):
         print(f"REFUSED: role sequences differ or are unlabelled ({ra} vs {rb}). Nothing compared.")
         return 1
-    print(f"comparing {len(fa)} presents, roles {' '.join(ra)}")
+    # ALIGN ON THE GUEST TICK, not the index, whenever the runtime stamped one.
+    ta, tb = [tick_of(f) for f in fa], [tick_of(f) for f in fb]
+    if all(t is not None for t in ta + tb):
+        if ta != tb:
+            print("REFUSED: the two runs are at DIFFERENT GUEST TICKS at the same present index.")
+            print(f"  run A ticks: {ta}")
+            print(f"  run B ticks: {tb}")
+            print("  Nothing is compared. Every difference below would be dominated by the moment")
+            print("  drift rather than by the setting that was varied — which is exactly how a")
+            print("  configuration change gets credited with a scene change.")
+            return 1
+        print(f"comparing {len(fa)} presents at MATCHED guest ticks {ta[0]}..{ta[-1]}, "
+              f"roles {' '.join(ra)}")
+    else:
+        print(f"comparing {len(fa)} presents, roles {' '.join(ra)}")
+        print("  NOTE: these dumps carry no guest-tick stamp, so index alignment is ASSUMED and")
+        print("  not verified. Re-run with a build that stamps it before trusting a cross-run diff.")
     tot = {'main': [], 'sub': []}
     for k, (a, b) in enumerate(zip(fa, fb)):
         px, mad = metrics(load(a), load(b))

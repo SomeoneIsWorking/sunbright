@@ -2310,6 +2310,40 @@ void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
 // It REFUSES rather than degrades: no director, no recorded draw block, no TGraphics snapshot, or
 // no snapshot tick means no sub-frame, counted and reported. A sub-frame that quietly renders
 // nothing would show up as "60fps that looks like 30" with no way to tell it from a bad alpha.
+// The cue both view-calc re-issues pass. ONE definition, because the second pass exists to balance
+// the first: two passes issued with different cues would not cancel, and that is the kind of drift a
+// duplicated literal invites. SBR_INTERP60_PREENTRY_VC_CUE overrides it for A/B (0 restores nothing
+// — pass the old `cue & ~0x203` value explicitly if you want the darkening back for comparison).
+u32 preentry_vc_cue() {
+    static const u32 v = [] {
+        const char* e = std::getenv("SBR_INTERP60_PREENTRY_VC_CUE");
+        return e ? (u32)std::strtoul(e, nullptr, 0) : 0x4u;
+    }();
+    return v;
+}
+
+// HOW MANY TIMES each view-calc pass is issued, and why the answer is not one.
+//
+// J3DModel::viewCalc begins with swapDrawMtx()/swapNrmMtx(): it makes the OTHER buffer current and
+// computes into it. A drawable that has already been ENTERED holds the pointer it was entered with,
+// so a single extra pass leaves the draw reading the buffer that is no longer being written — stale
+// normals, and the frame renders at ambient. Measured with one pass: the sub-frame comes out at
+// mean RGB 2.1/11.0/14.0 against 62.8/75.6/64.4 with the pass off, and differs from BOTH of its
+// neighbours by 100% of pixels.
+//
+// Two passes return the current buffer to the one the entries point at AND leave it holding
+// matrices built from the view live at the time, which is the whole point of the pass. Same
+// balancing argument the post-present pass already made, applied where it was missing: before the
+// draw, not only after the present.
+int preentry_vc_passes() {
+    static const int v = [] {
+        const char* e = std::getenv("SBR_INTERP60_PREENTRY_VC_N");
+        const int n = e ? std::atoi(e) : 2;
+        return n < 1 ? 1 : n;
+    }();
+    return v;
+}
+
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     if (!enabled()) return;
     // RE-ENTRANCY. The re-issued lists are ordinary guest code and may reach the frame seam again
@@ -2465,8 +2499,20 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // the earlier calc-anim attempt rebuilt matrices under the wrong view.
     static const bool preEntryVC = std::getenv("SBR_INTERP60_PREENTRY_VC") != nullptr;
     if (preEntryVC && preEntry && sb_ram_fast(preEntry)) {
-        // 0x1 movement, 0x2 calc-anim (advances animation), 0x200 entry — all cleared. 0x4 survives.
-        perform_list(cpu, preEntry, cue & ~0x203u, gfx);
+        // THE CUE IS 0x4 EXACTLY, not `cue & ~0x203`.
+        //
+        // Subtracting the three bits that must not run leaves every OTHER bit of the tick's cue set
+        // — 0x8, 0x10, 0x400 and whatever else the director passed — and those dispatch real work
+        // through each member's own perform. Measured: with `cue & ~0x203` the whole frame renders
+        // ~20x darker (mean RGB 2.8/11.6/14.6 against 62.8/75.6/64.4 with the pass off), and the
+        // MAIN frames darken too, so the pass was changing state that outlives the sub-frame.
+        //
+        // The bit this pass needs is named in the decomp (liveactor.cpp:418): `if (cue & 4)
+        // mMActor->viewCalc()`. Ask for that one and nothing else. Building the cue by SUBTRACTION
+        // meant the set of things being run was whatever the tick happened to pass minus three —
+        // a set nobody had enumerated.
+        for (int p = 0; p < preentry_vc_passes(); ++p)
+            perform_list(cpu, preEntry, preentry_vc_cue(), gfx);
     }
 
     static const bool calcAnim = std::getenv("SBR_INTERP60_CALCANIM") != nullptr;
@@ -2647,7 +2693,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // from the true view. Same shape as the actor seam's post-restore recompute: not an undo, a
     // recompute of the right value.
     if (preEntryVC && preEntry && sb_ram_fast(preEntry))
-        perform_list(cpu, preEntry, cue & ~0x203u, gfx);
+        for (int p = 0; p < preentry_vc_passes(); ++p)
+            perform_list(cpu, preEntry, preentry_vc_cue(), gfx);
 
     player_apply(cpu, gfx, false);
     actors_calc_root(cpu, g_lastSnapTick, false, false);

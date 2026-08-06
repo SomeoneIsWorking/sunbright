@@ -34,6 +34,7 @@ long tick_index();
 
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -166,6 +167,10 @@ struct QuitSignals {
 // the mid-tick pacing hook below can find it — aurora issues the second present from inside its own
 // end_frame, where the retrace count is not in scope.
 unsigned g_tickFields = 2;
+
+// The guest retrace count stamped onto this tick's dumps, shared by the main present and the
+// sub-frame present so both carry the same anchor.
+u32 g_dumpGuestTick = 0;
 
 // Deferred-present state for SBR_PRESENT_AFTER_COPY. The CPUState is needed by the sub-frame, and
 // the seam has already returned by the time the copy is emitted, so it is carried across.
@@ -620,7 +625,19 @@ void present_tail(CPUState& cpu) {
     // tick, and a dump series with no record of which file is which has to be identified by
     // inference — which has already produced two wrong readings in this arc. The runtime knows the
     // answer, so it says it.
-    aurora_set_dump_tag("main");
+    //
+    // AND THE GUEST TICK, because the present INDEX is not a moment. Configurations of the
+    // interpolation reach different game states by the same present number — measured, three
+    // configurations dumped at present 60 sat at tick motions of 10.6, 76.5 and 27.7 — so any
+    // cross-configuration comparison keyed on the index is comparing two different moments and
+    // reporting the difference as a finding. The game's own retrace counter is the anchor the two
+    // runs genuinely share, and it costs one word in a filename to carry it.
+    const u32 gtickAddr = (u32)cpu.gpr[13] - 22768;
+    const u32 gtick = sb_ram_fast(gtickAddr) ? sb_r32(gtickAddr) : 0u;
+    g_dumpGuestTick = gtick;
+    char tag[32];
+    std::snprintf(tag, sizeof tag, "main-t%u", gtick);
+    aurora_set_dump_tag(tag);
     present_and_reopen(s_frameActive);
 
     // GAME-NATIVE 60fps: the interpolated sub-frame.
@@ -656,7 +673,12 @@ void present_tail(CPUState& cpu) {
                              before == 0 ? "<-- EMPTY: the re-issue emitted NOTHING, so the main "
                                            "frame's stream is what gets re-sent" : "");
             gxfifo_send_last();
-            aurora_set_dump_tag("sub");
+            // Same guest tick as the main present above: the sub-frame is an EXTRA present inside
+            // one tick, not a tick of its own, and stamping it with a tick of its own would make
+            // the anchor lie in exactly the way the present index already does.
+            char stag[32];
+            std::snprintf(stag, sizeof stag, "sub-t%u", g_dumpGuestTick);
+            aurora_set_dump_tag(stag);
             // The half-tick image has to be SHOWN at the half tick; both presents issued back to
             // back are 30fps with every frame sent twice, however high the present count reads.
             aurora_replay_midpoint();
