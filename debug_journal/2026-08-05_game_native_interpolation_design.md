@@ -3038,3 +3038,52 @@ numbers taken before these seams existed.
 compared, MUST be 0. The gate had identity, control and liveness, all of which are within-run or
 against a baseline; none could see a leak that moves both sides together. This is the third time in
 this arc that a missing control, rather than a wrong fix, cost the conclusions.
+
+## The leak, bisected and mostly fixed
+
+Two levels of bisect, each run as a PAIR (alpha=0 and alpha=1) with MAIN frames compared, since a
+main frame must not depend on alpha.
+
+**By seam:**
+
+    camera only         :       0 px    (restores its cached matrix bit-exactly)
+    calc-anim re-issue  :       0 px    (recomputes, keeps nothing)
+    player              :   4,619 px
+    actors              : 340,509 px
+
+**Within the actor seam** (`SBR_INTERP60_ACTOR_CALLS=<mask>`; bit0 calcRootMatrix, bit1
+MActor::calc, bit2 MActor::viewCalc):
+
+    mask 1  (calcRootMatrix)        :       0 px
+    mask 3  (+ MActor::calc)        :      88 px
+    mask 7  (+ MActor::viewCalc)    : 340,509 px
+
+`viewCalc` is the leak, and for a clear reason: it writes the model-view matrices into each model's
+persistent draw-matrix array, which is exactly the state the next frame's packets reference. Running
+it from an interpolated pose and view leaves midpoint matrices standing.
+
+### The fix, and the mistake that hid it for two attempts
+
+The fix takes this file's existing shape — do not undo the wrong value, RECOMPUTE the right one:
+after `restore_all()`, run the same calls again from the true pose, with j3dSys's view saved and put
+back around the seed (the seed was itself unrestored, and is global and long-lived).
+
+That fix was written twice and both times the leak came back **bit-identical** at 345,174 px. The
+reason was in my own code: `restore_all()` clears `e.applied`, and the recompute pass required
+`e.applied` — so it iterated ZERO actors. **Bit-identical output across a code change is not a null
+result; it is the signal that the code did not run**, and it should have been read that way the first
+time rather than sending me to look for a third mechanism.
+
+With the pass actually running:
+
+    all seams, before : 345,174 px
+    all seams, after  :   4,592 px      (98.7% of the leak gone)
+    actors only, after:   1,071 px
+
+The residual 4,592 with everything on is almost exactly the 4,619 the player seam leaks alone, so
+what is left is `TMario::calcAnim`'s own side effects — `addCallBack`, `addUpper`, `considerWaist` —
+which a second calcAnim call does not undo. That is the next thing to fix, and it is now the only
+thing standing between these seams and being trustworthy enough to measure with, let alone default on.
+
+Until it is zero, cross-run comparisons with `SBR_INTERP60_PLAYER` or `_ACTORS` on remain invalid,
+and the reopened sub-pixel question must still be answered camera-only.

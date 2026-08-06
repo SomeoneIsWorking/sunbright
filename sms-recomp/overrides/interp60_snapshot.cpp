@@ -126,6 +126,8 @@ float alpha_act() { static const float a = alpha_of("SBR_INTERP60_ALPHA_ACT"); r
 
 long viewseq_at();   // defined with the view-sequence probe; the arming present is shared
 void anim_apply(CPUState& cpu, u32 mActor, float alpha);   // defined with the animation-phase seam
+void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool requireApplied);
+void player_apply(CPUState& cpu, u32 gfx);
 void anim_restore();
 float alpha_act();
 
@@ -1714,7 +1716,24 @@ void note_mover(bool moved, u32 obj, const char* why) {
     lucent::info("i60movers", "  mover 0x{:08x} vptr=0x{:08x} \"{}\": {}", obj, vptr, nm, why);
 }
 
-void actors_calc_root(CPUState& cpu, u32 tick) {
+// SBR_INTERP60_ACTOR_CALLS=<mask>: which of the three calls the seam makes. bit0 calcRootMatrix,
+// bit1 MActor::calc, bit2 MActor::viewCalc. Default 7 (all three, as TLiveActor::perform does).
+//
+// The seam-level bisect localised a state LEAK to this function — running it at alpha=0 vs alpha=1
+// diverges the MAIN frames by 340,509 pixels, and a main frame must not depend on alpha. Two fixes
+// were tried and BOTH left the number bit-identical (recomputing from the restored pose after the
+// present; saving and restoring j3dSys's view around the seed), which is itself evidence: whatever
+// persists is not the pose and not the global view. This mask bisects the remaining three calls the
+// same way the seam level was bisected, instead of guessing at a third fix.
+int actor_calls() {
+    static const int v = [] {
+        const char* e = std::getenv("SBR_INTERP60_ACTOR_CALLS");
+        return e ? (int)std::strtol(e, nullptr, 0) : 7;
+    }();
+    return v;
+}
+
+void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool requireApplied) {
     calcroot_scan(tick);
     if (!actors_on()) return;
     const u32 savedSp = (u32)cpu.gpr[1];
@@ -1722,7 +1741,13 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
     long movedTotal = 0, movedCalled = 0;
     for (int i = 0; i < TABLE_SIZE; ++i) {
         const Entry& e = g_tab[i];
-        if (e.obj == 0 || e.tick != tick || !e.applied) continue;
+        // `applied` is what marks an entry as currently substituted — but restore_all() CLEARS it,
+        // so the post-restore recompute pass must not require it. It did, which meant that pass
+        // iterated ZERO actors and the two attempted leak fixes produced bit-identical numbers.
+        // Bit-identical output across a code change is not a null result; it is the signal that the
+        // code did not run, and it should have been read that way immediately.
+        if (e.obj == 0 || e.tick != tick) continue;
+        if (requireApplied && !e.applied) continue;
         if (e.posOnly) continue;                       // cameras and other non-actors
         if (!sb_ram_fast(e.obj)) continue;
         // Only an actor whose prev differs from cur can change a pixel, so the counts that matter
@@ -1777,26 +1802,32 @@ void actors_calc_root(CPUState& cpu, u32 tick) {
         // bl and bctrl through, so an OVERRIDDEN calcRootMatrix is honoured here exactly as it
         // would be during the tick. Dispatching around it would silently run the recomp body of a
         // function the port has deliberately replaced.
-        cpu.gpr[3] = e.obj;
-        call_ppc(cpu, fnAddr);
-        cpu.gpr[1] = savedSp;
+        if (actor_calls() & 1) {
+            cpu.gpr[3] = e.obj;
+            call_ppc(cpu, fnAddr);
+            cpu.gpr[1] = savedSp;
+        }
         // THE SECOND HALF, and it is not optional. The game does `calcRootMatrix(); mMActor->calc();`
         // as a pair (liveactor.cpp:414). calcRootMatrix only writes the model's base TR matrix;
         // without calc() that never reaches the node matrices the packets reference, and the
         // substitution is invisible however correctly it was written. Measured: kick=3000 on every
         // dispatched actor moved 0 pixels with calcRootMatrix alone.
-        anim_apply(cpu, mActor, alpha_act());
-        cpu.gpr[3] = mActor;
-        func_80239770(cpu);
-        cpu.gpr[1] = savedSp;
+        if (substituteAnim) anim_apply(cpu, mActor, alpha_act());
+        if (actor_calls() & 2) {
+            cpu.gpr[3] = mActor;
+            func_80239770(cpu);
+            cpu.gpr[1] = savedSp;
+        }
         // ...and the THIRD call the game makes, under cue 0x4 (liveactor.cpp:418). calcRootMatrix
         // gives the world matrix and calc() propagates it through the skeleton, but neither
         // concatenates j3dSys's view — viewCalc does. Measured: only 14 of a tick's ~139 viewCalc
         // calls happen inside a sub-frame, which is why an exactly-interpolated view moved almost
         // nothing.
-        cpu.gpr[3] = mActor;
-        func_80239734(cpu);
-        cpu.gpr[1] = savedSp;
+        if (actor_calls() & 4) {
+            cpu.gpr[3] = mActor;
+            func_80239734(cpu);
+            cpu.gpr[1] = savedSp;
+        }
         ++called;
         movedCalled += moved ? 1 : 0;
         note_mover(moved, e.obj, "DISPATCHED");
@@ -2099,7 +2130,16 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // game: TSmJ3DScn::perform does exactly this copy (MTXCopy(param_2->mViewMtx, j3dSys view)),
     // and camera_apply has just rebuilt that matrix with the game's own C_MTXLookAt. This only
     // moves the copy earlier so the recompute sees the view it is supposed to.
+    // SAVED FIRST. j3dSys's view is GLOBAL and long-lived: seeding it without putting it back left
+    // the interpolated view standing after the sub-frame, so the next tick's viewCalc built its
+    // model-view matrices from a midpoint. That is a leak of exactly the kind the camera avoids by
+    // restoring its cached matrix bit-exactly, and it is most of the 340,509-pixel actor leak —
+    // the seed runs whenever a camera is substituted, not only under the calc-anim re-issue.
+    float j3dViewSave[12];
+    bool  j3dViewSaved = false;
     if (camSave.obj && sb_ram_fast(camSave.obj + OFF_CPSC_VIEWMTX)) {
+        for (int i = 0; i < 12; ++i) j3dViewSave[i] = guest_f32(J3DSYS_VIEWMTX + (u32)i * 4);
+        j3dViewSaved = true;
         for (int i = 0; i < 12; ++i)
             guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4,
                         guest_f32(camSave.obj + OFF_CPSC_VIEWMTX + (u32)i * 4));
@@ -2134,7 +2174,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         }
     }
     player_apply(cpu, gfx);
-    actors_calc_root(cpu, g_lastSnapTick);
+    actors_calc_root(cpu, g_lastSnapTick, true, true);
     viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
@@ -2233,6 +2273,32 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // Pass 2: the true pose, entered again so the NEXT tick's draw lists consume tick N and not the
     // midpoint. This is the pass that makes the substitution self-cancelling by construction.
     restore_all();
+
+    // ...AND RECOMPUTE WHAT THE SUBSTITUTION DERIVED. Restoring mPosition is not enough: the
+    // sub-frame ran calcRootMatrix / MActor::calc / viewCalc from the INTERPOLATED pose, and those
+    // wrote a base TR matrix, a skeleton and model-view matrices that no restore touched. Those
+    // outlive the sub-frame and are what the next tick starts from.
+    //
+    // Measured, by running each seam alone and comparing MAIN frames across alpha (which must be
+    // byte-identical):
+    //
+    //     camera only        :       0 px   the camera restores its cached matrix exactly
+    //     calc-anim re-issue :       0 px   recomputes, keeps nothing
+    //     player             :   4,619 px
+    //     actors             : 340,509 px
+    //
+    // The camera got this right from the start ("restored rather than rebuilt ... bit-exact") and
+    // the actor seam simply never did. The fix takes the shape this file already uses for PreEntry:
+    // do not undo the wrong value, RECOMPUTE the right one — run the same calls again now that the
+    // true pose is back, so what persists is what the game itself would have produced. Animation
+    // frames are not substituted this time; anim_restore() has already put them back.
+    // j3dSys goes back BEFORE the recompute, so the recompute builds model-view matrices from the
+    // view the tick actually had — not from the midpoint the sub-frame seeded.
+    if (j3dViewSaved)
+        for (int i = 0; i < 12; ++i)
+            guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4, j3dViewSave[i]);
+    player_apply(cpu, gfx);
+    actors_calc_root(cpu, g_lastSnapTick, false, false);
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
 
     // Did the re-issue move the view, and did the camera take part?
