@@ -10,11 +10,12 @@
 
 #include "overrides.h"
 #include "../runtime/probe_server.h"
-#include "../runtime/screen_effects.h"
+#include "../frame_interp/effects.h"
 #include "../runtime/native_render.h"
 #include "../runtime/state_oracle.h"
 #include "../runtime/scene.h"
-#include "../runtime/lerp60.h"
+#include "../frame_interp/stream_interp.h"
+#include "../frame_interp/frame_interp.h"
 
 // Declared rather than included: aurora's gfx headers are internal to the library, and the recomp
 // links it statically so the symbol resolves directly. Same approach lerp60.cpp uses for aurora's
@@ -214,6 +215,11 @@ void pace_fields(unsigned fields) {
 // so the midpoint is that plus half the tick's own field count. A tick that has already overrun its
 // midpoint does not sleep at all rather than pushing the tick further behind.
 extern "C" void aurora_replay_midpoint() {
+    // THE PRESENTATION FRAME. This function is called by aurora between the tick's two presents,
+    // which makes it the only place in the frame loop that is genuinely mid-tick — so it is where
+    // interpolation callbacks are dispatched (frame_interp.h). It runs before the sleep, so a
+    // callback's work lands in the in-between image rather than after it has been shown.
+    sb::frame_interp::present_interpolated_frame();
     if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0) return;
     const int64_t midpoint = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs / 2;
     const int64_t now = now_ns();
@@ -400,6 +406,7 @@ void video_wait_for_retrace(CPUState& cpu) {
 
     // Interpolation tag coverage, on a slow cadence. Inert unless SBR_LERP60 is set.
     if (sbr_lerp_enabled() && (g_present_count % 300) == 0) {
+        sb::frame_interp::report();
         sbr_lerp_report_tag_coverage();
         sbr_camera_cut_report();
         sbr_afterimage_report();
@@ -616,9 +623,16 @@ void present_tail(CPUState& cpu) {
     // deferred past the game's EFB->XFB copy, the copy command is emitted after the seam returns, so
     // a stream closed in the seam would not contain it.
     gxfifo_build();
+    // ONE SIMULATION TICK ENDS HERE. begin_sim_tick() clears the interpolation-callback registry,
+    // so it must run once per tick and before anything registers for the NEXT in-between frame.
+    sb::frame_interp::begin_sim_tick();
     if (sbr_lerp_enabled()) sbr_afterimage_tick();
     if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
-    if (sbr_lerp_enabled() && sbr_camera_cut_take()) aurora::gfx::snap_next_interpolation();
+    // The camera cut goes through the unified API rather than straight to aurora's snap: a cut is
+    // "present this tick exactly", which is a statement about the whole frame and not only about
+    // the renderer's matrix rewrite. Routing it here is what lets anything else that must be exact
+    // on a cut — an effect, a UI element — see the same signal instead of re-deriving it.
+    if (sbr_lerp_enabled() && sbr_camera_cut_take()) sb::frame_interp::request_presentation_sync();
     gxfifo_send_last();
 
     // Label this present for the dump series. The sub-frame below issues a SECOND present per

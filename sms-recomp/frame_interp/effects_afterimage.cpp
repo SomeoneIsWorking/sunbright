@@ -35,9 +35,9 @@
 // last won and the other's work vanished with no diagnostic. override_register now refuses. The
 // identification below is called FROM that existing override instead.
 
-#include "overrides.h"
+#include "../overrides/overrides.h"
 
-#include "../runtime/lerp60.h"
+#include "stream_interp.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>

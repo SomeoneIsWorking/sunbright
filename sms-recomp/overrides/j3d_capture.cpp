@@ -22,7 +22,7 @@
 #include "../runtime/scene.h"
 #include "../runtime/j3d_decode.h"
 #include "../runtime/state_oracle.h"
-#include "../runtime/lerp60.h"
+#include "../frame_interp/stream_interp.h"
 #include "../runtime/native_render.h"
 
 void sbr_mtx_begin_shape(u32 shape);

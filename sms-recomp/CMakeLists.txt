@@ -29,12 +29,34 @@ target_compile_options(sms-recomp-guest PRIVATE -w)
 # OBJECT, not STATIC: each override self-registers from a static initializer and exports
 # nothing else, so in a static archive the linker discards the whole object as unused and
 # the override silently never installs. An object library always contributes its objects.
-file(GLOB SB_OVERRIDES "${CMAKE_CURRENT_SOURCE_DIR}/overrides/*.cpp")
+# CONFIGURE_DEPENDS: without it a NEW source file is not picked up until someone
+# reconfigures by hand, and the failure is a link error naming a function you just wrote
+# — which reads as a typo, not as a stale glob.
+file(GLOB SB_OVERRIDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/overrides/*.cpp")
 add_library(sms-recomp-overrides OBJECT ${SB_OVERRIDES})
 target_include_directories(sms-recomp-overrides PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides"
+    "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
 target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx aurora::pad)
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
+
+# frame_interp/ — ALL interpolated-60fps code, in one place. See docs/60fps.md for the map.
+#
+# Its own library rather than more files under overrides/ because it is a SUBSYSTEM, not a
+# collection of unrelated hooks: it was previously spread across overrides/ (four files),
+# runtime/ (two) and aurora, under three different names, and nothing in the tree said the six
+# belonged together. A directory says it.
+#
+# OBJECT for the same reason overrides/ is: these files self-register guest hooks from static
+# initializers and export nothing else, so a static archive lets the linker discard the whole
+# object as unused and the hook silently never installs — which for an interpolation seam looks
+# exactly like "interpolation is not implemented for that thing".
+file(GLOB SB_FRAME_INTERP CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp/*.cpp")
+add_library(sms-recomp-frame-interp OBJECT ${SB_FRAME_INTERP})
+target_include_directories(sms-recomp-frame-interp PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides"
+    "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
+target_link_libraries(sms-recomp-frame-interp PUBLIC nod::nod aurora::gx aurora::pad lucent::lucent)
 
 # nod supplies random-access reads of the disc image (ISO/RVZ/...). The DI device serves
 # the guest's own DVD library at the REGISTER level, so nothing marshals guest structs —
@@ -70,7 +92,7 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/mmio.cpp
                                  runtime/dev_gxfifo.cpp
                                  runtime/boot_env.cpp
                                  runtime/guest_sched.cpp)
-target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
+target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
 target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx aurora::audio)
 
 # Host harness: loads the DOL into guest RAM and runs the entry point.
@@ -81,13 +103,13 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/tev_eval.cpp runtime/probe_server.cpp
                            runtime/native_render.cpp runtime/scene.cpp runtime/j3d_decode.cpp runtime/gx_texture.cpp runtime/state_oracle.cpp
-                           runtime/render_compare.cpp runtime/frame_smoothness.cpp runtime/lerp60.cpp)
+                           runtime/render_compare.cpp runtime/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
 # is the guest call stack — but only if the names resolve.
 target_link_options(sms-recomp PRIVATE -rdynamic)
 target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
-                      sms-recomp-overrides lucent::lucent
+                      sms-recomp-overrides sms-recomp-frame-interp lucent::lucent
                       # aurora_core and aurora_gx reference each other, so both must be on
                       # the link line together for the static archives to resolve.
                       aurora::core aurora::gx aurora::core

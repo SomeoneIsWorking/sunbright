@@ -29,7 +29,6 @@ between them.
 | honest coverage number | yes: tagged/untagged draws split ortho vs persp vs indexed | no | yes: the `NOT covered` line |
 | status | **most complete**; the one whose effects work | superseded | best-measured, worst-covered |
 | **JUDDER** (measured, matched ticks) | **1.10** | — | **2.33** |
-| cadence (presents per tick) | irregular, 2–3 | — | irregular, 1–3 |
 
 ### Measured, on the axis that matches the complaint
 
@@ -38,11 +37,11 @@ it takes the difference between each pair of CONSECUTIVE presents and asks wheth
 the same size. `judder = max(step)/min(step)`; 1.0 means every present advances the game equally.
 Same scenario, same pad script, **matched guest ticks** (~4802–4818, camera rotating):
 
-| configuration | judder | mean step | presents/tick |
-|---|---|---|---|
-| no interpolation, plain 30fps | 1.18 | 7.29 | 1 (regular) |
-| **A** — stream interpolation | **1.10** | 5.13 | 2–3 (irregular) |
-| **C** — record-and-replace | **2.33** | 6.02 | 1–3 (irregular) |
+| configuration | judder | mean step |
+|---|---|---|
+| no interpolation, plain 30fps | 1.18 | 7.29 |
+| **A** — stream interpolation | **1.10** | 5.13 |
+| **C** — record-and-replace | **2.33** | 6.02 |
 
 **C is twice as juddery as not interpolating at all**, and C is what `play.sh --60fps` used to
 select. A is smoother than the 30fps baseline. That is the whole case for the unification target
@@ -51,10 +50,15 @@ below, and it is why the flicker is a structural mismatch rather than a tuning p
 dash-trail EFB feedback and every screen-sampling effect step at 30 Hz inside a 60 Hz frame, while
 its sub-frame re-issues draw lists that were never meant to run twice.
 
-**Both** paths present an irregular number of frames per tick. That is judder by construction and
-no pixel metric that ignores the dump labels can see it — every present differs from the last, so
-every step is nonzero and the ratio still looks respectable. Pinning the cadence to exactly N
-presents per tick is a defect to fix in the merged path, independent of interpolation quality.
+RETRACTED, in the same session it was written: an earlier version of this table added a
+"presents/tick" column reading "irregular, 2–3" for A and "1–3" for C, and called it judder by
+construction. That came from grouping dumps by their `-t<n>` filename label — the GAME's own retrace
+counter, which advances by however many NTSC fields the game asked for that frame, so two
+consecutive ticks can share a label and a perfectly regular 2-per-tick cadence groups as 1, 2 or 3.
+The runtime's own counters say **6000 in-between frames for 6000 simulation ticks: exactly two
+presents per tick, regular**. The measurement was right and the verdict was wrong, which is the
+combination hardest to notice. `cadence.py` now labels that statistic for what it is and names the
+runtime as the authority for cadence.
 
 `play.sh --60fps` now selects A.
 
@@ -137,6 +141,37 @@ vars — the project already has one tracked logger and this arc bypassed it 24 
 ## Unification — the target shape
 
 Follow dusklight (`~/repo/dusklight/src/dusk/`, CC0), which solved this once already:
+
+**LANDED** — the directory exists and the build is behavior-identical across the move (judder 1.10,
+mean step 5.131, same guest ticks, before and after). What is in it today:
+
+```
+sms-recomp/frame_interp/          <- ALL 60fps code, one CMake OBJECT library
+  frame_interp.{h,cpp}   THE public API. Mode (dusklight's Off/Capped/Unlimited), the step,
+                         request_presentation_sync(), add_interpolation_callback(), and the
+                         per-run report with its denominators.        [NEW, live]
+  stream_interp.{h,cpp}  path A's driver + tag-coverage report        (was runtime/lerp60.*)
+  camera.cpp             camera-cut detection -> presentation sync    (was overrides/camera_cut.cpp)
+  effects.h              the screen-effect registry interface         (was runtime/screen_effects.h)
+  effects_screen.cpp     shimmer / water refraction identity          (was overrides/screen_effects.cpp)
+  effects_afterimage.cpp dash-trail EFB cross-frame feedback          (was overrides/afterimage.cpp)
+  record_replace.{h,cpp} path C: matrix record + lerp + census        (was overrides/interp60_replace.*)
+  subframe_legacy.cpp    path B, 2951 lines, superseded               (was overrides/interp60_snapshot.cpp)
+```
+
+Wired seams, all three real and all three verified firing:
+
+| seam | called from | evidence |
+|---|---|---|
+| `begin_sim_tick()` | `present_tail` in `native_frame.cpp` | 6000 ticks counted over a plaza run |
+| `present_interpolated_frame()` | `aurora_replay_midpoint()` — the one point genuinely BETWEEN a tick's two presents | 6000 in-between frames, 1:1 with ticks |
+| `request_presentation_sync()` | `camera.cpp` via `present_tail` | 0 requests, and the report SAYS 0 rather than staying silent |
+
+The callback registry is live and **nothing registers yet** — the report says so in those words,
+because "no effect asked to be interpolated" and "the dispatch never ran" are the same silence
+otherwise. Porting the effects onto it is the next step.
+
+The target this is converging on:
 
 ```
 sms-recomp/frame_interp/

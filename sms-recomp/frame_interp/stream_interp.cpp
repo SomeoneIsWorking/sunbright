@@ -1,6 +1,6 @@
 // lerp60 — see the header, and debug_journal/2026-07-30_aurora_60fps_lerp_design.md.
 
-#include "lerp60.h"
+#include "stream_interp.h"
 
 #include <lucent/log.h>
 

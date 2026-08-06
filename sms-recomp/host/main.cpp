@@ -9,7 +9,7 @@
 #include "boot_env.h"
 #include "guest_sched.h"
 #include "intrinsics.h"
-#include "lerp60.h"
+#include "../frame_interp/stream_interp.h"
 
 #include <aurora/aurora.h>
 

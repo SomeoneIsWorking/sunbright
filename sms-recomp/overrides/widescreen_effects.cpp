@@ -21,10 +21,10 @@
 
 #include "overrides.h"
 
-#include "../runtime/lerp60.h"
+#include "../frame_interp/stream_interp.h"
 
 #include "../runtime/probe_server.h"
-#include "../runtime/screen_effects.h"
+#include "../frame_interp/effects.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>

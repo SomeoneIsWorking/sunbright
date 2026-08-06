@@ -29,8 +29,8 @@
 // from (cur) for real actors first, because an inert prev/cur pair renders identically to a working
 // one -- interpolation built on a dead snapshot would look correct while doing nothing.
 
-#include "overrides.h"
-#include "interp60_replace.h"
+#include "../overrides/overrides.h"
+#include "record_replace.h"
 #include "tactor_vtables.h"
 #include "tplacement_vtables.h"
 

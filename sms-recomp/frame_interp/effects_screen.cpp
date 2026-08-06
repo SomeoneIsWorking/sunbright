@@ -10,10 +10,10 @@
 // and TMirrorCamera are already hooked by widescreen_effects.cpp (a different concern, one override
 // per address); those call sb_screen_effect_fired() directly rather than being double-hooked.
 
-#include "overrides.h"
+#include "../overrides/overrides.h"
 
 #include "../runtime/probe_server.h"
-#include "../runtime/screen_effects.h"
+#include "effects.h"
 
 #include <intrinsics.h>
 

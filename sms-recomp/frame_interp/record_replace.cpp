@@ -56,9 +56,9 @@
 //   SBR_INTERP60_REPLACE_NONRM=1  interpolate draw matrices only, leaving normals at the tick rate
 //                                 (an ablation: it isolates lighting lag from geometry lag)
 
-#include "interp60_replace.h"
+#include "record_replace.h"
 
-#include "overrides.h"
+#include "../overrides/overrides.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>

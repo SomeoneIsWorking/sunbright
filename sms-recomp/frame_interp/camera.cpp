@@ -24,9 +24,9 @@
 // OBSERVE-ONLY: the real body always runs. These are not replacements (see overrides.h); they are
 // the same observing-wrapper shape as J3DShape::draw in j3d_capture.cpp.
 
-#include "overrides.h"
+#include "../overrides/overrides.h"
 
-#include "../runtime/lerp60.h"
+#include "stream_interp.h"
 
 #include <intrinsics.h>
 

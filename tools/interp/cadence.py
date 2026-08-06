@@ -93,13 +93,25 @@ def steps_of(frames):
     return [float(np.abs(frames[i + 1] - frames[i]).mean()) for i in range(len(frames) - 1)]
 
 
-def presents_per_tick(ticks):
-    """The cadence itself: how many presents landed on each guest tick.
+def presents_per_label(ticks):
+    """How many presents carry each distinct `-t<n>` label.
 
-    An N-times interpolation must present EXACTLY N times per tick. A run that presents 1, 2 and 3
-    times on successive ticks is juddering by construction no matter how good each individual
-    in-between frame is, and no pixel metric that ignores the labels can see it — the frames are all
-    different from each other, so every step is nonzero and the ratio looks respectable.
+    THIS IS NOT THE PRESENT CADENCE, and an earlier version of this function said it was. The label
+    is the GAME's own retrace counter, which the game advances by however many NTSC fields it asked
+    for this frame — usually 2, but not always, and it does not have to change at all. So two
+    consecutive ticks can share a label, and a run presenting exactly twice per tick then shows a
+    label carrying 4 presents. Reading that as "4 presents in one tick" is reading the counter's
+    variable step as a cadence irregularity.
+
+    Measured, on the run this was first drawn from: the labels grouped as [1, 2, 3] while the
+    runtime's own counters reported 6000 in-between frames for 6000 simulation ticks — exactly two
+    presents per tick, perfectly regular. The verdict was wrong and the numbers it came from were
+    right, which is the combination that is hardest to notice.
+
+    THE AUTHORITY FOR CADENCE IS THE RUNTIME, NOT THE FILENAMES: `SBR_LUCENT_DEBUG=interp` prints
+    "N simulation tick(s), M in-between frame(s) presented". What this function is still good for is
+    checking that a series covers the guest ticks you think it does, which is what makes two runs
+    comparable at all.
     """
     if any(t is None for t in ticks):
         return None
@@ -137,24 +149,20 @@ def score(steps, label="", ticks=None):
     else:
         print(f"  JUDDER {judder:.2f}   (1.00 = every present advances equally; ~2 = the in-between "
               f"frame exists but sits off the midpoint, which is the visible shimmer)")
-    ppt = presents_per_tick(ticks) if ticks else None
+    ppt = presents_per_label(ticks) if ticks else None
     if ppt is None:
-        print("  PRESENTS PER TICK: unknown — these dumps carry no `-t<tick>` label, so this run "
-              "cannot say whether the cadence is regular. That is not 'the cadence is fine'.")
+        print("  RETRACE LABELS: absent — these dumps carry no `-t<n>` label, so this series "
+              "cannot be checked for moment overlap against another. That is not 'it overlaps'.")
         span = None
     else:
         counts, inner = ppt
         span = (min(counts), max(counts))
-        uniq = sorted(set(inner))
-        print(f"  presents per guest tick (excluding the partial first/last): {inner}")
-        if len(uniq) == 1:
-            print(f"  ^ REGULAR: exactly {uniq[0]} present(s) per tick.")
-        else:
-            print(f"  ^ IRREGULAR CADENCE: {uniq} presents per tick within one window. This is "
-                  f"judder by construction — the frames are all different from each other so every "
-                  f"step is nonzero and the ratio above still looks respectable, but the display is "
-                  f"advancing the game by different amounts of time on consecutive refreshes.")
-        print(f"  guest ticks covered: {min(counts)}..{max(counts)}")
+        print(f"  presents per retrace label (excluding the partial first/last): {inner}")
+        print(f"  ^ NOT the present cadence. The label is the game's own retrace counter and it "
+              f"advances by however many fields the game asked for that frame, so consecutive ticks "
+              f"can share one. For the cadence, read the runtime: SBR_LUCENT_DEBUG=interp prints "
+              f"simulation ticks against in-between frames presented.")
+        print(f"  guest retrace labels covered: {min(counts)}..{max(counts)}")
     print(f"  SCALE: mean step {mean:.3f}. Two runs are comparable ONLY over the SAME GUEST TICKS — "
           f"SB_DUMP_FRAME_AFTER counts presents, so a 60fps run reaches a given present at half the "
           f"tick a 30fps run does, and their step sizes then describe different scenes.")
