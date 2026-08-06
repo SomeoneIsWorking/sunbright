@@ -309,6 +309,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_VIEWSEQ_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1204` |  |
 | `SBR_INTERP60_VIEWSEQ_MIN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1237` |  |
 | `SBR_INTERP60_VIEWWHO` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1328` |  |
+| `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp:428` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:148` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:212` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:68` |  |
@@ -360,4 +361,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
 
-**339 switches; 69 still gate a raw print.**
+**340 switches; 69 still gate a raw print.**
