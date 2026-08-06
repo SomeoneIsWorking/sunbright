@@ -2534,3 +2534,55 @@ Two things follow, and neither is yet measured:
 
 The camera result is unaffected by any of this and remains the one solid piece: `SBR_INTERP60`
 interpolates the camera exactly, in both directions, via the game's own prev/cur and C_MTXLookAt.
+
+## FIXED: the player interpolates — `SBR_INTERP60_PLAYER=1`
+
+### Root cause, from the decomp rather than from a pixel diff
+
+`TMario` never reaches `TLiveActor::perform`'s 0x2 branch, so no amount of re-issuing the director's
+calc-anim list could ever have moved him — the previous entry's 0.2% reach was other props. His pose
+becomes a matrix in `TMario::calcAnim` → `calcBaseMtx`, which builds a TR matrix from `mPosition` +
+`mModelFaceAngle` and copies it into the model's base TR matrix (`src/Player/MarioDraw.cpp:1920`
+and `:1582`). And `TMario::perform` calls `calcAnim` in exactly one place
+(`src/Player/MarioMain.cpp:139`):
+
+    if ((param_1 & 1) && mFreezeTimer <= 0) { thinkAloha(); calcAnim(2, graphics); ... }
+
+**Gated on cue bit 0x1 — the MOVEMENT bit, the one bit a sub-frame must never set**, because the
+same branch runs `playerControl()`, the physics. The player's pose-to-matrix step is structurally
+unreachable from a draw-only re-issue.
+
+### The fix takes the camera's shape exactly
+
+Call the GAME'S OWN function with an interpolated pose already written, and let it produce the
+matrix — `TMario::calcAnim(2, gfx)` (US `0x80244800`) after `apply_all`, the same way `camera_apply`
+calls the game's own `C_MTXLookAt`. No lerped matrix, no reimplemented math, cue 2 so the skeleton
+recomputes without a frame advance.
+
+### Measured, with the identity control that makes it safe
+
+`calcAnim` also runs callbacks and the skeleton, so calling it a second time within a tick could
+double-apply something. At alpha=1.0 the substituted pose IS the game's pose, so the sub-frame must
+still reproduce the following main frame:
+
+    identity  alpha=1, sub vs following main : 3,257 px / mean 0.066   (was 3,116 / 0.075)
+    reach     kick=3000 vs unkicked          : 7,334 px / mean 0.303   (was 2,477 / 0.001)
+    actor alpha 1.0 vs 0.0, camera pinned    : 5,608 px / mean 0.070   (was 0 — byte-identical)
+
+Identity is unchanged (its mean actually falls slightly), so the extra call has no side effect worth
+seeing. And the kicked pixels are POSITIVELY IDENTIFIED as the player rather than assumed: a single
+compact blob, bounding box 113 x 238 at x 591..703 / y 479..716 — screen-centre, lower half, aspect
+2.11, filling 27% of its box. That is a standing character silhouette where Mario stands, not a
+scatter of props.
+
+The actor alpha now moves 5,608 pixels where it moved zero. That is Mario's own 2.42 units of
+per-tick motion reaching the frame, at the right scale for a character occupying ~7,300 px.
+
+### Still opt-in, and why
+
+One present, one scene, one moment. The identity and reach numbers are clean but they are not a
+sweep, and `calcAnim` is a large function with callback side effects that a single sample cannot
+exonerate across cutscenes, Yoshi, water and the Torocco path (`calcBaseMtx` has four distinct
+branches, only one of which was exercised here). Default-on wants the gate run across several
+moments first. The remaining 400-object scenery set is still gated behind the calc-anim boundary
+and its own cost — that is the next piece, and it is separate from the player.

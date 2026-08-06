@@ -47,6 +47,11 @@ extern "C" unsigned VIGetRetraceCount(void);
 extern "C" void sbr_tick_split_call(CPUState&);
 extern "C" void func_802f80d0(CPUState&);      // JDrama::TDisplay::endRendering
 extern "C" void sbr_frame_present_now();       // overrides/native_frame.cpp
+// TMario::calcAnim(u32 cue, JDrama::TGraphics*) — US 0x80244800. The player's pose-to-matrix step:
+// calcBaseMtx() builds a TR matrix from mPosition + mModelFaceAngle and MTXCopy's it into
+// mModel->unk8->getBaseTRMtx(), then mModel->perform(cue) runs the skeleton (decomp
+// src/Player/MarioDraw.cpp:1920, :1582).
+extern "C" void func_80244800(CPUState&);
 extern "C" void func_80349f5c(CPUState&);      // C_MTXLookAt(Mtx dst, const Vec* eye, const Vec* up,
                                                //             const Vec* target)
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
@@ -1480,6 +1485,71 @@ CamSave camera_apply(CPUState& cpu, u32 obj, float alpha) {
     return sv;
 }
 
+// ── the PLAYER, rebuilt in the game's own terms ──────────────────────────────
+//
+// ROOT CAUSE, from the decomp rather than from a pixel diff. TMario does not reach
+// TLiveActor::perform's 0x2 branch at all, so no amount of re-issuing the director's calc-anim list
+// can move him. His pose becomes a matrix in TMario::calcAnim -> calcBaseMtx, which builds a TR
+// matrix from mPosition + mModelFaceAngle and copies it into the model's base TR matrix
+// (src/Player/MarioDraw.cpp:1920 and :1582) -- and TMario::perform calls calcAnim ONLY here:
+//
+//     if ((param_1 & 1) && mFreezeTimer <= 0) { thinkAloha(); calcAnim(2, graphics); ... }
+//
+// Gated on cue bit 0x1. That is the MOVEMENT bit, and it is the one bit a sub-frame must never set,
+// because the same branch runs playerControl() -- the physics. So the player's pose-to-matrix step
+// is structurally unreachable from a draw-only re-issue, which is exactly the shape of the camera's
+// problem and takes exactly the camera's answer: call the GAME'S OWN function with an interpolated
+// pose already written, and let it produce the matrix. No lerped matrix, no reimplemented math.
+//
+// The identity control is what makes this safe to try: calcAnim also runs callbacks and the
+// skeleton, so calling it a second time within a tick could double-apply something. At alpha=1.0
+// the substituted pose IS the game's pose, so the sub-frame must still reproduce the following main
+// frame to the 0.075/channel it reaches today. If it does not, this call has a side effect and the
+// number will say so rather than hiding inside a midpoint nobody can check.
+bool player_on() {
+    static const bool v = std::getenv("SBR_INTERP60_PLAYER") != nullptr;
+    return v;
+}
+
+// The player object, derived and CHECKED the same way report_player_coverage does it: 0x8040E10C is
+// gpMarioPos and points at mPosition, i.e. the object +0x10.
+u32 player_obj() {
+    if (!sb_ram_fast(0x8040E10Cu)) return 0;
+    const u32 p = sb_r32(0x8040E10Cu);
+    if (!sb_ram_fast(p)) return 0;
+    const u32 obj = p - OFF_POSITION;
+    if (!sb_ram_fast(obj)) return 0;
+    const u32 vptr = sb_r32(obj);
+    if (vptr < 0x80000000u || !sb_ram_fast(vptr)) return 0;
+    return obj;
+}
+
+void player_apply(CPUState& cpu, u32 gfx) {
+    if (!player_on()) return;
+    const u32 obj = player_obj();
+    if (!obj) {
+        static bool said = false;
+        if (!said) { said = true;
+            lucent::info("i60player", "SBR_INTERP60_PLAYER: the player object could not be derived "
+                                      "from gpMarioPos -- calcAnim was NOT called and this run "
+                                      "tests nothing about the player.");
+        }
+        return;
+    }
+    const u32 savedSp = (u32)cpu.gpr[1];
+    cpu.gpr[3] = obj;
+    cpu.gpr[4] = 2;        // the cue the game itself passes: matrices + skeleton, no frame advance
+    cpu.gpr[5] = gfx;
+    func_80244800(cpu);
+    cpu.gpr[1] = savedSp;
+    static long n = 0;
+    if (++n <= 3 || (n % 900) == 0)
+        lucent::info("i60player", "calcAnim(2) #{} on player 0x{:08x} at pose ({:.2f},{:.2f},{:.2f})",
+                     n, obj, (double)guest_f32(obj + OFF_POSITION),
+                     (double)guest_f32(obj + OFF_POSITION + 4),
+                     (double)guest_f32(obj + OFF_POSITION + 8));
+}
+
 void camera_restore(const CamSave& sv) {
     if (!sv.obj) return;
     for (int k = 0; k < 3; ++k) {
@@ -1652,6 +1722,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
             perform_list(cpu, ca, cue, gfx);
         }
     }
+    player_apply(cpu, gfx);
     viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
