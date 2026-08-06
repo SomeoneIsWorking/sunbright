@@ -128,6 +128,7 @@ long viewseq_at();   // defined with the view-sequence probe; the arming present
 void anim_apply(CPUState& cpu, u32 mActor, float alpha);   // defined with the animation-phase seam
 void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool requireApplied);
 void player_apply(CPUState& cpu, u32 gfx, bool saveWaist);
+extern float g_subframeCamY;
 void player_restore();
 void mtxtrace_report(u32 model, const char* when);
 extern u32 g_mtxModel;
@@ -2092,8 +2093,47 @@ void mtx_census(u32 model) {
                  g_inSubframe ? "[SUB]" : "[tick]");
 }
 
+// The direct question is not WHICH models viewCalc inside a sub-frame but under WHICH VIEW they do
+// it, so bucket the calls by the view that was live. A distinct-model census answers "who ran"; this
+// answers "did the recompute see the interpolated view", which is the thing that decides whether the
+// geometry can move. Buckets are keyed on the view's y translation, which separates the main camera
+// (~+590) from the mirror (~-1177) unambiguously at this scene.
+float g_subframeCamY = 0.0f;   // the interpolated camera view's y, captured at sub-frame start
+struct ViewBucket { float y; long n; };
+ViewBucket g_vcBuckets[8];
+int  g_vcBucketN = 0;
+
+void vc_bucket(float y) {
+    for (int i = 0; i < g_vcBucketN; ++i)
+        if (g_vcBuckets[i].y == y) { ++g_vcBuckets[i].n; return; }
+    if (g_vcBucketN < 8) { g_vcBuckets[g_vcBucketN].y = y; g_vcBuckets[g_vcBucketN].n = 1;
+                           ++g_vcBucketN; }
+}
+
+void vc_buckets_report() {
+    if (!viewcalc_on() || g_vcBucketN == 0) return;
+    static long n = 0;
+    if (++n > 4 && (n % 900) != 0) { g_vcBucketN = 0; return; }
+    lucent::info("i60vc", "sub-frame #{}: viewCalc calls bucketed by the view they ran under "
+                          "(reference: this sub-frame's camera view y={:.2f}; an ortho pass is "
+                          "y=0; the mirror pass is strongly negative):",
+                 n, (double)g_subframeCamY);
+    for (int i = 0; i < g_vcBucketN; ++i)
+        // NO NAME IS ASSERTED. The first version labelled anything with y >= 0 "the main camera",
+        // which called a y of -0.00 the main view when the main camera's y is +590 — a label that
+        // would have been read as a finding. The buckets print the VALUE, and the two reference
+        // views are printed beside them from the SAME sub-frame, so the comparison is inside the
+        // instrument instead of in the reader's memory of an earlier run.
+        lucent::info("i60vc", "    view y={:>10.2f}  ->  {} call(s)", (double)g_vcBuckets[i].y,
+                     g_vcBuckets[i].n);
+    g_vcBucketN = 0;
+}
+
 void viewcalc_hook(CPUState& cpu) {
-    if (g_inSubframe) ++g_vcSub; else ++g_vcTick;
+    if (g_inSubframe) {
+        ++g_vcSub;
+        if (viewcalc_on()) vc_bucket(guest_f32(J3DSYS_VIEWMTX + 7 * 4));
+    } else ++g_vcTick;
     const u32 model = (u32)cpu.gpr[3];
     mtx_census(model);
     if (mtxtrace_on() && (long)VIGetRetraceCount() >= viewseq_at()) {
@@ -2390,6 +2430,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     player_apply(cpu, gfx, true);
     actors_calc_root(cpu, g_lastSnapTick, true, true);
     mtxtrace_report(g_mtxModel, "sub-frame START");
+    g_subframeCamY = camSave.obj ? guest_f32(camSave.obj + OFF_CPSC_VIEWMTX + 7 * 4) : 0.0f;
     viewseq_begin();
     if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
@@ -2546,6 +2587,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                                     "however much geometry was emitted." : "");
     }
 
+    vc_buckets_report();
     if (viewcalc_on()) {
         static long n = 0;
         if (++n <= 4 || (n % 900) == 0)

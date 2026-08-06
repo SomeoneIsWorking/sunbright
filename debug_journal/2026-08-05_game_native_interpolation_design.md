@@ -3334,3 +3334,56 @@ between two concrete situations: the calc-anim pass is rebuilding matrices under
 something later overwrites them, or it is rebuilding them under the wrong one.
 
 Both are checkable with the instrument that now exists. No new hypothesis is required.
+
+## ANSWERED: the sub-frame never viewCalcs the background at all
+
+Bucketing every sub-frame `viewCalc` by the view that was live when it ran — the direct form of the
+question, since a distinct-model census answers "who ran" and this answers "did the recompute see the
+interpolated view":
+
+    sub-frame #2 (this sub-frame's interpolated camera view y = -1961.42):
+        view y = -1961.42  ->  126 call(s)     <- our actor substitution pass, correct view
+        view y =     -0.00  ->  14 call(s)     <- an ORTHO pass
+        view y = -1963.88  ->  126 call(s)     <- our post-restore recompute, restored view
+                                  266 total
+
+Both 126-blocks are `actors_calc_root`'s own `MActor::viewCalc` calls, and they match the actor
+dispatch count exactly. **The scene itself contributes only the 14, and those run under an ortho
+view.** The background's models are viewCalc'd ZERO times inside a sub-frame.
+
+### This corrects an earlier reading
+
+"140 inside vs 139 in the tick — full coverage" was recorded as the calc-anim re-issue rebuilding
+every drawable. It was not: 126 of those 140 were our own actor calls and 14 were the ortho pass.
+Re-issuing the calc-anim list with cue 0x4 produces **no viewCalc for the scene's models at all** —
+confirmed by re-running with `SBR_INTERP60_ACTORS` off, where the count stays at 14 with
+`CALCANIM=1` set. The number was right and the attribution was wrong, which a bucket keyed on the
+view exposes immediately and a bare total never could.
+
+### So the long-open question has an answer
+
+The background does not follow the interpolated view because **nothing recomputes its model-view
+matrices inside the sub-frame.** Not "the matrices are baked in a display list", not "the swap
+parity is wrong", not "sub-pixel motion" — the recompute simply never runs for that geometry. Every
+one of those hypotheses was consistent with the pixels; none of them was what was happening.
+
+The chain, now fully measured end to end:
+
+    interpolated camera pose      -> verified (CAMTRACE: exact midpoint)
+    -> cached view matrix         -> verified (the game's own C_MTXLookAt)
+    -> gfx->mViewMtx              -> verified (VIEWSEQ: camera 1 writes it)
+    -> j3dSys view                -> verified (VIEWSEQ: the dominant pass receives it)
+    -> per-drawable model-view    -> NEVER COMPUTED for the background inside a sub-frame
+    -> pixels                     -> therefore the tick's, at every alpha
+
+### What this makes possible, and what it costs
+
+The fix is no longer mysterious: the sub-frame must make the scene's own models recompute their
+model-view matrices under the interpolated view. The honest options are to find which phase does
+that in a normal tick and re-issue exactly it, or to walk the scene's models and call
+`J3DModel::viewCalc` directly the way the actor seam does — remembering that viewCalc SWAPS a double
+buffer, so the call count per model per tick has to stay balanced.
+
+Both are now concrete engineering with a measurement that will show whether they worked (the bucket
+report, plus the leak gate for the swap parity). That is a different position from the last several
+entries, which each had a plausible story and no way to tell it from the alternatives.
