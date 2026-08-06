@@ -70,6 +70,7 @@ timeout -s KILL "${RUN_TIMEOUT:-300}" env \
     "${ALPHA_ENV[@]}" \
     SB_DUMP_FRAME="$PREFIX" SB_DUMP_FRAME_AFTER="$AFTER" \
     SB_DUMP_FRAME_EVERY=1 SB_DUMP_FRAME_COUNT="$COUNT" \
+    SBR_INTERP60_CAMTRACE=1 SBR_INTERP60_CAMFAST=0 SBR_INTERP60_VIEWSEQ_AT="$AFTER" \
     SBR_LUCENT_DEBUG=interp60 \
     "$@" "$HERE/run-recomp.sh" >"$LOGS/i60_$TAG.log" 2>&1
 RC=$?
@@ -82,5 +83,32 @@ if [[ "$N" -lt 3 ]]; then
     exit 1
 fi
 echo "  produced $N dumps (exit $RC)"
+
+# LIVENESS AT THE DUMPED MOMENT — the precondition, not a footnote.
+#
+# The only thing this configuration interpolates by default is the CAMERA, so if the camera is
+# parked across the dumped presents then alpha provably cannot change a pixel and a score of "the
+# sub-frame duplicates its follower" is a fact about the scene, not about the interpolation. The
+# scene can be moving hard (Mario walking fills 40% of the frame) while the camera stands still,
+# so the frame-level "moment scale" cannot answer this and a separate number is needed.
+#
+# This project has already paid for the same mistake once: a fast test moment was chosen for speed
+# and silently moved the measurement to a pre-gameplay window with a static camera, and four
+# `eye moved 0.000` samples became a wrong root cause. SBR_INTERP60_CAMTRACE is armed at the dump
+# present for exactly this reason.
+CAM="$(grep -a 'CAMTRACE present' "$LOGS/i60_$TAG.log" | head -4 || true)"
+echo "  camera liveness at the dumped moment (|eye cur-prev| per tick):"
+if [[ -z "$CAM" ]]; then
+    echo "    NO CAMTRACE LINES — the camera probe never fired at present >= $AFTER."
+    echo "    That is NOT 'the camera was still': it means this run cannot say either way."
+else
+    echo "$CAM" | sed 's/^/    /'
+    if ! echo "$CAM" | grep -qv '|eye cur-prev|=0\.000'; then
+        echo "    ^ THE CAMERA IS PARKED HERE. The camera is the only thing this configuration"
+        echo "      interpolates, so alpha cannot reach a pixel at this moment and the score below"
+        echo "      describes the SCENE, not the interpolation. Move the dump, or add the actor"
+        echo "      seams (SBR_INTERP60_ACTORS / _PLAYER / _ANIM), before reading it."
+    fi
+fi
 echo
 exec python3 "$HERE/tools/interp/subframe_position.py" "$PREFIX"

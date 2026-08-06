@@ -274,7 +274,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_CALCROOT_SCAN` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1704` |  |
 | `SBR_INTERP60_CAMFAST` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1499` |  |
 | `SBR_INTERP60_CAMTRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1453` |  |
-| `SBR_INTERP60_COPY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2586` |  |
+| `SBR_INTERP60_COPY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2599` |  |
 | `SBR_INTERP60_DROPLAST` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2514` |  |
 | `SBR_INTERP60_FOLLOW` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:834` |  |
 | `SBR_INTERP60_J3DSYS` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1322` |  |
@@ -292,7 +292,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_PLAYER_DIFF` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2210` |  |
 | `SBR_INTERP60_PREENTRY` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2386` |  |
 | `SBR_INTERP60_PREENTRY_VC` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2466` |  |
-| `SBR_INTERP60_STREAMHASH` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2524` |  |
+| `SBR_INTERP60_STREAMHASH` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2530` |  |
 | `SBR_INTERP60_TRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:777` |  |
 | `SBR_INTERP60_TRACE_AT` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:800` |  |
 | `SBR_INTERP60_VCLIST` | 2 | `sms-recomp/overrides/interp60_snapshot.cpp:2128` |  |

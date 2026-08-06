@@ -17,6 +17,14 @@
 # reaches SOMETHING; only reach says whether it reaches the SCENE. A tiny control with a tiny
 # reach means the bracket is in the wrong place, however cleanly the pair passes.
 #
+# THE SUB-FRAME MUST BE VISIBLE, or none of the three questions is being asked of it. Without
+# SBR_INTERP60_COPY=1 the sub-frame renders into the EFB and nothing copies it out, and without
+# SBR_PRESENT_AFTER_COPY=1 the present happens before the game's own copy — either way the "sub"
+# present shows the previously copied XFB, i.e. the main frame again, BIT-IDENTICALLY. Every metric
+# below would then be about main frames while reading as though it were about the interpolation.
+# Both are set here, unconditionally, for the same reason interp60_run.sh carries them: the failure
+# is silent and the run still looks healthy.
+#
 # DETERMINISM IS A PRECONDITION, not a detail. Frame comparison is meaningless if two identical
 # runs differ, and they did until tb_get() stopped reading the host clock (SBR_DETERMINISTIC=1
 # substitutes a monotonic virtual timebase). The gate re-establishes this every time by running
@@ -61,6 +69,7 @@ run() {  # run <tag> [env assignments...]
       timeout -s KILL 180 env \
         SB_HEADLESS=1 SB_TURBO=1 \
         SBR_DETERMINISTIC=1 SBR_FASTBOOT=1 \
+        SBR_INTERP60_COPY=1 SBR_PRESENT_AFTER_COPY=1 \
         SBR_PAD_SCRIPT="$PAD" \
         SB_DUMP_FRAME="$dump" SB_DUMP_FRAME_AFTER="$AFTER" \
         SBR_LUCENT_DEBUG=interp60 \

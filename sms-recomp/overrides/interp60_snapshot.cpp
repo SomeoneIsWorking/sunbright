@@ -2521,17 +2521,30 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // pixels, whatever every state-level probe says — and every probe in this arc so far has been
     // state-level. Reported with the byte COUNT as its denominator, so "same hash" cannot be
     // confused with "emitted nothing".
+    //
+    // CAP THE BORING CASE. The first six sub-frames of a run happen before gameplay, with the
+    // camera parked (|cur-prev| = 0.000), so a flat first-N cap prints six hashes that CANNOT
+    // differ across alpha however well the substitution works — and two runs agreeing there reads
+    // exactly like two runs agreeing everywhere. The lines that can answer the question are the
+    // ones where the camera is actually moving, so those are printed too.
     if (std::getenv("SBR_INTERP60_STREAMHASH")) {
         static long n = 0;
+        static int moving = 0;
         const uint32_t now = sbr_gxfifo_stream_pos();
-        if (++n <= 6 || (n % 900) == 0)
+        const bool interesting = g_camSep >= 1.0f && moving < 8 && ++moving;
+        if (++n <= 6 || (n % 900) == 0 || interesting)
             lucent::info("i60stream",
-                         "sub-frame #{} alpha={:.2f}: emitted {} bytes, FNV-1a {:016x}{}",
-                         n, (double)alpha, now - streamBefore,
+                         "sub-frame #{} alpha={:.2f} |cam cur-prev|={:.3f}: emitted {} bytes, "
+                         "FNV-1a {:016x}{}",
+                         n, (double)alpha, (double)g_camSep, now - streamBefore,
                          sbr_gxfifo_stream_hash(streamBefore, now),
                          now == streamBefore
                              ? "   <-- emitted NOTHING; a hash over an empty range says nothing "
-                               "about alpha" : "");
+                               "about alpha"
+                             : (g_camSep == 0.0f
+                                    ? "   <-- the camera did not move this tick, so two alphas MUST "
+                                      "hash the same here and their agreeing proves nothing"
+                                    : ""));
     }
     // Does the substituted camera pose SURVIVE the re-issue?
     //

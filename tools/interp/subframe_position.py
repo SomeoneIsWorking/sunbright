@@ -120,6 +120,7 @@ def report(files, imgs):
           f"   [px = share of pixels differing | mad = mean abs channel difference, both %]")
     print()
     kept = {'px': [], 'mad': []}
+    scale = {'px': [], 'mad': []}
     refused = 0
     for k in triples:
         prev, sub, nxt = imgs[k], imgs[k + 1], imgs[k + 2]
@@ -156,6 +157,7 @@ def report(files, imgs):
         for name in ('px', 'mad'):
             a, b, c, s = line[name]
             kept[name].append(s)
+            scale[name].append(c)
             print(f"  present {k}..{k+2} [{name:>3}]: prev->sub {a:7.3f}  sub->next {b:7.3f}  "
                   f"full tick {c:7.3f}  ideal half {c/2:7.3f}"
                   f"   asymmetry {s[0]*100:+7.2f}%  lead {('%.3f' % s[1]) if s[1] is not None else '  n/a'}"
@@ -172,7 +174,13 @@ def report(files, imgs):
         lead = [s[1] for s in kept[name] if s[1] is not None]
         off = [s[2] for s in kept[name]]
         print(f"  [{name:>3}] asymmetry {100*sum(asym)/len(asym):+7.2f}%   "
-              f"lead {sum(lead)/len(lead):.3f}   off-segment {100*sum(off)/len(off):+7.2f}%")
+              f"lead {sum(lead)/len(lead):.3f}   off-segment {100*sum(off)/len(off):+7.2f}%   "
+              f"MOMENT SCALE (mean full tick) {sum(scale[name])/len(scale[name]):7.3f}")
+    print("  COMPARE ONLY AT EQUAL MOMENT SCALE. asymmetry is a ratio whose denominator is how far")
+    print("  the tick moved, and the two are not independent: at a fast moment the sub-frame's")
+    print("  fixed content dominates and asymmetry saturates, at a slow one the same sub-frame")
+    print("  scores far closer to centred. Two configurations measured at different scales are not")
+    print("  comparable, and a table of asymmetries with no scale column cannot be checked for it.")
     print("  asymmetry 0 = the sub-frame is equidistant from its neighbours; +100% = it duplicates")
     print("  the FOLLOWING main frame; -100% = it duplicates the preceding one. Neither metric is")
     print("  linear in displacement, so compare these across configurations, never against a target.")
@@ -242,9 +250,57 @@ def selftest():
     return 0
 
 
+def compare(pa, pb):
+    """--compare A B: does alpha reach the sub-frame AT ALL?
+
+    Two runs at different alphas, same seed, same pad script, same switches: the cadence is
+    identical, so present index k is the same game moment in both and a cross-run diff at the same
+    index is legitimate here in a way it is NOT across configurations that change the cadence.
+
+    What it answers, which the within-run score cannot: a sub-frame that is 99% like its follower
+    might be a correct render of a nearly-static moment, or an alpha that reaches nothing. If the
+    two runs' SUB frames are byte-identical while their MAIN frames are too, the substitution
+    changed nothing anywhere and every asymmetry taken from either run is a statement about the
+    scene, not about the interpolation.
+    """
+    fa = sorted(glob.glob(pa + ".*"), key=seq_of)
+    fb = sorted(glob.glob(pb + ".*"), key=seq_of)
+    if not fa or not fb or len(fa) != len(fb):
+        print(f"REFUSED: series lengths differ ({len(fa)} vs {len(fb)}) — index k is not the same "
+              f"moment in both. Nothing compared.")
+        return 1
+    ra = [role_of(f) for f in fa]
+    rb = [role_of(f) for f in fb]
+    if ra != rb or any(r is None for r in ra):
+        print(f"REFUSED: role sequences differ or are unlabelled ({ra} vs {rb}). Nothing compared.")
+        return 1
+    print(f"comparing {len(fa)} presents, roles {' '.join(ra)}")
+    tot = {'main': [], 'sub': []}
+    for k, (a, b) in enumerate(zip(fa, fb)):
+        px, mad = metrics(load(a), load(b))
+        tot[ra[k]].append(px)
+        print(f"  present {k} [{ra[k]:>4}] : {px:7.3f}% pixels differ, mad {mad:6.3f}%")
+    print()
+    for role in ('main', 'sub'):
+        v = tot[role]
+        if not v:
+            print(f"  {role}: NO presents of this role in the series — nothing to conclude about it.")
+            continue
+        print(f"  {role}: mean {sum(v)/len(v):7.3f}% over {len(v)} present(s)")
+    if tot['sub'] and max(tot['sub']) == 0.0:
+        print("  ALPHA REACHES NOTHING: every sub present is byte-identical across the two runs.")
+        print("  Any asymmetry measured from either run describes the scene, not the interpolation.")
+    if tot['main'] and max(tot['main']) > 0.0:
+        print("  LEAK: a MAIN present differs across alpha. The substitution is not self-cancelling,")
+        print("  so the two runs are not the same game and no cross-run reading from them is valid.")
+    return 0
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == '--selftest':
         return selftest()
+    if len(sys.argv) >= 4 and sys.argv[1] == '--compare':
+        return compare(sys.argv[2], sys.argv[3])
     if len(sys.argv) < 2:
         print(__doc__.strip().rsplit("Usage:", 1)[-1])
         return 2
