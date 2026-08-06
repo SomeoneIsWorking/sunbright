@@ -136,6 +136,8 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
 - 60fps, game-native path → `sms-recomp/overrides/interp60_snapshot.cpp` (`sbr_interp60_subframe`)
 - which perform list is which → `SBR_INTERP60_LISTS=1` (resolves `gpMarDirector` by scan, names every slot)
 - whether a sub-frame is real or the same image twice → `tools/interp/subframe_gate.py` on a consecutive-present series
+- WHERE a sub-frame sits between its neighbours (the arc's `asymmetry` number) → `tools/interp/subframe_position.py`
+- do the diagnostic tools still work → `tools/selftest_all.py` (runs every tool's `--selftest`; in the pre-commit gate)
 - an opcode's emitted C → `tools/recompiler/c_emitter.cpp` + `sms-recomp/generated/functions_*.cpp`
 - Mario's position at runtime → `/r?a=0x8040E10C` then deref (pointer, not a position global)
 

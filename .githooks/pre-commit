@@ -24,3 +24,18 @@ pre-commit: the diagnostic-switch registry is stale or names a switch no code re
 MSG
     exit 1
 fi
+
+# The tools' own self-tests. Each one feeds a case whose answer is forced, so the tool has to
+# demonstrate it can produce the OTHER answer. They existed and nothing ran them, which is the
+# same defect one level up: a broken instrument still reports a clean negative, now with a
+# reassuring --selftest in its docstring.
+if ! python3 "$REPO/tools/selftest_all.py"; then
+    cat >&2 <<'MSG'
+
+pre-commit: a diagnostic tool's own self-test failed, so that tool cannot be trusted to show the
+  answer it is about to be used for. Run it directly to see which case broke:
+    python3 tools/selftest_all.py
+    python3 tools/selftest_all.py --list    # what is covered at all
+MSG
+    exit 1
+fi
