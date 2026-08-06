@@ -1404,6 +1404,21 @@ SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
 // labelling; recording the position lets that assumption be checked instead of trusted.
 uint32_t sbr_gxfifo_stream_pos() { return (uint32_t)g_out.size(); }
 
+// FNV-1a over a byte range of the emitted stream. The 60fps arc needs to bisect "the interpolated
+// state never reached the emitter" from "the emitter got it and the difference was lost later", and
+// every measurement so far has been of game STATE, never of the artifact. Hashing the bytes a
+// sub-frame emitted answers it directly: two alphas that produce the same stream cannot produce
+// different pixels, whatever the state said.
+//
+// A range, not the whole buffer, because a sub-frame is a suffix of a much larger tick stream and a
+// whole-buffer hash would be dominated by bytes neither alpha could affect.
+unsigned long long sbr_gxfifo_stream_hash(uint32_t from, uint32_t to) {
+    if (to > g_out.size()) to = (uint32_t)g_out.size();
+    unsigned long long h = 1469598103934665603ULL;
+    for (uint32_t i = from; i < to; ++i) { h ^= g_out[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
 // Copy-to-XFB triggers parsed so far. See the BP 0x52 site: this is what turns a rendered EFB into
 // the image that reaches the display.
 unsigned long sbr_gxfifo_xfb_copies() { return g_xfbCopies; }

@@ -120,6 +120,25 @@ run a1 SBR_INTERP60=1 SBR_INTERP60_ALPHA=1.0
 run a0 SBR_INTERP60=1 SBR_INTERP60_ALPHA=0.0
 ID="$(diff_px "$OUT/gate_base1.rgba" "$OUT/gate_a1.rgba")"
 CT="$(diff_px "$OUT/gate_base1.rgba" "$OUT/gate_a0.rgba")"
+# --- the invariant the gate was missing ---------------------------------------
+# A MAIN frame must not depend on alpha. The sub-frame substitutes guest state and restores it, so
+# alpha can only ever reach the sub-frame; if a main frame moves, the substitution LEAKED and the
+# game is being played differently at different alphas.
+#
+# This was absent, and its absence cost a whole session's conclusions: the per-actor and per-player
+# seams (SBR_INTERP60_PLAYER / _ACTORS / _ANIM / _CALCANIM) leak, and with them on, two runs at
+# different alphas diverge by 171,791 pixels in their MAIN frames — so every cross-run comparison
+# made with them silently compared two different games. Camera-only is clean (0 px), which is how
+# the leak was localised.
+run mA1 SBR_INTERP60=1 SBR_INTERP60_ALPHA=1.0
+run mA0 SBR_INTERP60=1 SBR_INTERP60_ALPHA=0.0
+LEAK="$(diff_px "$OUT/gate_mA1.rgba" "$OUT/gate_mA0.rgba")"
+echo "leak         main vs main  : $LEAK   MUST be 0 (a main frame may not depend on alpha)"
+if [[ "${LEAK%% of*}" != *"       0"* ]]; then
+    echo "  ^ THE SUBSTITUTION LEAKED. Cross-run comparisons are invalid until this is 0: the two" >&2
+    echo "    runs are not the same game. Bisect with the per-seam switches." >&2
+fi
+
 echo "identity     alpha=1.0     : $ID   MUST be 0"
 echo "control      alpha=0.0     : $CT   MUST be > 0"
 echo "liveness     alpha=1.0     : $(liveness a1)"

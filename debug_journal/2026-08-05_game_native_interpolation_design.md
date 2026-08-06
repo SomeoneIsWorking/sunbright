@@ -2985,3 +2985,56 @@ That is one bisect of the whole remaining space, and it is the first measurement
 looks at the artifact rather than at the state that is supposed to produce it. It must come before
 any further change — the last four explanations were each reasoned from verified state and each was
 wrong about the pixels.
+
+## RETRACTION: the new seams LEAK into game state, which voids the fast-window conclusions
+
+The stream hash answered its question cleanly — the emitter DOES receive the interpolated state:
+
+    alpha=0.0  sub-frame #1: 1,818,068 bytes, FNV-1a e871b2ca1f8e896b
+    alpha=1.0  sub-frame #1: 1,818,068 bytes, FNV-1a 9bf11bad56d8a766
+
+Same byte count, different bytes. So "the interpolated state never reached the emitter" is dead.
+
+But the response curve taken at the same window was impossible, and that is what exposed the real
+defect. Distance from the sub-frame to the following main frame:
+
+    alpha 0.00 -> 0.049      alpha 0.50 -> 0.059      alpha 1.00 -> 0.064
+
+All within 0.02 of each other — yet the alpha=0 and alpha=1 sub-frames were measured 1.738 apart.
+**That violates the triangle inequality**, so the two runs' main frames cannot be the same image. And
+they are not:
+
+    main(1), alpha=0 run vs alpha=1 run : 171,791 of 1,228,800 px, mean |d| 1.720
+    main(3), alpha=0 run vs alpha=1 run : 174,313 of 1,228,800 px, mean |d| 1.719
+
+**A main frame must not depend on alpha.** The sub-frame substitutes guest state and restores it, so
+alpha can only ever reach the sub-frame. When a main frame moves, the substitution has leaked and the
+two runs are not the same game. Camera-only at the same window is clean:
+
+    camera only, main(1) and main(3), alpha=0 vs alpha=1 : 0 of 1,228,800 px
+
+So the leak is in the seams added this session — `SBR_INTERP60_PLAYER`, `_ACTORS`, `_ANIM`,
+`_CALCANIM` — all of which are opt-in, so HEAD's default behaviour is unaffected. The likely
+mechanism is side effects in the game functions being called a second time per tick:
+`TMario::calcAnim` runs `addCallBack`/`addUpper`/`considerWaist`, and the calc-anim re-issue at cue
+0x4 runs `requestShadow`. Those were reasoned about as harmless because the alpha=1 IDENTITY control
+stayed at 0.066 — but identity compares a sub-frame to a main frame WITHIN one run, and a leak that
+affects both equally is invisible to it. The missing control was the cross-run one.
+
+### What this retracts
+
+The previous entry's fast-window conclusions were computed across runs and are therefore VOID,
+including "the sub-pixel explanation is dead" — that verdict rested on a 99.5% asymmetry measured
+while the two runs were playing different games. The sub-pixel question is REOPENED and must be
+re-measured camera-only, where the invariant holds.
+
+What survives: everything measured camera-only or within a single run — the camera chain
+verification, the DROPLAST plumbing control, the stream-hash result above, and the slow-window
+numbers taken before these seams existed.
+
+### The gate now checks it
+
+`tools/interp/interp60_gate.sh` gains a `leak` line: two runs at alpha 1.0 and 0.0, main frames
+compared, MUST be 0. The gate had identity, control and liveness, all of which are within-run or
+against a baseline; none could see a leak that moves both sides together. This is the third time in
+this arc that a missing control, rather than a wrong fix, cost the conclusions.

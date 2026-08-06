@@ -80,6 +80,7 @@ extern "C" void sbr_vptr_note(unsigned obj);
 // Where the GX parser is in this frame's stream (runtime/native_render.h). Used to price the re-issue.
 uint32_t sbr_gxfifo_stream_pos();
 unsigned long sbr_gxfifo_xfb_copies();
+unsigned long long sbr_gxfifo_stream_hash(uint32_t from, uint32_t to);
 
 namespace {
 
@@ -2029,6 +2030,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     for (int i = 0; i < 12; ++i) viewBefore[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
     g_camDispatches = 0;
     const unsigned long xfbBefore = sbr_gxfifo_xfb_copies();
+    const uint32_t streamBefore = sbr_gxfifo_stream_pos();
 
     // NO SEPARATE PreEntry -- and that is a POSITIVE design point, not an omission.
     //
@@ -2147,6 +2149,22 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     const int drawN = dropLast && g_drawN > 1 ? g_drawN - 1 : g_drawN;
     for (int i = 0; i < drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
     viewseq_end();
+    // THE ARTIFACT, not the state. Two alphas that emit the same bytes cannot render different
+    // pixels, whatever every state-level probe says — and every probe in this arc so far has been
+    // state-level. Reported with the byte COUNT as its denominator, so "same hash" cannot be
+    // confused with "emitted nothing".
+    if (std::getenv("SBR_INTERP60_STREAMHASH")) {
+        static long n = 0;
+        const uint32_t now = sbr_gxfifo_stream_pos();
+        if (++n <= 6 || (n % 900) == 0)
+            lucent::info("i60stream",
+                         "sub-frame #{} alpha={:.2f}: emitted {} bytes, FNV-1a {:016x}{}",
+                         n, (double)alpha, now - streamBefore,
+                         sbr_gxfifo_stream_hash(streamBefore, now),
+                         now == streamBefore
+                             ? "   <-- emitted NOTHING; a hash over an empty range says nothing "
+                               "about alpha" : "");
+    }
     // Does the substituted camera pose SURVIVE the re-issue?
     //
     // The camera's own perform runs inside the re-issue (measured: 16 dispatches), and
