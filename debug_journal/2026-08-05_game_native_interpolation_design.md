@@ -3177,3 +3177,58 @@ the guest draw-matrix array during the sub-frame at alpha=0 and alpha=1.
 Those are opposite halves of the remaining space and one measurement separates them. It is the same
 "read the artifact, not the state that should produce it" step that the stream hash was, one level
 further in.
+
+## THE MECHANISM: viewCalc is NOT idempotent — it SWAPS a double buffer
+
+`J3DModel::viewCalc()` (decomp `src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:924`) begins:
+
+    void J3DModel::viewCalc()
+    {
+        swapDrawMtx();
+        swapNrmMtx();
+        ...
+    }
+
+and the buffers it swaps are declared `Mtx* mDrawMtxBuf[2][views]` with
+
+    void swapDrawMtx() {
+        Mtx* tmp = mDrawMtxBuf[0][mCurrentViewNo];
+        mDrawMtxBuf[0][mCurrentViewNo] = mDrawMtxBuf[1][mCurrentViewNo];
+        mDrawMtxBuf[1][mCurrentViewNo] = tmp;
+    }
+
+**Every call to viewCalc exchanges the two matrix buffers before writing.** So calling it an extra
+time per tick is not "recomputing the same thing" — it changes which buffer any already-captured
+pointer refers to, and it flips a parity that the game maintains at exactly one swap per model per
+tick.
+
+This reframes several results at once, and it is the piece the last several entries were missing:
+
+* "Call the game's own function again" is sound for `calcRootMatrix` (pure write, leak measured at
+  0 px) and for `MActor::calc`. It is NOT sound for `viewCalc`, and the seam-level bisect said so in
+  numbers before the reason was known — `mask 7 (+ viewCalc)` was the 340,509-pixel leak while
+  `mask 3` was 88 px.
+* The sub-frame currently calls viewCalc up to THREE times per model per tick: the tick's own, the
+  sub-frame's (via the scene re-entry or the calc-anim pass), and the post-restore recompute. Three
+  swaps where the game does one leaves the buffers transposed.
+* It is a live candidate for why the background never follows the interpolated view: if a packet
+  captured its matrix pointer before a swap, the draw reads the buffer holding the PRE-swap
+  matrices — which are exactly the tick's endpoint matrices, rendered regardless of what the fresh
+  computation produced. That would produce precisely the observed "interpolated view reaches
+  j3dSys, 140 drawables recompute, background renders unchanged".
+
+### What to do with it, in order
+
+1. **Stop calling viewCalc in the post-restore recompute pass.** It cannot be a restore: an extra
+   swap is a mutation, not an undo. Remove it and re-measure the leak, which should fall from the
+   remaining 4,606 px if the parity is part of it.
+2. **Count the swaps per model per tick**, with and without each seam, against the game's own count
+   of one. That is the direct measurement of the parity claim rather than an argument from the
+   source, and it is the same "measure the artifact" step that has settled every other question in
+   this arc.
+3. Only then decide how a sub-frame should get fresh matrices at all — the honest options are to
+   swap back after drawing, or to leave viewCalc alone and accept that only substituted transforms
+   move. Both are choices to make with the swap count in hand, not before.
+
+Recorded before acting on any of it, because the three preceding hypotheses were each acted on
+first and each was wrong.
