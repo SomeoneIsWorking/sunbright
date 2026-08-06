@@ -29,8 +29,9 @@ discipline applies, with FOUR guards, all of which must pass:
 
   1. the directory is a DIRECT child of the repo root (no nesting, no traversal);
   2. its name starts with "build";
-  3. it CONTAINS CMakeCache.txt — proof it is a generated build tree and not a source directory
-     someone happened to name `build`;
+  3. it CONTAINS CMakeCache.txt OR CMakeFiles/ — proof it is a generated build tree and not a
+     source directory someone happened to name `build`. Two proofs because an ABORTED configure
+     never writes the cache but does create CMakeFiles/, and such a tree is still pure output;
   4. git says it is ignored or untracked — so a tracked file can never be inside it.
 
 `--keep-dir` protects a tree by name; the default protects nothing, and the default action is to
@@ -160,8 +161,20 @@ def clean_build_dirs(do_it: bool, keep: list[str]) -> int:
         if name in keep:
             skipped.append((name, "protected by --keep-dir"))
             continue
-        if not os.path.isfile(os.path.join(path, "CMakeCache.txt")):
-            skipped.append((name, "no CMakeCache.txt — NOT a generated build tree, refusing"))
+        # TWO acceptable proofs that this is a GENERATED tree, not a source directory named
+        # `build`. CMakeCache.txt is the strong one. But a configure that ABORTS never writes the
+        # cache while still having created CMakeFiles/ and _deps/ — build-native was exactly that,
+        # 75 MB of aborted configure output, and the cache-only test refused it forever.
+        #
+        # The fix is a second PROOF, not a --force flag. CMakeFiles/ is written by CMake and by
+        # nothing else, so its presence is evidence of the same kind; an escape hatch would have
+        # been evidence of nothing, and the first time it was used in a hurry it would have been
+        # used on the wrong directory.
+        has_cache = os.path.isfile(os.path.join(path, "CMakeCache.txt"))
+        has_cmakefiles = os.path.isdir(os.path.join(path, "CMakeFiles"))
+        if not (has_cache or has_cmakefiles):
+            skipped.append((name, "neither CMakeCache.txt nor CMakeFiles/ — NOT a generated build "
+                                  "tree, refusing"))
             continue
         if not _git_ignored(path):
             skipped.append((name, "git does not report it as ignored/clean — refusing"))
