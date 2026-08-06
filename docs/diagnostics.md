@@ -274,7 +274,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_CALCROOT_SCAN` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1705` |  |
 | `SBR_INTERP60_CAMFAST` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1500` |  |
 | `SBR_INTERP60_CAMTRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:1454` |  |
-| `SBR_INTERP60_CENSUS` | 2 | `sms-recomp/overrides/interp60_replace.cpp:248` |  |
+| `SBR_INTERP60_CENSUS` | 2 | `sms-recomp/overrides/interp60_replace.cpp:258` |  |
 | `SBR_INTERP60_COPY` | 2 | `sms-recomp/overrides/interp60_snapshot.cpp:2492` |  |
 | `SBR_INTERP60_DROPLAST` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2696` |  |
 | `SBR_INTERP60_FOLLOW` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:835` |  |
@@ -295,11 +295,11 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_PREENTRY_VC` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2636` |  |
 | `SBR_INTERP60_PREENTRY_VC_CUE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2325` |  |
 | `SBR_INTERP60_PREENTRY_VC_N` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2346` |  |
-| `SBR_INTERP60_REPLACE` | 1 | `sms-recomp/overrides/interp60_replace.cpp:243` |  |
-| `SBR_INTERP60_REPLACE_ALPHA` | 1 | `sms-recomp/overrides/interp60_replace.cpp:145` |  |
-| `SBR_INTERP60_REPLACE_KICK` | 1 | `sms-recomp/overrides/interp60_replace.cpp:153` |  |
-| `SBR_INTERP60_REPLACE_KICK_ONLY` | 1 | `sms-recomp/overrides/interp60_replace.cpp:175` |  |
-| `SBR_INTERP60_REPLACE_NONRM` | 1 | `sms-recomp/overrides/interp60_replace.cpp:188` |  |
+| `SBR_INTERP60_REPLACE` | 1 | `sms-recomp/overrides/interp60_replace.cpp:253` |  |
+| `SBR_INTERP60_REPLACE_ALPHA` | 1 | `sms-recomp/overrides/interp60_replace.cpp:155` |  |
+| `SBR_INTERP60_REPLACE_KICK` | 1 | `sms-recomp/overrides/interp60_replace.cpp:163` |  |
+| `SBR_INTERP60_REPLACE_KICK_ONLY` | 1 | `sms-recomp/overrides/interp60_replace.cpp:185` |  |
+| `SBR_INTERP60_REPLACE_NONRM` | 1 | `sms-recomp/overrides/interp60_replace.cpp:198` |  |
 | `SBR_INTERP60_STREAMHASH` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:2712` |  |
 | `SBR_INTERP60_TRACE` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:778` |  |
 | `SBR_INTERP60_TRACE_AT` | 1 | `sms-recomp/overrides/interp60_snapshot.cpp:801` |  |

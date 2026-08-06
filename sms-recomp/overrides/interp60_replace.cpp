@@ -93,6 +93,15 @@ struct Rec {
     std::vector<float> nrm;    // n * 9
     bool haveNrm = false;
     u32  stamp = 0;            // the tick this entry was last written in
+    // HOW MANY TIMES this model viewCalc'd in the current tick. A model drawn in more than one pass
+    // (a mirror/reflection pass and the main pass) viewCalcs once per pass, under a DIFFERENT view
+    // each time, and mDrawMtxBuf ends the tick holding whichever ran last. This recorder keeps the
+    // last one, so for such a model `cur` is not the matrix the main pass drew with — and the
+    // sub-frame, which runs no viewCalc at all, would then draw every pass from that one set.
+    // That is a real hazard with a real signature, so it is COUNTED rather than assumed absent:
+    // "0 models viewCalc'd twice" is a finding, and it cannot be read off a recorder that silently
+    // overwrites.
+    u32  writes = 0;
 };
 
 struct Saved {
@@ -125,6 +134,7 @@ bool g_applied = false;
 // is indistinguishable from "recorded nothing", "matched nothing" and "was never called".
 struct Stats {
     unsigned long ticks = 0, recorded = 0, subframes = 0, censusTicks = 0;
+    unsigned long censusModels = 0, multiPass = 0, multiPassMtx = 0;
     unsigned long matched = 0, unmatched = 0, recount = 0, badPtr = 0, absurdN = 0;
     unsigned long moved = 0;          // models whose prev and cur actually differ
     unsigned long clobbered = 0;      // buffers something else wrote during the sub-frame
@@ -268,6 +278,8 @@ void sbr_i60r_record(u32 model) {
     if (!drawPtr || !sb_ram_fast(drawPtr + n * kMtxFloats * 4 - 4)) { ++g_st.badPtr; return; }
 
     Rec& r = g_cur[model];
+    if (r.stamp != g_tick) r.writes = 0;
+    ++r.writes;
     r.n = n;
     r.stamp = g_tick;
     r.draw.resize((size_t)n * kMtxFloats);
@@ -312,6 +324,11 @@ void sbr_i60r_census() {
         auto it = g_prev.find(model);
         if (it == g_prev.end() || it->second.n != cur.n) continue;
         const Rec& prev = it->second;
+        ++g_st.censusModels;
+        if (cur.writes > 1) {
+            ++g_st.multiPass;
+            g_st.multiPassMtx += cur.n;
+        }
 
         bool movedThis = false;
         for (u32 i = 0; i < cur.n * kMtxFloats; ++i) {
@@ -495,6 +512,20 @@ void sbr_i60r_report() {
                        "probe says; a score taken at this moment describes the SCENE."
                      : "");
 
+    // MULTI-PASS MODELS — printed with its denominator every window, including when it is zero,
+    // because "no model is drawn twice" is a claim about this scene that a silent recorder cannot
+    // make. A model that viewCalcs more than once per tick does so under a different view each
+    // time, and only the LAST survives in both mDrawMtxBuf and this recording.
+    lucent::info("i60r",
+                 "  multi-pass: {} of {} matched models viewCalc'd MORE THAN ONCE this window "
+                 "({} draw matrices). {}",
+                 g_st.multiPass, g_st.censusModels, g_st.multiPassMtx,
+                 g_st.multiPass == 0
+                     ? "None — every model is view-calculated exactly once per tick, so the "
+                       "recorded matrix IS the one its draw used."
+                     : "Each of these ends the tick holding its LAST pass's matrices; the sub-frame "
+                       "runs no viewCalc, so it draws every pass of them from that one set.");
+
     lucent::info("i60r",
                  "record-and-replace: {} sub-frames, {} models recorded over {} ticks | "
                  "matched {} (of which {} actually MOVED this window), unmatched {}, joint-count "
@@ -525,4 +556,7 @@ void sbr_i60r_report() {
     g_st.transN = 0;
     g_st.nonFinite = 0;
     g_st.moved = 0;
+    g_st.censusModels = 0;
+    g_st.multiPass = 0;
+    g_st.multiPassMtx = 0;
 }

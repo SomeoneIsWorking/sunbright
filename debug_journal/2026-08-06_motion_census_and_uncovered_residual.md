@@ -63,14 +63,18 @@ Monotone in alpha, correct sign in both directions. The `alpha = 1.0` endpoint i
 `sub -> next` is 3.2% of pixels, mad 0.150 — down from the 5.03% the substitution path last scored,
 and its residual is now LOCAL (14% tile coverage, 90.7% top-decile) rather than spread.
 
-## The residual is asymmetric, and that names its cause
+## The residual is asymmetric, and it is measured
 
 `alpha = 0.0` should reproduce the preceding main frame exactly. It does not: 36.7% of pixels,
-mean 4.41/channel, against a full tick of 11.42. So **~39% of a tick's visible change is carried by
-content the matrix path does not move**, and because that content sits at the CURRENT tick's state
-whatever alpha is, it contributes zero error at alpha=1 and a full tick's error at alpha=0. That is
-the whole of the asymmetry above, and it is also why alpha=0.5 is off-segment by +86%: the frame is
-a mixture of two different instants, not a point on the path between them.
+mean 4.41/channel, against a full tick of 11.42 — so the sub-frame lands ~39% of a tick short of
+where alpha put it, while at alpha = 1.0 it lands within 3%. The error is therefore roughly
+proportional to (1 − alpha), which is also why alpha = 0.5 is off-segment by +86%: the frame is a
+mixture of two different instants rather than a point on the path between them.
+
+The obvious reading of a (1−alpha)-shaped error is "some content is frozen at the current tick".
+That reading is WRONG here and the per-region table below is what disproves it — do not carry it
+forward. It was written into this file first, and is kept visible rather than deleted because the
+same inference will look just as obvious next time.
 
 `scratch/screenshots/i60_a0_residual.png` shows it directly. The plaza GROUND is black — it returns
 to the previous tick exactly. Bright: the buildings and palms, the sea, the distant island, Mario's
@@ -112,15 +116,52 @@ because "most of a Delfino frame is static geometry drawn with the view matrix l
 that reading came from a measurement taken before the matrix path worked, and the geometry it
 describes is in fact reached by `mDrawMtxBuf` like everything else.
 
+## Per-region response to alpha — the residual is NOT a single frozen population
+
+`lead = |sub−prev| / (|sub−prev| + |sub−next|)` measured inside fixed boxes. A fully covered region
+must read ≈ alpha; a region frozen at the current tick reads ≈ 1.0 at every alpha.
+
+| region | α=0.0 | α=0.5 | α=1.0 | full tick |
+|---|---|---|---|---|
+| sky (top-right) | **0.009** | 0.491 | 1.000 | 5.83 |
+| ground (lower-left) | 0.304 | 0.599 | 0.979 | 11.16 |
+| sea (right) | 0.346 | 0.496 | 0.857 | 6.15 |
+| buildings/palms (top-left) | 0.457 | 0.669 | 1.000 | 23.20 |
+| subtitle box (J2D) | **0.854** | 0.874 | 1.000 | 19.50 |
+
+The two extremes validate the metric in both directions: the sky tracks alpha almost exactly, and
+the J2D subtitle — a population the path documents as uncovered — barely responds, exactly as an
+uncovered region must. Everything else sits BETWEEN: it responds to alpha, with a positive offset at
+α=0 that grows with how much that region changes per tick.
+
+So the residual is not one frozen population hiding among covered ones. It is a partial response
+distributed across the covered geometry, and no theory that names a single missing subsystem can be
+right on its own.
+
+## FALSIFIED with a denominator: no model is drawn twice per tick
+
+The obvious mechanism for a partial response — a model that viewCalcs once per rendering pass, under
+a different view each time, so that `mDrawMtxBuf` (and this recorder) keeps only the LAST pass and
+the sub-frame then draws every pass from it — does not occur here:
+
+    multi-pass: 0 of 22,001 matched models viewCalc'd MORE THAN ONCE this window (0 draw matrices)
+
+The counter is printed every window with its denominator, including when it is zero, because "no
+model is drawn twice" is a claim about this scene that a silently-overwriting recorder cannot make.
+
 ## OPEN, and this is the next defect
 
-**Which content carries the ~39%?** It is not the drawn matrices — those are covered, paired and
-verified. The candidates the path documents as uncovered are the projection matrix, texture and
-bump matrices, J2D/ortho, JPA particles and immediate-mode geometry. The subtitle box in the
-residual map is J2D and is accounted for; the buildings, palms, sea and island are NOT explained by
-any of them yet, and no theory about them should be recorded here until one is run against both
-classes. The instrument to build is the one that attributes a screen region to the draw that
-produced it — this arc has now paid twice for attributing a region by elimination.
+**Why does covered geometry respond only PARTIALLY to alpha?** Four mechanisms have been proposed
+and all four are now dead, each killed by a control rather than by argument: a hidden frozen
+population (kick-by-population: 0.00% vs 96.33%, exhaustive), a mis-aligned prev/cur pairing (alpha
+−1.0 and 2.0 are both worse than 0.0), multi-pass models keeping only their last view (0 of 22,001),
+and the camera pose lerp doing the work (ablation: ~6 of 41 points).
+
+What is left is that the sub-frame renders covered geometry from the right matrices and still lands
+short. The next instrument is the one this arc has twice tried to do without: attribute a screen
+REGION to the draw that produced it, so the population carrying the offset is named from the data
+instead of guessed and then eliminated. Until that exists, no theory about the buildings, palms or
+sea belongs in this file.
 
 `lookup_concat_replacement(lhs, rhs)` in dusklight exists because some draw sites resolve a
 view ⊗ world pair rather than a single final matrix. If SMS has such sites, that is where to look.
