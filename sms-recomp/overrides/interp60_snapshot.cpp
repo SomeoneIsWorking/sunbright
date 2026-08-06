@@ -506,18 +506,38 @@ void report_player_coverage() {
     static bool done = false;
     if (done) return;
     if (!sb_ram_fast(0x8040E10Cu)) return;
-    const u32 mario = sb_r32(0x8040E10Cu);
-    if (!sb_ram_fast(mario)) return;          // not created yet; try again next tick
+    // 0x8040E10C is gpMarioPos — it points at the player's POSITION, which is TPlacement::mPosition
+    // at object +0x10, NOT at the object. This probe used to treat it as an object pointer, read the
+    // float at mPosition.x as a vptr, get 0x00000000, and conclude in so many words that "the player
+    // is never snapshotted and never substituted, so no alpha can move him". The census
+    // (SBR_INTERP60_ACTCENSUS) shows マリオ at 0x8136383c substituted every sub-frame while this
+    // printed 0x8136384c — the same object, off by exactly the field offset it was already
+    // documenting on its own last line.
+    const u32 marioPos = sb_r32(0x8040E10Cu);
+    if (!sb_ram_fast(marioPos)) return;       // not created yet; try again next tick
+    const u32 mario = marioPos - OFF_POSITION;
+    if (!sb_ram_fast(mario)) return;
     done = true;
     const u32 vptr = sb_r32(mario);
+    // The derivation is CHECKED, not assumed, and it refuses rather than reporting on a wrong
+    // object: a plausible vtable pointer plus a readable name. If either fails, the pointer is not
+    // what this code thinks it is, and every line below would be about some other memory.
+    if (vptr < 0x80000000u || !sb_ram_fast(vptr)) {
+        lucent::info("interp60",
+                     "PLAYER COVERAGE REFUSES: gpMarioPos=0x{:08x} implies object 0x{:08x}, whose "
+                     "+0x00 is 0x{:08x} and is not a plausible vtable. NOTHING is reported about "
+                     "the player -- this is not a finding that he is uncovered.",
+                     marioPos, mario, vptr);
+        return;
+    }
     const bool actor = is_tactor(vptr);
     Entry* e = slot_for(mario);
     const bool inTable = e && e->obj == mario;
     char nm[48]; guest_name(mario, nm, sizeof nm);
     lucent::info("interp60",
-                 "PLAYER COVERAGE: gpMarioOriginal -> 0x{:08x} \"{}\" vptr=0x{:08x} "
-                 "is_tactor={} in_snapshot_table={}",
-                 mario, nm, vptr, actor ? "YES" : "NO", inTable ? "YES" : "NO");
+                 "PLAYER COVERAGE: gpMarioPos 0x8040E10C -> 0x{:08x} = object 0x{:08x} + 0x10; "
+                 "object \"{}\" vptr=0x{:08x} is_tactor={} in_snapshot_table={}",
+                 marioPos, mario, nm, vptr, actor ? "YES" : "NO", inTable ? "YES" : "NO");
     if (!actor)
         lucent::info("interp60", "  the player's vtable is NOT in kTActorVtables -- he is never "
                                  "snapshotted and never substituted, so no alpha can move him");
