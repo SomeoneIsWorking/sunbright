@@ -371,6 +371,50 @@ void ov_request_shadow(CPUState& cpu) {
     g_requestingActor = prev;
 }
 
+// ONE-OFF LAYOUT DISCOVERY. The join by POSITION cannot cover type-1 body shadows, because the calc
+// pass rewrites their position in place before the draw (ShadowUtil.cpp:288) and the submitted value
+// no longer matches. The request's ADDRESS does not change, so keying on that covers every type —
+// but it requires knowing where request() stores the copy, and the header's offset comments for
+// TMBindShadowManager are hand-written and demonstrably approximate (mRequests and mRequestCount are
+// commented +0x10 and +0x14, four bytes apart, for an ARRAY of 0x24-byte structs).
+//
+// So it is measured instead of trusted: right after the real request() returns, scan the manager for
+// the triple that was just submitted and report where it landed. Two hits give the base and the
+// stride. Bounded to the first few requests and to a 32 KB window, and it only runs under
+// SBR_SHADOW_LAYOUT=1 — it exists to be run once and have its answer written down.
+void discover_layout(u32 manager, u32 req) {
+    static const bool on = std::getenv("SBR_SHADOW_LAYOUT") != nullptr;
+    if (!on) return;
+    // SAMPLED LATE, NOT EARLY. The first version looked at the first six requests and reported "not
+    // found" six times — those happen during boot, where the gate rejects them, so nothing was
+    // stored and the scan was correct about a case that says nothing. Skipping into gameplay is the
+    // difference between measuring the layout and measuring the title screen.
+    static long seen = 0;
+    if (++seen < 200000) return;
+    static int shown = 0;
+    if (shown >= 6 || !sb_ram_fast(req + 8)) return;
+    const u32 x = sb_r32(req), y = sb_r32(req + 4), z = sb_r32(req + 8);
+    lucent::info("taggap", "shadow layout: probe — manager r3 = 0x{:08x}, req r4 = 0x{:08x}, "
+                          "submitted pos bits ({:08x},{:08x},{:08x})",
+                 manager, req, x, y, z);
+    for (u32 off = 0; off < 0x40000; off += 4) {
+        if (!sb_ram_fast(manager + off + 8)) break;
+        if (sb_r32(manager + off) == x && sb_r32(manager + off + 4) == y &&
+            sb_r32(manager + off + 8) == z && (manager + off) != req) {
+            ++shown;
+            lucent::info("taggap",
+                         "shadow layout: request #{} stored at manager+0x{:x} (manager 0x{:08x}). "
+                         "Two or more of these give the array base and its stride.",
+                         shown, off, manager);
+            return;
+        }
+    }
+    ++shown;
+    lucent::info("taggap",
+                 "shadow layout: request's position was NOT FOUND anywhere in manager+0..0x8000. "
+                 "Either request() rejected it (the gate), or the manager pointer is not r3.");
+}
+
 void note_request(CPUState& cpu) {
     ++g_noteReqCalls;
     if (!enabled() || !sbr_lerp_enabled() || g_requestingActor == 0) return;
@@ -381,8 +425,18 @@ void note_request(CPUState& cpu) {
                         sb_r32(req + REQ_UNK0 + 8)}] = g_requestingActor;
 }
 
-void ov_request(CPUState& cpu)      { note_request(cpu); func_8022ecec(cpu); }
-void ov_force_request(CPUState& cpu) { note_request(cpu); func_8022ebbc(cpu); }
+void ov_request(CPUState& cpu) {
+    const u32 mgr = (u32)cpu.gpr[3], req = (u32)cpu.gpr[4];
+    note_request(cpu);
+    func_8022ecec(cpu);
+    discover_layout(mgr, req);
+}
+void ov_force_request(CPUState& cpu) {
+    const u32 mgr = (u32)cpu.gpr[3], req = (u32)cpu.gpr[4];
+    note_request(cpu);
+    func_8022ebbc(cpu);
+    discover_layout(mgr, req);
+}
 
 // The actor that owns the shadow drawn from `fp`, or 0 if it cannot be established.
 u32 owner_of(u32 fp) {
