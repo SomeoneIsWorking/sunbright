@@ -125,43 +125,70 @@ the same path, not to patch the difference.
   view" fix above was written for the retired era, where the in-between frame was produced by a
   replay that the host drove and could interleave guest calls with. It does not transfer as written.
 
-### The water fix IS ALREADY IMPLEMENTED — do not write it again
+### The water fix WAS NOT implemented — the construct it was written for is not in this scene
 
-This section previously prescribed patching the recorded stream to substitute
-`PNMTX0 = view(N½) · view(N)⁻¹` for the refraction quad. That was written from the retired-era
-handoff without checking the current mechanism, and **the current mechanism already does exactly
-that, for every draw of that kind, unconditionally.**
+This section previously said the fix was already in place: that `interp::begin_camera_delta` computes
+`g_camDelta = V_lerp · V_cur⁻¹` and `patch_camera_only` applies it to every perspective unpaired
+draw, which "is precisely the water refraction: an immediate-mode `TDLTexQuad`, so it carries no
+`J3DShape::draw` tag, and its `PNMTX0` is identity".
 
-`aurora::gfx::interp::begin_camera_delta` computes
+**Measured 2026-08-07, and that last clause is false in the recomp's Delfino Plaza.** Instrumenting
+every draw with a `GX_TG_POS`-sourced matrix texgen over a ~15,000-tick run with the camera
+rotating:
 
-    g_camDelta = V_lerp · V_cur⁻¹
+    104,944 draws used a position-sourced matrix texgen
+          0 of them had an identity PNMTX
 
-once per tick (`extern/aurora/lib/gfx/interp.cpp`), and `interpolate_recorded_frame` applies it via
-`patch_camera_only` to every draw that is **perspective and unpaired** — which is precisely the
-water refraction: an immediate-mode `TDLTexQuad`, so it carries no `J3DShape::draw` tag, and its
-`PNMTX0` is identity, so composing the delta onto it yields the eye-space reprojection verbatim.
-The prescription and the implementation are the same matrix.
+The deviation histogram is what makes that readable rather than a bare zero: the rejects split into
+89,952 draws hundreds of units from identity (ordinary object-space geometry) and 14,992 — one per
+tick — a fixed 0.12 away, which turned out to be a 1.12-scaled two-vertex screen overlay, not water.
+So the eye-space quad the old text describes never reaches `patch_camera_only` at all, and the claim
+that the camera delta was already handling the water rested on a draw that does not exist here.
 
-**Measured**, path A, camera rotating, per-region alternation (1.00 = both presents advance the
-region equally; higher = that share moves on only one of the two):
+### What the defect actually is, and the fix that shipped
 
-| region | A — stream interpolation | C — record-and-replace (the CONTROL) |
-|---|---|---|
-| **sea / water** | **1.03** | **4.99** |
-| sky | 1.02 | 5.27 |
-| ground | 1.02 | 1.08 |
-| buildings + palms | 1.11 | 1.15 |
+The general form is not about identity matrices. A texgen sourced from `GX_TG_POS` reads the **raw
+vertex attribute**, so it is untouched by everything interpolation does to the position matrices —
+and that is true whether the draw is unpaired (position matrix moved to the in-between *viewpoint*)
+or paired (moved to the object's in-between *pose*). Where the texture matrix is a projection
+through the camera, the surface advances half a tick while the image painted on it stays on the
+previous tick's mapping. It shows up only while something is moving, which is why a parked camera
+looks fine and the user's report was specifically about camera rotation.
 
-The control is what makes this readable. Path C covers `J3DModel` draw matrices only, so
-immediate-mode water and the background MUST snap under it — and they do, at ~5. Had the metric
-returned ~1 for both paths it would have been blind, and "the water interpolates" would have been a
-statement about the instrument.
+`patch_draw` never touched texture matrices either, and the paired population is the large one. For
+a paired draw the correction needs no camera delta at all, because the interpolated model-view is
+already computed:
 
-**What this does NOT establish.** Alternation near 1.0 rules out the water SNAPPING — moving on one
-present and not the other. It does not prove the reflection TRACKS the surface: a reflection that
-swims coherently can still produce balanced step magnitudes. Per the standing directive that remains
-a headed check, and it is the specific thing to look at: watch the tower reflection in the plaza
-water while rotating the camera with the C-stick.
+    texmtx = A · pnMtx        so    A = texmtx · pnMtx⁻¹
+    in-between: texmtx' = A · pnMtx_lerp
+
+Exact, if the decomposition holds. **It does not always hold, and that is the whole difficulty:** an
+object-locked projection (a decal, an object-space shadow map) has `texmtx = A' · M` with no view in
+it, and its UVs are *correct unchanged* when the camera moves — rewriting it would be the
+corruption, not the fix. The two are indistinguishable from one frame's state.
+
+So the code does not guess. It recovers `A` every tick and applies the correction only where `A`
+came out **the same as last tick**: `A` is constant for a camera projection (it *is* the projection)
+and provably is not for an object-locked mapping (there `A = A'·M·pnMtx⁻¹ = A'·V⁻¹`, which moves with
+the camera). Both classes are counted, so the split is visible rather than assumed — and it is
+non-degenerate, which is the control this project requires:
+
+    50,344 draws used a position-sourced texgen
+    34,217 STABLE   -> texture matrix tracks the model-view; re-composed with the interpolated pose
+     1,733 UNSTABLE -> object-locked or animating; left alone
+         5 no previous tick
+
+A discriminator that returned one class for everything would be telling us about itself. This one
+separates them.
+
+`SBR_INTERP_TEXMTX=0` restores the old behaviour for A/B. The unpaired identity-PNMTX path is also
+implemented (composing the delta on the *right*, since it acts on the vertex before the texture
+matrix does) — correct, but **inert in Delfino**, per the measurement above. Do not read a zero on
+that line as the fix failing; read it as the construct being absent.
+
+**Still a headed check.** Alternation near 1.0 rules out the water *snapping*; it cannot see a
+projection that slides coherently, which is exactly this defect. What to look at: rotate the camera
+with the C-stick in the plaza and watch whether the reflection stays put on the water surface.
 
 ### What IS still missing
 

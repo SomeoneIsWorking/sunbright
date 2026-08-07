@@ -34,6 +34,30 @@ exhaustive, so the columns sum to the draw count.
 | text glyphs, J2D pane | — | **CORRECT**: 2D has no meaningful in-between |
 | (unlabelled) | — | the audit's own edge; kept visible on purpose |
 
+### Projected textures — the texture-matrix path (2026-08-07)
+
+The audit table above counts MATRICES PAIRED, and every row in it could read 100% while a projected
+image still slid across the surface it is painted on. A texgen sourced from `GX_TG_POS` reads the
+**raw vertex attribute**, so it is untouched by everything the position matrices receive; where the
+texture matrix is a projection through the camera, the surface advances half a tick and the image on
+it does not. Only visible while something moves — which is why it survived a whole arc of
+still-frame and alternation measurement, and why the user's report was specifically about camera
+rotation.
+
+For a **paired** draw the interpolated model-view already exists, so the correction is exact:
+`A = texmtx · pnMtx⁻¹`, then `texmtx' = A · pnMtx_lerp`. It is applied only where `A` measures the
+same as last tick, because an object-locked projection (`texmtx = A'·M`, no view in it) has UVs that
+are correct unchanged and must not be touched. Measured split: **34,217 stable / 1,733 unstable** of
+50,344 candidates — a discriminator that produces both answers rather than one.
+
+For an **unpaired** draw with an identity PNMTX the vertices are already eye-space, so the camera
+delta composes on the *right*. Implemented, and **inert in Delfino**: 0 of 104,944 position-sourced
+texgen draws there have an identity PNMTX, which falsifies the older claim that this construct was
+what drew the water. `docs/60fps/effects.md` and
+`debug_journal/2026-08-07_texgen_position_sourced_texmtx.md` carry the full measurement.
+
+A/B with `SBR_INTERP_TEXMTX=0`.
+
 ### Deforming geometry — the vertex path (2026-08-07)
 
 Flags and the sea ripple grid rebuild their mesh every tick, so their motion lives in the VERTEX
@@ -206,7 +230,7 @@ two need merging rather than choosing between.
 
 | Path | Selects behaviour |
 |---|---|
-| A | `SBR_60FPS`, `SBR_LERP60`, `AURORA_REPLAY_PRESENT`, `AURORA_INTERP_ALPHA`, `SBR_FORCE_DASHBLUR` |
+| A | `SBR_60FPS`, `SBR_LERP60`, `AURORA_REPLAY_PRESENT`, `AURORA_INTERP_ALPHA`, `SBR_FORCE_DASHBLUR`, `SBR_INTERP_CAMONLY`, `SBR_INTERP_TEXMTX` |
 | B | `SBR_INTERP60`, `_ALPHA`, `_ALPHA_CAM`, `_ALPHA_ACT`, `_COPY`, `SBR_PRESENT_AFTER_COPY`, `_ACTORS`, `_PLAYER`, `_ANIM`, `_CALCANIM`, `_PREENTRY`, `_PREENTRY_VC`, `_PREENTRY_VC_N`, `_PREENTRY_VC_CUE`, `_MASK`, `_DROPLAST`, `_NORESTORE`, `_KICK`, `_FOLLOW`, `_J3DSYS` |
 | C | `SBR_INTERP60_REPLACE`, `_REPLACE_ALPHA`, `_REPLACE_NONRM`, `_REPLACE_KICK`, `_REPLACE_KICK_ONLY` |
 
