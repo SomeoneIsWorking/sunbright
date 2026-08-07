@@ -344,7 +344,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp:17` |  |
 | `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp:51` |  |
 | `SBR_TAGPARTICLE` | 1 | `sms-recomp/frame_interp/tag_particle.cpp:72` |  |
-| `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:88` |  |
+| `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:91` |  |
 | `SBR_TEV_TRACE` | 1 | `sms-recomp/runtime/render/scene.cpp:925` |  |
 | `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/render/scene.cpp:1022` |  |
 | `SBR_TEV_TRACE_BLACK` | 1 | `sms-recomp/runtime/render/scene.cpp:932` |  |

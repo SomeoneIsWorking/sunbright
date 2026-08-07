@@ -69,6 +69,9 @@
 extern "C" void func_802305dc(CPUState&);   // TMBindShadowManager::drawShadowVolume(bool, TAlphaShadowQuad*)
 extern "C" void func_8027c67c(CPUState&);   // TModelWaterManager::drawShineShadowVolume(MtxPtr)
 extern "C" void func_80225c30(CPUState&);   // SMS_DrawShape(J3DModelData*, u16)
+extern "C" void func_80218020(CPUState&);   // TLiveActor::requestShadow()
+extern "C" void func_8022ecec(CPUState&);   // TMBindShadowManager::request(const TCircleShadowRequest&, u32)
+extern "C" void func_8022ebbc(CPUState&);   // TMBindShadowManager::forceRequest(...)
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
 bool sbr_lerp_enabled();
@@ -100,7 +103,22 @@ Scheme scheme() {
         // wrong place for a single frame every few seconds. Snapping is what those draws did before
         // any of this and is strictly better than teleporting, so they snap until a real owner
         // identity exists.
-        if (e == nullptr) return Scheme::FpOnly;
+        // DEFAULT OFF, and this is a retreat with a reason rather than a preference.
+        //
+        // Every reading that made slot-keying look acceptable was taken while this file read the
+        // WRONG REGISTER: r4 is `useNear`, a bool, so all near shadows collapsed into the single
+        // identity 1 and every far shadow was skipped for "fp == 0". Tagging was therefore nearly
+        // inert, and the 98 mispairs it scored were the score of doing almost nothing.
+        //
+        // With r5 — the actual quad — the tagging is real for the first time, and so is the defect
+        // the slot key carries: mispairs go 98 -> 1,128 against a no-tagging control of 4. That is
+        // the marukage teleport with the volume turned up, and it is not something to ship while
+        // the user is watching shadows.
+        //
+        // SBR_TAGSHADOW=fp turns it back on. It stays off until the OWNER join resolves, which is
+        // the one key here that does not depend on a slot; its plumbing and its four denominators
+        // are in place and it currently resolves nothing, which is the next thing to fix.
+        if (e == nullptr) return Scheme::Off;
         if (e[0] == '0') return Scheme::Off;
         if (std::strcmp(e, "all") == 0) return Scheme::All;
         if (std::strcmp(e, "fp") == 0) return Scheme::FpOnly;
@@ -160,6 +178,47 @@ constexpr u64 kShineId = 0x5417EULL;   // a fixed id; distinct from any guest po
 std::unordered_map<u32, u32> g_modelSeenThisTick;
 unsigned long g_modelTagged = 0;
 
+// ── THE OWNER IDENTITY ──────────────────────────────────────────────────────────────────────────
+//
+// The sound key the slot index was standing in for. TLiveActor::requestShadow builds a LOCAL
+// TCircleShadowRequest from the actor's own position and hands it to the manager, which COPIES it
+// into mRequests[i] (Strategic/liveactor.cpp:313, MarioUtil/ShadowUtil.cpp:182). So the submitted
+// position is carried verbatim into the slot, and it joins the two sides exactly: record
+// position -> actor at request time, then at draw time read fp->mReq->unk0 and look the actor up.
+//
+// Matched on EXACT float equality, not proximity. A threshold would be a different kind of guess
+// from the one being replaced, and this needs none: the bytes are copied, not recomputed.
+//
+// An ACTOR is a genuine per-instance identity — long-lived, not recycled per tick — which is
+// exactly what fp turned out not to be.
+//
+// WHAT THIS DOES NOT COVER, stated because a partial map must not read as a total one: the calc
+// pass MUTATES unk0 for type-1 (body) shadows before they are drawn, sliding the centre along the
+// light direction (ShadowUtil.cpp:288). Those no longer match what was submitted and fall back to
+// the previous behaviour. Circle shadows — the marukage the user reported teleporting — are not
+// mutated and are covered.
+struct PosKey {
+    u32 x, y, z;
+    bool operator==(const PosKey& o) const { return x == o.x && y == o.y && z == o.z; }
+};
+struct PosKeyHash {
+    std::size_t operator()(const PosKey& k) const {
+        std::size_t h = 1469598103934665603ull;
+        for (u32 v : {k.x, k.y, k.z}) { h ^= v; h *= 1099511628211ull; }
+        return h;
+    }
+};
+std::unordered_map<PosKey, u32, PosKeyHash> g_posToActor;
+u32 g_requestingActor = 0;
+unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
+// The JOIN's own denominators. "0 owners resolved" has three causes — requestShadow never fired,
+// request() never fired with an actor in scope, or the position did not match at draw time — and
+// without these they are one number.
+unsigned long g_reqShadowCalls = 0, g_noteReqCalls = 0, g_noteReqWithActor = 0, g_lookupMiss = 0;
+unsigned long g_ownerGuardQuad = 0, g_ownerGuardReq = 0, g_ownerCalls = 0;
+
+constexpr u32 REQ_UNK0 = 0x00;   // JGeometry::TVec3<f32> — the submitted position
+
 // The shadow SET's size, per tick. Slots are only stable while it is.
 u32 g_thisTickQuadCount = 0, g_lastTickQuadCount = 0, g_prevTickQuadCount = 0;
 bool g_setStableThisTick = false;
@@ -180,6 +239,7 @@ u64 sbr_shine_shadow_next_tag() {
 void sbr_tag_shadow_begin_tick() {
     g_seenThisTick.clear();
     g_modelSeenThisTick.clear();
+    g_posToActor.clear();
     // Decided ONCE per tick, from the two previous ticks' counts: this tick may only pair if the
     // set was the same size last tick as the tick before, because pairing compares THIS tick's
     // slots against LAST tick's.
@@ -193,10 +253,22 @@ void sbr_tag_shadow_begin_tick() {
 void sbr_tag_shadow_report() {
     if (!enabled() || !sbr_lerp_enabled()) return;
     lucent::info("taggap",
+                 "  owner join: requestShadow fired {} time(s); manager request() fired {} time(s), "
+                 "{} of them with an actor in scope; {} draw-time position lookups MISSED. All four "
+                 "are needed: a zero in the first two is a hook that never ran, a zero in the third "
+                 "means the request does not come through requestShadow, and misses in the fourth "
+                 "mean the position is not carried verbatim after all. owner_of ran {} time(s), "
+                 "refused {} on an unreadable quad and {} on an unreadable request.",
+                 g_reqShadowCalls, g_noteReqCalls, g_noteReqWithActor, g_lookupMiss, g_ownerCalls,
+                 g_ownerGuardQuad, g_ownerGuardReq);
+    lucent::info("taggap",
                  "shadow tagging: {} volume + {} shine-slice + {} model draw(s) given an identity "
-                 "over {} tick(s); {} draw(s) deliberately SNAPPED because the shadow set changed "
-                 "size, so slot k was not the same caster as last tick{}",
-                 g_tagged, g_shineTagged, g_modelTagged, g_ticks, g_snappedForSetChange,
+                 "over {} tick(s); {} keyed by their OWNING ACTOR and {} still by slot (the owner "
+                 "could not be established — a type-1 body shadow, whose position the calc pass "
+                 "mutates before the draw); {} draw(s) SNAPPED because the shadow set changed size "
+                 "and no owner was known for them{}",
+                 g_tagged, g_shineTagged, g_modelTagged, g_ticks, g_ownerTagged, g_ownerMissed,
+                 g_snappedForSetChange,
                  (g_tagged + g_shineTagged + g_modelTagged) == 0
                      ? "   <-- NONE. Either no shadow drew in this scene, or the hook never fired; "
                        "those are different answers and this line cannot tell them apart, so check "
@@ -271,9 +343,59 @@ u32 request_fingerprint(u32 fp) {
     return h ? h : 1u;   // 0 is reserved for "could not read"
 }
 
+// TLiveActor::requestShadow — r3 is the actor. Held only for the duration of the call, so a
+// request arriving from anywhere else cannot pick up a stale owner.
+void ov_request_shadow(CPUState& cpu) {
+    ++g_reqShadowCalls;
+    const u32 prev = g_requestingActor;
+    g_requestingActor = (u32)cpu.gpr[3];
+    func_80218020(cpu);
+    g_requestingActor = prev;
+}
+
+void note_request(CPUState& cpu) {
+    ++g_noteReqCalls;
+    if (!enabled() || !sbr_lerp_enabled() || g_requestingActor == 0) return;
+    ++g_noteReqWithActor;
+    const u32 req = (u32)cpu.gpr[4];
+    if (!sb_ram_fast(req + REQ_UNK0 + 8)) return;
+    g_posToActor[PosKey{sb_r32(req + REQ_UNK0), sb_r32(req + REQ_UNK0 + 4),
+                        sb_r32(req + REQ_UNK0 + 8)}] = g_requestingActor;
+}
+
+void ov_request(CPUState& cpu)      { note_request(cpu); func_8022ecec(cpu); }
+void ov_force_request(CPUState& cpu) { note_request(cpu); func_8022ebbc(cpu); }
+
+// The actor that owns the shadow drawn from `fp`, or 0 if it cannot be established.
+u32 owner_of(u32 fp) {
+    ++g_ownerCalls;
+    if (!sb_ram_fast(fp + QUAD_MREQ)) { ++g_ownerGuardQuad; return 0; }
+    const u32 req = sb_r32(fp + QUAD_MREQ);
+    if (!sb_ram_fast(req + REQ_UNK0 + 8)) { ++g_ownerGuardReq; return 0; }
+    auto it = g_posToActor.find(PosKey{sb_r32(req + REQ_UNK0), sb_r32(req + REQ_UNK0 + 4),
+                                       sb_r32(req + REQ_UNK0 + 8)});
+    if (it == g_posToActor.end()) { ++g_lookupMiss; return 0; }
+    return it->second;
+}
+
 void ov_draw_shadow_volume(CPUState& cpu) {
-    // r4 is the second argument: TAlphaShadowQuad* fp.
-    const u32 fp = (u32)cpu.gpr[4];
+    // r5, NOT r4. drawShadowVolume is a MEMBER function — `void TMBindShadowManager::
+    // drawShadowVolume(bool useNear, TAlphaShadowQuad* fp)` — so r3 is `this`, r4 is `useNear` and
+    // the quad is r5. The first version of this file read r4 and therefore keyed every shadow on a
+    // BOOLEAN: all near shadows collapsed into the single identity 1, and every far shadow had
+    // "fp == 0" and was skipped entirely.
+    //
+    // That is the real cause of the marukage rendering at the wrong place — not the slot-reuse story
+    // this file previously told, which was a correct description of ShadowUtil that happened to be
+    // about a pointer the code was never reading. Two of the counters said so and were not believed
+    // for a while: the request fingerprint "did nothing" and the owner join refused 445,840 of
+    // 445,840 lookups on an unreadable quad, both because 0x68 past a bool is not memory.
+    const u32 fp = (u32)cpu.gpr[5];
+    // The ACTOR that owns this shadow, joined through the position the manager copied verbatim from
+    // the request. 0 when it cannot be established (a type-1 body shadow, whose position the calc
+    // pass mutates before the draw) — those keep the old slot-plus-gate behaviour.
+    const u32 owner = fp ? owner_of(fp) : 0;
+    const u32 fingerprint = 0;
     // fp IS NOT A PER-INSTANCE IDENTITY, and an earlier version of this file claimed it was.
     //
     // ShadowUtil draws from `TAlphaShadowQuad& fp = mQuads[i]` — a FIXED ARRAY indexed by request
@@ -307,14 +429,21 @@ void ov_draw_shadow_volume(CPUState& cpu) {
     const bool setStable = g_lastTickQuadCount == g_thisTickQuadCount + 1 ||
                            g_prevTickQuadCount == g_lastTickQuadCount;
     ++g_thisTickQuadCount;
-    const bool tag = enabled() && sbr_lerp_enabled() && fp != 0 && g_setStableThisTick;
+    const bool live = enabled() && sbr_lerp_enabled() && fp != 0;
+    // OWNER FIRST. With a real per-instance identity the request SLOT stops mattering, so the
+    // set-change gate — which exists only because a slot's occupant can change between ticks — does
+    // not apply to a draw whose owner is known.
+    const bool tag = live && (owner != 0 || g_setStableThisTick);
     (void)setStable;
+    (void)fingerprint;
     if (tag) {
-        const u32 nth = g_seenThisTick[fp]++;
+        const u32 key = owner != 0 ? owner : fp;
+        const u32 nth = g_seenThisTick[key]++;
         sbr_gxfifo_draw_pop(SB_POP_SHADOW_VOLUME);
-        sbr_gxfifo_draw_tag(((uint64_t)fp << 32) | (uint64_t)nth);
+        sbr_gxfifo_draw_tag(((uint64_t)key << 32) | (uint64_t)nth);
         ++g_tagged;
-    } else if (enabled() && sbr_lerp_enabled() && fp != 0) {
+        ++(owner != 0 ? g_ownerTagged : g_ownerMissed);
+    } else if (live) {
         ++g_snappedForSetChange;
     }
     func_802305dc(cpu);
@@ -326,6 +455,15 @@ void ov_draw_shadow_volume(CPUState& cpu) {
 }
 
 } // namespace
+
+SB_OVERRIDE(0x80218020u, ov_request_shadow, "TLiveActor::requestShadow",
+            "60fps: note which ACTOR is requesting a shadow, so its draws can be keyed by a real "
+            "per-instance identity instead of the request slot they happen to land in")
+SB_OVERRIDE(0x8022ececu, ov_request, "TMBindShadowManager::request",
+            "60fps: join the requesting actor to the request's position, which the manager copies "
+            "verbatim into the slot the draw later reads")
+SB_OVERRIDE(0x8022ebbcu, ov_force_request, "TMBindShadowManager::forceRequest",
+            "60fps: as request(), for the ungated path")
 
 SB_OVERRIDE(0x80225c30u, ov_sms_draw_shape, "SMS_DrawShape",
             "60fps: identity for the shadow passes that draw a model directly rather than through "
