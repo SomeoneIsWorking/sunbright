@@ -32,6 +32,8 @@
 extern u8* g_ram_base;
 extern void call_ppc(CPUState& cpu, u32 address);
 extern void rt_dump_guest_stack(const char* why);
+extern "C" void sbr_dsp_mix(u32 frames);
+extern "C" bool sbr_dsp_take(int16_t* out, u32 frames);
 
 namespace {
 
@@ -104,16 +106,23 @@ void audio_init() {
 
 // Emit one 32-byte block. Guest memory is big-endian; the host stream is native-endian s16.
 void emit_block(u32 addr) {
+    // The samples come from the RENDERER, not from the guest's DMA buffer. On hardware the DSP
+    // fills that buffer and the DAC walks it; here the renderer replaces the DSP, and the guest's
+    // own audio path rewrites that same buffer with DSPBuf's (silent) triple buffer between the two
+    // — see the note in dsp_mixer.cpp. `addr` is kept because it is still the hardware model's
+    // cursor and a bad one is a real fault worth catching.
     const u32 off = addr & 0x01FFFFFFu;
     if (off + kBlockBytes > 0x01800000u) {
         lucent::error("aid", "DMA source 0x{:08x} is outside MEM1", addr);
         std::abort();
     }
-    const u8* src = g_ram_base + off;
 
     int16_t frames[kBlockFrames * kChannels];
-    for (unsigned i = 0; i < kBlockFrames * kChannels; ++i)
-        frames[i] = (int16_t)(u16)((src[i * 2] << 8) | src[i * 2 + 1]);
+    if (!sbr_dsp_take(frames, kBlockFrames)) {
+        // Before the renderer has produced anything (early boot, and any starve) emit true silence
+        // rather than the guest buffer's contents, which are stale or uninitialised.
+        std::memset(frames, 0, sizeof(frames));
+    }
 
     aurora_audio_push(frames, kBlockFrames);
     if (g_raw) std::fwrite(frames, sizeof(frames), 1, g_raw);
@@ -169,6 +178,80 @@ void deliver_aid() {
 }
 
 // ---------------------------------------------------------------------------------------
+// The DSP frame the guest is waiting on, which no DSP exists to render or to signal.
+//
+// JAS drives its whole audio pipeline off DSP interrupts, and there are TWO kinds per frame:
+//
+//   * SUB-FRAME (gSubFrames-1 of them). AudioThread's message 1 decrements intcount and calls
+//     DSPBuf::updateDSP, which is what runs Kernel::subframeCallback and TDSPChannel::updateAll —
+//     i.e. THE SEQUENCER'S CLOCK. gSubFrames is 7.
+//   * FRAME (the last one). intcount hits 0 and DSPBuf::finishDSPFrame runs, handing the next
+//     buffer over and setting dspstatus = 1 again.
+//
+// Missing BOTH produced two different bugs, one after the other, and it is worth keeping them
+// apart because the second looked nothing like a missing interrupt:
+//
+//  1. No finishDSPFrame at all: `dspstatus` stays 1 forever after the first frame, so the idle-kick
+//     in process's read path (`if (dspstatus == 0) finishDSPFrame()`) can never fire again. The
+//     pipeline ran exactly ONE frame per run. Measured: MSBgm::startBGM=2, TSeqParser::mainProc=30,
+//     TDSPChannel::updateAll=1, TTrack::noteOn=0. The game had asked for music and the sequencer had
+//     started; it stalled permanently one frame in.
+//
+//  2. finishDSPFrame but no sub-frame interrupts: process(UNK1) calls updateDSP once at its end, so
+//     the sequencer ticked ONCE per DSP frame instead of gSubFrames times. Everything played, in
+//     tune, at 1/7 tempo — reported as "super slowmo". Note that the PITCH was right, because pitch
+//     comes from the resample step and not from this clock; only the sequencer was slow. A bug that
+//     changes tempo without changing pitch points here and nowhere near the mixer.
+//
+// So one AID cycle runs a whole DSP frame's worth of interrupts: gSubFrames-1 updateDSP calls then
+// one finishDSPFrame, with the frame's samples rendered in sub-frame sized chunks between them, as
+// the hardware does. 560 samples / 7 sub-frames = 80 each, exactly.
+constexpr u32 kUpdateDSP      = 0x80314160;   // updateDSP__Q28JASystem6DSPBufFv
+constexpr u32 kFinishDSPFrame = 0x803141d8;   // finishDSPFrame__Q28JASystem6DSPBufFv
+// JASystem::Kernel::gSubFrames. Read live from small data rather than hardcoded to 7: it is the
+// value the guest itself passes to setDSPSyncCount, seen at process+0x190 as `lwz r3,-0x73cc(r13)`,
+// and if the game ever changes it the two must not disagree.
+constexpr u32 kSubFramesSda   = 0x73cc;
+
+unsigned long g_dsp_frames = 0, g_dsp_subframes = 0, g_dsp_badSub = 0;
+
+void run_dsp_frame(u32 destAddr, u32 frames) {
+    // The same gate deliver_aid uses: before JAS has registered its DMA callback the audio system
+    // is not up and dsp_buf is unallocated, so calling into the pipeline would fault rather than do
+    // nothing. There is no frame to render and nothing to fake.
+    if (!sb_r32(AID_CALLBACK_GLOBAL) || frames == 0) return;
+
+    CPUState& cpu = gsched_cpu();
+    u32 sub = sb_r32(cpu.gpr[13] - kSubFramesSda);
+    if (sub == 0 || sub > frames) {
+        // Refuse to invent a cadence. Falling back to 1 is what the slow-motion bug WAS, so this
+        // is counted and reported rather than silently absorbed.
+        ++g_dsp_badSub;
+        sub = 1;
+    }
+
+    const u32 per = frames / sub;
+    u32 done = 0;
+    for (u32 i = 0; i < sub; ++i) {
+        const bool last = (i + 1 == sub);
+        // Same synchronous-handler idiom as deliver_aid: the guest runs nested inside the host call
+        // that stepped the engine, register file saved and restored around it, which is what an
+        // interrupt does. Guest MEMORY changes persist, as they must.
+        const CPUState saved = cpu;
+        call_ppc(cpu, last ? kFinishDSPFrame : kUpdateDSP);
+        cpu = saved;
+        ++g_dsp_subframes;
+
+        // Render this sub-frame's audio with the voice state the update just produced. The last
+        // chunk takes the remainder so the frame is covered exactly however gSubFrames divides.
+        const u32 n = last ? (frames - done) : per;
+        sbr_dsp_mix(n);
+        done += n;
+    }
+    ++g_dsp_frames;
+}
+
+// ---------------------------------------------------------------------------------------
 // The engine
 
 void step_blocks(u32 n) {
@@ -198,6 +281,17 @@ void step_blocks(u32 n) {
             // bounded by that target, not by how long the host stalled. A stall therefore drops
             // interrupts (as a masked level does on hardware) instead of replaying them.
             deliver_aid();
+
+            // THE DSP'S JOB. The callback above ran the guest's updateDac, so the VPBs now hold
+            // this frame's voice state; render it into the buffer the DAC is about to walk. One
+            // cycle is 70 blocks = 560 stereo frames, which is exactly getFrameSamples() — the
+            // AID cycle and the DSP frame are the same granularity on hardware, so no rate
+            // conversion or accumulator is needed here.
+            //
+            // Mixed AFTER deliver_aid, not before: the handler routinely re-programs the DMA from
+            // inside itself (AIInitDMA/AIStartDMA re-fire every cycle, alternating between the two
+            // buffers), so the source to fill is whichever one is latched once it returns.
+            run_dsp_frame(g_cur_addr, g_remaining_blocks * kBlockFrames);
         }
     }
 }
@@ -285,9 +379,10 @@ extern "C" void sbr_audio_frame() {
     if (secs != last_report) {
         last_report = secs;
         lucent::debug("aid", "queued={} blocks={} wraps={} (+{}/s) delivered={} (+{}/s) "
-                             "cb=0x{:08x}",
+                             "dspFrames={} subframes={} badSub={} cb=0x{:08x}",
                       queued, g_blocks, g_wraps, g_wraps - last_wraps, g_delivered,
-                      g_delivered - last_delivered, sb_r32(AID_CALLBACK_GLOBAL));
+                      g_delivered - last_delivered, g_dsp_frames, g_dsp_subframes, g_dsp_badSub,
+                      sb_r32(AID_CALLBACK_GLOBAL));
         last_wraps = g_wraps;
         last_delivered = g_delivered;
     }

@@ -25,7 +25,7 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | File-select / save screen | ✅ renders | 🟢 at parity incl. Mario | recomp file-select correct; the mip/has_mips fix closed the "sea wash" |
 | Delfino Plaza (stage 1) | ✅ **renders + playable** | ⬜ crashes into gameplay | recomp: Mario/FLUDD/HUD/NPCs/statue/dialogue; heat haze + water refraction render; `SBR_FASTBOOT=1` |
 | Other stages | 🟡 reachable via `SBR_STAGE=<n>` | — | Gelato Beach verified wide; per-stage fidelity unaudited |
-| Audio | ⬜ silent | ✅ **audible** (title BGM) | decomp: `sms-boot/runtime/jas_kernel_native.cpp`, verified 2026-07-17, oracle WAV in `scratch/wav/`. recomp: DSP coprocessor not emulated; plan + prior art in `docs/audio/recomp_plan.md` |
+| Audio | ✅ **audible** (music + SFX) | ✅ **audible** (title BGM) | decomp: `sms-boot/runtime/jas_kernel_native.cpp`, verified 2026-07-17. recomp: `sms-recomp/runtime/devices/dsp_mixer.cpp` + the DSP frame/sub-frame interrupts in `dev_aid.cpp`, verified 2026-08-07. Both: v1 L/R only. `docs/audio/recomp_plan.md` |
 | Movies (THP) | 🟡 decodes, no reopen | 🟡 | recomp: `SBR_THP=stage` default; second session faults (null msg queue) |
 
 ## sms-recomp/ — the recomp runtime (primary)
@@ -70,7 +70,7 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | PAD | ✅ | `sms-recomp/overrides/native_pad.cpp` | keyboard 12/12 bound (calls aurora PADInit); `SBR_PAD_SCRIPT` |
 | OS threads / MMU | ✅ | `sms-recomp/overrides/native_os_thread.cpp`, `native_os_mmu.cpp` | token hand-off; OSCancelThread |
 | AID audio-DMA engine | ✅ | `sms-recomp/runtime/devices/dev_aid.cpp` | 0xCC005030-3C its own device (was swallowed by dev_aram as inert halfwords — the dead link). Latch/wrap/re-arm, `__AID_Callback` delivered 57/s = 32000/560, paced to a 100 ms host backlog. Verified 2026-07-23 |
-| DSP voice mixer | ⬜ | `sms-recomp/overrides/native_dsp.cpp` | the heartbeat now beats but every delivered sample is ZERO — nothing fills the buffer. AX/Zelda ucode HLE = step 4 of `docs/audio/recomp_plan.md` |
+| DSP voice mixer | ✅ | `sms-recomp/runtime/devices/dsp_mixer.cpp` | native voice renderer reading GUEST VPBs (AFC + PCM8/16, linear resample, L/R bus mix). The DSP's frame AND sub-frame interrupts are supplied by `dev_aid.cpp` — gSubFrames=7 per frame, and supplying only the frame one gives 1/7 tempo. Music + SFX audible, verified 2026-08-07; v1 is centre-panned, no aux/filters/Dolby. `docs/audio/recomp_plan.md` |
 | fastboot | ✅ | `sms-recomp/overrides/fastboot_native.cpp` | `SBR_FASTBOOT`/`SBR_STAGE`/`SBR_SCENARIO`; ported from git 9283f44^ |
 | widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
 | widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp` | per-`.blo`-name edge anchoring; `/2d` |

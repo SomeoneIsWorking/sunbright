@@ -139,6 +139,13 @@ void aram_dma(u32 mram_addr, u32 aram_addr, u32 len, bool to_mram) {
 // Explicit init rather than a static initializer: this file exports nothing else, so in a
 // static archive the linker would discard the whole object and the device would silently
 // never register (exactly how the first override failed to install).
+// The ARAM backing store, for the DSP voice mixer. On hardware the DSP reads sample data
+// straight out of ARAM; here the mixer is host code and needs the same window. Exposed as an
+// accessor rather than a global so a caller cannot use it before aram_device_init() has
+// allocated it — it returns null until then, and the mixer treats null as "no ARAM yet".
+extern "C" const u8* sbr_aram_base() { return g_aram; }
+extern "C" u32 sbr_aram_size() { return g_aram ? kAramSize : 0u; }
+
 void aram_device_init() {
     {
         void* p = mmap(nullptr, kAramSize, PROT_READ | PROT_WRITE,

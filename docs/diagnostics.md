@@ -250,7 +250,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_AB_EVERY` | 1 | `sms-recomp/runtime/render/render_compare.cpp:245` |  |
 | `SBR_AB_SELFTEST` | 1 | `sms-recomp/runtime/render/render_compare.cpp:101` |  |
 | `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/render/native_render.cpp:502` |  |
-| `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/devices/dev_aid.cpp:94` |  |
+| `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/devices/dev_aid.cpp:96` |  |
 | `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:630` |  |
 | `SBR_BIND_LOG` | 1 | `sms-recomp/runtime/render/native_render.cpp:220` |  |
 | `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp:630` |  |

@@ -78,6 +78,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/cmake/AuroraNodProvider.cm
 add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/devices/mmio.cpp
                                  runtime/devices/dev_aram.cpp
                                  runtime/devices/dev_aid.cpp
+                                 runtime/devices/dsp_mixer.cpp
                                  runtime/devices/dev_dsp.cpp
                                  runtime/devices/dev_ai.cpp
                                  runtime/devices/dev_exi.cpp

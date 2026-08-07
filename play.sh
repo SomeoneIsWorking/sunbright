@@ -12,9 +12,12 @@
 # WHAT RUNS: the game's real PowerPC code, statically recompiled, on native device models plus
 # Aurora (SDL3 + WebGPU/Dawn). The whole game runs — not a subset of hand-ported actors.
 #
-# WHAT DOES NOT: attract movies and most cutscenes (the plaza's own video does decode), and the
-# game is SILENT — the JAS DSP mixer is not ported yet, which is a known named gap, not a fault of
-# your setup.
+# WHAT DOES NOT: attract movies and most cutscenes (the plaza's own video does decode).
+#
+# AUDIO WORKS as of 2026-08-07 — music and sound effects. The mixing the GameCube DSP used to do is
+# done natively (sms-recomp/runtime/devices/dsp_mixer.cpp); v1 renders the main L/R buses, so the
+# aux/reverb sends, the IIR/FIR filters and the Dolby positional mix are absent and the output is
+# CENTRE-PANNED. Streamed audio (DTK / movie soundtracks) is a separate path and still silent.
 #
 # ── USAGE ──────────────────────────────────────────────────────────────────────────────────────
 #   ./play.sh                        boot normally: GC logo -> title -> file select
@@ -118,7 +121,8 @@ cat <<'CONTROLS'
  Gamepad             plugged in and mapped as a GameCube pad; just use it.
 
  Quit                close the window, or Ctrl-C
- Audio               SILENT — the JAS mixer is not ported yet (known gap)
+ Audio               music + SFX. Centre-panned: aux/reverb/filters/Dolby are not
+                     rendered yet, and streamed (movie) audio is still silent.
 ────────────────────────────────────────────────────────────────────────────────
 CONTROLS
 

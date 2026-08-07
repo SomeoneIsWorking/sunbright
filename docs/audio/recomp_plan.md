@@ -37,39 +37,80 @@ counter, NOT the DAC DMA engine.
 
 Licensing is a non-issue for this project (user directive).
 
-## STATUS — steps 0-3 LANDED and measured (2026-07-23)
+## STATUS — AUDIBLE (2026-08-07). Steps 0-4 landed.
 
-`sms-recomp/runtime/devices/dev_aid.cpp` is the AID engine + delivery + output tap; `dev_aram.cpp` now
-stops at 0xCC005030 and chains `aid_device_init()`. `sbr_audio_frame()` (the weak seam in
-`overrides/native_frame.cpp`) has a strong definition there. **Measured, SBR_FASTBOOT, 65 s:**
+`runtime/devices/dev_aid.cpp` is the AID engine + delivery + the DSP frame's interrupts;
+`runtime/devices/dsp_mixer.cpp` is the voice renderer. Measured, SBR_FASTBOOT, 155 s:
 
 | gate | result |
 |---|---|
-| step 0 — before the engine existed | `AIInitDMA` fired **once** (0x5030<-0x805e, 0x5032<-0x4d80, 0x5036<-0x0046 = 70 blocks), `AIStartDMA` **once** (0x5036<-0x8046, bit 15). **4 AID register writes in 60 s, then silence.** 6 CPU->DSP mails total, then silence. `__AID_Callback` @0x8040E94C = **0x803110f0** (registered, non-null). Premise confirmed exactly. |
-| step 1 — engine | 70 blocks (2240 B) per cycle, re-arms on wrap; **3579 wraps in 62.6 s = 57.2/s** = 32000/560 exactly. |
-| step 2 — delivery | guest woke: `AIInitDMA`/`AIStartDMA` now re-fire per cycle, alternating between the double-buffered sources **0x805e4d80 / 0x805e44c0**. Deliveries **57/s**, one per wrap. |
-| step 3 — output tap | `SBR_AUDIO_RAW` dump = 8015872 B = 250496 blocks (block-exact), **62.624 s of audio in a 65 s run**, **every sample zero**. Backlog **stable at 973-2464 frames** across the whole run — never climbing, never collapsing. |
+| steps 0-3 (2026-07-23) | engine + delivery + tap beating at the hardware rate, backlog stable, **every sample zero** |
+| clock | 57 wraps/s, 7 sub-frames each, `badSub=0`; `TDSPChannel::updateAll` at **391/s** (hardware: gSubFrames x 57.2 = 400) |
+| renderer | 911,156 voice-renders, 6,619 key-ons, 5,544 wave decodes, **0 undecodable** |
+| output | **100% of seconds non-silent**, peak ~8,800, rms 1,150, **0 clipped**, silent sub-frame chunks **0.56%**, sample jumps >2000 **107 in 60 s** with no boundary alignment, beat autocorrelation **64.7 BPM** = half-time of ~129, musically plausible |
 
-**Three corrections to the plan, found by measuring:**
+### FOUR bugs, and each one hid behind healthy-looking counters upstream
 
-1. **`g_cpu` is a PRE-BOOT SNAPSHOT, not the live CPU state.** `gsched_init` *copies* the
-   `CPUState` main.cpp exposes as `g_cpu`, so its r2/r13 (small-data bases) are still zero.
-   Copying `dev_di.cpp`'s idiom verbatim faulted on the first delivery at 0xffffa3ac
-   (= 0 - 0x5c54, a r13-relative load in `__AID_Callback`). DI survives it only because
-   `DVDLowIntrHandler` needs r4 alone. **Any new synchronous handler must use `gsched_cpu()`.**
-2. **Wraps must NOT be coalesced per host frame.** One AID cycle is 17.5 ms, so below 57 fps more
-   than one cycle legitimately completes per frame. Collapsing them to one delivery gave 2616
-   wraps but 1600 deliveries (43/s vs the 57/s the DAC drained) and the queue ran dry. Deliver one
-   interrupt per wrap; the pacing target is what bounds a burst after a stall.
-3. **The backlog target must exceed the longest host frame interval.** 33 ms underran
-   continuously (queue pinned at 7 frames, 45.8 s of audio in 60 s of wall time). It is now 100 ms
-   (`kSampleRate / 10`), which survives a 10 fps stall.
+The mixer was the easy part. What cost the time was that JAS's pipeline is clocked entirely by DSP
+interrupts that do not exist here, and each missing piece failed in a way that looked like something
+else.
 
-`SBR_AUDIO_RAW=<path>` dumps the raw interleaved s16 stream. Diagnostics: `SBR_LUCENT_DEBUG=aid`
-(per-register writes + a 1 Hz backlog/rate report), `SBR_LUCENT_DEBUG=dspmail` (CPU->DSP mails).
+**1. No frame completion — one frame, then a permanent stall.** `DSPBuf::process` hands a frame over
+and sets `dspstatus = 1`; only the audio thread receiving the DSP's completion interrupt and calling
+`DSPBuf::finishDSPFrame` ever clears it (`JASAudioThread.cpp:95`). Without it the idle-kick
+(`if (dspstatus == 0) finishDSPFrame()`) can never fire again. Measured: `MSBgm::startBGM=2
+TSeqParser::mainProc=30 TTrack::noteOn=0 TDSPChannel::alloc=0 updateAll=1`. The game HAD asked for
+music and the sequencer HAD started — one frame, then nothing, forever. Supplied one
+`finishDSPFrame` per AID cycle.
 
-Step 4 (real mailbox + ZeldaAudioRenderer) is NOT started — the samples are still silence by
-design. Everything upstream of the mixer is now beating at the hardware's own rate.
+**2. No SUB-frame interrupts — everything at 1/7 tempo.** `gSubFrames` is 7. Per frame the DSP
+raises 7 interrupts: the first 6 run `DSPBuf::updateDSP` (which is what runs
+`Kernel::subframeCallback` and `TDSPChannel::updateAll` — **the sequencer's clock**) and the 7th runs
+`finishDSPFrame`. `process(UNK1)` calls `updateDSP` once at its end, so supplying only
+`finishDSPFrame` gave one sequencer tick per frame instead of seven. Reported as *"audio is super
+slowmo"*. **The pitch was correct throughout**, because pitch comes from the resample step and not
+from this clock — a bug that changes tempo without changing pitch points at the clock and nowhere
+near the mixer. An AID cycle now runs a whole frame of interrupts, rendering the 560 samples in
+seven 80-sample chunks between them, as the hardware does.
+
+**3. Re-trigger detected as "the wave address changed" — silent after 8 s.** A channel is allocated
+and freed per note, so the same instrument lands on the same channel constantly; same address, no
+detected re-trigger, and the voice stays finished forever. This one is worth remembering because
+**every counter upstream was perfect while it was happening** — 19,300 sequencer ticks and 37
+note-ons per 7 s, channels allocated and freed in step, 466,437 voice-renders — and the output was
+silence. It only appeared once bug 2 was fixed, because at 1/7 tempo channels were reused too slowly
+to expose it. The real signal is `DSPBuffer::playStart` @0x8031520c setting **`unk8 = 1`** (and
+zeroing the ucode cursor at `unk68`); the renderer acts on that and clears it, as the DSP does.
+
+**4. Rendering into the guest's DMA buffer — crackling.** The guest's audio path re-interleaves
+DSPBuf's (silent) triple buffer into that same buffer between our store and the DMA read, blanking
+~1 sub-frame in 6: an 80-sample hole in continuous music every few ms. Found by reading our own
+output back from guest memory right after the store (**0.76% silent**) and comparing with the
+emitted stream (**18.1% silent**) — same chunks, two readers, only the guest in between. The mixer
+now renders into a HOST buffer that `dev_aid.cpp` drains a block at a time. Silent chunks 18.1% ->
+0.56%, boundary-aligned jumps 37.4% -> 3.7% (uniform 1.2%). Two earlier theories were measured and
+killed first: per-sub-frame volume stepping (the ramp is right and is kept, but the jumps did not
+move) and misread loop bounds (`unk114` is a genuine loop END; zero rejections).
+
+**A layout trap worth keeping.** `JASDSPInterface.hpp` comments `Channel`'s members at 0x0/0x4/0x8/
+0xC, making it 16 bytes and putting `unk10[6]` at 0x10..0x70 — over `unk50`, which the same header
+places at 0x50. Both cannot be right. `setMixerVolume` @0x80315444 settles it: `rlwinm r4,r4,3` —
+stride **8**, target volume at +2, current at +4. The recomp reads guest memory, so it uses the RE'd
+offsets; the header's would have read the wrong halfword of the wrong bus, which does not crash and
+does not look like a layout bug — it looks like a mixer that is merely quiet.
+
+### Measured residuals (v1 scope)
+
+- **Centre-panned**: L and R are bit-identical. v1 reads bus 0/1 target volumes only; pan/aux routing
+  goes through `setBusConnect`'s `connect_table` and the Dolby pan matrix.
+- **DC offset** ~-420 mean that VARIES with the music (per-second std 457), so it rides on the voices
+  rather than being a fixed bias — consistent with looped AFC waves decoded once without restoring
+  the loop predictor/history (`unk104`/`unk106`), the same simplification the decomp renderer makes.
+- Streamed audio (DTK / movie soundtracks) is a separate path and untouched.
+
+### Still deferred (the fidelity milestone)
+Aux buses 2-5 and the FxlineConfig delay lines, IIR/FIR filters, Dolby positional mix, oscillator/
+synth voices, HardStream, DTK, THP audio. None gate music or SFX.
 
 ## Minimal path to first sound (each step independently verifiable)
 
