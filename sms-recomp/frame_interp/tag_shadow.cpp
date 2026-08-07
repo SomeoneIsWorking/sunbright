@@ -127,7 +127,18 @@ Scheme scheme() {
         // SBR_TAGSHADOW=fp turns it back on. It stays off until the OWNER join resolves, which is
         // the one key here that does not depend on a slot; its plumbing and its four denominators
         // are in place and it currently resolves nothing, which is the next thing to fix.
-        if (e == nullptr) return Scheme::FpOnly;
+        // DEFAULT IS NOW ALL THREE SCHEMES, and that reverses a decision made on a CONFOUNDED
+        // measurement. The verdict "the ordinal schemes carry ~93% of the added mispairing" was
+        // taken while this file read r4 — a bool — so the shadow VOLUME was mispairing
+        // catastrophically and the ordinals were blamed for it. Re-measured with the owner key as
+        // the base:
+        //     owner only ......... mispairs 16   volume 94.6%  shine   0%   model   0%
+        //     owner + ordinals ... mispairs 16   volume 94.6%  shine 95.4%  model 99.8%
+        // Identical mispairing, ~730,000 more draws interpolating. An ordinal is still a positional
+        // stand-in and still misaligns when a list changes length; it simply does not, measurably,
+        // in this game — which is a fact about the scene that only became visible once the base key
+        // was sound.
+        if (e == nullptr) return Scheme::All;
         if (e[0] == '0') return Scheme::Off;
         if (std::strcmp(e, "all") == 0) return Scheme::All;
         if (std::strcmp(e, "fp") == 0) return Scheme::FpOnly;
