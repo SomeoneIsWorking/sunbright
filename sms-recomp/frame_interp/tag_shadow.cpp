@@ -223,6 +223,29 @@ struct PosKeyHash {
 // built from them.
 std::unordered_map<PosKey, u32, PosKeyHash> g_posToActor;      // filling this tick
 std::unordered_map<PosKey, u32, PosKeyHash> g_posToActorPrev;  // what the draw reads
+
+// ── KEYED BY THE REQUEST'S ADDRESS, which covers every shadow type ──────────────────────────────
+//
+// The position join cannot reach type-1 BODY shadows: the calc pass rewrites their position in
+// place before the draw (ShadowUtil.cpp:288), so the submitted value no longer matches. The
+// request's ADDRESS does not change when its contents do, and the draw has it — fp->mReq.
+//
+// Where request() stores the copy was MEASURED, not read off the header, whose offset comments are
+// hand-written and demonstrably approximate. SBR_SHADOW_LAYOUT=1 scans the manager for a
+// just-submitted position; consecutive accepted requests landed at manager+0x7c, +0xa0, +0xc4,
+// +0xe8 — stride 0x24, exactly sizeof(TCircleShadowRequest), so the array is contiguous and filled
+// from slot 0 each tick.
+//
+// The base is learned from the first accepted request of a tick and then VERIFIED on every
+// subsequent one by reading the predicted address back and comparing the position. That readback is
+// what makes this self-correcting rather than a hardcoded offset: if the prediction ever stops
+// matching — a different manager, a layout change, a rejected request miscounted — it rescans
+// instead of silently keying on the wrong slot.
+constexpr u32 REQ_STRIDE = 0x24;
+u32 g_reqBase = 0;          // absolute address of mRequests[0]
+u32 g_acceptedThisTick = 0;
+std::unordered_map<u32, u32> g_addrToActor, g_addrToActorPrev;
+unsigned long g_addrHit = 0, g_addrMiss = 0, g_rescans = 0;
 u32 g_requestingActor = 0;
 unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
 // The JOIN's own denominators. "0 owners resolved" has three causes — requestShadow never fired,
@@ -257,6 +280,9 @@ void sbr_tag_shadow_begin_tick() {
     if (g_posToActor.size() > g_mapMaxSize) g_mapMaxSize = g_posToActor.size();
     g_posToActorPrev.swap(g_posToActor);
     g_posToActor.clear();
+    g_addrToActorPrev.swap(g_addrToActor);
+    g_addrToActor.clear();
+    g_acceptedThisTick = 0;
     // Decided ONCE per tick, from the two previous ticks' counts: this tick may only pair if the
     // set was the same size last tick as the tick before, because pairing compares THIS tick's
     // slots against LAST tick's.
@@ -391,28 +417,34 @@ void discover_layout(u32 manager, u32 req) {
     // difference between measuring the layout and measuring the title screen.
     static long seen = 0;
     if (++seen < 200000) return;
-    static int shown = 0;
-    if (shown >= 6 || !sb_ram_fast(req + 8)) return;
+    // KEEP TRYING UNTIL SOMETHING IS FOUND, up to a bounded number of attempts. The previous version
+    // stopped after six ATTEMPTS and reported six "not found"s — but request() is GATED, and a
+    // rejected request stores nothing, so a handful of arbitrary samples is mostly measuring
+    // rejections. Counting attempts and hits separately is what distinguishes "the layout is not
+    // where I looked" from "I happened to look at requests the game threw away".
+    static int hits = 0, attempts = 0;
+    if (hits >= 4 || attempts >= 400 || !sb_ram_fast(req + 8)) return;
+    ++attempts;
     const u32 x = sb_r32(req), y = sb_r32(req + 4), z = sb_r32(req + 8);
-    lucent::info("taggap", "shadow layout: probe — manager r3 = 0x{:08x}, req r4 = 0x{:08x}, "
-                          "submitted pos bits ({:08x},{:08x},{:08x})",
-                 manager, req, x, y, z);
     for (u32 off = 0; off < 0x40000; off += 4) {
         if (!sb_ram_fast(manager + off + 8)) break;
         if (sb_r32(manager + off) == x && sb_r32(manager + off + 4) == y &&
             sb_r32(manager + off + 8) == z && (manager + off) != req) {
-            ++shown;
+            ++hits;
             lucent::info("taggap",
-                         "shadow layout: request #{} stored at manager+0x{:x} (manager 0x{:08x}). "
-                         "Two or more of these give the array base and its stride.",
-                         shown, off, manager);
+                         "shadow layout: HIT {} (attempt {}) — request stored at manager+0x{:x} "
+                         "(manager 0x{:08x}). Two or more give the array base and its stride.",
+                         hits, attempts, off, manager);
             return;
         }
     }
-    ++shown;
-    lucent::info("taggap",
-                 "shadow layout: request's position was NOT FOUND anywhere in manager+0..0x8000. "
-                 "Either request() rejected it (the gate), or the manager pointer is not r3.");
+    if (attempts == 400) {
+        lucent::info("taggap",
+                     "shadow layout: {} hit(s) in 400 attempts. request() is GATED, so a miss is "
+                     "usually a rejected request rather than a wrong base — but 0 hits in 400 means "
+                     "the manager is not r3, or the array is outside the scanned window.",
+                     hits);
+    }
 }
 
 void note_request(CPUState& cpu) {
@@ -425,17 +457,59 @@ void note_request(CPUState& cpu) {
                         sb_r32(req + REQ_UNK0 + 8)}] = g_requestingActor;
 }
 
+// After the real request() has run: work out WHERE it stored the copy, and record the owning actor
+// under that address. Returns quietly when the request was rejected by the gate, which is the common
+// case and not an error.
+void note_stored(u32 manager, u32 req) {
+    if (!enabled() || !sbr_lerp_enabled() || g_requestingActor == 0) return;
+    if (!sb_ram_fast(req + 8)) return;
+    const u32 x = sb_r32(req), y = sb_r32(req + 4), z = sb_r32(req + 8);
+    auto stored_at = [&](u32 addr) {
+        return sb_ram_fast(addr + 8) && sb_r32(addr) == x && sb_r32(addr + 4) == y &&
+               sb_r32(addr + 8) == z;
+    };
+    // Predict first — O(1) for every request after the base is known.
+    if (g_reqBase != 0) {
+        const u32 predicted = g_reqBase + g_acceptedThisTick * REQ_STRIDE;
+        if (stored_at(predicted)) {
+            g_addrToActor[predicted] = g_requestingActor;
+            ++g_acceptedThisTick;
+            ++g_addrHit;
+            return;
+        }
+    }
+    // The prediction failed. Either this request was REJECTED (nothing was stored, the common case)
+    // or the base is wrong. Scanning tells the two apart, and only runs on that path.
+    ++g_rescans;
+    for (u32 off = 0; off < 0x800; off += 4) {
+        const u32 addr = manager + off;
+        if (!sb_ram_fast(addr + 8)) break;
+        if (addr != req && stored_at(addr)) {
+            if (g_acceptedThisTick == 0) {
+                g_reqBase = addr;   // first accepted request of a tick occupies slot 0
+            }
+            g_addrToActor[addr] = g_requestingActor;
+            ++g_acceptedThisTick;
+            ++g_addrHit;
+            return;
+        }
+    }
+    ++g_addrMiss;   // rejected by the gate: nothing was stored, nothing to record
+}
+
 void ov_request(CPUState& cpu) {
     const u32 mgr = (u32)cpu.gpr[3], req = (u32)cpu.gpr[4];
     note_request(cpu);
     func_8022ecec(cpu);
     discover_layout(mgr, req);
+    note_stored(mgr, req);
 }
 void ov_force_request(CPUState& cpu) {
     const u32 mgr = (u32)cpu.gpr[3], req = (u32)cpu.gpr[4];
     note_request(cpu);
     func_8022ebbc(cpu);
     discover_layout(mgr, req);
+    note_stored(mgr, req);
 }
 
 // The actor that owns the shadow drawn from `fp`, or 0 if it cannot be established.
@@ -444,6 +518,22 @@ u32 owner_of(u32 fp) {
     if (!sb_ram_fast(fp + QUAD_MREQ)) { ++g_ownerGuardQuad; return 0; }
     const u32 req = sb_r32(fp + QUAD_MREQ);
     if (!sb_ram_fast(req + REQ_UNK0 + 8)) { ++g_ownerGuardReq; return 0; }
+    // ADDRESS FIRST — it covers every type, including the body shadows whose position is rewritten
+    // between the request and the draw.
+    {
+        // Two separate lookups, not one iterator compared against the other map's end() — that is
+        // undefined and it happened to compile.
+        u32 found = 0;
+        if (auto ia = g_addrToActorPrev.find(req); ia != g_addrToActorPrev.end()) {
+            found = ia->second;
+        } else if (auto ib = g_addrToActor.find(req); ib != g_addrToActor.end()) {
+            found = ib->second;
+        }
+        if (found != 0) {
+            ++g_lookupHit;
+            return found;
+        }
+    }
     const PosKey key{sb_r32(req + REQ_UNK0), sb_r32(req + REQ_UNK0 + 4),
                      sb_r32(req + REQ_UNK0 + 8)};
     auto it = g_posToActorPrev.find(key);

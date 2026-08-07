@@ -337,7 +337,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/render/native_render.cpp:578` |  |
 | `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp:253` |  |
 | `SBR_SDLGPU` | 1 | `sms-recomp/runtime/render/native_render.cpp:304` |  |
-| `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:386` |  |
+| `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:412` |  |
 | `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:122` |  |
 | `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:127` |  |
 | `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:125` |  |

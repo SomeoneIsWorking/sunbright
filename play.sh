@@ -36,9 +36,11 @@
 # (how evenly consecutive presents advance the game — tools/interp/cadence.py) is 1.10 against the
 # uninterpolated 1.18, at matched guest ticks with the camera rotating.
 #
-# What is still wrong: about 9.5% of draws reach the renderer without a cross-tick identity and
-# therefore snap rather than interpolate. Off by default until that is fixed. docs/60fps/README.md has the
-# map and the plan.
+# WHAT INTERPOLATES, measured per population (SBR_LUCENT_DEBUG=interp prints this live):
+#   world geometry 97.3%   ·   particles 95.3%   ·   shadows 94.4%   ·   2D/HUD correctly snaps
+# Still snapping: flags and the sea ripple grid (they deform per tick, so only their vertices carry
+# the motion), the shine-shadow and ship-shadow shapes, and body shadows. docs/60fps/README.md has
+# the table and a reason for every row.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -91,15 +93,16 @@ if [[ "$FPS60" == 1 ]]; then
     # presents the packet again, running no game code in the sub-frame at all, which is why its
     # effects work and why it beats even the 30fps baseline.
     #
-    # A's own remaining defect, so it is not discovered by surprise: about 9.5% of draws
-    # (display-list geometry from a persistent vertex array) reach aurora without a cross-tick
-    # identity tag and therefore SNAP instead of interpolating. Named in docs/60fps/README.md.
+    # The cadence is REGULAR — from the runtime's own counters, one in-between frame per simulation
+    # tick exactly. An earlier note here claimed 2-3 per tick; that came from grouping dumps by their
+    # `-t<n>` filename label, which is the GAME's retrace counter and advances by however many fields
+    # the game asked for, so consecutive ticks can share one label. The numbers were right and the
+    # verdict was wrong.
     #
-    # The cadence is REGULAR — measured from the runtime's own counters, 6000 in-between frames for
-    # 6000 simulation ticks, exactly two presents per tick. An earlier note here claimed 2-3 per
-    # tick; that came from grouping dumps by their `-t<n>` filename label, which is the GAME's
-    # retrace counter and advances by however many fields the game asked for, so consecutive ticks
-    # can share one label. The numbers were right and the verdict was wrong.
+    # Interpolated runs also select a QUEUED present mode (strict Fifo). vsync=false gives Mailbox,
+    # which DISCARDS a pending image when a newer one arrives before the display samples it — so a
+    # tick emitting two images inside one refresh had its in-between frame thrown away by the
+    # swapchain while every counter still read 60fps.
     ENV+=("SBR_60FPS=1")
 fi
 
@@ -118,10 +121,10 @@ cat <<'CONTROLS'
 CONTROLS
 
 if [[ "$FPS60" == 1 ]]; then
-    echo " 60fps interpolation: ON — stream interpolation (the path that measures best:"
-    echo "                          judder 1.10 vs 1.18 uninterpolated). Game logic still runs"
-    echo "                          at 30Hz. Known gaps: present cadence is 2-3/tick not exactly"
-    echo "                          2, and ~9.5% of draws snap instead of interpolating."
+    echo " 60fps interpolation: ON — game logic still runs at 30Hz, as on console."
+    echo "                          Interpolating: world 97.3%, particles 95.3%, shadows 94.4%."
+    echo "                          Still snapping: flags, sea ripple, body shadows (see"
+    echo "                          docs/60fps/README.md for the full table and why)."
     echo "────────────────────────────────────────────────────────────────────────────────"
 fi
 echo
