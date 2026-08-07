@@ -23,6 +23,7 @@
 #include "../runtime/render/j3d_decode.h"
 #include "../runtime/render/state_oracle.h"
 #include "../frame_interp/stream_interp.h"
+#include "../frame_interp/populations.h"
 #include "../runtime/render/native_render.h"
 
 void sbr_mtx_begin_shape(u32 shape);
@@ -164,6 +165,7 @@ void ov_shape_draw(CPUState& cpu) {
     // Emitted BEFORE the draw — the tag has to precede the GX it labels in the stream.
     if (sbr_lerp_enabled()) {
         const u32 instance = sb_r32(shape + SHAPE_DRAW_MATRICES);
+        sbr_gxfifo_draw_pop(SB_POP_J3D_SHAPE);
         sbr_gxfifo_draw_tag(((uint64_t)shape << 32) | (uint64_t)instance);
     }
 
@@ -176,6 +178,7 @@ void ov_shape_draw(CPUState& cpu) {
     // is a wrong answer that looks like a working one. Untagged draws snap, which is correct for
     // exactly those cases.
     if (sbr_lerp_enabled()) sbr_gxfifo_draw_tag(0);
+    sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
     // Bring the parsed GX state up to date with what the game has just written, so the texture
     // binding read below is THIS shape's material rather than a stale one.
     gxfifo_drain_pending();

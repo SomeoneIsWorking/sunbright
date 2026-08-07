@@ -13,6 +13,7 @@
 //   curl 127.0.0.1:17654/2dclass
 
 #include "overrides.h"
+#include "../frame_interp/populations.h"
 
 #include "../runtime/probe_server.h"
 #include "../runtime/render/scene.h"
@@ -273,6 +274,11 @@ void ov_pic_drawself_mtx(CPUState& cpu) {
     if (pane.valid) emit_pane_quad(pane);
 }
 void ov_pic_draw(CPUState& cpu) {
+    // AUDIT LABEL, shared with the 60fps interpolation report. This address already had an override
+    // and the registry refuses a second, so the label is applied from here rather than from
+    // frame_interp/populations.cpp. It gives no identity and changes no rendering.
+    sbr_gxfifo_draw_pop(SB_POP_J2D);
+    struct Clear { ~Clear() { sbr_gxfifo_draw_pop(SB_POP_UNLABELLED); } } clear;
     if (diag_on()) note("J2DPicture::draw", cpu.gpr[3]);
     func_802ccef4(cpu);
 }

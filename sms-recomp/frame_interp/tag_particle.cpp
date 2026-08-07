@@ -42,6 +42,7 @@
 //   SBR_TAGPARTICLE=0   disable (the draws revert to the camera delta alone)
 
 #include "../overrides/overrides.h"
+#include "populations.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -109,11 +110,13 @@ void tag_and_run(CPUState& cpu, void (*body)(CPUState&)) {
         aurora::gfx::interp::set_tag_world_pos(tag, guest_f32(particle + PART_GLOBAL),
                                                guest_f32(particle + PART_GLOBAL + 4),
                                                guest_f32(particle + PART_GLOBAL + 8));
+        sbr_gxfifo_draw_pop(SB_POP_PARTICLE);
         sbr_gxfifo_draw_tag(tag);
         ++g_tagged;
     }
     body(cpu);
     if (tag != 0) sbr_gxfifo_draw_tag(0);
+    sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
 void ov_billboard(CPUState& cpu) { tag_and_run(cpu, func_8033025c); }

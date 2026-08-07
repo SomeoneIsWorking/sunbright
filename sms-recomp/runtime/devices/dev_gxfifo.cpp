@@ -1462,6 +1462,16 @@ void sbr_gxfifo_view_matrix() {
 static uint64_t g_pendingTagState = 0;
 uint64_t sbr_gxfifo_pending_tag() { return g_pendingTagState; }
 
+// The audit label for the draws that follow (GX_AURORA_DRAW_POP). Not an identity: it says WHICH
+// SYSTEM emitted a draw, so the interpolation report can be per-population instead of one global
+// percentage that cannot separate a correctly-snapping HUD from stuttering world geometry.
+void sbr_gxfifo_draw_pop(u8 pop) {
+    gxfifo_drain_pending();
+    put_u8(g_out, 0x50);
+    put_u16(g_out, (u16)GX_AURORA_DRAW_POP);
+    put_u8(g_out, pop);
+}
+
 void sbr_gxfifo_draw_tag(uint64_t tag) {
     g_pendingTagState = tag;
     gxfifo_drain_pending();

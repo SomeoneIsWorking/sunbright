@@ -26,6 +26,7 @@
 //   SBR_TAGGAP=1   report the untagged display-list callers, worst first
 
 #include "../overrides/overrides.h"
+#include "populations.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -161,9 +162,11 @@ void ov_call_display_list(CPUState& cpu) {
     if (sbr_gxfifo_pending_tag() == 0) {
         const u64 shine = sbr_shine_shadow_next_tag();
         if (shine != 0) {
+            sbr_gxfifo_draw_pop(SB_POP_SHADOW_SHINE);
             sbr_gxfifo_draw_tag(shine);
             func_80362a50(cpu);
             sbr_gxfifo_draw_tag(0);
+    sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
             return;
         }
     }

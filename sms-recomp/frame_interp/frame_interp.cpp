@@ -10,6 +10,7 @@
 #include "frame_interp.h"
 
 #include "stream_interp.h"
+#include "populations.h"
 
 #include <lucent/log.h>
 
@@ -21,6 +22,29 @@
 // this directory uses for aurora's tag counters.
 namespace aurora::gfx {
 void snap_next_interpolation();
+namespace interp {
+void name_population(uint8_t pop, const char* name);
+void report_audit();
+}
+} // namespace aurora::gfx
+
+// Registered once so the audit reads as systems rather than numbers. Kept here, beside the one
+// place that knows the whole subsystem, rather than each seam naming itself — a seam that forgot
+// would produce a numbered row that looks like a different population.
+void sbr_pop_register_names() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    aurora::gfx::interp::name_population(SB_POP_J3D_SHAPE, "J3D shape (world)");
+    aurora::gfx::interp::name_population(SB_POP_SHADOW_VOLUME, "shadow volume");
+    aurora::gfx::interp::name_population(SB_POP_SHADOW_SHINE, "shine shadow slice");
+    aurora::gfx::interp::name_population(SB_POP_SHADOW_MODEL, "shadow model");
+    aurora::gfx::interp::name_population(SB_POP_PARTICLE, "JPA particle");
+    aurora::gfx::interp::name_population(SB_POP_FLAG, "flag (deforming)");
+    aurora::gfx::interp::name_population(SB_POP_WAVE, "sea ripple (deforming)");
+    aurora::gfx::interp::name_population(SB_POP_DRAW_CUBE, "shadow alpha cube");
+    aurora::gfx::interp::name_population(SB_POP_TEXT, "text glyphs");
+    aurora::gfx::interp::name_population(SB_POP_J2D, "J2D pane");
 }
 
 namespace sb::frame_interp {
@@ -112,6 +136,8 @@ void present_interpolated_frame() {
 
 void report() {
     if (!is_enabled()) return;
+    sbr_pop_register_names();
+    aurora::gfx::interp::report_audit();
     lucent::info("interp",
                  "frame interpolation: {} simulation tick(s), {} in-between frame(s) presented, "
                  "{} presentation-sync request(s). Callbacks: {} registration(s) produced {} "

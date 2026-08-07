@@ -57,6 +57,7 @@
 // the identity that is beyond doubt; SBR_TAGSHADOW=0 disables the lot.
 
 #include "../overrides/overrides.h"
+#include "populations.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -206,6 +207,9 @@ void sbr_tag_shadow_report() {
 namespace {
 
 void ov_sms_draw_shape(CPUState& cpu) {
+    // Labelled always, tagged only under SBR_TAGSHADOW=all — see the note above.
+    const bool label = sbr_lerp_enabled() && sbr_gxfifo_pending_tag() == 0;
+    if (label) sbr_gxfifo_draw_pop(SB_POP_SHADOW_MODEL);
     // r3 = J3DModelData*, r4 = u16 shape index.
     const u32 model = (u32)cpu.gpr[3];
     const u32 shapeIdx = (u32)cpu.gpr[4] & 0xFFFF;
@@ -214,14 +218,23 @@ void ov_sms_draw_shape(CPUState& cpu) {
     if (tag) {
         const u32 key = model ^ (shapeIdx << 24);
         const u32 nth = g_modelSeenThisTick[key]++;
+        sbr_gxfifo_draw_pop(SB_POP_SHADOW_MODEL);
         sbr_gxfifo_draw_tag(((u64)key << 32) | (u64)nth);
         ++g_modelTagged;
     }
     func_80225c30(cpu);
     if (tag) sbr_gxfifo_draw_tag(0);
+    if (label) sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+    sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
 void ov_draw_shine_shadow_volume(CPUState& cpu) {
+    // Labelled ALWAYS, tagged only when the ordinal schemes are enabled. The audit must be able to
+    // say "this population snaps, and here is why" even — especially — for the paths whose tagging
+    // was deliberately withdrawn; unlabelled they would be indistinguishable from draws nobody has
+    // looked at.
+    const bool label = sbr_lerp_enabled();
+    if (label) sbr_gxfifo_draw_pop(SB_POP_SHADOW_SHINE);
     const bool was = g_shineScope;
     const u32 wasOrd = g_shineOrdinal;
     g_shineScope = true;
@@ -229,6 +242,7 @@ void ov_draw_shine_shadow_volume(CPUState& cpu) {
     func_8027c67c(cpu);
     g_shineScope = was;
     g_shineOrdinal = wasOrd;
+    if (label) sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
 // TAlphaShadowQuad::mReq (+0x68) -> TCircleShadowRequest. The fields below are the ones that stay
@@ -297,6 +311,7 @@ void ov_draw_shadow_volume(CPUState& cpu) {
     (void)setStable;
     if (tag) {
         const u32 nth = g_seenThisTick[fp]++;
+        sbr_gxfifo_draw_pop(SB_POP_SHADOW_VOLUME);
         sbr_gxfifo_draw_tag(((uint64_t)fp << 32) | (uint64_t)nth);
         ++g_tagged;
     } else if (enabled() && sbr_lerp_enabled() && fp != 0) {
@@ -307,6 +322,7 @@ void ov_draw_shadow_volume(CPUState& cpu) {
     // identity, which would pair unrelated geometry with a shadow's transform — a wrong answer that
     // renders like a working one.
     if (tag) sbr_gxfifo_draw_tag(0);
+    sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
 } // namespace
