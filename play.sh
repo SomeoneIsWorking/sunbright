@@ -40,8 +40,9 @@
 #   ship/pass-4 shadows 99.8%  ·  world geometry 97.3%  ·  shine shadow 95.4%  ·  particles 95.3%
 #   ·  shadow volume 94.8%  ·  2D/HUD correctly snaps
 # Still snapping: flags and the sea ripple grid — they DEFORM per tick, so only their vertices carry
-# the motion and no matrix can express it — and the shadow alpha cube. docs/60fps/README.md has the
-# table and a reason for every row.
+# the motion and no matrix can express it — and the shadow alpha cube. Those figures count every
+# camera-only draw as a shortfall, which OVERSTATES it: for static geometry the camera delta alone is
+# correct. docs/60fps/README.md has the table and a reason for every row.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

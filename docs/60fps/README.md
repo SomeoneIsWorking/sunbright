@@ -21,35 +21,24 @@ between them.
 (`GX_AURORA_DRAW_POP`) and the fate it received, at the point that fate is decided; the outcomes are
 exhaustive, so the columns sum to the draw count.
 
-| population | of what NEEDS to move | note |
+| population | interpolates | note |
 |---|---|---|
-| shine shadow slice | **100.0%** | 12,891 of its camera-only draws were provably static |
 | shadow model (ship / pass-4) | **99.8%** | per-model ordinal |
-| JPA particle | **99.4%** | own motion as a translation |
 | J3D shape (world) | **97.3%** | `(shape, instance)` tag at `J3DShape::draw` |
-| shadow volume | **94.6%** | keyed by the OWNING ACTOR |
-| flag (deforming) | 0% | 115,047 draws that MOVED and got the camera delta only |
-| sea ripple (deforming) | 0% | 12,783 moved |
-| shadow alpha cube | 0% | 419,395 moved — so it is a real defect, not static geometry |
+| shine shadow slice | **95.4%** | per-slice ordinal |
+| JPA particle | **95.3%** | own motion as a translation |
+| shadow volume | **94.8%** | keyed by the OWNING ACTOR |
+| flag (deforming) | 0% | needs the vertex path |
+| sea ripple (deforming) | 0% | needs the vertex path |
+| shadow alpha cube | 0% | not investigated |
 | text glyphs, J2D pane | — | **CORRECT**: 2D has no meaningful in-between |
 | (unlabelled) | — | the audit's own edge; kept visible on purpose |
 
-### `camera-only` is TWO outcomes, and conflating them understated the path
-
-A draw that receives the camera delta alone is correct when its own transform did not change —
-static world geometry needs exactly that and nothing more — and defective when it did. Reporting
-them as one number made every population look worse than it is.
-
-The audit now splits them by hashing each camera-only draw's position matrix and comparing against
-the same position in its population last tick. That join is by ORDINAL, which this project distrusts
-everywhere else — deliberately, and the reason is worth stating: a mispaired ordinal here adds NOISE
-TO A PERCENTAGE, and cannot produce a visible artefact, because nothing is corrected on the strength
-of it. That is the one place a positional key is acceptable.
-
-What it changed: JPA particles 95.3% → **99.4%** and the shine slices 95.4% → **100%** — most of
-what looked like a shortfall was static geometry being counted as a failure. It also FALSIFIED a
-guess I was about to act on: the shadow alpha cube looked like it might be static world geometry for
-which camera-only is right, and it is not — 419,395 of its draws moved.
+`camera-only` is an **upper bound** on the defect, not a measurement of it: for STATIC world
+geometry the camera delta is exactly correct, and no sound test to separate the two exists yet. Two
+were tried and both were unsound — see `interp.cpp`. A previous version of this table read
+particles at 99.4% and the shine slices at 100% on the strength of the first one; those numbers were
+an artefact and are withdrawn.
 
 **Mispairing is 16 against a no-tagging control of 4** — 0.002% of tagged draws, so none of that
 coverage is bought with wrong pairings, which is the trade this arc made twice and had to undo.
