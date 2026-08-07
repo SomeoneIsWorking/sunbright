@@ -15,6 +15,51 @@ between them.
 
 ---
 
+## STATUS — what interpolates today (2026-08-07)
+
+`SBR_LUCENT_DEBUG=interp` prints this live. Every draw is filed under the system that emitted it
+(`GX_AURORA_DRAW_POP`) and the fate it received, at the point that fate is decided; the outcomes are
+exhaustive, so the columns sum to the draw count.
+
+| population | interpolates | how |
+|---|---|---|
+| shadow model (ship / pass-4) | **99.8%** | per-model ordinal |
+| J3D shape (world) | **97.3%** | `(shape, instance)` tag at `J3DShape::draw` |
+| shine shadow slice | **95.4%** | per-slice ordinal |
+| JPA particle | **95.3%** | own motion applied as a translation |
+| shadow volume | **94.8%** | keyed by the OWNING ACTOR |
+| flag (deforming) | 0% | needs the vertex path |
+| sea ripple (deforming) | 0% | needs the vertex path |
+| shadow alpha cube | 0% | not investigated |
+| text glyphs, J2D pane | — | **CORRECT**: 2D has no meaningful in-between |
+| (unlabelled) | — | the audit's own edge; kept visible on purpose |
+
+**Mispairing is 16 against a no-tagging control of 4** — 0.002% of tagged draws, so none of that
+coverage is bought with wrong pairings, which is the trade this arc made twice and had to undo.
+
+### A verdict reversed by re-measuring after the base was fixed
+
+The shine-slice and shadow-model rows sat at **0%** because their ordinal keys had been measured as
+carrying "~93% of the added mispairing" and were withdrawn. That measurement was CONFOUNDED: it was
+taken while the shadow tag read `r4` — a **bool** — so the shadow VOLUME was mispairing
+catastrophically and the ordinals were blamed for its damage.
+
+Re-measured with the owner key as the base:
+
+| | mispairs | volume | shine | model |
+|---|---|---|---|---|
+| owner only | 16 | 94.6% | 0% | 0% |
+| owner + ordinals | 16 | 94.6% | **95.4%** | **99.8%** |
+
+Identical mispairing, ~730,000 more draws interpolating. An ordinal is still a positional stand-in
+and still misaligns when a list changes length — it simply does not, measurably, in this game, and
+that was invisible while the base key was broken.
+
+**A measurement taken over a broken component is not evidence about the components beside it.** Two
+verdicts in this arc stood on exactly that.
+
+---
+
 ## The three paths
 
 | | A — stream interpolation | B — substitute & re-issue | C — record & replace |
@@ -35,8 +80,13 @@ between them.
 An interpolated run MUST use a queued present mode. aurora's `vsync = false` selects **Mailbox**,
 whose defining behaviour is that a newer present REPLACES the pending image — so a tick emitting two
 images inside one display refresh has its in-between frame **discarded by the swapchain**, while
-every counter still reads 60 fps. Interpolated runs therefore select `vsync = true` →
-`FifoRelaxed`, where each presented image is queued and shown for at least one refresh.
+every counter still reads 60 fps. Interpolated runs therefore select `vsync = true` → strict
+**`Fifo`**, where each presented image is queued and shown for at least one refresh.
+
+Not `FifoRelaxed`, which was the first choice and is wrong here: its whole purpose is to present
+IMMEDIATELY when a frame missed its vblank, and a late tick is the common case (94% measured), so
+the pair went out back to back exactly as under Mailbox. `AURORA_PRESENT_RELAXED=1` restores it
+for comparison.
 `debug_journal/2026-08-06_interp60_mailbox_discards_the_inbetween.md`.
 
 The corollary is that the frame-loop sleep which used to space the two presents is obsolete: the
