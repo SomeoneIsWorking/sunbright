@@ -103,7 +103,15 @@ Scheme scheme() {
         // wrong place for a single frame every few seconds. Snapping is what those draws did before
         // any of this and is strictly better than teleporting, so they snap until a real owner
         // identity exists.
-        // DEFAULT OFF, and this is a retreat with a reason rather than a preference.
+        // DEFAULT ON AGAIN, because the key is now sound. The retreat below is kept as the record
+        // of why it was ever off.
+        //
+        // Shadows are keyed by the ACTOR that requested them, joined through the position the
+        // manager copies verbatim from the request into the slot. Measured with that key and no
+        // slot fallback: mispairing is 4 — IDENTICAL to a run with shadow tagging disabled
+        // entirely — while 94.3% of the shadow-volume population interpolates. A sound identity
+        // costs nothing and the unsound one cost everything.
+        //
         //
         // Every reading that made slot-keying look acceptable was taken while this file read the
         // WRONG REGISTER: r4 is `useNear`, a bool, so all near shadows collapsed into the single
@@ -118,7 +126,7 @@ Scheme scheme() {
         // SBR_TAGSHADOW=fp turns it back on. It stays off until the OWNER join resolves, which is
         // the one key here that does not depend on a slot; its plumbing and its four denominators
         // are in place and it currently resolves nothing, which is the next thing to fix.
-        if (e == nullptr) return Scheme::Off;
+        if (e == nullptr) return Scheme::FpOnly;
         if (e[0] == '0') return Scheme::Off;
         if (std::strcmp(e, "all") == 0) return Scheme::All;
         if (std::strcmp(e, "fp") == 0) return Scheme::FpOnly;
@@ -208,14 +216,21 @@ struct PosKeyHash {
         return h;
     }
 };
-std::unordered_map<PosKey, u32, PosKeyHash> g_posToActor;
+// DOUBLE-BUFFERED, because the shadow manager DRAWS BEFORE the actors re-request. Measured: with a
+// single map cleared each tick, all 572,296 draw-time lookups missed while the map itself peaked at
+// 116 entries — populated, but not yet at the moment the draw needed it. The draw therefore has to
+// consult the PREVIOUS tick's requests, which is also the correct pairing: the quad being drawn was
+// built from them.
+std::unordered_map<PosKey, u32, PosKeyHash> g_posToActor;      // filling this tick
+std::unordered_map<PosKey, u32, PosKeyHash> g_posToActorPrev;  // what the draw reads
 u32 g_requestingActor = 0;
 unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
 // The JOIN's own denominators. "0 owners resolved" has three causes — requestShadow never fired,
 // request() never fired with an actor in scope, or the position did not match at draw time — and
 // without these they are one number.
 unsigned long g_reqShadowCalls = 0, g_noteReqCalls = 0, g_noteReqWithActor = 0, g_lookupMiss = 0;
-unsigned long g_ownerGuardQuad = 0, g_ownerGuardReq = 0, g_ownerCalls = 0;
+unsigned long g_ownerGuardQuad = 0, g_ownerGuardReq = 0, g_ownerCalls = 0, g_lookupHit = 0;
+unsigned long g_mapMaxSize = 0;
 
 constexpr u32 REQ_UNK0 = 0x00;   // JGeometry::TVec3<f32> — the submitted position
 
@@ -239,6 +254,8 @@ u64 sbr_shine_shadow_next_tag() {
 void sbr_tag_shadow_begin_tick() {
     g_seenThisTick.clear();
     g_modelSeenThisTick.clear();
+    if (g_posToActor.size() > g_mapMaxSize) g_mapMaxSize = g_posToActor.size();
+    g_posToActorPrev.swap(g_posToActor);
     g_posToActor.clear();
     // Decided ONCE per tick, from the two previous ticks' counts: this tick may only pair if the
     // set was the same size last tick as the tick before, because pairing compares THIS tick's
@@ -258,9 +275,10 @@ void sbr_tag_shadow_report() {
                  "are needed: a zero in the first two is a hook that never ran, a zero in the third "
                  "means the request does not come through requestShadow, and misses in the fourth "
                  "mean the position is not carried verbatim after all. owner_of ran {} time(s), "
-                 "refused {} on an unreadable quad and {} on an unreadable request.",
+                 "refused {} on an unreadable quad and {} on an unreadable request; {} lookups "
+                 "HIT; the position map peaked at {} entries in a tick.",
                  g_reqShadowCalls, g_noteReqCalls, g_noteReqWithActor, g_lookupMiss, g_ownerCalls,
-                 g_ownerGuardQuad, g_ownerGuardReq);
+                 g_ownerGuardQuad, g_ownerGuardReq, g_lookupHit, g_mapMaxSize);
     lucent::info("taggap",
                  "shadow tagging: {} volume + {} shine-slice + {} model draw(s) given an identity "
                  "over {} tick(s); {} keyed by their OWNING ACTOR and {} still by slot (the owner "
@@ -372,9 +390,16 @@ u32 owner_of(u32 fp) {
     if (!sb_ram_fast(fp + QUAD_MREQ)) { ++g_ownerGuardQuad; return 0; }
     const u32 req = sb_r32(fp + QUAD_MREQ);
     if (!sb_ram_fast(req + REQ_UNK0 + 8)) { ++g_ownerGuardReq; return 0; }
-    auto it = g_posToActor.find(PosKey{sb_r32(req + REQ_UNK0), sb_r32(req + REQ_UNK0 + 4),
-                                       sb_r32(req + REQ_UNK0 + 8)});
-    if (it == g_posToActor.end()) { ++g_lookupMiss; return 0; }
+    const PosKey key{sb_r32(req + REQ_UNK0), sb_r32(req + REQ_UNK0 + 4),
+                     sb_r32(req + REQ_UNK0 + 8)};
+    auto it = g_posToActorPrev.find(key);
+    if (it == g_posToActorPrev.end()) {
+        // Fall back to this tick's map, in case a scene ever requests before it draws — the
+        // ordering is a property of the director's list order, not a law.
+        it = g_posToActor.find(key);
+        if (it == g_posToActor.end()) { ++g_lookupMiss; return 0; }
+    }
+    ++g_lookupHit;
     return it->second;
 }
 
@@ -433,11 +458,24 @@ void ov_draw_shadow_volume(CPUState& cpu) {
     // OWNER FIRST. With a real per-instance identity the request SLOT stops mattering, so the
     // set-change gate — which exists only because a slot's occupant can change between ticks — does
     // not apply to a draw whose owner is known.
-    const bool tag = live && (owner != 0 || g_setStableThisTick);
+    // ONLY THE SOUND KEY. A draw whose owning actor is known is tagged; everything else is left
+    // untagged and takes the camera delta, exactly as it did before any of this work.
+    //
+    // The slot fallback is gone rather than gated. It is not a weaker identity, it is a WRONG one —
+    // mRequestCount resets every tick and actors re-request in whatever order they run, so slot k
+    // is a different caster from one tick to the next and pairing on it lerps one character's
+    // shadow from another's pose. Measured across the three states, on the interpolator's own
+    // mispairing signature (draws pairing with a pose 100-1000 units away):
+    //     no shadow tagging at all ...................    4
+    //     owner where known, slot elsewhere .......... 280
+    //     slot for everything (r5, no owner join) ... 1,128
+    // Keeping a fallback that is wrong-by-construction to raise a coverage number is the trade this
+    // arc has already made once and had to undo.
+    const bool tag = live && owner != 0;
     (void)setStable;
     (void)fingerprint;
     if (tag) {
-        const u32 key = owner != 0 ? owner : fp;
+        const u32 key = owner;
         const u32 nth = g_seenThisTick[key]++;
         sbr_gxfifo_draw_pop(SB_POP_SHADOW_VOLUME);
         sbr_gxfifo_draw_tag(((uint64_t)key << 32) | (uint64_t)nth);
