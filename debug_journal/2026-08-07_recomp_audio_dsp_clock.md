@@ -27,7 +27,7 @@ its own setters fill its own struct; nothing there crosses to guest memory, so t
 never hurt it. Reading them here would have taken the volume from the wrong halfword of the wrong
 bus — which does not crash and does not read as a layout bug. It reads as a mixer that is quiet.
 
-## The three bugs, and why each one lied
+## The four bugs, and why each one lied
 
 JAS clocks its entire render pipeline off DSP interrupts. There is no DSP. Each missing interrupt
 failed in a way that pointed somewhere else.
