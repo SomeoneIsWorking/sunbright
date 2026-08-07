@@ -28,11 +28,35 @@ exhaustive, so the columns sum to the draw count.
 | shine shadow slice | **95.4%** | per-slice ordinal |
 | JPA particle | **95.3%** | own motion as a translation |
 | shadow volume | **94.8%** | keyed by the OWNING ACTOR |
-| flag (deforming) | 0% | needs the vertex path |
-| sea ripple (deforming) | 0% | needs the vertex path |
+| flag (deforming) | **100%** | VERTEX interpolation |
+| sea ripple (deforming) | **100%** | VERTEX interpolation |
 | shadow alpha cube | 0% | not investigated |
 | text glyphs, J2D pane | — | **CORRECT**: 2D has no meaningful in-between |
 | (unlabelled) | — | the audit's own edge; kept visible on purpose |
+
+### Deforming geometry — the vertex path (2026-08-07)
+
+Flags and the sea ripple grid rebuild their mesh every tick, so their motion lives in the VERTEX
+DATA and no matrix reaches them. `interp::patch_vertices` lerps the positions directly: 86,910 of
+107,813 offered draws (80.6%), with both populations at 100% of what the audit can see.
+
+Three things this had to get right, each of which fails silently otherwise:
+
+* **A separate buffer.** Both emissions replay the same recorded passes and therefore the same
+  `vertRange`, so patching in place corrupts the tick's OWN frame. Uniforms escape this because the
+  snapshot re-pushes them; vertices have no such path. The lerp is pushed as new vertex data and
+  only the interpolated emission's command is repointed at it.
+* **Big-endian floats.** The buffer holds raw GC vertex records — the shader byte-swaps them
+  (`gx/shader.cpp` `bswap32`). A lerp on the native interpretation of those bytes produces garbage
+  that still renders.
+* **It must run LAST.** "Direct f32 positions and a tag" also describes a JPA billboard, whose
+  positions are baked in EYE space; lerping those across ticks mixes two view transforms. Running
+  the vertex path first did exactly that and moved 516,562 particle draws off the correct
+  billboard-translation path onto this one. It is now the fallback after the specific paths, and
+  particles are back at 414,241 billboard / 0 vertex.
+
+A draw whose vertex COUNT changed between ticks is snapped, not smeared between two unrelated
+meshes (7,882 per run), and one with no consecutive previous tick snaps too (20,903).
 
 `camera-only` is an **upper bound** on the defect, not a measurement of it: for STATIC world
 geometry the camera delta is exactly correct, and no sound test to separate the two exists yet. Two

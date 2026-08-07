@@ -24,6 +24,8 @@ extern "C" void func_801dd21c(CPUState&);   // TMapObjWave::draw
 extern "C" void func_80225d00(CPUState&);   // SMS_DrawCube
 extern "C" void func_802f1b00(CPUState&);   // JUTResFont::drawChar_scale
 bool sbr_lerp_enabled();
+void sbr_gxfifo_draw_tag(uint64_t tag);
+uint64_t sbr_gxfifo_pending_tag();
 
 namespace {
 
@@ -40,8 +42,32 @@ struct Scope {
     }
 };
 
-void ov_flag(CPUState& cpu)      { Scope s(SB_POP_FLAG);      func_801dc34c(cpu); }
-void ov_wave(CPUState& cpu)      { Scope s(SB_POP_WAVE);      func_801dd21c(cpu); }
+// A DEFORMING object gets an identity as well as a label. Its mesh is rebuilt every tick, so the
+// vertex path — not any matrix — is what interpolates it, and that path needs a stable key to find
+// the previous tick's vertices. `this` (r3) is a real per-instance object: a flag and a wave grid
+// are persistent actors, not pooled per-tick records, so this is the sound kind of key rather than
+// the ordinals this project has had to withdraw twice.
+//
+// The vertex-count gate lives in patch_vertices: a mesh rebuilt at a different resolution has no
+// correspondence and snaps rather than smearing between two unrelated shapes.
+struct Deforming {
+    bool on;
+    Deforming(u8 pop, u32 self) : on(sbr_lerp_enabled() && self != 0 && sbr_gxfifo_pending_tag() == 0) {
+        if (on) {
+            sbr_gxfifo_draw_pop(pop);
+            sbr_gxfifo_draw_tag((uint64_t)self << 32 | 1u);
+        }
+    }
+    ~Deforming() {
+        if (on) {
+            sbr_gxfifo_draw_tag(0);
+            sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+        }
+    }
+};
+
+void ov_flag(CPUState& cpu) { Deforming d(SB_POP_FLAG, (u32)cpu.gpr[3]); func_801dc34c(cpu); }
+void ov_wave(CPUState& cpu) { Deforming d(SB_POP_WAVE, (u32)cpu.gpr[3]); func_801dd21c(cpu); }
 void ov_cube(CPUState& cpu)      { Scope s(SB_POP_DRAW_CUBE); func_80225d00(cpu); }
 void ov_text(CPUState& cpu)      { Scope s(SB_POP_TEXT);      func_802f1b00(cpu); }
 
