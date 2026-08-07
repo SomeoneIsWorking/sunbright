@@ -72,6 +72,7 @@ extern "C" void func_80225c30(CPUState&);   // SMS_DrawShape(J3DModelData*, u16)
 extern "C" void func_80218020(CPUState&);   // TLiveActor::requestShadow()
 extern "C" void func_8022ecec(CPUState&);   // TMBindShadowManager::request(const TCircleShadowRequest&, u32)
 extern "C" void func_8022ebbc(CPUState&);   // TMBindShadowManager::forceRequest(...)
+
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
 bool sbr_lerp_enabled();
@@ -246,6 +247,23 @@ u32 g_reqBase = 0;          // absolute address of mRequests[0]
 u32 g_acceptedThisTick = 0;
 std::unordered_map<u32, u32> g_addrToActor, g_addrToActorPrev;
 unsigned long g_addrHit = 0, g_addrMiss = 0, g_rescans = 0;
+
+// ── WHY PASS-4 SHADOW SHAPES ARE STILL UNKEYED — a route that was tried and is CLOSED ───────────
+//
+// Pass 4 of drawShadow draws the type-3 (ship) shapes through SMS_DrawShape, which receives only the
+// shared shadow MODEL; the per-instance quad lives in the enclosing loop and never reaches the call.
+// That population is the largest one still snapping.
+//
+// The decomp shows the loop doing `PSMTXConcat(view, fp->mMtx, fpMv)` immediately before the draw,
+// and mMtx is at quad+0x04 — so the quad looked recoverable as r4-4, verified by requiring its mReq
+// to resolve to a known owner. It is not: MEASURED, drawShadow was entered 20,386 times and
+// PSMTXConcat (US 0x803499f0) was called ZERO times inside it. Retail does not reach that symbol
+// here — inlined, or a different concat entry — so the recovery has nothing to hook and the hooks
+// were removed rather than left in place doing nothing at the cost of a wrapper on one of the
+// hottest functions in the game.
+//
+// What would work instead: hook the pass-4 loop itself, or find the concat retail actually calls.
+// Neither is done here.
 u32 g_requestingActor = 0;
 unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
 // The JOIN's own denominators. "0 owners resolved" has three causes — requestShadow never fired,
@@ -547,6 +565,7 @@ u32 owner_of(u32 fp) {
     return it->second;
 }
 
+
 void ov_draw_shadow_volume(CPUState& cpu) {
     // r5, NOT r4. drawShadowVolume is a MEMBER function — `void TMBindShadowManager::
     // drawShadowVolume(bool useNear, TAlphaShadowQuad* fp)` — so r3 is `this`, r4 is `useNear` and
@@ -637,6 +656,7 @@ void ov_draw_shadow_volume(CPUState& cpu) {
 }
 
 } // namespace
+
 
 SB_OVERRIDE(0x80218020u, ov_request_shadow, "TLiveActor::requestShadow",
             "60fps: note which ACTOR is requesting a shadow, so its draws can be keyed by a real "
