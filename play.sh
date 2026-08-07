@@ -37,10 +37,11 @@
 # uninterpolated 1.18, at matched guest ticks with the camera rotating.
 #
 # WHAT INTERPOLATES, measured per population (SBR_LUCENT_DEBUG=interp prints this live):
-#   world geometry 97.3%   ·   particles 95.3%   ·   shadows 94.4%   ·   2D/HUD correctly snaps
-# Still snapping: flags and the sea ripple grid (they deform per tick, so only their vertices carry
-# the motion), the shine-shadow and ship-shadow shapes, and body shadows. docs/60fps/README.md has
-# the table and a reason for every row.
+#   ship/pass-4 shadows 99.8%  ·  world geometry 97.3%  ·  shine shadow 95.4%  ·  particles 95.3%
+#   ·  shadow volume 94.8%  ·  2D/HUD correctly snaps
+# Still snapping: flags and the sea ripple grid — they DEFORM per tick, so only their vertices carry
+# the motion and no matrix can express it — and the shadow alpha cube. docs/60fps/README.md has the
+# table and a reason for every row.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -122,9 +123,9 @@ CONTROLS
 
 if [[ "$FPS60" == 1 ]]; then
     echo " 60fps interpolation: ON — game logic still runs at 30Hz, as on console."
-    echo "                          Interpolating: world 97.3%, particles 95.3%, shadows 94.4%."
-    echo "                          Still snapping: flags, sea ripple, body shadows (see"
-    echo "                          docs/60fps/README.md for the full table and why)."
+    echo "                          Interpolating: shadows 94.8-99.8%, world 97.3%, particles 95.3%."
+    echo "                          Still snapping: flags and the sea ripple grid (they deform, so"
+    echo "                          only their vertices carry the motion) — docs/60fps/README.md."
     echo "────────────────────────────────────────────────────────────────────────────────"
 fi
 echo
