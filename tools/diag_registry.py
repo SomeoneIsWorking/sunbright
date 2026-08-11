@@ -273,11 +273,15 @@ def render():
     for name, sites in code.items():
         by_prefix.setdefault(name.split("_")[0], {})[name] = sites
     for prefix in sorted(by_prefix):
-        lines += [f"## `{prefix}_*`", "", "| switch | sites | first read at | |", "|---|---|---|---|"]
+        # FILE, NOT FILE:LINE. The line number went stale the moment anything was inserted above
+        # the getenv, so every unrelated edit anywhere in a file rewrote this table and failed the
+        # commit gate until it was regenerated — a recurring tax that bought nothing, since a reader
+        # greps the switch name anyway. The file still narrows it to one place.
+        lines += [f"## `{prefix}_*`", "", "| switch | sites | first read in | |", "|---|---|---|---|"]
         for name in sorted(by_prefix[prefix]):
             sites = by_prefix[prefix][name]
             gated = "gated print" if any(s[2] for s in sites) else ""
-            lines.append(f"| `{name}` | {len(sites)} | `{sites[0][0]}:{sites[0][1]}` | {gated} |")
+            lines.append(f"| `{name}` | {len(sites)} | `{sites[0][0]}` | {gated} |")
         lines.append("")
     total_gated = sum(1 for v in code.values() if any(s[2] for s in v))
     lines += [f"**{len(code)} switches; {total_gated} still gate a raw print.**", ""]

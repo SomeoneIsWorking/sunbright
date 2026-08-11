@@ -37,7 +37,14 @@ emitter address cannot.
   (screen-space under a *perspective* projection — declared by a seam, because nothing else can
   detect it; it must not move) · `no-primitives` (the call site emits no geometry — a material
   display list) · `seam-owned` (a hand-written seam claims this site's primitives, so the site has
-  no verdict of its own — the note names the `pop.*` row that holds the measurement) · `unmeasured`.
+  no verdict of its own — the note names the `pop.*` row that holds the measurement) · `drew-once`
+  (every draw was a FIRST SIGHTING — the graphic appeared on one tick and never again, so there was
+  never a previous pose to interpolate from and there is no verdict to give) · `unmeasured`.
+
+  A **first sighting is excluded from the percentage entirely**, on both sides. An object being
+  drawn for the first time has nothing to pair with, so counting it as a failure made every
+  once-per-tick emitter read `partial` at 99.7% forever, and counting it as a success would credit
+  the path for a frame it never produced. The audit prints the excluded count beside every row.
 - `stages`, `first_seen`.
 
 There are deliberately **no draw counts**. A row is a flag that a source of visual output exists and

@@ -15,6 +15,30 @@ between them.
 
 ---
 
+## What counts as a DEFECT (measured, 2026-08-11)
+
+Not everything that fails to interpolate is a failure. Three fates are correct by construction and
+the audit keeps each of them apart from the defect column, because collapsing them makes a perfect
+population look broken and a broken one look ordinary:
+
+- **`snap:2D`** — an orthographic element has no meaningful in-between.
+- **`snap:EXACT`** — screen-space under a *perspective* projection, which only the emitter can know,
+  so a seam has to declare it.
+- **`birth`** — the object is being drawn for the FIRST TIME in the run. There is no previous pose
+  to interpolate from, and no amount of correct behaviour can produce one.
+
+Births used to be filed as `camera-only`. The cost was not subtle: every once-per-tick emitter sat
+at exactly **99.7% PARTIAL** for the whole run because of its own first tick, which is a verdict that
+can never read clean. With births excluded from both sides of the percentage, Delfino's JPA
+particles, flags, wires, water mirror and shine slices read **100% interpolates**, and the two rows
+that are genuinely imperfect — the shadow alpha cube at 96.2% and the particle stripe chain at
+94.9% — stop being camouflaged by a dozen rows carrying the same label for no reason.
+
+The flag has its own control in aurora's `interp` self-test, because a bug that called *every*
+unpaired draw a birth would show every population at 100%: a never-seen tag must read birth, the
+same tag one tick later must pair, and a tag that drew, skipped a tick and came back must read
+**not** a birth.
+
 ## What counts as a mispairing (measured, 2026-08-11)
 
 The audit used to call any paired draw moving **≥10 world units per tick** a mispairing. That is

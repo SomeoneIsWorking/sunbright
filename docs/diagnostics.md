@@ -8,367 +8,367 @@ logger — that is debt to convert, not a feature.
 
 ## `AURORA_*`
 
-| switch | sites | first read at | |
+| switch | sites | first read in | |
 |---|---|---|---|
-| `AURORA_ARRAYBASE_REJECT_RAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp:1549` |  |
-| `AURORA_DRAW_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3557` |  |
-| `AURORA_EFB_FEEDBACK` | 1 | `extern/aurora/lib/gfx/common.cpp:919` |  |
-| `AURORA_FIFO_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:488` |  |
-| `AURORA_INTERP_ALPHA` | 1 | `extern/aurora/lib/gfx/common.cpp:612` |  |
-| `AURORA_PRESENT_RELAXED` | 1 | `extern/aurora/lib/webgpu/gpu.cpp:215` |  |
-| `AURORA_REPLAY_LOG_EVERY` | 1 | `extern/aurora/lib/gfx/common.cpp:1980` |  |
-| `AURORA_REPLAY_PRESENT` | 1 | `extern/aurora/lib/gfx/common.cpp:597` |  |
-| `AURORA_REPLAY_PROFILE` | 2 | `extern/aurora/lib/aurora.cpp:392` |  |
+| `AURORA_ARRAYBASE_REJECT_RAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `AURORA_DRAW_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `AURORA_EFB_FEEDBACK` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
+| `AURORA_FIFO_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `AURORA_INTERP_ALPHA` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
+| `AURORA_PRESENT_RELAXED` | 1 | `extern/aurora/lib/webgpu/gpu.cpp` |  |
+| `AURORA_REPLAY_LOG_EVERY` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
+| `AURORA_REPLAY_PRESENT` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
+| `AURORA_REPLAY_PROFILE` | 2 | `extern/aurora/lib/aurora.cpp` |  |
 
 ## `SB_*`
 
-| switch | sites | first read at | |
+| switch | sites | first read in | |
 |---|---|---|---|
-| `SB_ACTOR_LIGHT_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRActor.cpp:129` | gated print |
-| `SB_ALLOW_NAN_JOINTS` | 1 | `decomp/sms/src/M3DUtil/M3UModel.cpp:135` |  |
-| `SB_AMB_TRACE` | 2 | `extern/aurora/lib/gx/command_processor.cpp:1619` | gated print |
-| `SB_ARC_DBG` | 7 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp:258` |  |
-| `SB_ARR_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4339` |  |
-| `SB_ASYNC_PIPELINES` | 1 | `extern/aurora/lib/gfx/pipeline_cache.cpp:1111` |  |
-| `SB_AUDIO_RAW` | 1 | `sms-boot/runtime/jas_kernel_native.cpp:348` |  |
-| `SB_BLO_BOUNDS_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp:118` | gated print |
-| `SB_BLO_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp:15` | gated print |
-| `SB_CALCPASS_DBG` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp:302` | gated print |
-| `SB_CALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:851` |  |
-| `SB_CAM_DBG` | 2 | `decomp/sms/src/Camera/CameraOption.cpp:88` | gated print |
-| `SB_CLEAR_OVERRIDE` | 1 | `extern/aurora/lib/gfx/common.cpp:1885` |  |
-| `SB_CLEAR_RGB` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:187` | gated print |
-| `SB_CLOUD_TC_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4261` |  |
-| `SB_COL_DBG` | 1 | `decomp/sms/src/Map/MapCollisionEntry.cpp:152` | gated print |
-| `SB_COND_DBG` | 1 | `decomp/sms/src/Enemy/conductor.cpp:375` | gated print |
-| `SB_COPY_DBG_AFTER` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:252` |  |
-| `SB_CULL_STATS` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3679` |  |
-| `SB_DBFILL_BT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:439` |  |
-| `SB_DBG_AUDIO` | 14 | `sms-boot/runtime/jas_kernel_native.cpp:228` | gated print |
-| `SB_DBG_IDX` | 1 | `extern/aurora/lib/gx/shader.cpp:1287` |  |
-| `SB_DBG_MATAMB` | 2 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DMaterial.cpp:262` | gated print |
-| `SB_DBHEAD_DBG_AFTER` | 3 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:114` |  |
-| `SB_DBHEAD_MAT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:564` |  |
-| `SB_DEFER_COPY_CLEAR` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:163` |  |
-| `SB_DEGEN_DRAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2619` |  |
-| `SB_DIRECT_BR` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp:74` |  |
-| `SB_DL_SANITIZE_DBG` | 1 | `extern/aurora/lib/dolphin/gx/GXDispList.cpp:147` | gated print |
-| `SB_DL_TAG` | 1 | `extern/aurora/lib/dolphin/gx/GXDispList.cpp:170` |  |
-| `SB_DL_VALIDATE` | 4 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DPacket.cpp:18` | gated print |
-| `SB_DOUBLE_DRAW` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp:379` |  |
-| `SB_DRAWBUF_CHECK` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:517` |  |
-| `SB_DRAWBUF_STATS` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp:474` |  |
-| `SB_DRAW_DUMP` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3912` |  |
-| `SB_DRAW_DUMP_AFTER` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3924` |  |
-| `SB_DRAW_DUMP_ALL` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3936` |  |
-| `SB_DRAW_DUMP_FRAME` | 2 | `extern/aurora/lib/gx/command_processor.cpp:3884` |  |
-| `SB_DRAW_STATS` | 1 | `extern/aurora/lib/gx/fifo.cpp:158` | gated print |
-| `SB_DUMP_FRAME` | 1 | `extern/aurora/lib/aurora.cpp:497` |  |
-| `SB_DUMP_FRAME_AFTER` | 1 | `extern/aurora/lib/aurora.cpp:499` |  |
-| `SB_DUMP_FRAME_COUNT` | 1 | `extern/aurora/lib/aurora.cpp:512` |  |
-| `SB_DUMP_FRAME_EVERY` | 1 | `extern/aurora/lib/aurora.cpp:508` |  |
-| `SB_DUMP_FST` | 1 | `extern/aurora/lib/dolphin/dvd/fst.cpp:86` | gated print |
-| `SB_DUMP_PERFORMLISTS` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp:493` | gated print |
-| `SB_DUMP_WGSL` | 1 | `extern/aurora/lib/gx/shader.cpp:2120` |  |
-| `SB_EFBTEX_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDREfbCtrl.cpp:87` | gated print |
-| `SB_FB_SCALE` | 1 | `extern/aurora/lib/window.cpp:417` |  |
-| `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp:723` |  |
-| `SB_FIFO_REPLAY` | 1 | `sms-boot/main.cpp:89` |  |
-| `SB_FIFO_TRACE_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp:499` |  |
-| `SB_FORCE_ABUF` | 1 | `extern/aurora/lib/gx/shader.cpp:2104` |  |
-| `SB_FORCE_COLOR` | 1 | `extern/aurora/lib/gx/shader.cpp:2098` |  |
-| `SB_FORCE_LOD0` | 1 | `extern/aurora/lib/gx/gx.cpp:1160` |  |
-| `SB_FORCE_RAS` | 1 | `extern/aurora/lib/gx/shader.cpp:2099` |  |
-| `SB_FRUIT_DBG` | 1 | `decomp/sms/src/MoveBG/MapObjBall.cpp:23` | gated print |
-| `SB_GENOBJ_SKIP_ALL` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp:113` |  |
-| `SB_GXBEGIN_TRACE` | 1 | `extern/aurora/lib/dolphin/gx/GXVert.cpp:30` |  |
-| `SB_H` | 3 | `sms-recomp/host/main.cpp:108` |  |
-| `SB_HEADLESS` | 2 | `sms-boot/runtime/jas_kernel_native.cpp:372` |  |
-| `SB_HEAP_DBG` | 2 | `decomp/sms/src/JSystem/JKernel/JKRExpHeap.cpp:45` | gated print |
-| `SB_HEAP_GUARD` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp:260` |  |
-| `SB_HOST_ALLOC_CAP_MB` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp:340` |  |
-| `SB_INDIRECT_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp:74` | gated print |
-| `SB_INITSTAGE_DBG` | 1 | `decomp/sms/src/Map/Map.cpp:175` | gated print |
-| `SB_J2D_DRAW_DUMP` | 2 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp:299` | gated print |
-| `SB_J2D_PIC_DUMP` | 2 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp:99` | gated print |
-| `SB_J2D_PIC_HEXDUMP` | 1 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp:31` | gated print |
-| `SB_J3DSHAPE_SKIP_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp:314` |  |
-| `SB_J3D_DBG` | 9 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:800` | gated print |
-| `SB_JAI_DBG` | 1 | `decomp/sms/src/JSystem/JAudio/JAInterface/JAIData.cpp:194` |  |
-| `SB_JKR_BT` | 1 | `decomp/sms/src/JSystem/JKernel/JKRSolidHeap.cpp:108` |  |
-| `SB_JPA_DBG` | 1 | `decomp/sms/src/JSystem/JParticle/JPAEmitterManager.cpp:196` |  |
-| `SB_JPA_TEXDBG` | 1 | `decomp/sms/src/JSystem/JParticle/JPATexture.cpp:18` | gated print |
-| `SB_KEEP_PH6_MAPXLU` | 1 | `decomp/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp:132` |  |
-| `SB_LF_CLAMP_DIAG` | 1 | `decomp/sms/src/Camera/lensflare.cpp:103` |  |
-| `SB_LF_DBG` | 1 | `decomp/sms/src/Camera/lensflare.cpp:129` | gated print |
-| `SB_LIGHT_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3828` |  |
-| `SB_LOAD_PANE_DBG` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp:632` | gated print |
-| `SB_LOG` | 3 | `sms-recomp/runtime/sb_log.cpp:34` | gated print |
-| `SB_MAKEVCD_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp:233` | gated print |
-| `SB_MAPXLU_DBG` | 1 | `decomp/sms/src/Map/Map.cpp:410` |  |
-| `SB_MARIO_ANIM_DBG` | 1 | `decomp/sms/src/Player/MarioMain.cpp:94` | gated print |
-| `SB_MARIO_DBG` | 4 | `decomp/sms/src/Player/MarioCap.cpp:224` | gated print |
-| `SB_MIRRORBUF_DBG` | 1 | `decomp/sms/src/Map/MapMirror.cpp:387` | gated print |
-| `SB_MODEL_TRACE` | 5 | `decomp/sms/src/JSystem/J3D/J3DGraphLoader/J3DModelLoader.cpp:80` | gated print |
-| `SB_MSG_DBG` | 1 | `decomp/sms/src/GC2D/MessageUtil.cpp:50` | gated print |
-| `SB_NAMEREF_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp:45` |  |
-| `SB_NDC_DRAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2793` |  |
-| `SB_NDC_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2789` |  |
-| `SB_NDC_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2786` |  |
-| `SB_NDC_PROBE_AFTER` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2790` |  |
-| `SB_NO_ACMP` | 1 | `extern/aurora/lib/gx/gx.cpp:931` |  |
-| `SB_NO_ARRCACHE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4353` |  |
-| `SB_NO_COPYDISP` | 1 | `extern/aurora/lib/webgpu/gpu.cpp:363` |  |
-| `SB_NO_CULL` | 1 | `extern/aurora/lib/gx/gx.cpp:732` |  |
-| `SB_NO_DEPTH` | 1 | `extern/aurora/lib/gx/gx.cpp:764` |  |
-| `SB_NO_FASTBOOT` | 1 | `decomp/sms/src/System/Application.cpp:649` |  |
-| `SB_NO_GPU_PROF` | 1 | `extern/aurora/lib/webgpu/gpu_prof.cpp:295` |  |
-| `SB_NO_MERGE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3341` |  |
-| `SB_NO_MIRROR_ENTRY` | 1 | `decomp/sms/src/Strategic/MirrorActor.cpp:90` |  |
-| `SB_NO_ZTEST_DRAWS` | 1 | `extern/aurora/lib/gx/gx.cpp:596` |  |
-| `SB_NO_ZWRITE_DRAWS` | 1 | `extern/aurora/lib/gx/gx.cpp:581` |  |
-| `SB_NPCPARTS_DBG` | 1 | `decomp/sms/src/NPC/NpcParts.cpp:68` | gated print |
-| `SB_NPC_DBG` | 2 | `decomp/sms/src/NPC/NpcBase.cpp:630` | gated print |
-| `SB_NPC_ON` | 1 | `decomp/sms/src/System/MarNameRefGen_NPC.cpp:36` |  |
-| `SB_NRM_VIZ` | 1 | `extern/aurora/lib/gx/shader.cpp:33` |  |
-| `SB_ONLY_DRAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3814` |  |
-| `SB_OPCODE_CENSUS` | 1 | `extern/aurora/lib/gx/command_processor.cpp:542` |  |
-| `SB_OPT_FIX` | 1 | `decomp/sms/src/Player/MarioMove.cpp:2063` |  |
-| `SB_ORTHO_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4726` |  |
-| `SB_PAD_SCRIPT` | 1 | `sms-boot/runtime/pad_script.cpp:114` |  |
-| `SB_PANE_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp:242` |  |
-| `SB_PASS_DBG` | 1 | `extern/aurora/lib/gfx/common.cpp:445` |  |
-| `SB_PERSP_ZONLY` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4553` |  |
-| `SB_PIN_STATE` | 1 | `sms-boot/runtime/pin_state.cpp:42` |  |
-| `SB_PIXEL_WATCH` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2405` |  |
-| `SB_PLACE_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRPlacement.cpp:31` | gated print |
-| `SB_PLIST_ORDER_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp:63` |  |
-| `SB_PLIST_ORDER_DBG_AFTER` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp:65` |  |
-| `SB_PL_DBG` | 1 | `decomp/sms/src/System/PerformList.cpp:36` |  |
-| `SB_POS_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2238` |  |
-| `SB_PRESENT_COPY` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:214` |  |
-| `SB_PRESENT_PASS1` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:219` |  |
-| `SB_PROFILE` | 1 | `sms-boot/runtime/frame_seam.cpp:105` |  |
-| `SB_PROFILE_DRAWPRIM` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2041` |  |
-| `SB_PROFILE_GFX` | 3 | `extern/aurora/lib/aurora.cpp:378` |  |
-| `SB_PROJ_BT` | 2 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp:120` | gated print |
-| `SB_PROJ_DBG` | 1 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp:65` |  |
-| `SB_PROJ_DBG_AFTER` | 2 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp:48` |  |
-| `SB_QUAD_RECT` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2278` |  |
-| `SB_RAL_DBG` | 2 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp:289` | gated print |
-| `SB_RASC_VIZ` | 1 | `extern/aurora/lib/gx/shader.cpp:44` |  |
-| `SB_RDOC` | 1 | `extern/aurora/lib/aurora.cpp:82` |  |
-| `SB_RDOC_PATH` | 1 | `extern/aurora/lib/aurora.cpp:103` |  |
-| `SB_ROOTMTX_DBG` | 1 | `decomp/sms/src/Strategic/liveactor.cpp:262` | gated print |
-| `SB_SCENARIO` | 1 | `decomp/sms/src/System/Application.cpp:682` |  |
-| `SB_SCENECMN_DUMP` | 1 | `decomp/sms/src/System/MarDirectorLoadResource.cpp:88` | gated print |
-| `SB_SCENE_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp:342` | gated print |
-| `SB_SEA_DBG` | 2 | `decomp/sms/src/Map/MapStaticObject.cpp:205` | gated print |
-| `SB_SEL_DBG` | 10 | `decomp/sms/src/GC2D/CardLoad.cpp:543` | gated print |
-| `SB_SEL_DUMP` | 2 | `decomp/sms/src/GC2D/CardLoad.cpp:556` |  |
-| `SB_SEL_DUMP_N` | 2 | `decomp/sms/src/GC2D/CardLoad.cpp:557` |  |
-| `SB_SEL_DUMP_SETTLED` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp:616` | gated print |
-| `SB_SEL_PICK` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp:593` | gated print |
-| `SB_SEL_POS` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp:565` | gated print |
-| `SB_SHADER_CHECK` | 1 | `extern/aurora/lib/gx/shader.cpp:2152` |  |
-| `SB_SHADER_DUMP` | 2 | `extern/aurora/lib/gx/shader.cpp:967` |  |
-| `SB_SHADER_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4520` | gated print |
-| `SB_SHADOW_BISECT` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp:511` |  |
-| `SB_SHADOW_DBG` | 3 | `decomp/sms/src/MarioUtil/LightUtil.cpp:265` | gated print |
-| `SB_SHADOW_PASSES` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp:516` |  |
-| `SB_SHADOW_SETUPN` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp:523` |  |
-| `SB_SHADOW_VIZ` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp:546` |  |
-| `SB_SHAPEDRAW_DBG` | 2 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp:89` | gated print |
-| `SB_SHAPE_STATS` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp:334` |  |
-| `SB_SHIMMER_DBG` | 1 | `decomp/sms/src/Map/Shimmer.cpp:33` | gated print |
-| `SB_SKIP_ADD` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4591` |  |
-| `SB_SKIP_ADD_OVERLAY` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3699` |  |
-| `SB_SKIP_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3308` | gated print |
-| `SB_SKIP_BIGQUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2354` |  |
-| `SB_SKIP_COPY_QUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4540` |  |
-| `SB_SKIP_COVERING` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3261` |  |
-| `SB_SKIP_DUOTONE` | 1 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp:276` |  |
-| `SB_SKIP_FADER` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3743` | gated print |
-| `SB_SKIP_GHOST` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp:420` |  |
-| `SB_SKIP_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4498` |  |
-| `SB_SKIP_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4590` |  |
-| `SB_SKIP_MBLACK` | 1 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp:282` |  |
-| `SB_SKIP_MIRROR_FAR` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4699` |  |
-| `SB_SKIP_MIRROR_NEAR` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4700` |  |
-| `SB_SKIP_OPAQUE_P4` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3713` | gated print |
-| `SB_SKIP_ORTHO` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4563` |  |
-| `SB_SKIP_PERSP` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4573` |  |
-| `SB_SKIP_SCENEQUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3728` | gated print |
-| `SB_SKIP_SKY_IDX` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4666` |  |
-| `SB_SKIP_TEV3` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4326` |  |
-| `SB_SKIP_TEX` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3783` |  |
-| `SB_SKIP_TEXDIM` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4621` |  |
-| `SB_SKIP_TEXDIM_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4641` | gated print |
-| `SB_SKIP_VERTS` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3760` |  |
-| `SB_SKIP_WNEG_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3274` |  |
-| `SB_SKIP_WNEG_KIND` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3292` |  |
-| `SB_SKY_DIM_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4623` | gated print |
-| `SB_STAGE` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:311` |  |
-| `SB_STAGE_DUMP` | 1 | `decomp/sms/src/System/Application.cpp:1043` |  |
-| `SB_STATICOBJ_DBG` | 1 | `decomp/sms/src/Map/MapStaticObject.cpp:430` | gated print |
-| `SB_STRAT_DUMP` | 1 | `decomp/sms/src/Strategic/Strategy.cpp:106` | gated print |
-| `SB_SUNGLASS_DBG` | 1 | `decomp/sms/src/GC2D/SunGlass.cpp:24` | gated print |
-| `SB_TABLES_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp:311` | gated print |
-| `SB_TBX_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DTextBox.cpp:245` | gated print |
-| `SB_TEV_DUMP` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4207` | gated print |
-| `SB_TEV_STOP` | 1 | `extern/aurora/lib/gx/shader.cpp:56` |  |
-| `SB_TEXBIND_DBG` | 1 | `extern/aurora/lib/gx/gx.cpp:525` | gated print |
-| `SB_TEX_DUMP` | 1 | `extern/aurora/lib/gfx/texture.cpp:87` |  |
-| `SB_TEX_DUMP_MAX` | 1 | `extern/aurora/lib/gfx/texture.cpp:91` |  |
-| `SB_TIMELINE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:106` |  |
-| `SB_TITLE_PANE_DBG` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp:723` |  |
-| `SB_TRACE_SEQ` | 7 | `sms-boot/runtime/frame_seam.cpp:85` | gated print |
-| `SB_TURBO` | 2 | `sms-recomp/overrides/native_frame.cpp:139` |  |
-| `SB_UNIF_DUMP` | 1 | `extern/aurora/lib/gx/shader_info.cpp:405` |  |
-| `SB_UV_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2690` |  |
-| `SB_VIEWCALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:945` |  |
-| `SB_VIZ_TAG` | 1 | `extern/aurora/lib/gfx/common.cpp:2366` |  |
-| `SB_W` | 3 | `sms-recomp/host/main.cpp:107` |  |
-| `SB_WATCHDOG_SECS` | 1 | `sms-boot/runtime/watchdog.cpp:59` |  |
-| `SB_WATER_DBG` | 1 | `decomp/sms/src/Player/ModelWaterManager.cpp:1631` |  |
-| `SB_WAVE_ALPHA_RASA` | 1 | `decomp/sms/src/MoveBG/MapObjWave.cpp:262` |  |
-| `SB_WAVE_DBG` | 1 | `decomp/sms/src/MoveBG/MapObjWave.cpp:18` | gated print |
-| `SB_WAVE_SOLID` | 1 | `decomp/sms/src/MoveBG/MapObjWave.cpp:274` |  |
-| `SB_WIPE_DBG` | 1 | `sms-boot/runtime/hx_wipe.cpp:49` |  |
-| `SB_XH_GPU_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4295` |  |
-| `SB_XH_SKY_DBG` | 4 | `decomp/sms/src/Map/Sky.cpp:115` | gated print |
-| `SB_XLU_DBG` | 2 | `decomp/sms/src/Map/MapXlu.cpp:47` | gated print |
+| `SB_ACTOR_LIGHT_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRActor.cpp` | gated print |
+| `SB_ALLOW_NAN_JOINTS` | 1 | `decomp/sms/src/M3DUtil/M3UModel.cpp` |  |
+| `SB_AMB_TRACE` | 2 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_ARC_DBG` | 7 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp` |  |
+| `SB_ARR_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_ASYNC_PIPELINES` | 1 | `extern/aurora/lib/gfx/pipeline_cache.cpp` |  |
+| `SB_AUDIO_RAW` | 1 | `sms-boot/runtime/jas_kernel_native.cpp` |  |
+| `SB_BLO_BOUNDS_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp` | gated print |
+| `SB_BLO_DBG` | 2 | `decomp/sms/src/JSystem/J2D/J2DPane.cpp` | gated print |
+| `SB_CALCPASS_DBG` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp` | gated print |
+| `SB_CALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp` |  |
+| `SB_CAM_DBG` | 2 | `decomp/sms/src/Camera/CameraOption.cpp` | gated print |
+| `SB_CLEAR_OVERRIDE` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
+| `SB_CLEAR_RGB` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp` | gated print |
+| `SB_CLOUD_TC_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_COL_DBG` | 1 | `decomp/sms/src/Map/MapCollisionEntry.cpp` | gated print |
+| `SB_COND_DBG` | 1 | `decomp/sms/src/Enemy/conductor.cpp` | gated print |
+| `SB_COPY_DBG_AFTER` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp` |  |
+| `SB_CULL_STATS` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_DBFILL_BT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp` |  |
+| `SB_DBG_AUDIO` | 14 | `sms-boot/runtime/jas_kernel_native.cpp` | gated print |
+| `SB_DBG_IDX` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_DBG_MATAMB` | 2 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DMaterial.cpp` | gated print |
+| `SB_DBHEAD_DBG_AFTER` | 3 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp` |  |
+| `SB_DBHEAD_MAT` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp` |  |
+| `SB_DEFER_COPY_CLEAR` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp` |  |
+| `SB_DEGEN_DRAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_DIRECT_BR` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp` |  |
+| `SB_DL_SANITIZE_DBG` | 1 | `extern/aurora/lib/dolphin/gx/GXDispList.cpp` | gated print |
+| `SB_DL_TAG` | 1 | `extern/aurora/lib/dolphin/gx/GXDispList.cpp` |  |
+| `SB_DL_VALIDATE` | 4 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DPacket.cpp` | gated print |
+| `SB_DOUBLE_DRAW` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp` |  |
+| `SB_DRAWBUF_CHECK` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp` |  |
+| `SB_DRAWBUF_STATS` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp` |  |
+| `SB_DRAW_DUMP` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_DRAW_DUMP_AFTER` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_DRAW_DUMP_ALL` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_DRAW_DUMP_FRAME` | 2 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_DRAW_STATS` | 1 | `extern/aurora/lib/gx/fifo.cpp` | gated print |
+| `SB_DUMP_FRAME` | 1 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_DUMP_FRAME_AFTER` | 1 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_DUMP_FRAME_COUNT` | 1 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_DUMP_FRAME_EVERY` | 1 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_DUMP_FST` | 1 | `extern/aurora/lib/dolphin/dvd/fst.cpp` | gated print |
+| `SB_DUMP_PERFORMLISTS` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
+| `SB_DUMP_WGSL` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_EFBTEX_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDREfbCtrl.cpp` | gated print |
+| `SB_FB_SCALE` | 1 | `extern/aurora/lib/window.cpp` |  |
+| `SB_FIFO_NO_COPYSYN` | 1 | `sms-boot/runtime/fifo_player.cpp` |  |
+| `SB_FIFO_REPLAY` | 1 | `sms-boot/main.cpp` |  |
+| `SB_FIFO_TRACE_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_FORCE_ABUF` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_FORCE_COLOR` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_FORCE_LOD0` | 1 | `extern/aurora/lib/gx/gx.cpp` |  |
+| `SB_FORCE_RAS` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_FRUIT_DBG` | 1 | `decomp/sms/src/MoveBG/MapObjBall.cpp` | gated print |
+| `SB_GENOBJ_SKIP_ALL` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp` |  |
+| `SB_GXBEGIN_TRACE` | 1 | `extern/aurora/lib/dolphin/gx/GXVert.cpp` |  |
+| `SB_H` | 3 | `sms-recomp/host/main.cpp` |  |
+| `SB_HEADLESS` | 2 | `sms-boot/runtime/jas_kernel_native.cpp` |  |
+| `SB_HEAP_DBG` | 2 | `decomp/sms/src/JSystem/JKernel/JKRExpHeap.cpp` | gated print |
+| `SB_HEAP_GUARD` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
+| `SB_HOST_ALLOC_CAP_MB` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
+| `SB_INDIRECT_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp` | gated print |
+| `SB_INITSTAGE_DBG` | 1 | `decomp/sms/src/Map/Map.cpp` | gated print |
+| `SB_J2D_DRAW_DUMP` | 2 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp` | gated print |
+| `SB_J2D_PIC_DUMP` | 2 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp` | gated print |
+| `SB_J2D_PIC_HEXDUMP` | 1 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp` | gated print |
+| `SB_J3DSHAPE_SKIP_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp` |  |
+| `SB_J3D_DBG` | 9 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp` | gated print |
+| `SB_JAI_DBG` | 1 | `decomp/sms/src/JSystem/JAudio/JAInterface/JAIData.cpp` |  |
+| `SB_JKR_BT` | 1 | `decomp/sms/src/JSystem/JKernel/JKRSolidHeap.cpp` |  |
+| `SB_JPA_DBG` | 1 | `decomp/sms/src/JSystem/JParticle/JPAEmitterManager.cpp` |  |
+| `SB_JPA_TEXDBG` | 1 | `decomp/sms/src/JSystem/JParticle/JPATexture.cpp` | gated print |
+| `SB_KEEP_PH6_MAPXLU` | 1 | `decomp/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp` |  |
+| `SB_LF_CLAMP_DIAG` | 1 | `decomp/sms/src/Camera/lensflare.cpp` |  |
+| `SB_LF_DBG` | 1 | `decomp/sms/src/Camera/lensflare.cpp` | gated print |
+| `SB_LIGHT_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_LOAD_PANE_DBG` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
+| `SB_LOG` | 3 | `sms-recomp/runtime/sb_log.cpp` | gated print |
+| `SB_MAKEVCD_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp` | gated print |
+| `SB_MAPXLU_DBG` | 1 | `decomp/sms/src/Map/Map.cpp` |  |
+| `SB_MARIO_ANIM_DBG` | 1 | `decomp/sms/src/Player/MarioMain.cpp` | gated print |
+| `SB_MARIO_DBG` | 4 | `decomp/sms/src/Player/MarioCap.cpp` | gated print |
+| `SB_MIRRORBUF_DBG` | 1 | `decomp/sms/src/Map/MapMirror.cpp` | gated print |
+| `SB_MODEL_TRACE` | 5 | `decomp/sms/src/JSystem/J3D/J3DGraphLoader/J3DModelLoader.cpp` | gated print |
+| `SB_MSG_DBG` | 1 | `decomp/sms/src/GC2D/MessageUtil.cpp` | gated print |
+| `SB_NAMEREF_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp` |  |
+| `SB_NDC_DRAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_NDC_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_NDC_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_NDC_PROBE_AFTER` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_NO_ACMP` | 1 | `extern/aurora/lib/gx/gx.cpp` |  |
+| `SB_NO_ARRCACHE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_NO_COPYDISP` | 1 | `extern/aurora/lib/webgpu/gpu.cpp` |  |
+| `SB_NO_CULL` | 1 | `extern/aurora/lib/gx/gx.cpp` |  |
+| `SB_NO_DEPTH` | 1 | `extern/aurora/lib/gx/gx.cpp` |  |
+| `SB_NO_FASTBOOT` | 1 | `decomp/sms/src/System/Application.cpp` |  |
+| `SB_NO_GPU_PROF` | 1 | `extern/aurora/lib/webgpu/gpu_prof.cpp` |  |
+| `SB_NO_MERGE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_NO_MIRROR_ENTRY` | 1 | `decomp/sms/src/Strategic/MirrorActor.cpp` |  |
+| `SB_NO_ZTEST_DRAWS` | 1 | `extern/aurora/lib/gx/gx.cpp` |  |
+| `SB_NO_ZWRITE_DRAWS` | 1 | `extern/aurora/lib/gx/gx.cpp` |  |
+| `SB_NPCPARTS_DBG` | 1 | `decomp/sms/src/NPC/NpcParts.cpp` | gated print |
+| `SB_NPC_DBG` | 2 | `decomp/sms/src/NPC/NpcBase.cpp` | gated print |
+| `SB_NPC_ON` | 1 | `decomp/sms/src/System/MarNameRefGen_NPC.cpp` |  |
+| `SB_NRM_VIZ` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_ONLY_DRAW` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_OPCODE_CENSUS` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_OPT_FIX` | 1 | `decomp/sms/src/Player/MarioMove.cpp` |  |
+| `SB_ORTHO_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_PAD_SCRIPT` | 1 | `sms-boot/runtime/pad_script.cpp` |  |
+| `SB_PANE_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DScreen.cpp` |  |
+| `SB_PASS_DBG` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
+| `SB_PERSP_ZONLY` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_PIN_STATE` | 1 | `sms-boot/runtime/pin_state.cpp` |  |
+| `SB_PIXEL_WATCH` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_PLACE_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRPlacement.cpp` | gated print |
+| `SB_PLIST_ORDER_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp` |  |
+| `SB_PLIST_ORDER_DBG_AFTER` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp` |  |
+| `SB_PL_DBG` | 1 | `decomp/sms/src/System/PerformList.cpp` |  |
+| `SB_POS_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_PRESENT_COPY` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp` |  |
+| `SB_PRESENT_PASS1` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp` |  |
+| `SB_PROFILE` | 1 | `sms-boot/runtime/frame_seam.cpp` |  |
+| `SB_PROFILE_DRAWPRIM` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_PROFILE_GFX` | 3 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_PROJ_BT` | 2 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp` | gated print |
+| `SB_PROJ_DBG` | 1 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp` |  |
+| `SB_PROJ_DBG_AFTER` | 2 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp` |  |
+| `SB_QUAD_RECT` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_RAL_DBG` | 2 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
+| `SB_RASC_VIZ` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_RDOC` | 1 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_RDOC_PATH` | 1 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_ROOTMTX_DBG` | 1 | `decomp/sms/src/Strategic/liveactor.cpp` | gated print |
+| `SB_SCENARIO` | 1 | `decomp/sms/src/System/Application.cpp` |  |
+| `SB_SCENECMN_DUMP` | 1 | `decomp/sms/src/System/MarDirectorLoadResource.cpp` | gated print |
+| `SB_SCENE_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
+| `SB_SEA_DBG` | 2 | `decomp/sms/src/Map/MapStaticObject.cpp` | gated print |
+| `SB_SEL_DBG` | 10 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
+| `SB_SEL_DUMP` | 2 | `decomp/sms/src/GC2D/CardLoad.cpp` |  |
+| `SB_SEL_DUMP_N` | 2 | `decomp/sms/src/GC2D/CardLoad.cpp` |  |
+| `SB_SEL_DUMP_SETTLED` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
+| `SB_SEL_PICK` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
+| `SB_SEL_POS` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
+| `SB_SHADER_CHECK` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_SHADER_DUMP` | 2 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_SHADER_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SHADOW_BISECT` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp` |  |
+| `SB_SHADOW_DBG` | 3 | `decomp/sms/src/MarioUtil/LightUtil.cpp` | gated print |
+| `SB_SHADOW_PASSES` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp` |  |
+| `SB_SHADOW_SETUPN` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp` |  |
+| `SB_SHADOW_VIZ` | 1 | `decomp/sms/src/MarioUtil/ShadowUtil.cpp` |  |
+| `SB_SHAPEDRAW_DBG` | 2 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp` | gated print |
+| `SB_SHAPE_STATS` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp` |  |
+| `SB_SHIMMER_DBG` | 1 | `decomp/sms/src/Map/Shimmer.cpp` | gated print |
+| `SB_SKIP_ADD` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_ADD_OVERLAY` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SKIP_BIGQUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_COPY_QUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_COVERING` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_DUOTONE` | 1 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp` |  |
+| `SB_SKIP_FADER` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SKIP_GHOST` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp` |  |
+| `SB_SKIP_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_MBLACK` | 1 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp` |  |
+| `SB_SKIP_MIRROR_FAR` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_MIRROR_NEAR` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_OPAQUE_P4` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SKIP_ORTHO` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_PERSP` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_SCENEQUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SKIP_SKY_IDX` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_TEV3` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_TEX` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_TEXDIM` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_TEXDIM_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SKIP_VERTS` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_WNEG_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKIP_WNEG_KIND` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_SKY_DIM_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_STAGE` | 2 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
+| `SB_STAGE_DUMP` | 1 | `decomp/sms/src/System/Application.cpp` |  |
+| `SB_STATICOBJ_DBG` | 1 | `decomp/sms/src/Map/MapStaticObject.cpp` | gated print |
+| `SB_STRAT_DUMP` | 1 | `decomp/sms/src/Strategic/Strategy.cpp` | gated print |
+| `SB_SUNGLASS_DBG` | 1 | `decomp/sms/src/GC2D/SunGlass.cpp` | gated print |
+| `SB_TABLES_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
+| `SB_TBX_DBG` | 1 | `decomp/sms/src/JSystem/J2D/J2DTextBox.cpp` | gated print |
+| `SB_TEV_DUMP` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_TEV_STOP` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
+| `SB_TEXBIND_DBG` | 1 | `extern/aurora/lib/gx/gx.cpp` | gated print |
+| `SB_TEX_DUMP` | 1 | `extern/aurora/lib/gfx/texture.cpp` |  |
+| `SB_TEX_DUMP_MAX` | 1 | `extern/aurora/lib/gfx/texture.cpp` |  |
+| `SB_TIMELINE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_TITLE_PANE_DBG` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` |  |
+| `SB_TRACE_SEQ` | 7 | `sms-boot/runtime/frame_seam.cpp` | gated print |
+| `SB_TURBO` | 2 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SB_UNIF_DUMP` | 1 | `extern/aurora/lib/gx/shader_info.cpp` |  |
+| `SB_UV_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_VIEWCALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp` |  |
+| `SB_VIZ_TAG` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
+| `SB_W` | 3 | `sms-recomp/host/main.cpp` |  |
+| `SB_WATCHDOG_SECS` | 1 | `sms-boot/runtime/watchdog.cpp` |  |
+| `SB_WATER_DBG` | 1 | `decomp/sms/src/Player/ModelWaterManager.cpp` |  |
+| `SB_WAVE_ALPHA_RASA` | 1 | `decomp/sms/src/MoveBG/MapObjWave.cpp` |  |
+| `SB_WAVE_DBG` | 1 | `decomp/sms/src/MoveBG/MapObjWave.cpp` | gated print |
+| `SB_WAVE_SOLID` | 1 | `decomp/sms/src/MoveBG/MapObjWave.cpp` |  |
+| `SB_WIPE_DBG` | 1 | `sms-boot/runtime/hx_wipe.cpp` |  |
+| `SB_XH_GPU_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_XH_SKY_DBG` | 4 | `decomp/sms/src/Map/Sky.cpp` | gated print |
+| `SB_XLU_DBG` | 2 | `decomp/sms/src/Map/MapXlu.cpp` | gated print |
 
 ## `SBR_*`
 
-| switch | sites | first read at | |
+| switch | sites | first read in | |
 |---|---|---|---|
-| `SBR_60FPS` | 3 | `sms-recomp/frame_interp/stream_interp.cpp:31` |  |
-| `SBR_AB` | 1 | `sms-recomp/runtime/render/render_compare.cpp:243` |  |
-| `SBR_ABLATE` | 1 | `sms-recomp/runtime/render/render_compare.cpp:124` |  |
-| `SBR_AB_AT` | 1 | `sms-recomp/runtime/render/render_compare.cpp:214` |  |
-| `SBR_AB_EVERY` | 1 | `sms-recomp/runtime/render/render_compare.cpp:245` |  |
-| `SBR_AB_SELFTEST` | 1 | `sms-recomp/runtime/render/render_compare.cpp:101` |  |
-| `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/render/native_render.cpp:502` |  |
-| `SBR_ARENA_SELFTEST` | 1 | `sms-recomp/overrides/guard_arena.cpp:87` |  |
-| `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/devices/dev_aid.cpp:96` |  |
-| `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:630` |  |
-| `SBR_BIND_LOG` | 1 | `sms-recomp/runtime/render/native_render.cpp:220` |  |
-| `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp:688` |  |
-| `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp:93` |  |
-| `SBR_CARD_TRACE` | 1 | `sms-recomp/overrides/diag_card.cpp:40` |  |
-| `SBR_DETERMINISTIC` | 1 | `sms-recomp/runtime/rt_core.cpp:372` |  |
-| `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp:43` |  |
-| `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/render/scene.cpp:867` |  |
-| `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:689` |  |
-| `SBR_FASTBOOT` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:312` |  |
-| `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:150` |  |
-| `SBR_FIFO_STALL` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:1382` |  |
-| `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/frame_interp/effects_afterimage.cpp:67` |  |
-| `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:77` |  |
-| `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:292` |  |
-| `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
-| `SBR_INTERP60` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp:142` |  |
-| `SBR_INTERP60_ACTCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:730` |  |
-| `SBR_INTERP60_ACTORS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1656` |  |
-| `SBR_INTERP60_ACTOR_CALLS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1773` |  |
-| `SBR_INTERP60_ACTTALLY` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:752` |  |
-| `SBR_INTERP60_ALPHA` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:103` |  |
-| `SBR_INTERP60_ANIM` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1922` |  |
-| `SBR_INTERP60_CALCANIM` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2654` |  |
-| `SBR_INTERP60_CALCROOT_SCAN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1705` |  |
-| `SBR_INTERP60_CAMFAST` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1500` |  |
-| `SBR_INTERP60_CAMTRACE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1454` |  |
-| `SBR_INTERP60_CENSUS` | 2 | `sms-recomp/frame_interp/record_replace.cpp:258` |  |
-| `SBR_INTERP60_COPY` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp:2492` |  |
-| `SBR_INTERP60_DROPLAST` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2696` |  |
-| `SBR_INTERP60_FOLLOW` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:835` |  |
-| `SBR_INTERP60_J3DSYS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1323` |  |
-| `SBR_INTERP60_KICK` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:655` |  |
-| `SBR_INTERP60_LISTS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:880` |  |
-| `SBR_INTERP60_MASK` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:285` |  |
-| `SBR_INTERP60_MOVERS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1753` |  |
-| `SBR_INTERP60_MTXCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2079` |  |
-| `SBR_INTERP60_MTXTRACE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2016` |  |
-| `SBR_INTERP60_MTXTRACE_ADDR` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2183` |  |
-| `SBR_INTERP60_NORESTORE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:506` |  |
-| `SBR_INTERP60_ORDER` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1377` |  |
-| `SBR_INTERP60_ORDER_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2295` |  |
-| `SBR_INTERP60_PLAYER` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1557` |  |
-| `SBR_INTERP60_PLAYER_DIFF` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2216` |  |
-| `SBR_INTERP60_PREENTRY` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2556` |  |
-| `SBR_INTERP60_PREENTRY_VC` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2636` |  |
-| `SBR_INTERP60_PREENTRY_VC_CUE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2325` |  |
-| `SBR_INTERP60_PREENTRY_VC_N` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2346` |  |
-| `SBR_INTERP60_REPLACE` | 1 | `sms-recomp/frame_interp/record_replace.cpp:253` |  |
-| `SBR_INTERP60_REPLACE_ALPHA` | 1 | `sms-recomp/frame_interp/record_replace.cpp:155` |  |
-| `SBR_INTERP60_REPLACE_KICK` | 1 | `sms-recomp/frame_interp/record_replace.cpp:163` |  |
-| `SBR_INTERP60_REPLACE_KICK_ONLY` | 1 | `sms-recomp/frame_interp/record_replace.cpp:185` |  |
-| `SBR_INTERP60_REPLACE_NONRM` | 1 | `sms-recomp/frame_interp/record_replace.cpp:198` |  |
-| `SBR_INTERP60_STREAMHASH` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2712` |  |
-| `SBR_INTERP60_TRACE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:778` |  |
-| `SBR_INTERP60_TRACE_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:801` |  |
-| `SBR_INTERP60_VCLIST` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp:2129` |  |
-| `SBR_INTERP60_VIEWCALC` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:2062` |  |
-| `SBR_INTERP60_VIEWSEQ` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1199` |  |
-| `SBR_INTERP60_VIEWSEQ_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1204` |  |
-| `SBR_INTERP60_VIEWSEQ_MIN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1237` |  |
-| `SBR_INTERP60_VIEWWHO` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1328` |  |
-| `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp:1106` |  |
-| `SBR_INTERP_TEXMTX` | 1 | `extern/aurora/lib/gfx/interp.cpp:546` |  |
-| `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:149` |  |
-| `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:213` |  |
-| `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:73` |  |
-| `SBR_LERP60` | 3 | `sms-recomp/frame_interp/stream_interp.cpp:32` |  |
-| `SBR_MAX_BATCH` | 1 | `sms-recomp/runtime/render/native_render.cpp:913` |  |
-| `SBR_MIDPOINT_SLACK` | 2 | `sms-recomp/overrides/native_frame.cpp:240` |  |
-| `SBR_MTX_CHECK` | 1 | `sms-recomp/overrides/mtx_crosscheck.cpp:91` |  |
-| `SBR_MUTE` | 1 | `sms-recomp/runtime/devices/dev_aid.cpp:146` |  |
-| `SBR_NO_SCISSOR` | 1 | `sms-recomp/runtime/render/native_render.cpp:994` |  |
-| `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:596` |  |
-| `SBR_PAD_SCRIPT` | 1 | `sms-recomp/overrides/native_pad.cpp:102` |  |
-| `SBR_PHASE_COUNT` | 1 | `sms-recomp/overrides/diag_phases.cpp:25` |  |
-| `SBR_PRESENT_AFTER_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:186` |  |
-| `SBR_PRESENT_TIMING` | 1 | `sms-recomp/overrides/native_frame.cpp:428` |  |
-| `SBR_PROBE` | 1 | `sms-recomp/runtime/probe_server.cpp:240` |  |
-| `SBR_PROBE_PORT` | 1 | `sms-recomp/runtime/probe_server.cpp:290` |  |
-| `SBR_PTIME_HI` | 1 | `sms-recomp/overrides/native_frame.cpp:452` |  |
-| `SBR_PTIME_LO` | 1 | `sms-recomp/overrides/native_frame.cpp:451` |  |
-| `SBR_QUIT_AFTER` | 1 | `sms-recomp/overrides/native_frame.cpp:497` |  |
-| `SBR_RASTER_SRC` | 1 | `sms-recomp/overrides/j3d_capture.cpp:310` |  |
-| `SBR_RENDER_DEPTHVIZ` | 1 | `sms-recomp/runtime/render/scene.cpp:69` |  |
-| `SBR_RENDER_DUMP` | 1 | `sms-recomp/overrides/native_frame.cpp:691` |  |
-| `SBR_RENDER_SKIP_SKINNED` | 1 | `sms-recomp/runtime/render/scene.cpp:64` |  |
-| `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/render/native_render.cpp:578` |  |
-| `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp:253` |  |
-| `SBR_SDLGPU` | 1 | `sms-recomp/runtime/render/native_render.cpp:304` |  |
-| `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:450` |  |
-| `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:122` |  |
-| `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:127` |  |
-| `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:125` |  |
-| `SBR_STAGE` | 3 | `sms-recomp/frame_interp/graphics_db.cpp:310` |  |
-| `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp:17` |  |
-| `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp:55` |  |
-| `SBR_TAGPARTICLE` | 1 | `sms-recomp/frame_interp/tag_particle.cpp:70` |  |
-| `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:96` |  |
-| `SBR_TAGWIRE` | 1 | `sms-recomp/frame_interp/tag_deforming.cpp:186` |  |
-| `SBR_TEV_TRACE` | 1 | `sms-recomp/runtime/render/scene.cpp:925` |  |
-| `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/render/scene.cpp:1022` |  |
-| `SBR_TEV_TRACE_BLACK` | 1 | `sms-recomp/runtime/render/scene.cpp:932` |  |
-| `SBR_TEV_TRACE_FAR` | 1 | `sms-recomp/runtime/render/scene.cpp:1006` |  |
-| `SBR_TEV_VIZ` | 1 | `sms-recomp/runtime/render/native_render.cpp:516` |  |
-| `SBR_TEX` | 1 | `sms-recomp/runtime/render/native_render.cpp:207` |  |
-| `SBR_TEXGEN` | 1 | `sms-recomp/runtime/render/scene.cpp:78` |  |
-| `SBR_TEXMAP_FORCE` | 1 | `sms-recomp/runtime/render/native_render.cpp:487` |  |
-| `SBR_TEXMAP_NAMED` | 1 | `sms-recomp/runtime/render/native_render.cpp:479` |  |
-| `SBR_TEXMAP_UNITS` | 1 | `sms-recomp/runtime/render/native_render.cpp:477` |  |
-| `SBR_TEX_DUMP` | 1 | `sms-recomp/runtime/render/native_render.cpp:417` |  |
-| `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/render/native_render.cpp:809` |  |
-| `SBR_THP` | 1 | `sms-recomp/overrides/native_thp.cpp:99` |  |
-| `SBR_TICK_SPLIT` | 1 | `sms-recomp/overrides/diag_tick_split.cpp:50` |  |
-| `SBR_VPTR_DUMP` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp:1344` |  |
-| `SBR_WATCH` | 1 | `sms-recomp/runtime/rt_core.cpp:102` |  |
-| `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp:56` |  |
-| `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp:65` |  |
+| `SBR_60FPS` | 3 | `sms-recomp/frame_interp/stream_interp.cpp` |  |
+| `SBR_AB` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
+| `SBR_ABLATE` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
+| `SBR_AB_AT` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
+| `SBR_AB_EVERY` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
+| `SBR_AB_SELFTEST` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
+| `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_ARENA_SELFTEST` | 1 | `sms-recomp/overrides/guard_arena.cpp` |  |
+| `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/devices/dev_aid.cpp` |  |
+| `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
+| `SBR_BIND_LOG` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp` |  |
+| `SBR_CARD_TRACE` | 1 | `sms-recomp/overrides/diag_card.cpp` |  |
+| `SBR_DETERMINISTIC` | 1 | `sms-recomp/runtime/rt_core.cpp` |  |
+| `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp` |  |
+| `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_FASTBOOT` | 2 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
+| `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
+| `SBR_FIFO_STALL` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
+| `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/frame_interp/effects_afterimage.cpp` |  |
+| `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
+| `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
+| `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
+| `SBR_INTERP60` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ACTCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ACTORS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ACTOR_CALLS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ACTTALLY` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ALPHA` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ANIM` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_CALCANIM` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_CALCROOT_SCAN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_CAMFAST` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_CAMTRACE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_CENSUS` | 2 | `sms-recomp/frame_interp/record_replace.cpp` |  |
+| `SBR_INTERP60_COPY` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_DROPLAST` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_FOLLOW` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_J3DSYS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_KICK` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_LISTS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_MASK` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_MOVERS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_MTXCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_MTXTRACE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_MTXTRACE_ADDR` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_NORESTORE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ORDER` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_ORDER_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_PLAYER` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_PLAYER_DIFF` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_PREENTRY` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_PREENTRY_VC` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_PREENTRY_VC_CUE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_PREENTRY_VC_N` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_REPLACE` | 1 | `sms-recomp/frame_interp/record_replace.cpp` |  |
+| `SBR_INTERP60_REPLACE_ALPHA` | 1 | `sms-recomp/frame_interp/record_replace.cpp` |  |
+| `SBR_INTERP60_REPLACE_KICK` | 1 | `sms-recomp/frame_interp/record_replace.cpp` |  |
+| `SBR_INTERP60_REPLACE_KICK_ONLY` | 1 | `sms-recomp/frame_interp/record_replace.cpp` |  |
+| `SBR_INTERP60_REPLACE_NONRM` | 1 | `sms-recomp/frame_interp/record_replace.cpp` |  |
+| `SBR_INTERP60_STREAMHASH` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_TRACE` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_TRACE_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_VCLIST` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_VIEWCALC` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_VIEWSEQ` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_VIEWSEQ_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_VIEWSEQ_MIN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP60_VIEWWHO` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp` |  |
+| `SBR_INTERP_TEXMTX` | 1 | `extern/aurora/lib/gfx/interp.cpp` |  |
+| `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp` |  |
+| `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp` |  |
+| `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp` |  |
+| `SBR_LERP60` | 3 | `sms-recomp/frame_interp/stream_interp.cpp` |  |
+| `SBR_MAX_BATCH` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_MIDPOINT_SLACK` | 2 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_MTX_CHECK` | 1 | `sms-recomp/overrides/mtx_crosscheck.cpp` |  |
+| `SBR_MUTE` | 1 | `sms-recomp/runtime/devices/dev_aid.cpp` |  |
+| `SBR_NO_SCISSOR` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
+| `SBR_PAD_SCRIPT` | 1 | `sms-recomp/overrides/native_pad.cpp` |  |
+| `SBR_PHASE_COUNT` | 1 | `sms-recomp/overrides/diag_phases.cpp` |  |
+| `SBR_PRESENT_AFTER_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_PRESENT_TIMING` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_PROBE` | 1 | `sms-recomp/runtime/probe_server.cpp` |  |
+| `SBR_PROBE_PORT` | 1 | `sms-recomp/runtime/probe_server.cpp` |  |
+| `SBR_PTIME_HI` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_PTIME_LO` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_QUIT_AFTER` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_RASTER_SRC` | 1 | `sms-recomp/overrides/j3d_capture.cpp` |  |
+| `SBR_RENDER_DEPTHVIZ` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_RENDER_DUMP` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_RENDER_SKIP_SKINNED` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp` |  |
+| `SBR_SDLGPU` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp` |  |
+| `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
+| `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
+| `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
+| `SBR_STAGE` | 3 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
+| `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp` |  |
+| `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp` |  |
+| `SBR_TAGPARTICLE` | 1 | `sms-recomp/frame_interp/tag_particle.cpp` |  |
+| `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp` |  |
+| `SBR_TAGWIRE` | 1 | `sms-recomp/frame_interp/tag_deforming.cpp` |  |
+| `SBR_TEV_TRACE` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_TEV_TRACE_BLACK` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_TEV_TRACE_FAR` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_TEV_VIZ` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEX` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEXGEN` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
+| `SBR_TEXMAP_FORCE` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEXMAP_NAMED` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEXMAP_UNITS` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEX_DUMP` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_THP` | 1 | `sms-recomp/overrides/native_thp.cpp` |  |
+| `SBR_TICK_SPLIT` | 1 | `sms-recomp/overrides/diag_tick_split.cpp` |  |
+| `SBR_VPTR_DUMP` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
+| `SBR_WATCH` | 1 | `sms-recomp/runtime/rt_core.cpp` |  |
+| `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
+| `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
 **350 switches; 69 still gate a raw print.**
