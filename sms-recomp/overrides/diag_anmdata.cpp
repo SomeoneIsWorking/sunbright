@@ -18,11 +18,14 @@
 // still happens exactly where it did. `SB_LOG=anmdata` turns it on; silent otherwise.
 
 #include "overrides.h"
+#include "../frame_interp/graphics_db.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+#include <algorithm>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 extern "C" void func_8023c328(CPUState&);   // MActorAnmData::init(const char*, const char**)
@@ -39,6 +42,9 @@ extern "C" void func_802c1edc(CPUState&);   // JKRExpHeap::getFreeSize()
 extern "C" void func_802c37b8(CPUState&);   // JKRHeap::free(void*, JKRHeap*)
 extern "C" void func_802c1b14(CPUState&);   // JKRExpHeap::free(void*)
 extern "C" void func_802c1f48(CPUState&);   // JKRExpHeap::getTotalFreeSize()
+extern "C" void func_802c138c(CPUState&);   // JKRExpHeap::alloc(u32 size, int alignment)
+extern "C" void func_802c1b88(CPUState&);   // JKRExpHeap::freeAll()
+extern "C" void func_802c52b0(CPUState&);   // JKRThread::JKRThread(u32 stackSize, int, int)
 
 namespace {
 
@@ -100,6 +106,24 @@ unsigned long g_allocNull = 0;
 unsigned long g_allocCalls = 0;   // the denominator: "0 failures" from a hook that never fires and
                                   // "0 failures" from a healthy heap are the same line otherwise
 bool g_traceWalk = false;
+// The system heap, captured ONCE. Reading it from r13 at every call site looked equivalent and is
+// not: r13 is per-CPUState in this runtime, so a call arriving on another thread compares against
+// whatever that thread's SDA slot holds — which is how the resident ledger came to claim 200,672
+// bytes live in a 130,928-byte heap. One pinned pointer cannot drift.
+u32 g_sysHeapAddr = 0;
+u32 sys_heap(const CPUState& cpu) {
+    // Cache the ADDRESS of the static, never its VALUE. Caching the value froze whatever
+    // JKRHeap::sSystemHeap happened to hold the first time this ran — early in boot that is the ROOT
+    // heap, and the resident ledger then attributed 20.8 MB (including a single 15.7 MB block) to a
+    // 130,928-byte heap. Reading through the address every time follows the static as the game
+    // reassigns it, while still not depending on r13 being the same on every thread.
+    if (g_sysHeapAddr == 0) g_sysHeapAddr = (u32)cpu.gpr[13] - 0x5f30u;
+    return sb_r32(g_sysHeapAddr);
+}
+std::unordered_map<u32, u32> g_live;   // pointer -> size, for the system heap only
+std::unordered_map<u32, u32> g_liveSite;   // pointer -> the return address that allocated it
+unsigned long g_liveMissedFree = 0;    // frees of pointers never seen allocated
+unsigned long g_freeAllSys = 0;        // wholesale releases of the system heap
 unsigned long g_newSys = 0, g_freeSys = 0, g_newSys36 = 0;
 unsigned long g_expFreeSys = 0, g_expFreeAll = 0;
 unsigned long g_newSysBytes = 0;
@@ -220,6 +244,25 @@ void dump_volume_list(const char* why) {
     }
 }
 
+// The system heap's numbers, printed wherever the archive dump is — which fires on the first
+// mixed-case lookup in EVERY stage, not only where the lookup failed. That is what makes stage 8
+// and stage 9 comparable at the same point in the load; a number only printed on failure can never
+// say how much margin the stages that survive actually have.
+void dump_sys_heap(const CPUState& cpu) {
+    const u32 hp = sys_heap(cpu);
+    if (hp == 0) return;
+    CPUState a = cpu, b = cpu;
+    a.gpr[3] = hp;
+    func_802c1edc(a);
+    b.gpr[3] = hp;
+    func_802c1f48(b);
+    lucent::info("anmdata", "SYSTEM HEAP {:#010x}: largest free block {} bytes, TOTAL free {} bytes, "
+                            "of a {} byte heap. Four JKRThread stacks (JUTException, JKRAram, "
+                            "JKRAramStream, JKRDecomp) take 16 KB each in every stage, so 64 KB of "
+                            "this is structural.",
+                 hp, (s32)a.gpr[3], (s32)b.gpr[3], sb_r32(hp + 0x38));
+}
+
 void dump_all_archives(const char* why) {
     if (g_dumped) return;   // once: the answer does not change and the list is long
     g_dumped = true;
@@ -280,6 +323,7 @@ void ov_find_first_file(CPUState& cpu) {
     }
     if (res != 0) g_lastGood = path;
     if (mixedCase) {
+        dump_sys_heap(cpu);
         lucent::debug("anmdata", "  ^ that query contains UPPERCASE. JKR lookups lowercase the "
                                  "query before hashing, so it must match a lowercase-spelled entry; "
                                  "result was {}.",
@@ -415,6 +459,49 @@ void ov_find_first_file(CPUState& cpu) {
                              hp, (s32)fs.gpr[3], sb_r32(hp + 0x38), sb_r32(hp + 0x30),
                              sb_r32(hp + 0x34));
             }
+            {
+                // FILTER BY THE HEAP'S OWN ADDRESS RANGE, not by which heap the allocation was
+                // charged to. sSystemHeap is REASSIGNED during boot — it starts out as the root heap
+                // and is later pointed at a 128 KB child — so a ledger keyed on "the heap was
+                // sSystemHeap at the time" mixes two epochs and listed the 131,072-byte block that
+                // CREATED the system heap as if it were inside it. An address range cannot be
+                // confused that way: a pointer either lies in [mStart, mEnd) or it does not.
+                const u32 hp2 = sys_heap(cpu);
+                const u32 lo = sb_r32(hp2 + 0x30), hi = sb_r32(hp2 + 0x34);
+                std::vector<std::pair<u32, u32>> big;
+                for (const auto& kv : g_live) {
+                    if (kv.first >= lo && kv.first < hi) big.push_back(kv);
+                }
+                std::sort(big.begin(), big.end(),
+                          [](const auto& a, const auto& b) { return a.second > b.second; });
+                unsigned long bytes = 0;
+                unsigned long hist[33] = {};
+                for (const auto& kv : big) {
+                    bytes += kv.second;
+                    ++hist[kv.second < 1024 ? (kv.second / 32) : 32];
+                }
+                for (size_t i = 0; i < big.size() && i < 5; ++i) {
+                    const auto siteIt = g_liveSite.find(big[i].first);
+                    const u32 site = siteIt == g_liveSite.end() ? 0u : siteIt->second;
+                    lucent::info("anmdata", "    largest live block #{}: {} bytes at {:#010x}, "
+                                            "allocated from {:#010x} ({})",
+                                 i + 1, big[i].second, big[i].first, site,
+                                 site ? sbr_gfxdb_symbolize(site) : std::string("<unknown>"));
+                }
+                lucent::Line l;
+                l.add("  system heap RESIDENT at failure: {} live allocation(s) inside "
+                      "{:#010x}..{:#010x} holding {} bytes of {}. Sizes:", big.size(), lo, hi, bytes,
+                      sb_r32(hp2 + 0x38));
+                for (int i = 0; i < 33; ++i) {
+                    if (hist[i] == 0) continue;
+                    if (i == 32) l.add(" 1024+:{}", hist[i]);
+                    else l.add(" {}-{}:{}", i * 32, i * 32 + 31, hist[i]);
+                }
+                l.add("  ({} free(s) were of pointers this probe never saw allocated — allocations "
+                      "predating it, NOT counted above; {} wholesale freeAll(s) cleared the ledger)",
+                      g_liveMissedFree, g_freeAllSys);
+                l.flush(lucent::Level::Info, "anmdata");
+            }
             lucent::info("anmdata",
                          "  system-heap traffic so far: {} allocation(s) totalling {} bytes ({} of "
                          "them 36 bytes, the finder size) against {} free(s) via JKRHeap::free and "
@@ -466,7 +553,12 @@ void ov_archive_ctor(CPUState& cpu) {
 void ov_heap_alloc(CPUState& cpu) {
     const u32 size = (u32)cpu.gpr[3];
     ++g_allocCalls;
+    const u32 wrapperCaller = (u32)cpu.lr;
     func_802c3740(cpu);
+    // OVERWRITE the site recorded by the inner JKRExpHeap::alloc hook. That one only ever sees this
+    // wrapper as its caller (alloc__7JKRHeapFUliP7JKRHeap+0x3c for every block), which names the
+    // allocator and not the system doing the allocating — one frame short of the answer.
+    if ((u32)cpu.gpr[3] != 0) g_liveSite[(u32)cpu.gpr[3]] = wrapperCaller;
     if ((u32)cpu.gpr[3] == 0) {
         ++g_allocNull;
         if (g_allocNull <= 8) {
@@ -514,7 +606,7 @@ void ov_find_directory(CPUState& cpu) {
 void ov_op_new_heap(CPUState& cpu) {
     const u32 size = (u32)cpu.gpr[3];
     const u32 heap = (u32)cpu.gpr[4];
-    if (heap == sb_r32((u32)cpu.gpr[13] - 0x5f30u)) {
+    if (heap == sys_heap(cpu)) {
         ++g_newSys;
         g_newSysBytes += size;
         if (size == 36) ++g_newSys36;
@@ -530,8 +622,59 @@ void ov_op_new_heap(CPUState& cpu) {
     }
 }
 
+// WHAT IS RESIDENT IN THE SYSTEM HEAP, which is the question left after "it is exhausted". Traffic
+// counts cannot answer it — 710 allocations against 708 frees says the flow balances and says
+// nothing about the 128 KB that never left. So every allocation from this heap is remembered by
+// pointer and forgotten on free; what remains at the moment of failure IS the occupancy, by size.
+//
+// Hooked at JKRExpHeap::alloc rather than at one of the wrappers: everything that reaches this heap
+// passes through it, and this file has already been burned twice by watching one of several entry
+// points and reading the resulting zero as an answer.
+void ov_exp_alloc(CPUState& cpu) {
+    const u32 heap = (u32)cpu.gpr[3];
+    const u32 size = (u32)cpu.gpr[4];
+    func_802c138c(cpu);
+    const u32 ptr = (u32)cpu.gpr[3];
+    if (ptr != 0 && heap == sys_heap(cpu)) {
+        g_live[ptr] = size;
+        // WHO asked. A size on its own names a shape, not a system — and the four 16 KB blocks that
+        // dominate this heap could be anything until their caller is named. The return address is
+        // symbolized through the graphics registry's resolver, which bounds addresses by the
+        // recompiler's own function table and so reports an unnamed function honestly instead of as
+        // `some_symbol+0x4000`.
+        g_liveSite[ptr] = (u32)cpu.lr;
+    }
+}
+
+// BULK FREES MUST CLEAR THE LEDGER. Without this the resident set only ever grows: freeAll releases
+// every block at once without a per-pointer free, so the map keeps entries for memory that is gone
+// and the total climbs past the heap's own size. The first run of this probe reported 200,672 bytes
+// resident in a 130,928-byte heap — an arithmetic impossibility, which is the useful kind of wrong
+// answer because it cannot be mistaken for a finding.
+void ov_exp_free_all(CPUState& cpu) {
+    if ((u32)cpu.gpr[3] == sys_heap(cpu)) {
+        g_live.clear();
+        ++g_freeAllSys;
+    }
+    func_802c1b88(cpu);
+}
+
+// EVERY JKRThread TAKES ITS STACK FROM THE SYSTEM HEAP, and that is where the 128 KB goes: four
+// live 16 KB stacks plus their thread objects account for 65 KB of it. Whether that is normal or a
+// port defect turns on the COUNT and the SIZE, so both are logged with the caller — a stage that
+// creates more threads than another, or one that creates them per load without destroying them,
+// shows up here immediately.
+unsigned long g_threads = 0;
+
+void ov_jkr_thread_ctor(CPUState& cpu) {
+    ++g_threads;
+    lucent::debug("anmdata", "JKRThread #{} constructed: stack {} bytes, from {:#010x} ({})",
+                  g_threads, (u32)cpu.gpr[4], (u32)cpu.lr, sbr_gfxdb_symbolize((u32)cpu.lr));
+    func_802c52b0(cpu);
+}
+
 void ov_heap_free(CPUState& cpu) {
-    if ((u32)cpu.gpr[4] == sb_r32((u32)cpu.gpr[13] - 0x5f30u)) ++g_freeSys;
+    if ((u32)cpu.gpr[4] == sys_heap(cpu)) ++g_freeSys;
     func_802c37b8(cpu);
 }
 
@@ -540,8 +683,12 @@ void ov_heap_free(CPUState& cpu) {
 // because nothing is freed are the same number — the exact trap this file has already fallen into
 // once today with the allocator.
 void ov_exp_free(CPUState& cpu) {
-    if ((u32)cpu.gpr[3] == sb_r32((u32)cpu.gpr[13] - 0x5f30u)) ++g_expFreeSys;
+    if ((u32)cpu.gpr[3] == sys_heap(cpu)) ++g_expFreeSys;
     ++g_expFreeAll;
+    const u32 ptr = (u32)cpu.gpr[4];
+    const auto it = g_live.find(ptr);
+    if (it != g_live.end()) g_live.erase(it);
+    else if (ptr != 0) ++g_liveMissedFree;
     func_802c1b14(cpu);
 }
 
@@ -563,6 +710,14 @@ void ov_archive_ctor_default(CPUState& cpu) {
 
 } // namespace
 
+SB_OVERRIDE(0x802c52b0u, ov_jkr_thread_ctor, "JKRThread::JKRThread",
+            "diagnostic (SB_LOG=anmdata): every JKRThread takes a 16 KB stack from the 128 KB system "
+            "heap — count and caller")
+SB_OVERRIDE(0x802c1b88u, ov_exp_free_all, "JKRExpHeap::freeAll",
+            "diagnostic (SB_LOG=anmdata): clear the resident ledger on a wholesale release")
+SB_OVERRIDE(0x802c138cu, ov_exp_alloc, "JKRExpHeap::alloc",
+            "diagnostic (SB_LOG=anmdata): remember every system-heap allocation so the RESIDENT set "
+            "can be reported when the heap runs out")
 SB_OVERRIDE(0x802c1b14u, ov_exp_free, "JKRExpHeap::free",
             "diagnostic (SB_LOG=anmdata): the virtual free a delete actually reaches")
 SB_OVERRIDE(0x802c37b8u, ov_heap_free, "JKRHeap::free",

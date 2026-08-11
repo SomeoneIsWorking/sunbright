@@ -94,3 +94,37 @@ the same load path. Whatever holds ~128 KB of system heap at stage-9 load is the
 Do NOT fix this by enlarging the system heap or by null-guarding the recomp side. The heap size
 matches retail's and the guest's own code is what dereferences the null; a guard would trade a crash
 for a stage that loads with no map-object animations.
+
+### Note (2026-08-11)
+QUANTIFIED (2026-08-11, same probe): stage 9 consumes ~60 KB MORE system heap than stages that work,
+measured at the same point in the load (the first mixed-case archive lookup, which every stage
+performs).
+
+    stage 1 (plaza):        largest free block 60,780   total free 60,800   of 130,928
+    stage 8 (Pianta):       largest free block 60,780   total free 60,800   of 130,928
+    stage 9 (Noki Bay):     largest free block      8   total free      16   of 130,928
+
+Identical numbers for two working stages and near-zero for the failing one: the heap budget is not
+marginal, something Noki-Bay-specific takes about 60 KB of it.
+
+What is NOT the cause: JKRThread stacks. Four threads are constructed in every stage (JUTException,
+JKRAram, JKRAramStream, JKRDecomp), 16 KB of stack each, 64 KB total — structural, identical in 8
+and 9, and confirmed by hooking the constructor rather than assumed.
+
+Where the resident ledger stands: 21 live allocations totalling 69,600 bytes are attributable inside
+the heap's address range at the failure, dominated by those four thread stacks. The heap is 130,912
+bytes used, so ~61 KB is held by allocations the probe does not see — and that unattributed figure
+is suspiciously close to the 60 KB difference between stages. So the next probe is specific:
+
+    JKRExpHeap::alloc (0x802c138c) is hooked, but allocations may reach the heap through the VIRTUAL
+    do_alloc instead. Hook that path too, re-run stages 8 and 9, and diff the callers of everything
+    above ~1 KB. The ~60 KB Noki Bay holds and Pianta does not is the bug.
+
+Beware the traps this probe has already fallen into, all fixed but all easy to repeat:
+  * cache the ADDRESS of JKRHeap::sSystemHeap, never its value — the static is reassigned during
+    boot (it starts as the root heap), and caching the value made the ledger report 20.8 MB live in
+    a 128 KB heap, including a single 15.7 MB block;
+  * filter resident blocks by the heap's [mStart, mEnd) range, not by which heap they were charged
+    to, for the same reason;
+  * getFreeSize() is the LARGEST FREE BLOCK, getTotalFreeSize() is the sum. Both are needed to tell
+    exhaustion from fragmentation (here: both tiny, so exhausted).
