@@ -51,6 +51,14 @@ void override_register(u32 address, void (*fn)(CPUState&), const char* symbol,
     if (address > g_hi) g_hi = address;
 }
 
+// Is this function overridden? A QUERY, and deliberately not override_lookup(): that one announces
+// the override on first use, which is a statement that the game executed it. Something merely
+// asking (the graphics registry, when it seeds a row's RE hint) must not put that line in the log.
+bool override_exists(u32 address) {
+    if (address < g_lo || address > g_hi) return false;
+    return table().find(address) != table().end();
+}
+
 void (*override_lookup(u32 address))(CPUState&) {
     if (address < g_lo || address > g_hi) return nullptr;
     auto it = table().find(address);

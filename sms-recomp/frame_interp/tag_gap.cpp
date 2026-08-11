@@ -26,6 +26,7 @@
 //   SBR_TAGGAP=1   report the untagged display-list callers, worst first
 
 #include "../overrides/overrides.h"
+#include "graphics_db.h"
 #include "populations.h"
 
 #include <intrinsics.h>
@@ -41,6 +42,9 @@ extern "C" void func_802dfe88(CPUState&);   // J3DShapeDraw::draw() const
 extern "C" void func_8035df88(CPUState&);   // GXBegin(GXPrimitive, GXVtxFmt, u16)
 uint64_t sbr_gxfifo_pending_tag();
 void sbr_gxfifo_draw_tag(uint64_t tag);
+u8 sbr_gxfifo_pending_pop();
+bool sbr_gxfifo_pending_pop_auto();
+void sbr_gxfifo_draw_pop_auto(u8 pop);
 void gxfifo_stats(u64& draws, u64& verts, u64& bytes);
 void gxfifo_drain_pending();
 u64 sbr_shine_shadow_next_tag();
@@ -96,6 +100,49 @@ std::unordered_map<u32, unsigned long> g_directSites;
 unsigned long g_directUntagged = 0, g_directTagged = 0;
 unsigned long g_untagged = 0, g_tagged = 0;
 unsigned long g_untaggedDraws = 0, g_taggedDraws = 0;
+
+// ── AUTOMATIC DETECTION — the graphics registry (graphics_db.h) ─────────────────────────────────
+//
+// The histograms above are a DIAGNOSTIC: they run under SBR_TAGGAP and print at the end of a run.
+// This is the same attribution made PERMANENT — a draw that no hand-written seam claims is labelled
+// with its emitter, and that emitter gets a row in a file that survives the run. Detection is
+// therefore a consequence of drawing rather than a list somebody maintains.
+//
+// NESTING. The outermost waist wins, and that is deliberate: J3DShapeDraw::draw's caller names a
+// SYSTEM, while the GXCallDisplayList inside it would only name J3D's own internals. A nested waist
+// that relabelled would replace an informative attribution with a useless one, every time.
+int g_autoDepth = 0;
+
+bool claimable() {
+    if (!sbr_gfxdb_enabled() || g_autoDepth != 0) return false;
+    // A hand-written population label covers a whole subtree and is never stepped on; an automatic
+    // one is just the last site's, and the site about to draw is the better answer.
+    return sbr_gxfifo_pending_pop() == SB_POP_UNLABELLED || sbr_gxfifo_pending_pop_auto();
+}
+
+// For waists whose geometry is emitted INSIDE the call (display lists, J3D shape draws).
+struct AutoLabel {
+    bool on;
+    AutoLabel(u32 lr, SbGfxWaist w) : on(claimable()) {
+        if (on) {
+            ++g_autoDepth;
+            sbr_gxfifo_draw_pop_auto(sbr_gfxdb_site(lr, w));
+        }
+    }
+    ~AutoLabel() {
+        if (on) {
+            --g_autoDepth;
+            sbr_gxfifo_draw_pop_auto(SB_POP_UNLABELLED);
+        }
+    }
+};
+
+// GXBegin is different: it OPENS a primitive, and the vertices follow after it returns. So the
+// label is latched rather than scoped — it stays in force until the next site latches its own,
+// which the next GXBegin does because an automatic label is always replaceable.
+void auto_latch_immediate(u32 lr) {
+    if (claimable()) sbr_gxfifo_draw_pop_auto(sbr_gfxdb_site(lr, SbGfxWaist::Immediate));
+}
 
 void report() {
     const unsigned long total = g_tagged + g_untagged;
@@ -170,6 +217,9 @@ void ov_call_display_list(CPUState& cpu) {
             return;
         }
     }
+    // Automatic detection runs whether or not the SBR_TAGGAP diagnostic is on: the registry is a
+    // permanent record, not an investigation someone switches on.
+    AutoLabel label((u32)cpu.lr, SbGfxWaist::Indexed);
     if (!enabled()) {
         func_80362a50(cpu);
         return;
@@ -200,6 +250,9 @@ void ov_call_display_list(CPUState& cpu) {
 }
 
 void ov_shape_draw_draw(CPUState& cpu) {
+    // The OUTERMOST waist for J3D geometry, so its caller is what the registry records — the
+    // display list inside would only name J3D's own shape-draw object.
+    AutoLabel label((u32)cpu.lr, SbGfxWaist::J3DShape);
     if (enabled()) {
         if (sbr_gxfifo_pending_tag() == 0) {
             ++g_shapeDrawUntagged;
@@ -212,6 +265,7 @@ void ov_shape_draw_draw(CPUState& cpu) {
 }
 
 void ov_gx_begin(CPUState& cpu) {
+    auto_latch_immediate((u32)cpu.lr);
     if (enabled()) {
         if (sbr_gxfifo_pending_tag() == 0) {
             ++g_directUntagged;

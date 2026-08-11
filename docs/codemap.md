@@ -136,6 +136,10 @@ gxfifo, widescreen, thp, …) and `SB_DUMP_FRAME`/`SB_DUMP_FRAME_AFTER`.
   the hooks are spread over eight files under three different names (`lerp60`, `interp60`,
   `interp60_replace`). The stale entry this replaces pointed at `runtime/render/scene.cpp`, which has not
   held a 60fps path for some time — the switch it named lives in `runtime/lerp60.cpp`.
+- **what graphics exist, what is RE'd, what interpolates → `docs/graphics/README.md`** and the file it
+  describes, `docs/graphics/graphics_db.tsv`. The game writes a row for every emitter it sees draw
+  (auto-detected at the three GX waists), with the interpolation verdict aurora measured for it; the
+  `re`/`note` columns are curated. Worklist: `tools/gfx/graphics_db.py next`
 - which perform list is which → `SBR_INTERP60_LISTS=1` (resolves `gpMarDirector` by scan, names every slot)
 - whether a sub-frame is real or the same image twice → `tools/interp/subframe_gate.py` on a consecutive-present series
 - WHERE a sub-frame sits between its neighbours (the arc's `asymmetry` number) → `tools/interp/subframe_position.py`
@@ -152,7 +156,8 @@ sms-recomp/  —  the recomp runtime
 │  ├─ devices/                 19 files   the GC hardware model — one file per device
 │  └─ render/                  18 files   the native SDL3-GPU renderer + its oracle harnesses
 ├─ overrides/      4.9k lines  25 files   native HW/OS seams + widescreen/HUD/j3d capture
-├─ frame_interp/   4.3k lines  11 files   ALL interpolated-60fps code — one API (docs/60fps/)
+├─ frame_interp/   4.3k lines  13 files   ALL interpolated-60fps code — one API (docs/60fps/)
+│                                        + graphics_db.* — the graphics registry (docs/graphics/)
 └─ host/          main.cpp
 extern/aurora/    the GC platform surface (SDL3 + WebGPU/Dawn), shared by both runtimes
 sms-boot/         the decomp+Aurora runtime (the oracle)

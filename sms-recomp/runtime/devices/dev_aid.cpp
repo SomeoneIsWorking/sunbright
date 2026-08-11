@@ -124,6 +124,15 @@ void emit_block(u32 addr) {
         std::memset(frames, 0, sizeof(frames));
     }
 
+    // SBR_MUTE=1 keeps the whole audio path running — mixer, pacing, the counters — and only stops
+    // the host DAC. Muting by skipping the render would change the engine's timing and make a muted
+    // run a different run; this way an automated or agent-driven run is silent to the person at the
+    // machine while still measuring exactly what an audible one does.
+    static const bool muted = [] {
+        const char* e = std::getenv("SBR_MUTE");
+        return e != nullptr && e[0] != '0' && e[0] != '\0';
+    }();
+    if (muted) std::memset(frames, 0, sizeof(frames));
     aurora_audio_push(frames, kBlockFrames);
     if (g_raw) std::fwrite(frames, sizeof(frames), 1, g_raw);
 }

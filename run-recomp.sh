@@ -15,6 +15,9 @@
 # file loads Delfino Plaza. Title, file-select and the plaza all render (title/file-select
 # verified per-region against the decomp oracle and a retail Dolphin capture, 2026-07-22).
 #
+#   SBR_MUTE=1 ./run-recomp.sh            # silent to the speakers; the audio path still runs
+#   SBR_QUIT_AFTER=320 ./run-recomp.sh    # quit after N presents (short, bounded automated runs)
+#
 #   SBR_FASTBOOT=1 ./run-recomp.sh        # skip the menus: File 1 -> Delfino Plaza
 #   SBR_STAGE=6 ./run-recomp.sh           # boot a specific stage (SBR_SCENARIO=<n> too)
 #

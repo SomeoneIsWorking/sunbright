@@ -67,6 +67,54 @@ def git(*args, cwd=SUBMODULE, check=True):
     return r.stdout.strip()
 
 
+def current_branch():
+    """Our branch in the submodule, read rather than assumed.
+
+    This was hardcoded to "sunbright" and the branch is now `main` (one branch per repo), so every
+    subcommand died on `Not a valid object name sunbright` — a tool that cannot run is a workflow
+    defect, not a fact about the rebase. Detached HEAD REFUSES: rebasing a detached head would drop
+    our commits with nothing pointing at them.
+    """
+    b = git("rev-parse", "--abbrev-ref", "HEAD")
+    if b == "HEAD":
+        sys.exit(f"decomp/sms is on a DETACHED HEAD ({git('rev-parse','--short','HEAD')}). "
+                 "Check out the port branch first — rebasing detached loses the commits.")
+    return b
+
+
+TARGET = "sms-boot"
+
+
+def build_dir():
+    """The build directory that actually HAS the decomp target — checked, not assumed.
+
+    This is the instrument's control, and it exists because the instrument lied. The tool assumed
+    a `build/` directory; the repo has `build-sms-recomp/` (the RECOMP runtime), which does not
+    define `sms-boot` at all. `cmake --build build-sms-recomp --target sms-boot` prints NOTHING and
+    exits 0 — so `audit` reported "build GREEN — no post-rebase reconciliation needed" from a build
+    that never compiled one file of the tree it was certifying. A green that cannot go red is not
+    evidence, and this one certified a 396-commit rebase.
+
+    So: a candidate directory must be configured AND list the target. If none does, REFUSE — an
+    unbuildable rebase must read as "not verified", never as "verified fine".
+    """
+    tried = []
+    for d in ("build", "build-sms-recomp"):
+        p = os.path.join(REPO, d)
+        if not os.path.isdir(os.path.join(p, "CMakeFiles")):
+            tried.append(f"{d}: not configured")
+            continue
+        r = subprocess.run(["cmake", "--build", d, "--target", "help"],
+                           cwd=REPO, capture_output=True, text=True)
+        if any(line.strip().endswith(f" {TARGET}") or line.strip() == TARGET
+               for line in r.stdout.splitlines()):
+            return d
+        tried.append(f"{d}: configured but defines no '{TARGET}' target")
+    sys.exit(f"REFUSES: no build directory defines the '{TARGET}' target ({'; '.join(tried)}), so "
+             f"NOTHING can be compiled and this says NOTHING about the rebase. Configure the decomp "
+             f"build first:  cmake -B build -DCMAKE_BUILD_TYPE=Release")
+
+
 def ensure_clean():
     if git("status", "--porcelain"):
         sys.exit(
@@ -109,23 +157,35 @@ def classify(files):
 
 
 def build(jobs=None):
-    """Build sms-boot. Returns (ok, error_count)."""
+    """Build the decomp target. Returns (ok, error_count).
+
+    An empty build log is treated as a FAILURE to observe rather than a pass: cmake prints
+    nothing and exits 0 for a target it does not have, which is how this tool certified a rebase it
+    never compiled. build_dir() now rules that case out up front; this is the second line of
+    defence, because "no output" and "everything was already up to date" are also indistinguishable
+    after a rebase that touched source files.
+    """
     jobs = jobs or str(os.cpu_count() or 4)
     r = subprocess.run(
-        ["cmake", "--build", "build", "--target", "sms-boot", "-j", jobs],
+        ["cmake", "--build", build_dir(), "--target", TARGET, "-j", jobs],
         cwd=REPO, capture_output=True, text=True,
     )
-    errs = [l for l in (r.stdout + r.stderr).splitlines() if "error:" in l]
+    out = r.stdout + r.stderr
+    if not out.strip():
+        sys.exit(f"REFUSES: building '{TARGET}' produced NO output at all, so nothing was "
+                 f"compiled and the result is not a verdict on the tree.")
+    errs = [l for l in out.splitlines() if "error:" in l]
     return r.returncode == 0, len(errs)
 
 
 def cmd_status(args):
     git("fetch", "upstream", "--quiet", check=False)
-    base = git("merge-base", "sunbright", "upstream/main")
+    branch = current_branch()
+    base = git("merge-base", branch, "upstream/main")
     behind = git("rev-list", "--count", f"{base}..upstream/main")
-    ours = git("rev-list", "--count", f"{base}..sunbright")
+    ours = git("rev-list", "--count", f"{base}..{branch}")
     on_top = "YES" if subprocess.run(
-        ["git", "merge-base", "--is-ancestor", "upstream/main", "sunbright"],
+        ["git", "merge-base", "--is-ancestor", "upstream/main", branch],
         cwd=SUBMODULE).returncode == 0 else "NO"
 
     files = diverging_files()
@@ -162,13 +222,14 @@ def cmd_diverge(args):
 def cmd_rebase(args):
     ensure_clean()
     git("fetch", "upstream", "--quiet", check=False)
-    base = git("merge-base", "sunbright", "upstream/main")
+    branch = current_branch()
+    base = git("merge-base", branch, "upstream/main")
     behind = int(git("rev-list", "--count", f"{base}..upstream/main"))
     if behind == 0:
         print("already up to date with upstream — nothing to rebase.")
         return
     tag = f"pre-rebase-backup-{args.tag}" if args.tag else "pre-rebase-backup"
-    git("tag", "-f", tag, "sunbright")
+    git("tag", "-f", tag, branch)
     print(f"[safety] tagged current tip as {tag}")
     print(f"[rebase] replaying our commits onto upstream/main ({behind} new upstream commits)")
     r = subprocess.run(
@@ -192,7 +253,7 @@ def cmd_audit(args):
         print("build GREEN — no post-rebase reconciliation needed.")
         return
     r = subprocess.run(
-        ["cmake", "--build", "build", "--target", "sms-boot", "-j",
+        ["cmake", "--build", build_dir(), "--target", TARGET, "-j",
          str(os.cpu_count() or 4)],
         cwd=REPO, capture_output=True, text=True,
     )

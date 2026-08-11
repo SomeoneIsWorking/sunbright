@@ -16,6 +16,7 @@
 #include "../runtime/render/scene.h"
 #include "../frame_interp/stream_interp.h"
 #include "../frame_interp/frame_interp.h"
+#include "../frame_interp/graphics_db.h"
 
 // Declared rather than included: aurora's gfx headers are internal to the library, and the recomp
 // links it statically so the symbol resolves directly. Same approach lerp60.cpp uses for aurora's
@@ -528,6 +529,17 @@ void video_wait_for_retrace(CPUState& cpu) {
     // renderer's block: smoothness measures AURORA's presented image and must work with the native
     // path off — it is the instrument for the 60fps interpolation work, which is an aurora change.
     sbr_compare_init();
+
+    // THE GRAPHICS REGISTRY. Written on a slow cadence rather than at exit, because automated runs
+    // end with SIGKILL and an exit-only write would leave the file empty for exactly the runs that
+    // draw the most. NOT gated on interpolation: detecting what the game draws is worth doing in
+    // every run; only the `lerp` column needs the audit, and it says `unmeasured` without it.
+    // The first write comes EARLY and the rest on a slow cadence: a 30-second verification run must
+    // leave a registry behind, and a long play session must not rewrite the file hundreds of times.
+    if (g_present_count == 60 || (g_present_count != 0 && (g_present_count % 300) == 0)) {
+        sbr_gfxdb_flush();
+        sbr_gfxdb_report();
+    }
 
     // Interpolation tag coverage, on a slow cadence. Inert unless SBR_LERP60 is set.
     if (sbr_lerp_enabled() && (g_present_count % 300) == 0) {

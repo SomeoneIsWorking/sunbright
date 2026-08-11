@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""graphics_db.py — read and curate THE GRAPHICS REGISTRY (docs/graphics/graphics_db.tsv).
+
+The registry is written by the game itself: every emitter that draws gets a row automatically, with
+its guest symbol, the stages it was seen in, and the interpolation verdict aurora's audit measured
+for it. This tool is the other half — reading it back in a useful order, and recording the CURATED
+columns (`re`, `note`) the game never touches.
+
+    graphics_db.py next                    THE WORKLIST — what to RE next, worst-interpolating first
+    graphics_db.py summary                 counts by RE state and by lerp verdict, with denominators
+    graphics_db.py list --re unknown       the graphics nobody has looked at yet, biggest first
+    graphics_db.py list --lerp no          the ones measured as NOT interpolating
+    graphics_db.py show 0x802dfe88         one row, every column
+    graphics_db.py set 0x802dfe88 re=yes note="water refraction quad; snap is correct"
+
+WHAT THE FILE CANNOT TELL YOU, repeated here because a listing is where it gets forgotten:
+
+  * It is a census of what has been OBSERVED. A graphic that never drew in a recorded run has no
+    row, and its absence is not evidence it does not exist. `summary` prints which stages have
+    contributed, so "we have only ever run the plaza" is visible rather than assumed.
+  * `lerp=unmeasured` means the interpolation audit filed nothing for that row (the run had
+    SBR_LERP60 off). It is NOT "does not interpolate", and this tool never counts it as one.
+  * A `re` of `native-override` is a HINT the game seeded — a native override exists for the
+    emitting function — not a verdict that the graphic is understood.
+"""
+import argparse
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DB = os.path.join(ROOT, "docs", "graphics", "graphics_db.tsv")
+COLS = ["key", "kind", "symbol", "stages", "re", "lerp", "interp_pct", "draws", "calls", "runs",
+        "first_seen", "last_seen", "note"]
+CURATED = {"re", "note"}
+RE_VERDICTS = ("unknown", "native-override", "identified", "no", "partial", "yes")
+
+
+def load():
+    if not os.path.isfile(DB):
+        # REFUSE. "no rows" from a missing file and "no rows" from a game that drew nothing are the
+        # same output and opposite facts; only one of them is answered by running the game.
+        sys.exit(f"REFUSES: {DB} does not exist, so NOTHING was read — this is not an empty "
+                 f"registry, it is no registry. Run the game once (./run-recomp.sh) and it will "
+                 f"write one.")
+    rows, header_seen = [], False
+    with open(DB, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if parts[0] == "key":
+                header_seen = True
+                if parts != COLS:
+                    sys.exit(f"REFUSES: {DB} has columns {parts}, this tool expects {COLS}. "
+                             f"Reading it with the wrong column map would mislabel every value.")
+                continue
+            if len(parts) != len(COLS):
+                sys.exit(f"REFUSES: malformed row with {len(parts)} column(s): {line[:120]}")
+            rows.append(dict(zip(COLS, parts)))
+    if not header_seen:
+        sys.exit(f"REFUSES: {DB} has no header row, so its columns are unknown.")
+    if not rows:
+        sys.exit(f"REFUSES: {DB} exists but holds ZERO rows. The game writes rows only for "
+                 f"emitters it actually saw draw, so this says the last run rendered nothing "
+                 f"through the hooked waists — not that the game has no graphics.")
+    return rows
+
+
+def write(rows):
+    header, body = [], []
+    with open(DB, encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                header.append(line)
+            else:
+                break
+    body = ["\t".join(COLS)]
+    for r in sorted(rows, key=lambda r: r["key"]):
+        body.append("\t".join(r[c] for c in COLS))
+    tmp = DB + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.writelines(header)
+        fh.write("\n".join(body) + "\n")
+    os.replace(tmp, DB)
+
+
+def as_int(v):
+    try:
+        return int(v)
+    except ValueError:
+        return 0
+
+
+def cmd_summary(args):
+    rows = load()
+    total_draws = sum(as_int(r["draws"]) for r in rows)
+    stages = sorted({s for r in rows for s in r["stages"].split(",") if s and s != "-"})
+    print(f"{len(rows)} row(s), {total_draws:,} draw(s) recorded, seen across stage(s): "
+          f"{', '.join(stages) or '(none recorded)'}")
+    print("  Only these stages have ever been observed — a graphic that draws elsewhere has no row "
+          "yet, and its absence here is not evidence it does not exist.\n")
+
+    for field, order in (("re", RE_VERDICTS), ("lerp", ("yes", "partial", "camera-only", "no",
+                                                        "2d-correct", "unmeasured"))):
+        print(f"  by {field}:")
+        seen = {}
+        for r in rows:
+            seen.setdefault(r[field], [0, 0])
+            seen[r[field]][0] += 1
+            seen[r[field]][1] += as_int(r["draws"])
+        for k in list(order) + sorted(set(seen) - set(order)):
+            if k not in seen:
+                continue
+            n, d = seen[k]
+            print(f"    {k:<16} {n:>4} row(s)  {d:>12,} draw(s)  {100.0*d/total_draws if total_draws else 0:5.1f}%")
+        print()
+    unmeasured = sum(1 for r in rows if r["lerp"] == "unmeasured")
+    if unmeasured:
+        print(f"  {unmeasured} row(s) are `unmeasured`: the audit filed nothing for them. Run with "
+              f"SBR_LERP60=1 to measure — until then they are NOT known to snap.")
+
+
+def cmd_list(args):
+    rows = load()
+    for f in ("re", "lerp", "kind"):
+        want = getattr(args, f)
+        if want:
+            rows = [r for r in rows if r[f] == want]
+    if args.stage:
+        rows = [r for r in rows if args.stage in r["stages"].split(",")]
+    if not rows:
+        print("no row matches — and that is a statement about the FILTER, not about the game: "
+              f"the registry holds {len(load())} row(s) in total.")
+        return
+    rows.sort(key=lambda r: -as_int(r[args.sort]))
+    print(f"{'key':<12} {'kind':<10} {'re':<16} {'lerp':<12} {'%':>6} {'draws':>12}  symbol")
+    for r in rows:
+        print(f"{r['key']:<12} {r['kind']:<10} {r['re']:<16} {r['lerp']:<12} "
+              f"{r['interp_pct']:>6} {as_int(r['draws']):>12,}  {r['symbol']}")
+    print(f"\n{len(rows)} row(s)", file=sys.stderr)
+
+
+def cmd_next(args):
+    """The worklist: what to reverse-engineer next, and why that one.
+
+    Ordered by DRAWS, because a row's draw count is how much of the screen it accounts for — the
+    honest proxy for "how much would fixing this be worth". Rows already curated as `yes`/`no` are
+    finished work: someone looked and recorded an answer, so they are not offered again.
+    """
+    rows = load()
+    todo = [r for r in rows if r["re"] in ("unknown", "native-override")]
+    # A row that already interpolates needs no lerp work; it may still want an RE verdict, so it is
+    # ranked below everything that snaps rather than dropped.
+    def rank(r):
+        blocked = {"no": 0, "camera-only": 1, "partial": 2, "no-primitives": 4,
+                   "unmeasured": 3, "2d-correct": 5, "yes": 5}.get(r["lerp"], 3)
+        return (blocked, -as_int(r["draws"]))
+    todo.sort(key=rank)
+    if not todo:
+        print(f"every one of the {len(rows)} row(s) carries a curated `re` verdict — there is "
+              f"nothing unexamined IN THE REGISTRY. That is not the same as nothing left in the "
+              f"game: only stages that have been played have rows at all.")
+        return
+    print(f"{len(todo)} row(s) with no curated RE verdict, worst-interpolating and biggest first:\n")
+    for r in todo[: args.limit]:
+        why = {"no": "SNAPS — nothing interpolates it",
+               "camera-only": "follows the camera but not its own motion",
+               "partial": "some draws interpolate, some do not",
+               "unmeasured": "never measured — run with SBR_LERP60=1 first",
+               "no-primitives": "emits no primitives; probably a state-only call site",
+               "2d-correct": "screen-space; snapping is correct, only the RE verdict is missing",
+               "yes": "interpolates; only the RE verdict is missing"}.get(r["lerp"], r["lerp"])
+        print(f"  {r['key']:<12} {as_int(r['draws']):>10,} draw(s)  {r['symbol']}")
+        print(f"  {'':<12} {r['lerp']:>10}  {why}  [seen: {r['stages']}]")
+    if len(todo) > args.limit:
+        print(f"\n  ... {len(todo) - args.limit} more (--limit to see them)")
+
+
+def cmd_show(args):
+    for r in load():
+        if r["key"] == args.key:
+            for c in COLS:
+                print(f"  {c:<12} {r[c]}")
+            return
+    sys.exit(f"no row with key {args.key}. Keys are the emitter's guest address (0x........) or a "
+             f"curated population slug (pop.*); `list` prints them.")
+
+
+def cmd_set(args):
+    rows = load()
+    target = [r for r in rows if r["key"] == args.key]
+    if not target:
+        sys.exit(f"no row with key {args.key} — this tool edits rows the GAME created, so a key "
+                 f"that has never drawn cannot be curated into existence.")
+    for a in args.assignment:
+        if "=" not in a:
+            sys.exit(f"expected field=value, got '{a}'")
+        field, _, value = a.partition("=")
+        if field not in CURATED:
+            sys.exit(f"'{field}' is MEASURED, not curated: the game rewrites it every run, so an "
+                     f"edit here would be silently discarded. Curated fields: {sorted(CURATED)}")
+        if field == "re" and value not in RE_VERDICTS:
+            sys.exit(f"re must be one of {RE_VERDICTS}")
+        target[0][field] = value.replace("\t", " ") or "-"
+    write(rows)
+    print(f"{args.key}: " + ", ".join(f"{a}" for a in args.assignment))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("summary").set_defaults(fn=cmd_summary)
+    p = sub.add_parser("list")
+    p.add_argument("--re")
+    p.add_argument("--lerp")
+    p.add_argument("--kind")
+    p.add_argument("--stage")
+    p.add_argument("--sort", default="draws", choices=["draws", "calls", "runs"])
+    p.set_defaults(fn=cmd_list)
+    p = sub.add_parser("next")
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(fn=cmd_next)
+    p = sub.add_parser("show")
+    p.add_argument("key")
+    p.set_defaults(fn=cmd_show)
+    p = sub.add_parser("set")
+    p.add_argument("key")
+    p.add_argument("assignment", nargs="+")
+    p.set_defaults(fn=cmd_set)
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,48 @@
+# THE GRAPHICS REGISTRY — every graphic this port has been OBSERVED to draw.
+# Written by the game itself (sms-recomp/frame_interp/graphics_db.cpp). Rows are added automatically the first
+# frame an emitter draws; measured columns are rewritten every run; the CURATED columns `re` and `note` are
+# never touched by the game. Edit those with tools/gfx/graphics_db.py.
+#
+# WHAT THIS FILE DOES NOT SAY: a graphic that has never drawn in a recorded run is ABSENT, not "does not
+# exist" — this is a census of what was observed. `lerp=unmeasured` means the interpolation audit filed
+# nothing (the run had SBR_LERP60 off), NOT that the graphic snaps.
+#
+# re:   unknown | native-override (auto hints) | yes | partial | no | identified   (curated verdicts)
+# lerp: yes | partial | camera-only | no | 2d-correct | unmeasured   (MEASURED, per run)
+key	kind	symbol	stages	re	lerp	interp_pct	draws	calls	runs	first_seen	last_seen	note
+0x8014044c	immediate	fill_rect__9@unnamed@FRCQ26JDrama5TRectQ28JUtility6TColor+0xbc	plaza	native-override	2d-correct	-	7	7	1	2026-08-11	2026-08-11	-
+0x801445ec	immediate	__dt__11TGCConsole2Fv+0x3e24?	plaza	unknown	2d-correct	-	106	108	1	2026-08-11	2026-08-11	-
+0x801499c0	immediate	__dt__11TGCConsole2Fv+0x91f8?	plaza	unknown	2d-correct	-	53	54	1	2026-08-11	2026-08-11	-
+0x8017d4f0	immediate	draw__9TSunGlassFRCQ26JDrama5TRectQ28JUtility6TColor+0x19c	plaza	unknown	2d-correct	-	292	293	1	2026-08-11	2026-08-11	-
+0x80181534	immediate	Hxs2_Circle+0x160	plaza	unknown	2d-correct	-	700	700	1	2026-08-11	2026-08-11	-
+0x8018162c	immediate	Hxs2_Circle+0x258	plaza	unknown	2d-correct	-	14846	14846	1	2026-08-11	2026-08-11	-
+0x80181884	immediate	Hxs1_Circle+0xe0	plaza	unknown	2d-correct	-	1794	1794	1	2026-08-11	2026-08-11	-
+0x80181968	immediate	Hxs1_Circle+0x1c4	plaza	unknown	2d-correct	-	5436	5436	1	2026-08-11	2026-08-11	-
+0x8018260c	immediate	__Hx_FrBufferMorf+0x158	plaza	unknown	2d-correct	-	30	30	1	2026-08-11	2026-08-11	-
+0x801982c0	immediate	drawUpper__8TMapWireCFv+0x48	plaza	unknown	camera-only	0.0	292	293	1	2026-08-11	2026-08-11	-
+0x801983f4	immediate	drawUpper__8TMapWireCFv+0x17c	plaza	unknown	camera-only	0.0	292	293	1	2026-08-11	2026-08-11	-
+0x801984d0	immediate	drawUpper__8TMapWireCFv+0x258	plaza	unknown	no-primitives	-	0	293	1	2026-08-11	2026-08-11	-
+0x80225cc8	indexed	SMS_SettingDrawShape__FP12J3DModelDataUs+0x34	plaza	unknown	no-primitives	-	0	8038	1	2026-08-11	2026-08-11	-
+0x8022d2f0	immediate	SMS_FillScreenAlpha__FUc+0x14c	plaza	unknown	camera-only	0.0	292	293	1	2026-08-11	2026-08-11	-
+0x8022d8d4	immediate	perform__12TAfterEffectFUlPQ26JDrama9TGraphics+0x3dc	plaza	native-override	2d-correct	-	292	293	1	2026-08-11	2026-08-11	-
+0x8027cbb8	immediate	drawShineShadowVolume__18TModelWaterManagerFPA4_f+0x53c	plaza	native-override	camera-only	0.0	292	293	1	2026-08-11	2026-08-11	-
+0x8027d034	immediate	drawMirror__18TModelWaterManagerFPA4_f+0x408	plaza	unknown	camera-only	0.0	292	293	1	2026-08-11	2026-08-11	-
+0x8027d24c	immediate	drawMirror__18TModelWaterManagerFPA4_f+0x620	plaza	unknown	camera-only	0.0	292	293	1	2026-08-11	2026-08-11	-
+0x802cd410	immediate	drawTexCoord__10J2DPictureFiiiiffffffffPA3_A4_f+0x124	plaza	native-override	2d-correct	-	1199	1214	1	2026-08-11	2026-08-11	-
+0x802d0200	immediate	drawSelf__9J2DScreenFiiPA3_A4_f+0x38	plaza	native-override	2d-correct	-	344	346	1	2026-08-11	2026-08-11	-
+0x802ed8f4	indexed	callDL__17J3DDisplayListObjFv+0x1c	plaza	unknown	no-primitives	-	0	66100	1	2026-08-11	2026-08-11	-
+0x803314fc	immediate	exec__25JPADrawExecRotDirectionalFPC14JPADrawContextP15JPABaseParticle+0x35c	plaza	unknown	camera-only	0.0	847	849	1	2026-08-11	2026-08-11	-
+0x80332364	immediate	exec__23JPADrawExecDirBillBoardFPC14JPADrawContextP15JPABaseParticle+0x270	plaza	unknown	camera-only	0.0	535	1490	1	2026-08-11	2026-08-11	-
+0x80333188	immediate	exec__22JPADrawExecStripeCrossFPC14JPADrawContext+0xe4	plaza	unknown	camera-only	0.0	876	879	1	2026-08-11	2026-08-11	-
+0x803334e8	immediate	exec__22JPADrawExecStripeCrossFPC14JPADrawContext+0x444	plaza	unknown	no-primitives	-	0	879	1	2026-08-11	2026-08-11	-
+0x803628fc	immediate	GXDrawCube+0x100	plaza	unknown	camera-only	0.0	584	586	1	2026-08-11	2026-08-11	-
+pop.flag	deforming	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	partial	99.7	2628	0	1	2026-08-11	2026-08-11	-
+pop.j2d-pane	2d	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	2d-correct	-	208	0	1	2026-08-11	2026-08-11	-
+pop.j3d-shape	world	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	partial	99.4	295051	0	1	2026-08-11	2026-08-11	-
+pop.jpa-particle	effect	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	partial	94.3	13268	0	1	2026-08-11	2026-08-11	-
+pop.sea-ripple	deforming	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	partial	99.7	292	0	1	2026-08-11	2026-08-11	-
+pop.shadow-alpha-cube	shadow	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	camera-only	0.0	15122	0	1	2026-08-11	2026-08-11	-
+pop.shadow-model	shadow	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	partial	98.3	2040	0	1	2026-08-11	2026-08-11	-
+pop.shadow-volume	shadow	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	partial	99.2	14126	0	1	2026-08-11	2026-08-11	-
+pop.shine-shadow-slice	shadow	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	partial	95.1	6424	0	1	2026-08-11	2026-08-11	-
+pop.text-glyph	2d	(labelled by a seam in sms-recomp/frame_interp)	plaza	identified	2d-correct	-	3107	0	1	2026-08-11	2026-08-11	-

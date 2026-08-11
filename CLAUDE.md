@@ -322,6 +322,14 @@ mixer into `sb_audio_frame` (game is silent by omission).
 `/analyze-rom` · `/build` · `/update-docs` · `/patch-func ADDR` (recomp-era skills are stale
 pending cleanup).
 
+## Graphics registry
+
+`docs/graphics/graphics_db.tsv` — every graphic the port has been OBSERVED to draw, whether it has
+been RE'd, and whether it interpolates. The GAME writes it: any emitter that draws gets a row
+automatically. Playing populates it; `tools/gfx/graphics_db.py next` is the worklist ("work on the
+DB entries"). `re`/`note` are curated, everything else is measured — read `docs/graphics/README.md`
+before trusting a column, especially `unmeasured` (audit was off) vs `no`.
+
 ## Codemap
 
 `docs/codemap.md` — what is where, what's done, what's missing. Consult at task START;

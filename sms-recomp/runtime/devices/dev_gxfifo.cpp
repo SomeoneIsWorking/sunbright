@@ -1309,6 +1309,8 @@ u32 fifo_read(u32 ea, unsigned width) {
 // Parse this frame's stream and rotate it into g_last (with the previous frame in g_prev). Does
 // NOT send anything to aurora — the frame seam decides what to send and present. The build/send
 // split is a useful separation in its own right; it no longer serves any interpolation consumer.
+void sbr_gxfifo_pop_stream_reset();
+
 void gxfifo_build() {
     // Drain whatever is still buffered. Parsing only ran once 4096 bytes had accumulated, so a
     // frame's trailing commands could sit unparsed and be emitted in the NEXT frame's stream.
@@ -1327,6 +1329,9 @@ void gxfifo_build() {
     sbr_state_oracle_mine_frame_end();
     g_last.swap(g_out);
     g_out.clear();
+    // The new stream carries no label yet, so the next one must be written even if it repeats the
+    // value the last frame ended on (see emit_draw_pop).
+    sbr_gxfifo_pop_stream_reset();
 }
 
 void gxfifo_send(const std::vector<u8>& s) {
@@ -1465,12 +1470,47 @@ uint64_t sbr_gxfifo_pending_tag() { return g_pendingTagState; }
 // The audit label for the draws that follow (GX_AURORA_DRAW_POP). Not an identity: it says WHICH
 // SYSTEM emitted a draw, so the interpolation report can be per-population instead of one global
 // percentage that cannot separate a correctly-snapping HUD from stuttering world geometry.
-void sbr_gxfifo_draw_pop(u8 pop) {
+//
+// The label in force is mirrored on this side (like the tag above) for two consumers: the graphics
+// registry needs to know whether a draw is ALREADY claimed by a hand-written seam before it
+// attributes it to an emitter site, and the redundant-write skip below needs the previous value.
+// The skip matters because the registry labels at GXBegin, which is called about a million times a
+// run: re-emitting the same label token would drain and re-parse the fifo every time for a byte
+// aurora already has.
+// The LOGICAL label (what a seam has asked for) and the label actually written into this frame's
+// stream are tracked separately. They differ at a frame boundary: a stream that was built but never
+// replayed would leave aurora's latch at some other value, so each frame re-states its first label
+// instead of trusting a mirror of a stream nobody consumed.
+static u8 g_pendingPop = 0;
+static bool g_pendingPopAuto = false;
+static int g_popEmitted = -1;   // -1 = nothing written to this frame's stream yet
+
+u8 sbr_gxfifo_pending_pop() { return g_pendingPop; }
+bool sbr_gxfifo_pending_pop_auto() { return g_pendingPopAuto; }
+
+static void emit_draw_pop(u8 pop, bool automatic) {
+    g_pendingPop = pop;
+    g_pendingPopAuto = automatic;
+    if ((int)pop == g_popEmitted) return;
+    g_popEmitted = (int)pop;
     gxfifo_drain_pending();
     put_u8(g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_DRAW_POP);
     put_u8(g_out, pop);
 }
+
+void sbr_gxfifo_draw_pop(u8 pop) { emit_draw_pop(pop, /*automatic=*/false); }
+
+void sbr_gxfifo_pop_stream_reset() {
+    g_popEmitted = -1;
+    g_pendingPop = 0;
+    g_pendingPopAuto = false;
+}
+
+// The registry's label. Distinguished from the hand-written one so that an AUTO label can be
+// replaced by the next site's auto label, while a seam's deliberate label is never stepped on:
+// a curated population that set its label around a whole subtree must keep it for that subtree.
+void sbr_gxfifo_draw_pop_auto(u8 pop) { emit_draw_pop(pop, /*automatic=*/true); }
 
 void sbr_gxfifo_draw_tag(uint64_t tag) {
     g_pendingTagState = tag;

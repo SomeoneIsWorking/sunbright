@@ -22,6 +22,10 @@
 // run its recompiled body, which is the case for all but a handful of functions.
 void (*override_lookup(u32 address))(CPUState&);
 
+// Is there one, without announcing it? Asking is not executing, and only override_lookup logs the
+// "-> native" line that says a function was actually replaced at run time.
+bool override_exists(u32 address);
+
 // Register at static-init time via the macro below.
 void override_register(u32 address, void (*fn)(CPUState&), const char* symbol,
                        const char* reason);
