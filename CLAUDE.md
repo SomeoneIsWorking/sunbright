@@ -47,10 +47,21 @@ of `sms-boot/CMakeLists.txt`. `shims/` holds RE'd game-logic spec headers includ
 `decomp/sms`; `boot_stubs/` holds scaffold stubs for unported classes (each one is
 porting worklist, replaced as the boot path exercises it).
 
-⛔ Retired and deleted: the Dolphin submodule and both oracle tiers, the SDL3-GPU Path-B
-renderer (`render_pc`), the GX-seam capture layer (`sms-boot/common`), the cooperative
-scheduler. History: `debug_journal/`, memory `[[aurora-two-path-refactor-2026-07-04]]`,
+⛔ Retired and deleted: both oracle tiers, the SDL3-GPU Path-B renderer (`render_pc`), the
+GX-seam capture layer (`sms-boot/common`), the cooperative scheduler. History:
+`debug_journal/`, memory `[[aurora-two-path-refactor-2026-07-04]]`,
 `debug_journal/2026-07-07_one_runtime_consolidation.md`.
+
+**Dolphin is NOT retired** — this line used to say it was, and the tree disagreed.
+`extern/dolphin_fork` (SomeoneIsWorking/dolphin@sunbright) is live and is the pixel/FIFO
+oracle: it carries a draw-log hook in `VertexManagerBase::Flush` and the `--fifo-record`
+NoGUI flag, used by `tools/oracle/record_fifo.sh` and `capture.sh`. (That hook's env switch
+lives in the FORK's source, not this repo, so it is deliberately not named here — the commit
+gate scans only our tree and would report any such name as a phantom, correctly.) What was
+retired in the 2026-07-07 consolidation was the in-process oracle TIERS, not the emulator.
+`extern/dolphin` (pinned upstream, never initialised, 0 bytes) is registered in `.gitmodules`
+and used by nothing — it is only a trap: `capture.sh` looked for its binary there, never found
+it, and silently fell through to a stock system Dolphin that has none of the hooks.
 
 ## 🏛️ TWO RUNTIMES (2026-07-21, decided at user's delegation; SUPERSEDES "NATIVE-ONLY, NO RECOMP")
 

@@ -8,8 +8,8 @@
 # Usage:
 #   tools/oracle/capture.sh [DURATION] [ROM]
 # ROM defaults to $SUNBRIGHT_ROM / .env / rom.rvz (same resolution as run.sh).
-# Dolphin binary: $ORACLE_DOLPHIN, else the extern/dolphin fork build if
-# present, else system dolphin-emu.
+# Dolphin binary: $ORACLE_DOLPHIN, else the extern/dolphin_fork build, else a system
+# dolphin-emu — and it SAYS which, because they are not the same oracle (see below).
 #
 # NOTE (perf trap, memory [[perf-dump-config-and-probe]]): DumpFrames is passed
 # as a -C override, NOT persisted to the Dolphin config dir — do not enable it
@@ -22,13 +22,44 @@ DURATION="${1:-75}"
 ROM="${2:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 [[ -f "$ROM" ]] || { echo "[oracle] ROM not found: $ROM" >&2; exit 1; }
 
+# WHICH DOLPHIN, AND SAY SO. This searched `extern/dolphin/build/Binaries/dolphin-emu`, which is
+# wrong twice over: `extern/dolphin` is the pinned UPSTREAM submodule and has never been
+# initialised on this machine (0 bytes), and the fork does not build a target by that name — it
+# builds `dolphin-emu-nogui` under `extern/dolphin_fork`. So the loop never matched and every run
+# silently fell through to /usr/bin/dolphin-emu, which exists here.
+#
+# That fallback is not a lesser oracle, it is a DIFFERENT one: the fork
+# (SomeoneIsWorking/dolphin@sunbright) carries the instrumentation this project's oracle work
+# depends on — the SB_ORACLE_DRAWLOG hook in VertexManagerBase::Flush, and the --fifo-record NoGUI
+# flag that tools/oracle/record_fifo.sh relies on. A capture taken from stock Dolphin looks exactly
+# like a capture from the fork and answers a different question. record_fifo.sh, written later,
+# always had the right path; this script was never updated to match.
 BIN="${ORACLE_DOLPHIN:-}"
+BIN_SRC="ORACLE_DOLPHIN"
 if [[ -z "$BIN" ]]; then
-    for c in "$HERE/extern/dolphin/build/Binaries/dolphin-emu" /usr/bin/dolphin-emu; do
-        [[ -x "$c" ]] && { BIN="$c"; break; }
-    done
+    FORK="$HERE/extern/dolphin_fork/build/Binaries/dolphin-emu-nogui"
+    if [[ -x "$FORK" ]]; then
+        BIN="$FORK"; BIN_SRC="extern/dolphin_fork (instrumented)"
+    else
+        for c in /usr/bin/dolphin-emu /usr/bin/dolphin-emu-nogui; do
+            [[ -x "$c" ]] && { BIN="$c"; BIN_SRC="SYSTEM dolphin (NOT instrumented)"; break; }
+        done
+    fi
 fi
-[[ -n "$BIN" ]] || { echo "[oracle] no dolphin binary found" >&2; exit 1; }
+[[ -n "$BIN" ]] || {
+    echo "[oracle] no dolphin binary found. Build the fork:" >&2
+    echo "  cd extern/dolphin_fork && git submodule update --init --depth 1 &&" >&2
+    echo "  cmake -B build -DENABLE_QT=OFF -DENABLE_EVDEV=OFF -DUSE_MGBA=OFF &&" >&2
+    echo "  cmake --build build --target dolphin-emu-nogui" >&2
+    exit 1
+}
+echo "[oracle] dolphin: $BIN   <- $BIN_SRC"
+if [[ "$BIN_SRC" == SYSTEM* ]]; then
+    echo "[oracle] WARNING: this is a STOCK Dolphin, not the sunbright fork. It has no" >&2
+    echo "         SB_ORACLE_DRAWLOG hook and no --fifo-record support, so any result that" >&2
+    echo "         depends on those is not merely missing here — it will be ABSENT while the" >&2
+    echo "         capture still looks complete. Set ORACLE_DOLPHIN, or build the fork." >&2
+fi
 
 DUMPDIR="$HOME/.local/share/dolphin-emu/Dump/Frames"
 OUT="$HERE/scratch/oracle"
