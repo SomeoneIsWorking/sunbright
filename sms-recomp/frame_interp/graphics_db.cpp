@@ -62,6 +62,7 @@ enum : int {
     kSnapOrtho,
     kSnapExact,
     kSnapNoId,
+    kCameraOnlyBirth,
     kDispCount
 };
 
@@ -373,6 +374,18 @@ void verdict(const long* row, bool auditLive, std::string& lerp, std::string& pc
     const long good = row[kPaired] + row[kBillboard];
     const long noId = row[kSnapNoId] + row[kUnclaimed];
     const long bad = row[kCameraOnly] + noId;
+    // Births are excluded from BOTH sides, matching aurora's table. A draw whose object is being
+    // seen for the first time has no previous pose to interpolate from; scoring it as a failure
+    // pinned every once-per-tick emitter at 99.7% forever, and scoring it as a success would credit
+    // the path for a frame it never produced.
+    const long birth = row[kCameraOnlyBirth];
+    if (bad == 0 && good == 0 && birth > 0 && row[kSnapOrtho] == 0 && row[kSnapExact] == 0) {
+        // Drew once and never again: nothing was ever pairable, and calling that `2d-correct` would
+        // assert an orthographic projection nobody measured.
+        lerp = "drew-once";
+        pct = "-";
+        return;
+    }
     if (bad == 0 && good == 0) {
         // Two ways to be correctly still, and they are different facts: `2d-correct` is a
         // screen-space element under an orthographic projection, which aurora detects; `exact` is

@@ -16,7 +16,7 @@ logger — that is debt to convert, not a feature.
 | `AURORA_FIFO_TRACE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:488` |  |
 | `AURORA_INTERP_ALPHA` | 1 | `extern/aurora/lib/gfx/common.cpp:612` |  |
 | `AURORA_PRESENT_RELAXED` | 1 | `extern/aurora/lib/webgpu/gpu.cpp:215` |  |
-| `AURORA_REPLAY_LOG_EVERY` | 1 | `extern/aurora/lib/gfx/common.cpp:1975` |  |
+| `AURORA_REPLAY_LOG_EVERY` | 1 | `extern/aurora/lib/gfx/common.cpp:1980` |  |
 | `AURORA_REPLAY_PRESENT` | 1 | `extern/aurora/lib/gfx/common.cpp:597` |  |
 | `AURORA_REPLAY_PROFILE` | 2 | `extern/aurora/lib/aurora.cpp:392` |  |
 
@@ -36,7 +36,7 @@ logger — that is debt to convert, not a feature.
 | `SB_CALCPASS_DBG` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp:302` | gated print |
 | `SB_CALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:851` |  |
 | `SB_CAM_DBG` | 2 | `decomp/sms/src/Camera/CameraOption.cpp:88` | gated print |
-| `SB_CLEAR_OVERRIDE` | 1 | `extern/aurora/lib/gfx/common.cpp:1880` |  |
+| `SB_CLEAR_OVERRIDE` | 1 | `extern/aurora/lib/gfx/common.cpp:1885` |  |
 | `SB_CLEAR_RGB` | 1 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp:187` | gated print |
 | `SB_CLOUD_TC_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4261` |  |
 | `SB_COL_DBG` | 1 | `decomp/sms/src/Map/MapCollisionEntry.cpp:152` | gated print |
@@ -208,7 +208,7 @@ logger — that is debt to convert, not a feature.
 | `SB_SKIP_WNEG_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3274` |  |
 | `SB_SKIP_WNEG_KIND` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3292` |  |
 | `SB_SKY_DIM_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4623` | gated print |
-| `SB_STAGE` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:310` |  |
+| `SB_STAGE` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:311` |  |
 | `SB_STAGE_DUMP` | 1 | `decomp/sms/src/System/Application.cpp:1043` |  |
 | `SB_STATICOBJ_DBG` | 1 | `decomp/sms/src/Map/MapStaticObject.cpp:430` | gated print |
 | `SB_STRAT_DUMP` | 1 | `decomp/sms/src/Strategic/Strategy.cpp:106` | gated print |
@@ -227,7 +227,7 @@ logger — that is debt to convert, not a feature.
 | `SB_UNIF_DUMP` | 1 | `extern/aurora/lib/gx/shader_info.cpp:405` |  |
 | `SB_UV_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp:2690` |  |
 | `SB_VIEWCALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:945` |  |
-| `SB_VIZ_TAG` | 1 | `extern/aurora/lib/gfx/common.cpp:2361` |  |
+| `SB_VIZ_TAG` | 1 | `extern/aurora/lib/gfx/common.cpp:2366` |  |
 | `SB_W` | 3 | `sms-recomp/host/main.cpp:107` |  |
 | `SB_WATCHDOG_SECS` | 1 | `sms-boot/runtime/watchdog.cpp:59` |  |
 | `SB_WATER_DBG` | 1 | `decomp/sms/src/Player/ModelWaterManager.cpp:1631` |  |
@@ -261,12 +261,12 @@ logger — that is debt to convert, not a feature.
 | `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp:43` |  |
 | `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/render/scene.cpp:867` |  |
 | `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:689` |  |
-| `SBR_FASTBOOT` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:311` |  |
+| `SBR_FASTBOOT` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:312` |  |
 | `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:150` |  |
 | `SBR_FIFO_STALL` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:1382` |  |
 | `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/frame_interp/effects_afterimage.cpp:67` |  |
-| `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:76` |  |
-| `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:291` |  |
+| `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:77` |  |
+| `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:292` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
 | `SBR_INTERP60` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp:142` |  |
 | `SBR_INTERP60_ACTCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:730` |  |
@@ -314,8 +314,8 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_VIEWSEQ_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1204` |  |
 | `SBR_INTERP60_VIEWSEQ_MIN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1237` |  |
 | `SBR_INTERP60_VIEWWHO` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1328` |  |
-| `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp:1062` |  |
-| `SBR_INTERP_TEXMTX` | 1 | `extern/aurora/lib/gfx/interp.cpp:517` |  |
+| `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp:1106` |  |
+| `SBR_INTERP_TEXMTX` | 1 | `extern/aurora/lib/gfx/interp.cpp:546` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:149` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:213` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:73` |  |
@@ -346,7 +346,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:122` |  |
 | `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:127` |  |
 | `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:125` |  |
-| `SBR_STAGE` | 3 | `sms-recomp/frame_interp/graphics_db.cpp:309` |  |
+| `SBR_STAGE` | 3 | `sms-recomp/frame_interp/graphics_db.cpp:310` |  |
 | `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp:17` |  |
 | `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp:55` |  |
 | `SBR_TAGPARTICLE` | 1 | `sms-recomp/frame_interp/tag_particle.cpp:70` |  |
