@@ -630,6 +630,9 @@ bool cube_from_draw_shadow(u32 lr) {
 
 unsigned long g_cubeTagged = 0, g_cubeUnowned = 0, g_cubeForeign = 0;
 std::unordered_map<u64, long> g_cubeKeyTick;
+std::unordered_map<u64, u32> g_cubeNth;   // key -> how many cubes it has drawn THIS tick
+long g_cubeNthTick = -1;
+u32 g_cubeNthMax = 0;
 unsigned long g_cubeKeyNew = 0, g_cubeKeyConsecutive = 0, g_cubeKeyGap = 0;
 
 u64 group_membership_key(u32 mgr, u32 groupOff) {
@@ -786,6 +789,31 @@ u64 sbr_shadow_cube_tag(const CPUState& cpu) {
         return 0;
     }
     ++g_cubeTagged;
+    // A GROUP DRAWS MORE THAN ONE CUBE PER TICK, and the tag has to say which. Measured, not
+    // assumed: the vertex path's gap histogram put 2,583 of the cube draws at a gap of ZERO ticks —
+    // the same tag drawing again within one tick — against 2,583 pairing normally. Each was
+    // overwriting the other's recorded vertices, so both paired against the wrong pose and neither
+    // could interpolate. Adding this index took the population from 48.2% to 97.3%.
+    //
+    // HOW MANY is measured too, and it is not what I first assumed. I wrote "two, one before and
+    // one after the shadow" from reading the pass; the counter says the most any group drew in one
+    // tick is FOUR. The index does not care — which is the point of counting occurrences rather than
+    // hard-coding a pair.
+    //
+    // It IS an ordinal, which this project withdraws on sight, and it is sound here for the same
+    // reason drawLower's two strips are: the sequence comes from the shadow pass's straight-line
+    // code for a given group, not from a set that varies with what the scene is doing. If that ever
+    // stops being true the failure is visible rather than silent — the reported maximum climbs.
+    u32 nth = 0;
+    {
+        const long tick = (long)aurora::gfx::interp::tick_index();
+        if (tick != g_cubeNthTick) {
+            g_cubeNth.clear();
+            g_cubeNthTick = tick;
+        }
+        nth = g_cubeNth[key]++;
+        if (nth > g_cubeNthMax) g_cubeNthMax = nth;
+    }
     // IS THE KEY STABLE FROM TICK TO TICK? The vertex path reported 2,675 of 5,162 cubes with no
     // consecutive previous tick, which is either a key that churns or a group that genuinely does
     // not draw every tick. Those need opposite fixes, and only counting can separate them: a key
@@ -802,7 +830,10 @@ u64 sbr_shadow_cube_tag(const CPUState& cpu) {
         }
         seen = tick;
     }
-    return key;
+    // Mix the occurrence in rather than adding it: the key is already a hash and the low bits carry
+    // as much information as the high ones, so a plain add would let (key K, cube 1) collide with
+    // (key K+1, cube 0) — two different groups' cubes wearing one identity.
+    return key ^ (0x9e3779b97f4a7c15ull * (u64)(nth + 1));
 }
 
 void sbr_shadow_cube_report() {
@@ -814,6 +845,13 @@ void sbr_shadow_cube_report() {
                  "back). A key that churns every tick and a group that draws every other tick both "
                  "read as \"not consecutive\" in the vertex path; only this line separates them.",
                  g_cubeKeyNew, g_cubeKeyConsecutive, g_cubeKeyGap);
+    lucent::info("taggap",
+                 "shadow alpha cube: the most any single group drew in one tick was {} cube(s). The "
+                 "identity carries that occurrence index, so however many a group emits they get "
+                 "distinct identities rather than one wrong shared one. A number that keeps climbing "
+                 "run over run would mean the index is standing in for something structural that "
+                 "has not been found yet.",
+                 g_cubeNthMax + 1);
     lucent::info("taggap",
                  "shadow alpha cube: {} tagged by their group's MEMBERSHIP, {} refused because a "
                  "member's owner could not be established (those snap rather than pair with a "

@@ -370,12 +370,22 @@ one with NO CONSECUTIVE TICK is a question about the seam. Same percentage, oppo
 | hanging-bridge ropes | 99.6% | 1 | 0 | at ceiling |
 | shadow volume | 96.3% | 58 | 0 | at ceiling |
 | particle stripe (chain) | 63.2% | 12 | **1,224** | **at its ceiling too** — a chain that gains or loses a link has no vertex correspondence |
-| shadow alpha cube | 48.2% | **2,675** | 0 | the real remaining gap |
+| shadow alpha cube | 48.2% → **97.3%** | 2,675 → 144 | 0 | was a tag collision within one tick; see below |
 | JPA particle | 0% | 3,036 | 0 | these are the leftovers `patch_billboard` could not pair — new particles, correct to snap |
 
-The alpha cube's gap is **not** a key-quality problem, which is what it looked like. Counting key
-lifetimes: 62 first sightings, 2,538 keys seen again on the very next tick, 2,664 seen again after a
-gap. Roughly sixty groups exist, each drawing about every third or fourth tick. Making the key
-order-independent (the obvious suspect) changed the numbers by exactly zero. The open question is
-therefore whether an object that legitimately skips ticks may interpolate ACROSS the skip — a
-different question from identity, and not yet answered.
+The alpha cube's gap was **not** a key-quality problem and **not** a spacing problem, though it took
+two wrong answers to get there and both are worth keeping:
+
+1. *The key must be churning.* It was not — 62 first sightings in 290 ticks, keys stable. Making the
+   membership key order-independent changed the numbers by exactly zero.
+2. *Then the groups must skip ticks, so let the lerp cross a gap.* Interpolating across a skipped
+   tick with alpha scaled by the spacing is correct and is now implemented — and it recovered
+   **22 draws**, which is what finally forced the question to be measured instead of reasoned about.
+
+Bucketing the misses by gap answered it in one run: **2,583 of them had a gap of ZERO** — the same
+tag drawing more than once within a single tick, each overwriting the other's recorded vertices so
+both paired against the wrong pose. The cube identity now carries an occurrence index within the
+tick (a legitimate ordinal: it comes from the shadow pass's straight-line code for one group, and
+the maximum observed is reported every run — it is 4, not the 2 I assumed from reading the pass).
+
+Result: shadow alpha cube **48.2% → 97.3%** in Pianta Village, 98.5% in the plaza, gap-0 count zero.
