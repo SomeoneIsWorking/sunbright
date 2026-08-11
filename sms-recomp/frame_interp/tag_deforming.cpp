@@ -163,6 +163,9 @@
 #include <cstdlib>
 #include <unordered_map>
 
+extern "C" void func_801813d4(CPUState&);   // Hxs2_Circle  (hx_wiper)
+extern "C" void func_801817a4(CPUState&);   // Hxs1_Circle  (hx_wiper)
+extern "C" void func_801824b4(CPUState&);   // __Hx_FrBufferMorf (hx_wiper)
 extern "C" void func_801da308(CPUState&);   // TCogwheel::draw() const
 extern "C" void func_80198278(CPUState&);   // TMapWire::drawUpper() const
 extern "C" void func_801983a8(CPUState&);   // TMapWire::drawLower() const — unnamed in funcs.txt
@@ -194,6 +197,15 @@ u32 g_self = 0;        // the object being drawn, 0 when no such draw is in prog
 unsigned g_strip = 0;  // which primitive of that object is about to be emitted
 unsigned long g_strips = 0, g_upperCalls = 0, g_lowerCalls = 0, g_mirrorCalls = 0;
 unsigned long g_cogCalls = 0, g_cogStrips = 0;
+unsigned long g_wipeCalls = 0, g_wipeStrips = 0;
+// The wipe functions are FREE FUNCTIONS — there is no `this` to key on, and the identity has to be
+// the call site. That is sound only while a site draws once per tick, so it is CHECKED rather than
+// assumed: the occurrence index is folded into the identity and its maximum is reported. A number
+// above 1 means the site draws twice in a tick and the index is carrying the difference; a number
+// that climbs run over run means it is standing in for something structural not yet found.
+std::unordered_map<u32, u32> g_wipeNth;
+long g_wipeNthTick = -1;
+u32 g_wipeNthMax = 0;
 unsigned long g_mirrorStrips = 0;
 unsigned long g_stripeCalls = 0, g_stripeStrips = 0, g_stripeNoEmitter = 0;
 unsigned long g_beamCalls = 0, g_beamFans = 0;
@@ -221,6 +233,7 @@ void on_gx_begin() {
 
 void count_wire() { ++g_strips; }
 void count_cog() { ++g_cogStrips; }
+void count_wipe() { ++g_wipeStrips; }
 void count_mirror() { ++g_mirrorStrips; }
 void count_stripe() { ++g_stripeStrips; }
 void count_beam() { ++g_beamFans; }
@@ -289,6 +302,51 @@ void ov_draw_lower(CPUState& cpu) {
 // supplies. Two strips of the same vertex count in one call MUST get separate tags: sharing one
 // would let the second strip pair against the first's previous-tick positions, and they are
 // different parts of the object.
+// ── THE SCREEN WIPES (hx_wiper) ────────────────────────────────────────────────────────────────
+//
+// Hxs1_Circle, Hxs2_Circle and __Hx_FrBufferMorf draw the stage-transition wipes: immediate-mode 2D
+// with three f32 positions per vertex written straight into the FIFO, exactly what the vertex path
+// interpolates. They were reported `2d-correct` — the audit's blanket verdict for an orthographic
+// draw, on the reasoning that a screen-space element has no meaningful in-between.
+//
+// That reasoning is right for a static HUD element and wrong for a wipe. A wipe is an ANIMATION in
+// screen space: Hx_UpdateWipe takes an f32 progress and the circle's radius follows it, so the
+// halfway frame is a real frame the path was simply not producing, and the wipe stepped at 30 Hz
+// over a game running at 60. The screen-space motion report is what turned that from an argument
+// into a measurement: these populations differ from the previous tick on 100% of ticks, while
+// fill_rect — a genuinely static element — differs on 0%.
+//
+// The identity is the CALL SITE plus the strip index, because these are free functions with no
+// object to key on. That holds only while a site draws once per tick, which is checked rather than
+// assumed: an occurrence index is folded in and its maximum is reported.
+u32 wipe_self(u32 site) {
+    const long tick = (long)sb::frame_interp::sim_tick_seq();
+    if (tick != g_wipeNthTick) {
+        g_wipeNthTick = tick;
+        g_wipeNth.clear();
+    }
+    const u32 nth = g_wipeNth[site]++;
+    if (nth + 1 > g_wipeNthMax) g_wipeNthMax = nth + 1;
+    // The site is a code address, so its low bits are the ones that vary; fold the occurrence into
+    // the top so two sites can never alias by it.
+    return site ^ (nth << 28);
+}
+
+void ov_wipe_hxs2(CPUState& cpu) {
+    Scope s(SB_POP_WIPE, wipe_self(0x801813d4u), g_wipeCalls, &count_wipe);
+    func_801813d4(cpu);
+}
+
+void ov_wipe_hxs1(CPUState& cpu) {
+    Scope s(SB_POP_WIPE, wipe_self(0x801817a4u), g_wipeCalls, &count_wipe);
+    func_801817a4(cpu);
+}
+
+void ov_wipe_morf(CPUState& cpu) {
+    Scope s(SB_POP_WIPE, wipe_self(0x801824b4u), g_wipeCalls, &count_wipe);
+    func_801824b4(cpu);
+}
+
 void ov_cogwheel(CPUState& cpu) {
     Scope s(SB_POP_COGWHEEL, (u32)cpu.gpr[3], g_cogCalls, &count_cog);
     func_801da308(cpu);
@@ -454,6 +512,17 @@ void sbr_tag_wire_report() {
                                   : "",
                  g_ropeTagged, g_ropeWithdrawn);
     lucent::info("taggap",
+                 "screen wipes (hx_wiper): {} draw call(s), {} strip(s) tagged, at most {} call(s) "
+                 "from one site in a single tick{}",
+                 g_wipeCalls, g_wipeStrips, g_wipeNthMax,
+                 g_wipeCalls == 0
+                     ? "   <-- NONE. A wipe only runs during a transition, so a run that never "
+                       "changes stage will not see one; this is NOT evidence the seam works."
+                 : g_wipeNthMax > 1
+                     ? "   <-- a site drew more than once in a tick, so the occurrence index is "
+                       "carrying that difference rather than the call site alone."
+                     : "");
+    lucent::info("taggap",
                  "balance scale (TCogwheel::draw): {} draw call(s), {} strip(s) tagged{}",
                  g_cogCalls, g_cogStrips,
                  g_cogCalls == 0
@@ -496,6 +565,13 @@ SB_OVERRIDE(0x80332c34u, ov_stripe, "JPADrawExecStripe::exec",
             "per-particle position can displace")
 SB_OVERRIDE(0x803330a4u, ov_stripe_cross, "JPADrawExecStripeCross::exec",
             "60fps: identity per strip for a crossed particle chain, same reason as Stripe")
+SB_OVERRIDE(0x801813d4u, ov_wipe_hxs2, "Hxs2_Circle (hx_wiper)",
+            "60fps: identity per strip for the circle wipe's outer layer — an ANIMATION in screen "
+            "space, so `2d-correct` was the wrong verdict; measured to differ on 100% of ticks")
+SB_OVERRIDE(0x801817a4u, ov_wipe_hxs1, "Hxs1_Circle (hx_wiper)",
+            "60fps: identity per strip for the circle wipe's inner layer, same reason as Hxs2")
+SB_OVERRIDE(0x801824b4u, ov_wipe_morf, "__Hx_FrBufferMorf (hx_wiper)",
+            "60fps: identity per strip for the framebuffer-morph wipe")
 SB_OVERRIDE(0x801da308u, ov_cogwheel, "TCogwheel::draw",
             "60fps: identity per strip for Noki Bay's balance scale, whose beam vertices are written "
             "into the FIFO as direct floats every tick (found by the graphics registry, reading "

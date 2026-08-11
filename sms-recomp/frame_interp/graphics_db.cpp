@@ -268,6 +268,7 @@ constexpr Curated kCurated[] = {
     {SB_POP_GRASS, "pop.grass", "deforming"},
     {SB_POP_BRIDGE, "pop.hanging-bridge", "deforming"},
     {SB_POP_COGWHEEL, "pop.cogwheel", "deforming"},
+    {SB_POP_WIPE, "pop.screen-wipe", "deforming"},
 };
 
 // ── THE FILE ────────────────────────────────────────────────────────────────────────────────────

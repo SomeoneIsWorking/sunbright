@@ -37,6 +37,7 @@ enum SbPopulation : u8 {
     SB_POP_GRASS          = 16,  // TMapObjGrassGroup::drawNear — swaying grass blades
     SB_POP_BRIDGE         = 17,  // THangingBridge::perform — the rope bridge's ropes, all of them
     SB_POP_COGWHEEL       = 18,  // TCogwheel::draw — Noki Bay's 天秤 scale, its beam built per tick
+    SB_POP_WIPE           = 19,  // hx_wiper — the screen-transition wipes, immediate-mode 2D
 };
 
 void sbr_gxfifo_draw_pop(u8 pop);
