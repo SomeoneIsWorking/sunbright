@@ -15,6 +15,23 @@ between them.
 
 ---
 
+## What counts as a mispairing (measured, 2026-08-11)
+
+The audit used to call any paired draw moving **≥10 world units per tick** a mispairing. That is
+false: `gpMario`, driven by a pad script, spends 90 of 593 ticks in `[10,100)` and peaks at **58.5
+units/tick** (`sms-recomp/frame_interp/motion_truth.cpp` measures it every run; claim **C034**). The
+old wording condemned 84,507 legitimate draws on a plaza run — 12.5% of world geometry.
+
+The boundary that survives measurement is **100 units/tick**, and paired draws beyond it are now
+snapped rather than interpolated (`kDiscontinuity` in aurora's `interp.cpp`). On the same run that
+refuses 186 draws out of 670,000; the largest ACCEPTED delta was 96.3, and the report prints that
+margin every run so a scene with genuinely faster objects shows up as the margin closing rather
+than as a silent loss of interpolation.
+
+It is a threshold, so it carries its own evidence and its own asymmetry argument at the use site.
+The short version: snapping a fast object costs one frame on a handful of draws; interpolating a
+mispair sweeps a whole model across the screen.
+
 ## STATUS — what interpolates today (2026-08-07)
 
 `SBR_LUCENT_DEBUG=interp` prints this live. Every draw is filed under the system that emitted it

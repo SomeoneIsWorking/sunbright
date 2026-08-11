@@ -30,6 +30,8 @@ key	kind	symbol	stages	re	lerp	first_seen	note
 0x8027cbb8	immediate	drawShineShadowVolume__18TModelWaterManagerFPA4_f+0x53c	plaza	yes	exact-correct	2026-08-11	drawShineShadowVolume's two identity-matrix screen quads: the same dst-alpha mask SMS_FillScreenAlpha draws. Marked EXACT per PRIMITIVE from the existing tag_shadow override, so the quads stop taking a camera delta while the sphere-slice display lists from the same call keep interpolating.
 0x802cd410	immediate	drawTexCoord__10J2DPictureFiiiiffffffffPA3_A4_f+0x124	plaza	native-override	2d-correct	2026-08-11	-
 0x802d0200	immediate	drawSelf__9J2DScreenFiiPA3_A4_f+0x38	plaza	native-override	2d-correct	2026-08-11	-
+0x802d2170	immediate	drawContents__9J2DWindowFRC7JUTRect+0x1e8	plaza	unknown	2d-correct	2026-08-11	-
+0x802d22dc	immediate	draw__Q29J2DWindow7TextureFiiiiUsUsUsUsUcQ28JUtility6TColorQ28JUtility6TColor+0x7c	plaza	unknown	2d-correct	2026-08-11	-
 0x802ed8f4	indexed	callDL__17J3DDisplayListObjFv+0x1c	plaza	unknown	no-primitives	2026-08-11	-
 0x80333188	immediate	exec__22JPADrawExecStripeCrossFPC14JPADrawContext+0xe4	plaza	yes	camera-only	2026-08-11	Now covered by the pop.particle-stripe seam - this row is the pre-fix history of it.
 0x803334e8	immediate	exec__22JPADrawExecStripeCrossFPC14JPADrawContext+0x444	plaza	unknown	no-primitives	2026-08-11	-

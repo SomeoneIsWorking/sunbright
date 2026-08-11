@@ -366,6 +366,8 @@ void sbr_tag_particle_report();
 void sbr_tag_wire_report();
 void sbr_mark_exact_report();
 void sbr_shadow_cube_report();
+void sbr_motion_truth_tick();
+void sbr_motion_truth_report();
 
 extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
@@ -516,6 +518,9 @@ void present_tail(CPUState& cpu);
 
 void video_wait_for_retrace(CPUState& cpu) {
     texwatch_frame();
+    // Ground truth for the pairing audit's motion threshold — one sample per tick, from the guest's
+    // own position global. See motion_truth.cpp.
+    if (sbr_lerp_enabled()) sbr_motion_truth_tick();
     report_app_state();
     report_mario_pos();
     // The probe's handlers run HERE, on the game thread at the frame boundary, which is the only
@@ -552,6 +557,7 @@ void video_wait_for_retrace(CPUState& cpu) {
         sbr_tag_wire_report();
         sbr_mark_exact_report();
         sbr_shadow_cube_report();
+        sbr_motion_truth_report();
         sbr_lerp_report_tag_coverage();
         sbr_camera_cut_report();
         sbr_afterimage_report();
