@@ -1,7 +1,7 @@
 ---
 id: 1
 title: Stage 9 (Noki Bay) aborts at boot: /scene/mapObj missing from the mounted archive
-status: investigating
+status: resolved
 symptom: SBR_STAGE=9 (Noki Bay, mare0.szs) aborts at boot: NULL-pointer r32 at guest address 0x00000000, guest stack MActorAnmData::init <- TObjManager::createAnmData <- TMActorKeeper <- TMapObjBase::makeMActors <- TJumpBase::initMapObj
 tags: recomp,assets,jkr,stage9,boot-crash
 created: 2026-08-11
@@ -313,3 +313,60 @@ load work proceeds on that stack, where retail hands it back to the setup thread
 gsched_create / the JKRDecomp work loop in sms-recomp/runtime/guest_sched.cpp and
 overrides/native_os_thread.cpp. Enlarging the JKRDecomp stack would hide it and leave the real
 routing wrong.
+
+### Note (2026-08-11)
+FIXED (2026-08-11), and it was never a stage-9 bug.
+
+The arena — the region the game's heap is built in — was published starting at the end of the DOL
+image, 0x80417800. The game's MAIN STACK lives immediately above that: __init_registers loads
+r1 = _stack_addr = 0x804277e8 and grows down through 64 KB that belongs to no DOL section, so
+nothing in the image accounts for it. We therefore handed the game an arena containing the stack it
+was standing on. JKRExpHeap built the 128 KB system heap at 0x804178c0, directly on top, and every
+16 KB JKRThread stack allocated out of that heap overlapped the main stack too.
+
+That is why the "wrong thread" reading in the previous note was wrong: the recursion was on the MAIN
+thread all along, at SP 0x80426488 on its own stack. That address only LOOKED like the JKRDecomp
+thread's stack because JKRDecomp's stack had been allocated on top of it. The scheduler and the
+stack-range inference disagreed — scheduler said OSThread 0x80402aa8 (the adopted main thread,
+created with no stack of its own), range-match said JKRDecomp — and printing both is what exposed
+it. A single answer would have been believed.
+
+## The fix
+
+OSInit already knows the right value and asks for it whenever BootInfo->arenaLo is null:
+
+    OSSetArenaLo(!BootInfo->arenaLo ? &__ArenaLo : BootInfo->arenaLo);
+    if (!BootInfo->arenaLo && BI2DebugFlag && *BI2DebugFlag < 2)
+        OSSetArenaLo((_stack_addr + 0x1F) & ~0x1F);
+
+__ArenaLo is a linker symbol placed AFTER the stacks (0x80429800 in this DOL). That branch is not a
+fallback for odd boots — it is the normal disc-boot path. So `boot_env.cpp` now publishes
+BootInfo->arenaLo as ZERO and the game picks its own. No constant on our side, correct for any DOL.
+With the debug monitor absent the game takes the second branch and lands on 0x80427800; the system
+heap moves to 0x804278c0, clear of the stack.
+
+## Measured, before -> after (SBR_STAGE=9)
+
+  * abort in MActorAnmData::init                  -> boots and RENDERS (scratch/screenshots/arena_stage9.png)
+  * system heap largest free block 8 bytes        -> 60,780
+  * heap accounting 51,620 of 130,928 (79 KB lost) -> 130,916 of 130,928
+  * "USED LIST CUT ... next link now reads 0"     -> gone
+
+Stages 1 and 8 still render (arena_stage{1,8}.png), so nothing regressed to buy it.
+
+## The guard that would have caught it at boot
+
+`sms-recomp/overrides/guard_arena.cpp` overrides OSSetArenaLo and aborts if the new arena lo is at
+or below the CALLER'S OWN STACK POINTER — a live address inside a stack by definition, so the check
+needs no constant and no threshold. It reports at shutdown when it never ran (silence is not a
+pass), and `SBR_ARENA_SELFTEST=1` feeds it a value it MUST reject, verified firing.
+
+## What this says about everything else
+
+The overlap was latent in EVERY stage; Noki Bay is only the first model whose J3D calc recurses 64
+levels instead of ~16 and therefore reaches far enough down the main stack to hit the heap block
+below it. Any past "missing asset", "null from a lookup that should work" or unexplained corruption
+dated before this commit is suspect and worth re-testing rather than trusted.
+
+### Resolution (2026-08-11)
+arena lo was published over the game's own main stack; publish 0 and let OSInit use __ArenaLo

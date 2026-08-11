@@ -391,6 +391,8 @@ bool gsched_is_dead(u32 os_thread) {
 
 u32 gsched_current_os_thread() { return t_self ? t_self->os_thread : 0; }
 
+u32 gsched_current_stack_top() { return t_self ? t_self->stack : 0; }
+
 bool gsched_is_tracked(u32 os_thread) {
     std::lock_guard<std::mutex> lk(g_lock);
     return find(os_thread) != nullptr;

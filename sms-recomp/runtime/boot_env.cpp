@@ -54,7 +54,7 @@ u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 
 
 } // namespace
 
-bool boot_env_setup(u32 arena_lo) {
+bool boot_env_setup(u32 dol_end) {
     if (!disc_is_open()) {
         lucent::error("boot", "no disc mounted — cannot build the boot environment");
         return false;
@@ -93,11 +93,34 @@ bool boot_env_setup(u32 arena_lo) {
     sb_w32(OS_ARENA_HI,      fst_addr);
     sb_w32(OS_BUS_CLOCK,     BUS_CLOCK);
     sb_w32(OS_CPU_CLOCK,     CPU_CLOCK);
-    // Everything from the end of the DOL up to the FST is the game's heap.
-    sb_w32(OS_ARENA_LO,      (arena_lo + 0x1F) & ~0x1Fu);
+    // ARENA LO IS PUBLISHED AS ZERO, ON PURPOSE, and the game picks it instead.
+    //
+    // The obvious value — the end of the DOL's sections and BSS — is wrong, and wrong in a way
+    // that hid for months. The DOL image ends at 0x80417800, but the game's MAIN STACK sits
+    // immediately above it: __init_registers loads r1 = _stack_addr = 0x804277e8 and grows down
+    // through 64 KB that belongs to no section at all. Handing the game an arena starting at the
+    // end of the image therefore hands it its own running stack, and JKRExpHeap duly builds the
+    // 128 KB system heap on top of it. Every JKRThread stack allocated out of that heap then
+    // overlaps the main stack: in Noki Bay a J3D calc recursion 64 levels deep wrote through a
+    // CMemBlock header, cut the used list, and lost 79 KB of heap — which surfaced three layers
+    // away as "/scene/mapObj is missing from the archive". (Issue #1.)
+    //
+    // OSInit already knows the right answer and asks for it whenever BootInfo->arenaLo is null:
+    //
+    //     OSSetArenaLo(!BootInfo->arenaLo ? &__ArenaLo : BootInfo->arenaLo);
+    //
+    // __ArenaLo is a linker symbol placed AFTER the stacks (0x80429800 in this DOL, 0x12000 above
+    // where we were putting it). That branch is not a fallback for odd boots — it is the normal
+    // disc-boot path, which is why every retail game relies on it. Publishing zero is both the
+    // faithful thing and the one that needs no constant from us: the value comes from the game's
+    // own image, so it stays right for any DOL.
+    sb_w32(OS_ARENA_LO,      0);
 
-    lucent::info("boot", "FST 0x{:x} bytes -> 0x{:08x}; arena 0x{:08x}..0x{:08x}; bus {} MHz",
-                 fst_len, fst_addr, sb_r32(OS_ARENA_LO), fst_addr, BUS_CLOCK / 1000000);
+    lucent::info("boot",
+                 "FST 0x{:x} bytes -> 0x{:08x}; DOL image ends 0x{:08x}; arena lo left to the "
+                 "game's own __ArenaLo (published 0, which is what a disc boot leaves), arena hi "
+                 "0x{:08x}; bus {} MHz",
+                 fst_len, fst_addr, (dol_end + 0x1F) & ~0x1Fu, fst_addr, BUS_CLOCK / 1000000);
     return true;
 }
 

@@ -53,6 +53,8 @@ extern void gxfifo_send_last();
 extern void gxfifo_send(const std::vector<u8>&);
 extern const std::vector<u8>& gxfifo_last_frame();
 
+void sbr_arena_guard_report();   // overrides/guard_arena.cpp
+
 namespace {
 
 // gpApplication (0x803E9700) field offsets from decomp/sms/include/System/Application.hpp:
@@ -407,6 +409,7 @@ void interp_reports() {
 // cadence, so a run that stopped at present 500 persisted what it knew at 300 and threw away
 // everything it learned afterwards.
 void final_reports() {
+    sbr_arena_guard_report();
     sbr_gfxdb_flush();
     sbr_gfxdb_report();
     if (sbr_lerp_enabled()) {

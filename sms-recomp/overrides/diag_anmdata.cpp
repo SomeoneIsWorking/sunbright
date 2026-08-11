@@ -20,6 +20,7 @@
 #include "overrides.h"
 #include "../frame_interp/graphics_db.h"
 
+#include <guest_sched.h>
 #include <intrinsics.h>
 #include <lucent/log.h>
 
@@ -901,6 +902,17 @@ void ov_deep_fn(CPUState& cpu) {
         static bool once = false;
         if (!once) {
             once = true;
+            // TWO INDEPENDENT ANSWERS to "which thread is this". The stack-range match below infers
+            // it from where the stack pointer sits; the scheduler KNOWS, because it hands the token
+            // to exactly one guest thread at a time. Printing both is the point: they are derived
+            // from different things, so agreement is evidence and disagreement says one of them is
+            // wrong — where a single answer would just be believed.
+            lucent::info("anmdata",
+                         "the scheduler says the running guest thread is OSThread {:#010x} (0 would "
+                         "mean the probe ran on a host thread the scheduler does not own, which "
+                         "would itself be the bug), and that thread was created with stack top "
+                         "{:#010x} (0 = the adopted main thread, which brought its own)",
+                         gsched_current_os_thread(), gsched_current_stack_top());
             const char* whose = "NOT any JKRThread stack (the main thread, or a stack this probe "
                                 "did not see created)";
             std::string detail;

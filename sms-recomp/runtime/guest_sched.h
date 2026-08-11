@@ -33,6 +33,12 @@ void gsched_cancel(u32 os_thread);       // ANOTHER thread is finished (OSCancel
 // Guest OSThread* of the running thread, or 0 if it is not a tracked guest thread.
 u32 gsched_current_os_thread();
 
+// The stack top this thread was CREATED with (0 for the adopted main thread, which brought its own).
+// Paired with the guest stack pointer it answers "is this thread running on its own stack" — a
+// question the stack pointer alone cannot answer, because a stack address only tells you where the
+// memory is, not who it was handed to.
+u32 gsched_current_stack_top();
+
 bool gsched_is_tracked(u32 os_thread);
 bool gsched_is_dead(u32 os_thread);
 

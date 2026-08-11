@@ -30,3 +30,13 @@ The shutdown path is `present_and_reopen`'s exit branch in `sms-recomp/overrides
 walk aurora-side arrays (`interp.cpp` population tables) while the GPU device is being torn down by
 another thread — the same log ends with "Buffer mapping Aborted" and "Device lost: Device was
 destroyed". Run under ASan with the reports forced every present to raise the hit rate.
+
+### Note (2026-08-11)
+Did not reproduce (2026-08-11) in a 15-stage sweep run after the arena fix (issue #1): stages 22, 23
+and 24 each completed 150 presents and exited 0. That is NOT a fix — this issue is recorded as
+intermittent, and three clean runs cannot distinguish "fixed" from "did not happen this time".
+
+It is worth re-testing deliberately, though, because the arena bug was exactly the kind of cause that
+produces intermittent memory faults: the heap and the main stack overlapped, so which allocation got
+smashed depended on how deep the stack happened to be. If this stops reproducing over many runs,
+issue #1 is the likely explanation.

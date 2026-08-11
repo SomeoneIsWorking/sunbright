@@ -171,6 +171,11 @@ int main(int argc, char** argv) {
     // scheduler owns threading from the first instruction.
     gsched_init(cpu, sb_r32(0x800000E4u));
 
+    // Before the first guest instruction: prove the arena guard can fire (SBR_ARENA_SELFTEST=1).
+    // It aborts on success — see overrides/guard_arena.cpp.
+    extern void sbr_arena_guard_selftest();
+    sbr_arena_guard_selftest();
+
     lucent::info("rt", "entering recompiled code at 0x{:08x}", dol.entry);
     // Run on the scheduler's copy, not the local one: gsched_create seeds new threads with
     // the creating thread's r2/r13 (the small-data bases), so thread 0's registers have to
