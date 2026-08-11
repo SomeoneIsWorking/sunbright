@@ -24,7 +24,7 @@ symbol is resolved against `reference/sms_gmse01_funcs.txt`, and it gets a row. 
 FIFO stream as `GX_AURORA_DRAW_POP`, so aurora can file every draw under the emitter that produced
 it and report the fate it received.
 
-The eleven hand-labelled populations (`sms-recomp/frame_interp/populations.h`) have rows too, keyed
+The hand-labelled populations (`sms-recomp/frame_interp/populations.h`) have rows too, keyed
 `pop.*`. A hand-written label always wins over an automatic one — it covers a whole subtree that the
 emitter address cannot.
 
@@ -32,11 +32,16 @@ emitter address cannot.
 
 **Measured — rewritten every run, do not edit:**
 
-- `draws` / `calls` — draws aurora classified, and calls counted at the waist.
 - `lerp` — `yes` · `partial` · `camera-only` (follows the camera but not its own motion) · `no` ·
-  `2d-correct` (screen-space: there *is* no in-between, so snapping is right) · `no-primitives`
-  (the call site emits no geometry — a material display list) · `unmeasured`.
-- `interp_pct`, `stages`, `runs`, `first_seen`, `last_seen`.
+  `2d-correct` (orthographic: there *is* no in-between, so snapping is right) · `exact-correct`
+  (screen-space under a *perspective* projection — declared by a seam, because nothing else can
+  detect it; it must not move) · `no-primitives` (the call site emits no geometry — a material
+  display list) · `unmeasured`.
+- `stages`, `first_seen`.
+
+There are deliberately **no draw counts**. A row is a flag that a source of visual output exists and
+what is known about it; counts changed on every run and made the tracked file churn without saying
+anything. Draws are still measured every run — they decide the verdict — they are just not stored.
 
 **Curated — the game never touches these:**
 
@@ -51,6 +56,14 @@ Edit curated columns with the tool, never by hand:
 tools/gfx/graphics_db.py set 0x8027d034 re=yes note="mirror quad; eye-space texgen, snaps by design"
 ```
 
+## Attribution of SDK helpers
+
+`GXDrawCube` and `GXDrawSphere` build their geometry themselves, so every cube in the game would
+land in one row called `GXDrawCube+0x100`, which names nothing. Those two helpers redirect
+attribution to *their* caller (`attrib_helpers.cpp`), which is how the row split into
+`TMario::perform+0x654` and `+0x6c4` — Mario's occlusion-probe boxes, which then turned out to be
+interpolable and now are.
+
 ## What it does not say
 
 - **Absence is not evidence.** A graphic that has never drawn in a recorded run has no row. Play a
@@ -62,9 +75,12 @@ tools/gfx/graphics_db.py set 0x8027d034 re=yes note="mirror quad; eye-space texg
 - **`camera-only` is an upper bound on the defect, not a measurement.** For genuinely static
   scenery, the camera delta alone is exactly right. Distinguishing the two needs the object, which
   is what the RE work in `next` produces.
-- **Symbols marked `?`** (e.g. `+0x3e24?`) fell in a gap of the US function list, which omits weak
-  virtual methods entirely. The address is right; the name is the nearest preceding symbol and is
-  probably the wrong function. Resolve those with `tools/re/vtable_re.py`.
+- **A symbol like `sub_801983a8 (in drawUpper__8TMapWireCFv)`** is a function the US symbol list does
+  not have — it omits weak methods entirely. The containing function comes from the *recompiler's*
+  own table, which knows the real boundaries, and the parenthesised name is only the nearest listed
+  neighbour. That distinction is not cosmetic: before it, three separate emitters were reported as
+  `TMapWire::drawUpper+0x48 / +0x17c / +0x258`, and drawUpper contains exactly one `GXBegin` — two of
+  the three were in `drawLower`.
 
 ## The control
 

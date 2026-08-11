@@ -8,7 +8,7 @@ columns (`re`, `note`) the game never touches.
 
     graphics_db.py next                    THE WORKLIST — what to RE next, worst-interpolating first
     graphics_db.py summary                 counts by RE state and by lerp verdict, with denominators
-    graphics_db.py list --re unknown       the graphics nobody has looked at yet, biggest first
+    graphics_db.py list --re unknown       the graphics nobody has looked at yet
     graphics_db.py list --lerp no          the ones measured as NOT interpolating
     graphics_db.py show 0x802dfe88         one row, every column
     graphics_db.py set 0x802dfe88 re=yes note="water refraction quad; snap is correct"
@@ -29,8 +29,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB = os.path.join(ROOT, "docs", "graphics", "graphics_db.tsv")
-COLS = ["key", "kind", "symbol", "stages", "re", "lerp", "interp_pct", "draws", "calls", "runs",
-        "first_seen", "last_seen", "note"]
+COLS = ["key", "kind", "symbol", "stages", "re", "lerp", "first_seen", "note"]
 CURATED = {"re", "note"}
 RE_VERDICTS = ("unknown", "native-override", "identified", "no", "partial", "yes")
 
@@ -94,26 +93,23 @@ def as_int(v):
 
 def cmd_summary(args):
     rows = load()
-    total_draws = sum(as_int(r["draws"]) for r in rows)
     stages = sorted({s for r in rows for s in r["stages"].split(",") if s and s != "-"})
-    print(f"{len(rows)} row(s), {total_draws:,} draw(s) recorded, seen across stage(s): "
+    print(f"{len(rows)} source(s) of visual output, seen across stage(s): "
           f"{', '.join(stages) or '(none recorded)'}")
     print("  Only these stages have ever been observed — a graphic that draws elsewhere has no row "
           "yet, and its absence here is not evidence it does not exist.\n")
 
     for field, order in (("re", RE_VERDICTS), ("lerp", ("yes", "partial", "camera-only", "no",
-                                                        "2d-correct", "unmeasured"))):
+                                                        "2d-correct", "no-primitives",
+                                                        "unmeasured"))):
         print(f"  by {field}:")
         seen = {}
         for r in rows:
-            seen.setdefault(r[field], [0, 0])
-            seen[r[field]][0] += 1
-            seen[r[field]][1] += as_int(r["draws"])
+            seen[r[field]] = seen.get(r[field], 0) + 1
         for k in list(order) + sorted(set(seen) - set(order)):
             if k not in seen:
                 continue
-            n, d = seen[k]
-            print(f"    {k:<16} {n:>4} row(s)  {d:>12,} draw(s)  {100.0*d/total_draws if total_draws else 0:5.1f}%")
+            print(f"    {k:<16} {seen[k]:>4} row(s)")
         print()
     unmeasured = sum(1 for r in rows if r["lerp"] == "unmeasured")
     if unmeasured:
@@ -133,20 +129,19 @@ def cmd_list(args):
         print("no row matches — and that is a statement about the FILTER, not about the game: "
               f"the registry holds {len(load())} row(s) in total.")
         return
-    rows.sort(key=lambda r: -as_int(r[args.sort]))
-    print(f"{'key':<12} {'kind':<10} {'re':<16} {'lerp':<12} {'%':>6} {'draws':>12}  symbol")
+    rows.sort(key=lambda r: (r["lerp"], r["key"]))
+    print(f"{'key':<12} {'kind':<10} {'re':<16} {'lerp':<14} symbol")
     for r in rows:
-        print(f"{r['key']:<12} {r['kind']:<10} {r['re']:<16} {r['lerp']:<12} "
-              f"{r['interp_pct']:>6} {as_int(r['draws']):>12,}  {r['symbol']}")
+        print(f"{r['key']:<12} {r['kind']:<10} {r['re']:<16} {r['lerp']:<14} {r['symbol']}")
     print(f"\n{len(rows)} row(s)", file=sys.stderr)
 
 
 def cmd_next(args):
     """The worklist: what to reverse-engineer next, and why that one.
 
-    Ordered by DRAWS, because a row's draw count is how much of the screen it accounts for — the
-    honest proxy for "how much would fixing this be worth". Rows already curated as `yes`/`no` are
-    finished work: someone looked and recorded an answer, so they are not offered again.
+    Ordered by how badly the source interpolates — `no` and `camera-only` first, because those are
+    the ones a player sees judder. Rows that already carry a curated `re` verdict are finished work:
+    someone looked and recorded an answer, so they are not offered again.
     """
     rows = load()
     todo = [r for r in rows if r["re"] in ("unknown", "native-override")]
@@ -155,14 +150,14 @@ def cmd_next(args):
     def rank(r):
         blocked = {"no": 0, "camera-only": 1, "partial": 2, "no-primitives": 4,
                    "unmeasured": 3, "2d-correct": 5, "yes": 5}.get(r["lerp"], 3)
-        return (blocked, -as_int(r["draws"]))
+        return (blocked, r["key"])
     todo.sort(key=rank)
     if not todo:
         print(f"every one of the {len(rows)} row(s) carries a curated `re` verdict — there is "
               f"nothing unexamined IN THE REGISTRY. That is not the same as nothing left in the "
               f"game: only stages that have been played have rows at all.")
         return
-    print(f"{len(todo)} row(s) with no curated RE verdict, worst-interpolating and biggest first:\n")
+    print(f"{len(todo)} source(s) with no curated RE verdict, worst-interpolating first:\n")
     for r in todo[: args.limit]:
         why = {"no": "SNAPS — nothing interpolates it",
                "camera-only": "follows the camera but not its own motion",
@@ -171,8 +166,8 @@ def cmd_next(args):
                "no-primitives": "emits no primitives; probably a state-only call site",
                "2d-correct": "screen-space; snapping is correct, only the RE verdict is missing",
                "yes": "interpolates; only the RE verdict is missing"}.get(r["lerp"], r["lerp"])
-        print(f"  {r['key']:<12} {as_int(r['draws']):>10,} draw(s)  {r['symbol']}")
-        print(f"  {'':<12} {r['lerp']:>10}  {why}  [seen: {r['stages']}]")
+        print(f"  {r['key']:<12} {r['lerp']:<14} {r['symbol']}")
+        print(f"  {'':<12} {'':<14} {why}  [seen: {r['stages']}]")
     if len(todo) > args.limit:
         print(f"\n  ... {len(todo) - args.limit} more (--limit to see them)")
 
@@ -249,10 +244,8 @@ def selftest():
         # 4. The POSITIVE case: a well-formed file loads, and `next` offers only the uncurated row.
         DB = os.path.join(d, "good.tsv")
         rows = [
-            ["0xaaaa", "immediate", "sym_a", "plaza", "unknown", "no", "0.0", "500", "9", "1",
-             "2026-01-01", "2026-01-02", "-"],
-            ["0xbbbb", "indexed", "sym_b", "plaza", "yes", "no", "0.0", "9000", "9", "1",
-             "2026-01-01", "2026-01-02", "curated already"],
+            ["0xaaaa", "immediate", "sym_a", "plaza", "unknown", "no", "2026-01-01", "-"],
+            ["0xbbbb", "indexed", "sym_b", "plaza", "yes", "no", "2026-01-01", "curated already"],
         ]
         with open(DB, "w", encoding="utf-8") as fh:
             fh.write("\t".join(COLS) + "\n")
@@ -262,15 +255,15 @@ def selftest():
         if len(loaded) != 2:
             failures.append(f"positive case: loaded {len(loaded)} row(s), expected 2")
         todo = [r for r in loaded if r["re"] in ("unknown", "native-override")]
-        # The bigger row is the curated one, so a worklist that ranked by draws alone would offer
-        # finished work first. This is the case that catches that.
+        # The second row is already curated (`re=yes`), so a worklist that offered every row with a
+        # bad `lerp` would offer finished work. This is the case that catches that.
         if [r["key"] for r in todo] != ["0xaaaa"]:
             failures.append(f"worklist offered {[r['key'] for r in todo]}, expected ['0xaaaa']")
 
         # 5. A MEASURED field must be refused by `set`, or curation would be silently discarded by
         #    the next run.
         class A:
-            key, assignment = "0xaaaa", ["draws=1"]
+            key, assignment = "0xaaaa", ["lerp=yes"]
         expect("set refuses a measured field", lambda: cmd_set(A()), "exit")
 
     DB = saved
@@ -292,7 +285,6 @@ def main():
     p.add_argument("--lerp")
     p.add_argument("--kind")
     p.add_argument("--stage")
-    p.add_argument("--sort", default="draws", choices=["draws", "calls", "runs"])
     p.set_defaults(fn=cmd_list)
     p = sub.add_parser("next")
     p.add_argument("--limit", type=int, default=10)

@@ -19,6 +19,8 @@
 
 #include "populations.h"
 
+#include <cpu_state.h>   // CPUState — g_recomp_table's entries are function pointers taking one
+
 #include <lucent/log.h>
 #include <unistd.h>
 
@@ -36,6 +38,7 @@
 // and the recomp links it statically, the same approach the rest of this directory uses.
 namespace aurora::gfx::interp {
 void audit_row(uint8_t pop, long* out, int outLen);
+int audit_disposition_count();
 void name_population(uint8_t pop, const char* name);
 int max_populations();
 } // namespace aurora::gfx::interp
@@ -50,7 +53,16 @@ namespace {
 // Disposition indices, matching aurora::gfx::interp::Disposition. Plain ints rather than the enum
 // because that enum lives in an internal aurora header; the ORDER is the contract and audit_row()
 // fills by index.
-enum : int { kUnclaimed = 0, kPaired, kBillboard, kCameraOnly, kSnapOrtho, kSnapNoId, kDispCount };
+enum : int {
+    kUnclaimed = 0,
+    kPaired,
+    kBillboard,
+    kCameraOnly,
+    kSnapOrtho,
+    kSnapExact,
+    kSnapNoId,
+    kDispCount
+};
 
 // The curated populations occupy the low ids (populations.h). Sites are allocated from here up, so
 // a hand-written label and an auto-detected site can never collide.
@@ -151,12 +163,12 @@ void load_symbols() {
     }
 }
 
-// Beyond this an address is not inside the preceding function, it is past the end of it. The same
-// bound addr2sym.py uses, and for the same reason: attributing a return address to the wrong
-// function is worse than leaving it unnamed.
+// Beyond this an address is not inside the preceding symbol, it is past the end of it. Same bound
+// addr2sym.py uses, and for the same reason: attributing a return address to the wrong function is
+// worse than leaving it unnamed.
 constexpr u32 kMaxSymOffset = 0x10000;
 
-const Sym* containing(u32 addr) {
+const Sym* nearest_listed(u32 addr) {
     load_symbols();
     if (!g_symsOk) return nullptr;
     auto it = std::upper_bound(g_syms.begin(), g_syms.end(), addr,
@@ -166,22 +178,51 @@ const Sym* containing(u32 addr) {
     return (addr - it->addr) <= kMaxSymOffset ? &*it : nullptr;
 }
 
-// A large offset is a WARNING, not a name. The US function list is known to be incomplete (weak
-// virtual methods are absent from it entirely), so an address that falls in one of its gaps
-// resolves to whatever function happens to precede the gap, plus a big offset — which reads as a
-// confident answer and is a wrong one. Past this, the name is marked `?` so nobody builds on it.
-// The bound is the size of the largest functions that really exist here; addr2sym.py's much looser
-// 0x10000 is a search bound, not a confidence bound.
-constexpr u32 kTrustedSymOffset = 0x1000;
+// ── WHICH FUNCTION IS THIS ADDRESS IN — asked of the RECOMPILER, not of the symbol list ─────────
+//
+// The symbol list omits weak methods entirely, so an address inside one resolves to whatever
+// function happens to PRECEDE the gap, plus an offset — a confident-looking answer that names the
+// wrong function. This is not hypothetical: the first registry run reported three sites as
+// `TMapWire::drawUpper+0x48 / +0x17c / +0x258`, and drawUpper contains exactly ONE GXBegin. Two of
+// those three are in TMapWire::drawLower, which has two and is absent from the list.
+//
+// The recompiler knows better, because it had to: g_recomp_table is every function it discovered,
+// in ascending order, and a site's containing function is the greatest entry <= the site. That is
+// the real boundary rather than the nearest name. A site whose function has no listed symbol is
+// reported as `sub_<start>+0x<off> (in <nearest listed>)` — unnamed, but attributed to the right
+// function and carrying the neighbour that locates it.
+struct JumpEntry {
+    u32 addr;
+    void (*fn)(CPUState&);
+};
+extern "C" const JumpEntry g_recomp_table[];
+extern "C" const size_t g_recomp_table_size;
+
+u32 function_start(u32 addr) {
+    size_t lo = 0, hi = g_recomp_table_size;
+    if (hi == 0) return 0;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (g_recomp_table[mid].addr <= addr) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo == 0 ? 0 : g_recomp_table[lo - 1].addr;
+}
 
 std::string symbolize(u32 addr) {
-    const Sym* s = containing(addr);
-    if (s == nullptr) return "?";
-    const u32 off = addr - s->addr;
-    if (off == 0) return s->name;
-    char b[32];
-    std::snprintf(b, sizeof(b), "+0x%x%s", off, off > kTrustedSymOffset ? "?" : "");
-    return s->name + b;
+    const u32 start = function_start(addr);
+    const Sym* listed = nearest_listed(addr);
+    char off[32] = {};
+    if (start != 0 && addr != start) std::snprintf(off, sizeof(off), "+0x%x", addr - start);
+    // The recompiler's boundary and the symbol list AGREE: a real name, and the offset is inside
+    // the function it names.
+    if (listed != nullptr && listed->addr == start) return listed->name + std::string(off);
+    if (start == 0) return listed != nullptr ? listed->name + std::string("+0x?") : "?";
+    // They disagree: the containing function is one the symbol list does not have.
+    char b[64];
+    std::snprintf(b, sizeof(b), "sub_%08x%s", start, off);
+    if (listed == nullptr) return b;
+    return std::string(b) + " (in " + listed->name + ")";
 }
 
 const char* waist_name(SbGfxWaist w) {
@@ -215,6 +256,8 @@ constexpr Curated kCurated[] = {
     {SB_POP_DRAW_CUBE, "pop.shadow-alpha-cube", "shadow"},
     {SB_POP_TEXT, "pop.text-glyph", "2d"},
     {SB_POP_J2D, "pop.j2d-pane", "2d"},
+    {SB_POP_WIRE, "pop.wire", "deforming"},
+    {SB_POP_MIRROR, "pop.water-mirror", "deforming"},
 };
 
 // ── THE FILE ────────────────────────────────────────────────────────────────────────────────────
@@ -222,13 +265,18 @@ constexpr Curated kCurated[] = {
 // Tab-separated because it must be BOTH machine-mergeable (this file re-reads it every flush to
 // preserve curation) and readable in a diff — a JSON blob rewritten every run produces a diff
 // nobody reviews, which is how a tracked file stops being read at all.
-constexpr int kCols = 13;
-constexpr const char* kHeader =
-    "key\tkind\tsymbol\tstages\tre\tlerp\tinterp_pct\tdraws\tcalls\truns\tfirst_seen\tlast_seen\tnote";
+// A FLAG, NOT A COUNTER. The first version carried draws/calls/runs/last_seen, and every one of
+// them changed on every run — so the tracked file churned on every run too, and a diff could not
+// show what had actually changed. What matters is that a source of visual output EXISTS, what it
+// is, and whether it interpolates; the counts were behind that, not part of it. Now a row changes
+// only when something real does: a new emitter appears, it shows up in a new stage, its verdict
+// moves, or somebody curates it. Draw counts are still measured every run — they decide the
+// verdict — they are simply not persisted.
+constexpr int kCols = 8;
+constexpr const char* kHeader = "key\tkind\tsymbol\tstages\tre\tlerp\tfirst_seen\tnote";
 
 struct Entry {
-    std::string key, kind, symbol, stages, re, lerp, pct, draws, calls, first, last, note;
-    long runs = 0;
+    std::string key, kind, symbol, stages, re, lerp, first, note;
 };
 
 std::string db_path() {
@@ -294,12 +342,6 @@ std::string join_stages(const std::string& existing, const std::string& add) {
     return out.empty() ? "-" : out;
 }
 
-std::string num(long v) {
-    char b[32];
-    std::snprintf(b, sizeof(b), "%ld", v);
-    return b;
-}
-
 // The measured verdict, from one population's audit row. Deliberately mirrors aurora's report_audit
 // wording so the log and the file cannot disagree about the same numbers.
 //
@@ -324,7 +366,11 @@ void verdict(const long* row, bool auditLive, std::string& lerp, std::string& pc
     const long noId = row[kSnapNoId] + row[kUnclaimed];
     const long bad = row[kCameraOnly] + noId;
     if (bad == 0 && good == 0) {
-        lerp = "2d-correct";        // screen-space: there IS no in-between, so snapping is right
+        // Two ways to be correctly still, and they are different facts: `2d-correct` is a
+        // screen-space element under an orthographic projection, which aurora detects; `exact` is
+        // one under a PERSPECTIVE projection, which only the emitter can know and which had to be
+        // declared by a seam. Collapsing them would hide whether anyone had to do anything.
+        lerp = row[kSnapExact] > 0 && row[kSnapOrtho] == 0 ? "exact-correct" : "2d-correct";
         pct = "-";
         return;
     }
@@ -363,9 +409,7 @@ std::vector<Entry> read_db(const std::string& path) {
         }
         Entry e;
         e.key = c[0]; e.kind = c[1]; e.symbol = c[2]; e.stages = c[3]; e.re = c[4];
-        e.lerp = c[5]; e.pct = c[6]; e.draws = c[7]; e.calls = c[8];
-        e.runs = std::strtol(c[9].c_str(), nullptr, 10);
-        e.first = c[10]; e.last = c[11]; e.note = c[12];
+        e.lerp = c[5]; e.first = c[6]; e.note = c[7];
         if (!e.key.empty() && e.key != "key") out.push_back(e);
     }
     return out;
@@ -378,7 +422,16 @@ bool sbr_gfxdb_enabled() {
     return v;
 }
 
+namespace {
+u32 g_attributeTo = 0;
+}
+
+void sbr_gfxdb_attribute_to(u32 guestAddr) { g_attributeTo = guestAddr; }
+
 u8 sbr_gfxdb_site(u32 guestAddr, SbGfxWaist waist) {
+    // A redirect in force wins: the waist's own caller is an SDK helper, and its address would
+    // collapse every caller of that helper into one row.
+    if (g_attributeTo != 0) guestAddr = g_attributeTo;
     if (!sbr_gfxdb_enabled() || guestAddr == 0) return SB_POP_UNLABELLED;
     const auto it = g_byAddr.find(guestAddr);
     if (it != g_byAddr.end()) {
@@ -470,20 +523,18 @@ void sbr_gfxdb_flush() {
             e.first = stamp;
             e.re = seedRe;      // the ONLY time `re` is written by the game
             e.note = "-";
-            e.runs = 0;
         }
         e.kind = kind;
         e.symbol = symbol;
         e.stages = join_stages(e.stages, stage);
-        e.lerp = lerp;
-        e.pct = pct;
-        e.draws = num(draws);
-        e.calls = num((long)calls);
-        e.last = stamp;
-        if (!g_countedRun[pop]) {
-            g_countedRun[pop] = true;   // periodic flushes must not inflate the run count
-            ++e.runs;
+        // A verdict that got WEAKER is worth a line in the log: it means something that used to
+        // interpolate has stopped, which no longer shows up as a number moving now that the file
+        // holds flags rather than counts.
+        if (!fresh && e.lerp != lerp && e.lerp != "unmeasured" && lerp != "unmeasured") {
+            lucent::info("gfxdb", "{} ({}): interpolation verdict {} -> {} ({}% of draws that "
+                                  "OUGHT to move do)", key, symbol, e.lerp, lerp, pct);
         }
+        e.lerp = lerp;
     };
 
     for (const Curated& c : kCurated) {
@@ -498,8 +549,8 @@ void sbr_gfxdb_flush() {
         // The seed is a HINT, not a verdict: it says a native override exists for the function that
         // emitted this, which is evidence someone has been here. Everything else starts `unknown`,
         // and only a human or an agent editing the file turns that into an answer.
-        const Sym* fn = containing(s.addr);
-        const char* seed = (fn != nullptr && override_exists(fn->addr)) ? "native-override" : "unknown";
+        const u32 fnStart = function_start(s.addr);
+        const char* seed = (fnStart != 0 && override_exists(fnStart)) ? "native-override" : "unknown";
         upsert(key, waist_name(s.waist), symbolize(s.addr), (u8)id, s.calls, seed);
     }
 
@@ -522,16 +573,17 @@ void sbr_gfxdb_flush() {
                     "nothing (the run had SBR_LERP60 off), NOT that the graphic snaps.\n");
     std::fprintf(f, "#\n# re:   unknown | native-override (auto hints) | yes | partial | no | "
                     "identified   (curated verdicts)\n");
-    std::fprintf(f, "# lerp: yes | partial | camera-only | no | 2d-correct | unmeasured   "
-                    "(MEASURED, per run)\n");
+    std::fprintf(f, "# lerp: yes | partial | camera-only | no | 2d-correct | no-primitives | "
+                    "unmeasured   (MEASURED, per run)\n");
+    std::fprintf(f, "#\n# There are deliberately NO draw counts here. A row is a FLAG that a source "
+                    "of visual output exists and\n# what is known about it; counts changed every "
+                    "run and made the file churn without saying anything.\n");
     std::fprintf(f, "%s\n", kHeader);
     for (const Entry& e : db) {
-        std::fprintf(f, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ld\t%s\t%s\t%s\n",
+        std::fprintf(f, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
                      e.key.c_str(), sanitize(e.kind).c_str(), sanitize(e.symbol).c_str(),
                      sanitize(e.stages).c_str(), sanitize(e.re).c_str(), sanitize(e.lerp).c_str(),
-                     sanitize(e.pct).c_str(), sanitize(e.draws).c_str(), sanitize(e.calls).c_str(),
-                     e.runs, sanitize(e.first).c_str(), sanitize(e.last).c_str(),
-                     sanitize(e.note).c_str());
+                     sanitize(e.first).c_str(), sanitize(e.note).c_str());
     }
     std::fclose(f);
     // Atomic replace: a run killed mid-write (which is how automated runs end) must not be able to
@@ -567,6 +619,16 @@ void sbr_gfxdb_report() {
                               "detected site claimed them. Detection has a hole: geometry is "
                               "reaching the fifo through a waist this build does not hook.",
                      unlabelledDraws);
+    }
+    // The disposition ORDER is duplicated across the aurora boundary (the enum lives in an internal
+    // header), so a new outcome added on one side and not the other would silently shift every
+    // column — "billboard" counts read as "camera-only". The count is the cheap half of that check
+    // and it is worth having: it turns a silent misread into a loud one.
+    if (aurora::gfx::interp::audit_disposition_count() != kDispCount) {
+        lucent::error("gfxdb", "aurora reports {} disposition(s), this build assumes {}. The audit "
+                               "columns are SHIFTED and every lerp verdict in the registry is "
+                               "misread — fix the enum in graphics_db.cpp to match interp.hpp.",
+                      aurora::gfx::interp::audit_disposition_count(), (int)kDispCount);
     }
     if (aurora::gfx::interp::max_populations() < kPopCount) {
         lucent::error("gfxdb", "aurora tracks only {} population(s) but this build allocates ids up "

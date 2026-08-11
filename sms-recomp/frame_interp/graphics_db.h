@@ -56,6 +56,11 @@ enum class SbGfxWaist : u8 {
 
 bool sbr_gfxdb_enabled();
 
+// Attribute the primitives emitted from here on to `guestAddr` instead of to the waist's own
+// caller; 0 clears it. For the SDK's draw helpers (GXDrawCube, GXDrawSphere), whose caller IS the
+// waist's caller and therefore tells you only that a cube was drawn, never by whom.
+void sbr_gfxdb_attribute_to(u32 guestAddr);
+
 // Allocate (or recall) the population id for an emitter site, and count this call. Returns 0 when
 // the registry is off or the id space is exhausted — 0 being the audit's "(unlabelled)" row, which
 // is the honest place for a draw whose emitter could not be given its own row.

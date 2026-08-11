@@ -51,8 +51,6 @@
 #include <cstring>
 #include <unordered_map>
 
-extern "C" void func_8033025c(CPUState&);   // JPADrawExecBillBoard::exec(const JPADrawContext*, JPABaseParticle*)
-extern "C" void func_80330434(CPUState&);   // JPADrawExecRotBillBoard::exec(...)
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
 bool sbr_lerp_enabled();
@@ -119,10 +117,65 @@ void tag_and_run(CPUState& cpu, void (*body)(CPUState&)) {
     sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
-void ov_billboard(CPUState& cpu) { tag_and_run(cpu, func_8033025c); }
-void ov_rot_billboard(CPUState& cpu) { tag_and_run(cpu, func_80330434); }
-
 } // namespace
+
+// ── EVERY PER-PARTICLE DRAW VISITOR, not the two that happened to be in the fountain ────────────
+//
+// The first version hooked BillBoard and RotBillBoard, and the registry then showed
+// JPADrawExecRotDirectional, JPADrawExecDirBillBoard and friends drawing camera-only in the same
+// plaza — the same defect, in the same subsystem, missed because nobody enumerated the visitors.
+//
+// The generalisation is sound rather than convenient, and this is why: JPA has one shape for every
+// per-particle visitor. It builds `offs[]` — the quad's (or the cross's, or the point's) SHAPE —
+// and adds ONE point to every corner, and that point is `particle->getGlobalPosition(pt)` in all
+// nine of them (checked in decomp/sms JPADrawVisitor.cpp, not assumed). So each one is a shape
+// DISPLACED by the particle's world position, which is exactly the case patch_billboard exists for.
+//
+// The variants differ in whether `pt` reaches the vertices in EYE space (BillBoard, DirBillBoard —
+// MTXMultVec by the view first) or in WORLD space (RotDirectional, Rotation — the offsets are
+// rotated into world space instead). Both are correct under the same patch, and it is worth being
+// explicit about why, because "it worked for billboards" is not a reason:
+//
+//   eye space   the draw matrix is identity, so the patch's composed matrix is the camera delta,
+//               and adding the eye-space displacement V_lerp*dw to its translation column
+//               translates the already-eye-space vertices by exactly that.
+//   world space the draw matrix is the view, so the composed matrix is ~V_lerp, and adding
+//               V_lerp*dw to its translation column IS V_lerp * translate_world(dw), since
+//               [R|t] * T(dw) = [R | R*dw + t].
+//
+// Same correction, both spaces, because in both the wanted operation is "rotate the world
+// displacement into eye space and translate".
+//
+// TWO ARE MISSING and are named rather than silently omitted: JPADrawExecLine::exec and
+// JPADrawExecRotYBillBoard::exec are absent from reference/sms_gmse01_funcs.txt (it omits weak
+// methods), so their addresses are not known here. If either ever draws, the graphics registry will
+// show it as an unlabelled site with a `?` symbol inside that gap — which is the detection working,
+// not a hole in it.
+//
+// The emitter-level visitors (Stripe, StripeCross) are deliberately NOT here: they draw a whole
+// particle CHAIN as one strip, so there is no single particle whose position could displace it.
+// Interpolating those needs the vertex path, and their registry rows say so.
+#define SB_JPA_VISITOR(hexaddr, name)                                                          \
+    extern "C" void func_##hexaddr(CPUState&);                                                 \
+    namespace {                                                                                \
+    void ov_jpa_##hexaddr(CPUState& cpu) { tag_and_run(cpu, func_##hexaddr); }                 \
+    }                                                                                          \
+    SB_OVERRIDE(0x##hexaddr##u, ov_jpa_##hexaddr, name,                                        \
+                "60fps: identity + world position for a per-particle JPA draw, so the "        \
+                "particle's own motion interpolates as a translation (its position is baked "  \
+                "into the vertex stream, not carried in a matrix)")
+
+SB_JPA_VISITOR(8033025c, "JPADrawExecBillBoard::exec")
+SB_JPA_VISITOR(80330434, "JPADrawExecRotBillBoard::exec")
+SB_JPA_VISITOR(80330650, "JPADrawExecYBillBoard::exec")
+SB_JPA_VISITOR(80330d8c, "JPADrawExecDirectional::exec")
+SB_JPA_VISITOR(803311a0, "JPADrawExecRotDirectional::exec")
+SB_JPA_VISITOR(803315fc, "JPADrawExecDirectionalCross::exec")
+SB_JPA_VISITOR(80331b54, "JPADrawExecRotDirectionalCross::exec")
+SB_JPA_VISITOR(803320f4, "JPADrawExecDirBillBoard::exec")
+SB_JPA_VISITOR(80332444, "JPADrawExecRotation::exec")
+SB_JPA_VISITOR(8033266c, "JPADrawExecRotationCross::exec")
+SB_JPA_VISITOR(803329d8, "JPADrawExecPoint::exec")
 
 void sbr_tag_particle_report() {
     if (!enabled() || !sbr_lerp_enabled()) return;
@@ -136,8 +189,4 @@ void sbr_tag_particle_report() {
                      : "");
 }
 
-SB_OVERRIDE(0x8033025cu, ov_billboard, "JPADrawExecBillBoard::exec",
-            "60fps: identity + world position for a billboard particle, so its own motion "
-            "interpolates as a translation (its position is baked into the vertex stream)")
-SB_OVERRIDE(0x80330434u, ov_rot_billboard, "JPADrawExecRotBillBoard::exec",
-            "60fps: identity + world position for a rotating billboard particle")
+

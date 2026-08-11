@@ -113,6 +113,9 @@ unsigned long g_untaggedDraws = 0, g_taggedDraws = 0;
 // that relabelled would replace an informative attribution with a useless one, every time.
 int g_autoDepth = 0;
 
+// See ov_gx_begin. Null unless a multi-primitive seam is active.
+void (*g_beginHook)() = nullptr;
+
 bool claimable() {
     if (!sbr_gfxdb_enabled() || g_autoDepth != 0) return false;
     // A hand-written population label covers a whole subtree and is never stepped on; an automatic
@@ -265,6 +268,10 @@ void ov_shape_draw_draw(CPUState& cpu) {
 }
 
 void ov_gx_begin(CPUState& cpu) {
+    // A seam that emits SEVERAL primitives from ONE guest call registers here — the wire's
+    // drawLower is two strips of identical vertex count, and no function-level hook can see the
+    // boundary between them. Scoped by the registering seam, so it is null for every other draw.
+    if (g_beginHook != nullptr) g_beginHook();
     auto_latch_immediate((u32)cpu.lr);
     if (enabled()) {
         if (sbr_gxfifo_pending_tag() == 0) {
@@ -278,6 +285,8 @@ void ov_gx_begin(CPUState& cpu) {
 }
 
 } // namespace
+
+void sbr_gxbegin_set_hook(void (*fn)()) { g_beginHook = fn; }
 
 SB_OVERRIDE(0x8035df88u, ov_gx_begin, "GXBegin",
             "60fps (SBR_TAGGAP): attribute IMMEDIATE-MODE draws that carry no interpolation "
