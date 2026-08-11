@@ -257,6 +257,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp` |  |
 | `SBR_CARD_TRACE` | 1 | `sms-recomp/overrides/diag_card.cpp` |  |
+| `SBR_CRASH_SELFTEST` | 1 | `sms-recomp/runtime/rt_core.cpp` |  |
 | `SBR_DETERMINISTIC` | 1 | `sms-recomp/runtime/rt_core.cpp` |  |
 | `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp` |  |
 | `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
@@ -371,4 +372,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**350 switches; 69 still gate a raw print.**
+**351 switches; 69 still gate a raw print.**

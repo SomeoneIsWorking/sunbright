@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sys/mman.h>
+#include <csignal>
 #include <execinfo.h>
 #include <ctime>
 #include <unordered_map>
@@ -211,6 +212,75 @@ void rt_dump_guest_stack(const char* why) {
             lucent::error("rt", "  #{:<2} {}", i, f);
     }
     std::free(names);
+}
+
+// ── A FATAL SIGNAL MUST SAY SOMETHING ────────────────────────────────────────
+//
+// Until now a SIGSEGV produced exit code 139 and nothing else. Issue #2 — an intermittent crash in
+// the shutdown report path — sat open for exactly that reason: it reproduced about one run in
+// three, every reproduction printed a full log that ended mid-report, and none of them said WHERE.
+// An intermittent fault you cannot attribute is one you cannot bisect, so the cheapest possible fix
+// is to make the crash name itself the first time it happens rather than the fifth.
+//
+// backtrace() is not async-signal-safe in the strict sense. It is used anyway, deliberately: the
+// process is already dying, the alternative is no information at all, and this is the same call the
+// stall watchdog and every hard-stop path in this file already make. The handler resets itself to
+// SIG_DFL and re-raises afterwards so the exit status still reports the real signal and a core is
+// still produced for anyone who wants one.
+extern "C" void rt_fatal_signal(int sig, siginfo_t* info, void*) {
+    static volatile sig_atomic_t s_inHandler = 0;
+    if (s_inHandler == 0) {
+        s_inHandler = 1;
+        const char* name = sig == SIGSEGV   ? "SIGSEGV"
+                           : sig == SIGBUS  ? "SIGBUS"
+                           : sig == SIGFPE  ? "SIGFPE"
+                           : sig == SIGILL  ? "SIGILL"
+                                            : "fatal signal";
+        lucent::error("rt", "{} at fault address {} — the host call stack follows. A frame named "
+                            "func_<addr> is GUEST code at that guest address; frames without one "
+                            "are the runtime or a library.",
+                      name, info != nullptr ? info->si_addr : nullptr);
+        rt_dump_guest_stack(name);
+        // The HOST frames too, unfiltered. rt_dump_guest_stack keeps only func_* frames, which is
+        // right when the question is "which guest code" and useless when the crash is in the
+        // runtime's own shutdown path — which is precisely the case this handler was added for.
+        void* frames[64];
+        const int n = backtrace(frames, 64);
+        char** names = backtrace_symbols(frames, n);
+        if (names != nullptr) {
+            lucent::error("rt", "host call stack ({} frame(s)):", n);
+            for (int i = 0; i < n; i++) lucent::error("rt", "  #{:<2} {}", i, names[i]);
+            std::free(names);
+        } else {
+            lucent::error("rt", "host call stack: backtrace_symbols failed, so the frames above are "
+                                "all there is");
+        }
+    }
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+}
+
+// SBR_CRASH_SELFTEST=1 dereferences a null pointer on purpose. A crash handler that has never been
+// seen to fire is indistinguishable from one that is not installed, and this one exists because a
+// silent 139 wasted a session.
+void rt_install_crash_handler() {
+    struct sigaction sa{};
+    sa.sa_sigaction = &rt_fatal_signal;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigemptyset(&sa.sa_mask);
+    for (int sig : {SIGSEGV, SIGBUS, SIGFPE, SIGILL}) sigaction(sig, &sa, nullptr);
+
+    if (const char* e = std::getenv("SBR_CRASH_SELFTEST"); e != nullptr && e[0] == '1') {
+        lucent::info("rt", "SELF-TEST: dereferencing a null pointer on purpose. The correct outcome "
+                           "is the fault report that follows, then death by the real signal. A run "
+                           "that reaches the next line means the handler is not installed and every "
+                           "silent 139 stays unattributed.");
+        volatile int* p = nullptr;
+        *p = 1;
+        lucent::error("rt", "SELF-TEST DID NOT FAULT — a null store was accepted, so this build "
+                            "cannot test the handler at all.");
+        std::abort();
+    }
 }
 
 void call_ppc(CPUState& cpu, u32 address) {

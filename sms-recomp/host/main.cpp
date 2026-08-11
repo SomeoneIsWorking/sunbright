@@ -129,6 +129,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Before anything can fault: a fatal signal must name itself. See rt_core.cpp.
+    extern void rt_install_crash_handler();
+    rt_install_crash_handler();
+
     Dol dol;
     std::vector<u8> bytes;
     if (!load_dol(dol_path, dol, bytes)) return 1;

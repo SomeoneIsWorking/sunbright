@@ -159,6 +159,37 @@ def cmd_next(args):
               f"nothing unexamined IN THE REGISTRY. That is not the same as nothing left in the "
               f"game: only stages that have been played have rows at all.")
         return
+    # LEAD WITH WHETHER ANYTHING IS ACTUALLY BROKEN. Ranked output that opens with twenty
+    # `2d-correct` rows reads like a list of defects when it is a list of correct things — the
+    # reader has to notice the verdict on every line to work out that nothing here judders. The
+    # split is the same one `rank` already makes, said out loud.
+    JUDDERS = ("no", "camera-only", "partial")
+    bad = [r for r in todo if r["lerp"] in JUDDERS]
+    unmeasured = [r for r in todo if r["lerp"] == "unmeasured"]
+    # Rows that judder but ALREADY carry a curated verdict are not offered as work — and would
+    # therefore vanish from this view entirely. Counting them here is the difference between
+    # "nothing left to do" and "nothing left to do THAT NOBODY HAS LOOKED AT", which are very
+    # different claims and only one of them is true.
+    curated_bad = [r for r in rows if r["lerp"] in JUDDERS and r not in todo]
+    if not bad:
+        print(f"NOTHING UNEXAMINED JUDDERS. None of the {len(todo)} row(s) below is `no`, "
+              f"`camera-only` or `partial` — every one either interpolates, is screen-space where "
+              f"snapping is correct, or is claimed by a seam. What is missing is a curated `re` "
+              f"verdict, which is bookkeeping, not lerp work.")
+        if curated_bad:
+            print(f"  {len(curated_bad)} row(s) DO still judder, but carry a curated verdict "
+                  f"already and so are not listed below — someone looked and recorded why. They "
+                  f"are the real remaining lerp work: "
+                  f"{', '.join(r['key'] for r in curated_bad)} "
+                  f"(`graphics_db.py list --lerp partial`).")
+        if unmeasured:
+            print(f"  {len(unmeasured)} row(s) are `unmeasured` — the audit filed nothing for "
+                  f"them, so the first claim covers everything EXCEPT those.")
+        print("  Only stages that have been played have rows at all, so this is a statement about "
+              "what has been SEEN, not about the game.\n")
+    else:
+        print(f"{len(bad)} of {len(todo)} unexamined row(s) actually judder (`no`, `camera-only` "
+              f"or `partial`) — those come first.\n")
     print(f"{len(todo)} source(s) with no curated RE verdict, worst-interpolating first:\n")
     for r in todo[: args.limit]:
         why = {"no": "SNAPS — nothing interpolates it",
