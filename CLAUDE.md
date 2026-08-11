@@ -263,7 +263,17 @@ the decomp source, not your own header comment.
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target sms-boot -j$(nproc)
 ./run.sh [rom.rvz]        # ROM via $SUNBRIGHT_ROM / .env / rom.rvz drop-in
+./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=400   # PREFER THIS for any automated/diagnostic run
 ```
+
+**Use `./run-safe.sh` rather than assembling a command line.** Every run that made this machine
+unusable was hand-assembled, and the common ingredient was `SB_TURBO=1` with nothing bounding the
+present rate. It picks a 60 Hz submission ceiling, headless, no native renderer and a wall-clock
+cap, and then reads the KERNEL's opinion of the run: it counts amdgpu ring timeouts and resets
+across the run and exits non-zero if the run disturbed the card, even when the game exits cleanly.
+That check is external to the process being checked, and it is validated against both classes
+(instrument I022) — 108 on the session that reset the card, 0 on an idle window, UNKNOWN (never 0)
+when the log cannot be read.
 
 Env vars: `SB_W`/`SB_H` (window), `SB_HEADLESS` (never show the window — REQUIRED for all
 automated/diagnostic runs, agents included), `SB_TURBO` (unpaced), `SB_WATCHDOG_SECS`,
