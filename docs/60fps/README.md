@@ -389,3 +389,12 @@ tick (a legitimate ordinal: it comes from the shadow pass's straight-line code f
 the maximum observed is reported every run — it is 4, not the 2 I assumed from reading the pass).
 
 Result: shadow alpha cube **48.2% → 97.3%** in Pianta Village, 98.5% in the plaza, gap-0 count zero.
+
+The same seam's "846 drawn from somewhere other than drawShadow and left alone" was a number nobody
+could act on until it named its call sites. They are `TModelWaterManager::drawWaterVolume`'s three
+`SMS_DrawCube` calls, all drawing the SAME world-space AABB (`unk5D70..unk5D7C`) under three
+different render states — a repeat loop that builds up destination alpha, a conditional one, and a
+final one in the water colour. Identity is (call site, repeat), reusing the same occurrence counter;
+the repeat count being data-dependent costs nothing here because every repeat is the same box. All
+846 now interpolate, and the cube population reads **96.0%** at the audit level with zero
+unattributed draws.

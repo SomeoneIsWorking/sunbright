@@ -42,6 +42,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <intrinsics.h>
 
 // The GX waist a site was discovered at. Recorded because it says what KIND of geometry the
@@ -77,6 +79,12 @@ u8 sbr_gfxdb_site(u32 guestAddr, SbGfxWaist waist);
 // That is the confidently-wrong note this registry exists to avoid, and it is invisible: the row
 // looks like every other measured row.
 void sbr_gfxdb_note_claimed(u32 guestAddr, u8 byPop);
+
+// Name a guest address the way the registry does — the recompiler's function table bounds the
+// address, so an unnamed function reads as `sub_801983a8 (in <the symbol before it>)` rather than as
+// a misleading `symbol+offset`. Exposed because a diagnostic that prints a bare address makes the
+// reader do the lookup, and they will do it wrong.
+std::string sbr_gfxdb_symbolize(u32 guestAddr);
 
 void sbr_gfxdb_flush();
 

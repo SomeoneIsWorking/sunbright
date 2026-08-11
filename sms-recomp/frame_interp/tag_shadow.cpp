@@ -58,6 +58,7 @@
 
 #include "../overrides/overrides.h"
 #include "mark_exact.h"
+#include "graphics_db.h"
 #include "populations.h"
 
 #include <intrinsics.h>
@@ -628,12 +629,34 @@ bool cube_from_draw_shadow(u32 lr) {
     return lr == 0x8022f224u || lr == 0x8022f434u || lr == 0x8022f478u;
 }
 
+// THE OTHER CALLER OF SMS_DrawCube, found by making the "foreign" counter name its call sites
+// instead of only counting them: TModelWaterManager::drawWaterVolume, three sites, 282 draws each
+// over 282 ticks.
+//
+// All three draw THE SAME BOX — the water volume's world-space AABB at unk5D70..unk5D7C
+// (ModelWaterManager.cpp:1113-1154) — under three different render states: a repeat loop of
+// `unk5D62` identical cubes that builds up destination alpha, a conditional one, and a final one in
+// the water colour. So the geometry is identical across all of them and across ticks, and the box
+// moves with the water, which is exactly what the vertex path interpolates.
+//
+// The identity is (this call site, which repeat) with no group lookup: the site is structural, and
+// the repeat index is supplied by the same per-tick occurrence counter the shadow cubes use. The
+// repeat COUNT is data-dependent (unk5D62), and that is harmless here in a way it would not be
+// elsewhere — every repeat draws the same box, so pairing repeat k against repeat k of the previous
+// tick is exact even when the count changes; a count that shrinks simply leaves the extra entries
+// with nothing to pair against.
+bool cube_from_water_volume(u32 lr) {
+    return lr == 0x8027d7d8u || lr == 0x8027d87cu || lr == 0x8027d8e0u;
+}
+
 unsigned long g_cubeTagged = 0, g_cubeUnowned = 0, g_cubeForeign = 0;
 std::unordered_map<u64, long> g_cubeKeyTick;
 std::unordered_map<u64, u32> g_cubeNth;   // key -> how many cubes it has drawn THIS tick
 long g_cubeNthTick = -1;
 u32 g_cubeNthMax = 0;
 unsigned long g_cubeKeyNew = 0, g_cubeKeyConsecutive = 0, g_cubeKeyGap = 0;
+std::unordered_map<u32, unsigned long> g_cubeForeignSite;
+unsigned long g_cubeWater = 0;
 
 u64 group_membership_key(u32 mgr, u32 groupOff) {
     if (!sb_ram_fast(mgr + MGR_MGROUPS)) return 0;
@@ -770,6 +793,21 @@ void ov_draw_shadow_volume(CPUState& cpu) {
     sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
+// Fold "which cube of this identity, this tick" into a key. Mixed in rather than added: the key is
+// already a hash and its low bits carry as much information as the high ones, so a plain add would
+// let (key K, cube 1) collide with (key K+1, cube 0) — two different groups' cubes wearing one
+// identity.
+u64 with_occurrence(u64 key) {
+    const long tick = (long)aurora::gfx::interp::tick_index();
+    if (tick != g_cubeNthTick) {
+        g_cubeNth.clear();
+        g_cubeNthTick = tick;
+    }
+    const u32 nth = g_cubeNth[key]++;
+    if (nth > g_cubeNthMax) g_cubeNthMax = nth;
+    return key ^ (0x9e3779b97f4a7c15ull * (u64)(nth + 1));
+}
+
 } // namespace
 
 // The identity for the shadow group's alpha-restore cube, for the SMS_DrawCube seam in
@@ -779,8 +817,21 @@ void ov_draw_shadow_volume(CPUState& cpu) {
 // established, and in both cases the camera delta alone is the honest answer.
 u64 sbr_shadow_cube_tag(const CPUState& cpu) {
     if (!sbr_lerp_enabled()) return 0;
+    if (cube_from_water_volume((u32)cpu.lr)) {
+        ++g_cubeWater;
+        // Salted so a water-volume site can never collide with a group-membership key, which is a
+        // hash over guest pointers and could otherwise land on a small site-derived value. The
+        // repeat index comes from the same per-tick occurrence counter the shadow cubes use.
+        const u64 wkey = 0xcbf29ce484222325ull ^ (0x100000001b3ull * (u64)cpu.lr);
+        return with_occurrence(wkey | 1ull);
+    }
     if (!cube_from_draw_shadow((u32)cpu.lr)) {
+        // NAME the foreign callers instead of only counting them. "846 drawn from somewhere other
+        // than drawShadow and left alone" is a number nobody can act on; the return addresses say
+        // WHICH code is drawing alpha cubes outside the shadow pass, which is either a fourth call
+        // site this list is missing or a different system that needs its own identity.
         ++g_cubeForeign;
+        ++g_cubeForeignSite[(u32)cpu.lr];
         return 0;
     }
     const u64 key = group_membership_key((u32)cpu.gpr[31], (u32)cpu.gpr[25]);
@@ -804,16 +855,6 @@ u64 sbr_shadow_cube_tag(const CPUState& cpu) {
     // reason drawLower's two strips are: the sequence comes from the shadow pass's straight-line
     // code for a given group, not from a set that varies with what the scene is doing. If that ever
     // stops being true the failure is visible rather than silent — the reported maximum climbs.
-    u32 nth = 0;
-    {
-        const long tick = (long)aurora::gfx::interp::tick_index();
-        if (tick != g_cubeNthTick) {
-            g_cubeNth.clear();
-            g_cubeNthTick = tick;
-        }
-        nth = g_cubeNth[key]++;
-        if (nth > g_cubeNthMax) g_cubeNthMax = nth;
-    }
     // IS THE KEY STABLE FROM TICK TO TICK? The vertex path reported 2,675 of 5,162 cubes with no
     // consecutive previous tick, which is either a key that churns or a group that genuinely does
     // not draw every tick. Those need opposite fixes, and only counting can separate them: a key
@@ -830,10 +871,7 @@ u64 sbr_shadow_cube_tag(const CPUState& cpu) {
         }
         seen = tick;
     }
-    // Mix the occurrence in rather than adding it: the key is already a hash and the low bits carry
-    // as much information as the high ones, so a plain add would let (key K, cube 1) collide with
-    // (key K+1, cube 0) — two different groups' cubes wearing one identity.
-    return key ^ (0x9e3779b97f4a7c15ull * (u64)(nth + 1));
+    return with_occurrence(key);
 }
 
 void sbr_shadow_cube_report() {
@@ -845,6 +883,22 @@ void sbr_shadow_cube_report() {
                  "back). A key that churns every tick and a group that draws every other tick both "
                  "read as \"not consecutive\" in the vertex path; only this line separates them.",
                  g_cubeKeyNew, g_cubeKeyConsecutive, g_cubeKeyGap);
+    lucent::info("taggap",
+                 "water-volume cube: {} draw(s) given an identity of (call site, repeat). All three "
+                 "sites draw the SAME world-space AABB under different render state, so the repeat "
+                 "count being data-dependent costs nothing — every repeat is the same box.{}",
+                 g_cubeWater,
+                 g_cubeWater == 0
+                     ? "   <-- none drew, which is scene-dependent (the water volume needs water in "
+                       "the scene) and is NOT evidence the seam works."
+                     : "");
+    for (const auto& kv : g_cubeForeignSite) {
+        lucent::info("taggap",
+                     "shadow alpha cube: {} draw(s) came from return address 0x{:08x} ({}), which is "
+                     "not one of TMBindShadowManager::drawShadow's three known call sites. Those get "
+                     "no identity and take the camera delta alone.",
+                     kv.second, kv.first, sbr_gfxdb_symbolize(kv.first));
+    }
     lucent::info("taggap",
                  "shadow alpha cube: the most any single group drew in one tick was {} cube(s). The "
                  "identity carries that occurrence index, so however many a group emits they get "

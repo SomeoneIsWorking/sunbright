@@ -313,8 +313,8 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_VIEWSEQ_AT` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1204` |  |
 | `SBR_INTERP60_VIEWSEQ_MIN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1237` |  |
 | `SBR_INTERP60_VIEWWHO` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:1328` |  |
-| `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp:1050` |  |
-| `SBR_INTERP_TEXMTX` | 1 | `extern/aurora/lib/gfx/interp.cpp:516` |  |
+| `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp:1062` |  |
+| `SBR_INTERP_TEXMTX` | 1 | `extern/aurora/lib/gfx/interp.cpp:517` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp:149` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp:213` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp:73` |  |
@@ -341,7 +341,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/render/native_render.cpp:578` |  |
 | `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp:253` |  |
 | `SBR_SDLGPU` | 1 | `sms-recomp/runtime/render/native_render.cpp:304` |  |
-| `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:449` |  |
+| `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:450` |  |
 | `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:122` |  |
 | `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:127` |  |
 | `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:125` |  |
@@ -349,7 +349,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp:17` |  |
 | `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp:55` |  |
 | `SBR_TAGPARTICLE` | 1 | `sms-recomp/frame_interp/tag_particle.cpp:70` |  |
-| `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:95` |  |
+| `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp:96` |  |
 | `SBR_TAGWIRE` | 1 | `sms-recomp/frame_interp/tag_deforming.cpp:186` |  |
 | `SBR_TEV_TRACE` | 1 | `sms-recomp/runtime/render/scene.cpp:925` |  |
 | `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/render/scene.cpp:1022` |  |

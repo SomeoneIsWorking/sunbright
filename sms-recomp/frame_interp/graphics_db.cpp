@@ -484,6 +484,8 @@ const char* curated_slug(u8 pop) {
 
 } // namespace
 
+std::string sbr_gfxdb_symbolize(u32 guestAddr) { return symbolize(guestAddr); }
+
 void sbr_gfxdb_note_claimed(u32 guestAddr, u8 byPop) {
     if (!sbr_gfxdb_enabled() || guestAddr == 0 || byPop == SB_POP_UNLABELLED) return;
     if (g_attributeTo != 0) guestAddr = g_attributeTo;
