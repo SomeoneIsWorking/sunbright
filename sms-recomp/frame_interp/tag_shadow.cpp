@@ -319,6 +319,30 @@ unsigned long g_addrHit = 0, g_addrMiss = 0, g_rescans = 0;
 // complete — what it needs is a run:
 //     ./run-safe.sh SBR_STAGE=1 SBR_LERP60=1 SBR_QUIT_AFTER=600
 // and the gate is the mispairing count against the no-tagging control of 4, not the coverage %.
+// Defined further down, with the join it belongs to; declared here because the pass-4 site is the
+// first caller in file order.
+u32 owner_for(u32 req);
+
+constexpr u32 kPass4Return = 0x8022f3e8u;
+constexpr u32 kQuadReqOffset = 0x68u;   // TAlphaShadowQuad::mReq, confirmed by `lwz r3, 0x68(r24)`
+
+unsigned long g_pass4Owned = 0, g_pass4NoOwner = 0, g_pass4Seen = 0;
+
+// OPT-IN, and default-off ON PURPOSE. This replaces the model population's ordinal key with a real
+// per-instance one, and an identity change in this file has already cost 1,128 mispairs once —
+// visible to the player as characters' shadows drawn in the wrong place. The rule that came out of
+// that is that identity changes are MEASURED before they become the default, and the measurement is
+// a run. So the code is here, ready, behind SBR_TAGSHADOW=pass4owner, and the gate it has to clear
+// is the mispairing count against the no-tagging control of 4 — NOT its coverage percentage, which
+// is what made the slot key look good.
+bool pass4_owner_on() {
+    static const bool v = [] {
+        const char* e = std::getenv("SBR_TAGSHADOW");
+        return e != nullptr && std::strcmp(e, "pass4owner") == 0;
+    }();
+    return v;
+}
+
 u32 g_requestingActor = 0;
 unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
 // The JOIN's own denominators. "0 owners resolved" has three causes — requestShadow never fired,
@@ -432,10 +456,40 @@ void sbr_tag_shadow_report() {
                        "those are different answers and this line cannot tell them apart, so check "
                        "SBR_TAGGAP=1 for whether the untagged population is still there."
                      : "");
+
+    // THE PASS-4 OWNER JOIN reports separately, and reports even when it is off — a mode that can
+    // run and print nothing is indistinguishable from one that never fired, and this one exists
+    // precisely to be measured against the ordinal key it would replace.
+    if (!pass4_owner_on()) {
+        lucent::info("taggap",
+                     "pass-4 owner join: OFF (default). The type-3 shadow shapes are keyed by the "
+                     "ordinal scheme. SBR_TAGSHADOW=pass4owner keys them by the OWNING ACTOR "
+                     "instead, read from the quad the loop keeps in r24 at LR {:#010x}. Judge it on "
+                     "the MISPAIRING count against the no-tagging control of 4, not on coverage — "
+                     "coverage is what made the slot key look acceptable before it was withdrawn.",
+                     kPass4Return);
+        return;
+    }
+    lucent::info("taggap",
+                 "pass-4 owner join ON: {} draw(s) arrived at the pass-4 call site, {} keyed by "
+                 "their OWNING ACTOR, {} fell through to snapping because the quad's request had no "
+                 "owner.{}",
+                 g_pass4Seen, g_pass4Owned, g_pass4NoOwner,
+                 g_pass4Seen == 0
+                     ? "   <-- ZERO ARRIVALS. The site discriminator (LR == the return address of "
+                       "the bl SMS_DrawShape at 0x8022f3e4) never matched. That is a broken hook, "
+                       "not a scene without ship shadows — check the address before reading "
+                       "anything into a mispairing count taken from this run."
+                     : "");
 }
 
 namespace {
 
+// The pass-4 return address, from the disassembly above: 0x8022f3e4 is `bl SMS_DrawShape` inside
+// the `for (fp = grp.mFpHead; fp; fp = fp->mNext)` loop, so LR is the instruction after it. This is
+// the ONLY SMS_DrawShape call site where r24 holds a TAlphaShadowQuad — the other two in drawShadow
+// are an array loop, and ModelWaterManager calls the same function — so the address is the whole
+// discriminator and it must be exact.
 void ov_sms_draw_shape(CPUState& cpu) {
     // Labelled always, tagged only under SBR_TAGSHADOW=all — see the note above.
     const bool label = sbr_lerp_enabled() && sbr_gxfifo_pending_tag() == 0;
@@ -443,6 +497,33 @@ void ov_sms_draw_shape(CPUState& cpu) {
     // r3 = J3DModelData*, r4 = u16 shape index.
     const u32 model = (u32)cpu.gpr[3];
     const u32 shapeIdx = (u32)cpu.gpr[4] & 0xFFFF;
+
+    // THE SOUND KEY, when this is the pass-4 call site. r24 is callee-saved, so the quad the loop
+    // is walking is still in it here; its mReq is the same request the volume population's owner
+    // join already resolves to an actor. Nothing is guessed — if the quad does not read back as a
+    // plausible pointer, or its request has no owner, this falls through to the behaviour below
+    // rather than inventing an identity.
+    if (pass4_owner_on() && sbr_lerp_enabled() && (u32)cpu.lr == kPass4Return &&
+        sbr_gxfifo_pending_tag() == 0) {
+        ++g_pass4Seen;
+        const u32 fp = (u32)cpu.gpr[24];
+        const u32 req = sb_ram_fast(fp + kQuadReqOffset) ? sb_r32(fp + kQuadReqOffset) : 0;
+        const u32 owner = req != 0 ? owner_for(req) : 0;
+        if (owner != 0) {
+            const u32 nth = g_modelSeenThisTick[owner]++;
+            sbr_gxfifo_draw_pop(SB_POP_SHADOW_MODEL);
+            sbr_gxfifo_draw_tag(((u64)owner << 32) | (u64)nth);
+            ++g_modelTagged;
+            ++g_pass4Owned;
+            func_80225c30(cpu);
+            sbr_gxfifo_draw_tag(0);
+            if (label) sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+            sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+            return;
+        }
+        ++g_pass4NoOwner;   // falls through and snaps, which is what it did before
+    }
+
     const bool tag = ordinal_schemes_on() && sbr_lerp_enabled() && model != 0 &&
                      sbr_gxfifo_pending_tag() == 0;
     if (tag) {
