@@ -68,6 +68,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -293,6 +294,12 @@ unsigned long g_reqShadowCalls = 0, g_noteReqCalls = 0, g_noteReqWithActor = 0, 
 // never be resolved, and one of them poisons its whole group's membership key, so the group's
 // alpha-restore box snaps for the tick. Keyed by the RETURN ADDRESS, which names the call site.
 std::unordered_map<u32, unsigned long> g_reqNoActorSite;
+// IS THE UN-OWNED REQUEST'S OWN ADDRESS A USABLE IDENTITY? If the caller passes a request embedded
+// in a persistent object, the same address recurs every tick and can serve as a synthetic owner; if
+// it is a stack temporary, the address is meaningless and keying on it would invent an identity that
+// changes with the stack. That decides the fix, so it is measured rather than assumed.
+std::unordered_set<u32> g_noActorReqThisTick, g_noActorReqPrevTick;
+unsigned long g_noActorReqRecurred = 0, g_noActorReqNew = 0;
 unsigned long g_ownerGuardQuad = 0, g_ownerGuardReq = 0, g_ownerCalls = 0, g_lookupHit = 0;
 unsigned long g_mapMaxSize = 0;
 
@@ -323,6 +330,8 @@ void sbr_tag_shadow_begin_tick() {
     g_posToActor.clear();
     g_addrToActorPrev.swap(g_addrToActor);
     g_addrToActor.clear();
+    g_noActorReqPrevTick.swap(g_noActorReqThisTick);
+    g_noActorReqThisTick.clear();
     g_acceptedThisTick = 0;
     // Decided ONCE per tick, from the two previous ticks' counts: this tick may only pair if the
     // set was the same size last tick as the tick before, because pairing compares THIS tick's
@@ -359,6 +368,13 @@ void sbr_tag_shadow_report() {
                                                          g_reqNoActorSite.end());
         std::sort(sites.begin(), sites.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });
+        lucent::info("taggap",
+                     "shadow owner join: of the un-owned requests, {} arrived at an address seen on "
+                     "the PREVIOUS tick and {} at a fresh one. A large first number means the "
+                     "request lives in a persistent object and its address is a usable synthetic "
+                     "owner; a large second means it is a stack temporary and keying on it would "
+                     "invent an identity that changes with the stack.",
+                     g_noActorReqRecurred, g_noActorReqNew);
         for (const auto& [lr, n] : sites) {
             lucent::info("taggap",
                          "shadow owner join: {} request(s) came from return address {:#010x} ({}) "
@@ -514,25 +530,49 @@ void discover_layout(u32 manager, u32 req) {
     }
 }
 
+// The owner id to record for a request. Normally the actor that asked, held by the requestShadow
+// hook for the duration of the call — but a shadow does not have to come from a TLiveActor, and
+// 3,145 requests a run do not: 2,363 from a function inside TMBindShadowManager::load's range (the
+// manager's own loaded map shadows) and 782 from TFruitsBoat::requestShadow, which asks directly.
+//
+// For those the REQUEST'S OWN ADDRESS is the identity, and that is measured rather than assumed:
+// 3,126 of the 3,145 arrive at an address that was already there on the previous tick, so the
+// request lives in a persistent object. (Had they been stack temporaries the address would have
+// changed with the stack and keying on it would have invented an identity — which is why the
+// counter reporting both cases exists and stays.)
+//
+// This matters out of proportion to its size. An unresolvable member POISONS its whole shadow
+// group's membership key, so one un-owned map shadow made every group containing it snap its
+// alpha-restore box for that tick.
+u32 owner_for(u32 req) { return g_requestingActor != 0 ? g_requestingActor : req; }
+
 void note_request(CPUState& cpu) {
     ++g_noteReqCalls;
     if (enabled() && sbr_lerp_enabled() && g_requestingActor == 0) {
         ++g_reqNoActorSite[(u32)cpu.lr];
+        const u32 req = (u32)cpu.gpr[4];
+        if (g_noActorReqPrevTick.count(req) != 0) {
+            ++g_noActorReqRecurred;
+        } else {
+            ++g_noActorReqNew;
+        }
+        g_noActorReqThisTick.insert(req);
     }
-    if (!enabled() || !sbr_lerp_enabled() || g_requestingActor == 0) return;
-    ++g_noteReqWithActor;
+    if (!enabled() || !sbr_lerp_enabled()) return;
+    if (g_requestingActor != 0) ++g_noteReqWithActor;
     const u32 req = (u32)cpu.gpr[4];
     if (!sb_ram_fast(req + REQ_UNK0 + 8)) return;
     g_posToActor[PosKey{sb_r32(req + REQ_UNK0), sb_r32(req + REQ_UNK0 + 4),
-                        sb_r32(req + REQ_UNK0 + 8)}] = g_requestingActor;
+                        sb_r32(req + REQ_UNK0 + 8)}] = owner_for(req);
 }
 
 // After the real request() has run: work out WHERE it stored the copy, and record the owning actor
 // under that address. Returns quietly when the request was rejected by the gate, which is the common
 // case and not an error.
 void note_stored(u32 manager, u32 req) {
-    if (!enabled() || !sbr_lerp_enabled() || g_requestingActor == 0) return;
+    if (!enabled() || !sbr_lerp_enabled()) return;
     if (!sb_ram_fast(req + 8)) return;
+    const u32 owner = owner_for(req);
     const u32 x = sb_r32(req), y = sb_r32(req + 4), z = sb_r32(req + 8);
     auto stored_at = [&](u32 addr) {
         return sb_ram_fast(addr + 8) && sb_r32(addr) == x && sb_r32(addr + 4) == y &&
@@ -542,7 +582,7 @@ void note_stored(u32 manager, u32 req) {
     if (g_reqBase != 0) {
         const u32 predicted = g_reqBase + g_acceptedThisTick * REQ_STRIDE;
         if (stored_at(predicted)) {
-            g_addrToActor[predicted] = g_requestingActor;
+            g_addrToActor[predicted] = owner;
             ++g_acceptedThisTick;
             ++g_addrHit;
             return;
@@ -558,7 +598,7 @@ void note_stored(u32 manager, u32 req) {
             if (g_acceptedThisTick == 0) {
                 g_reqBase = addr;   // first accepted request of a tick occupies slot 0
             }
-            g_addrToActor[addr] = g_requestingActor;
+            g_addrToActor[addr] = owner;
             ++g_acceptedThisTick;
             ++g_addrHit;
             return;
