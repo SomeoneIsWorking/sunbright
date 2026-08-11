@@ -264,6 +264,7 @@ constexpr Curated kCurated[] = {
     {SB_POP_CONEBEAM, "pop.cone-beam", "deforming"},
     {SB_POP_ROPE, "pop.swing-rope", "deforming"},
     {SB_POP_GRASS, "pop.grass", "deforming"},
+    {SB_POP_BRIDGE, "pop.hanging-bridge", "deforming"},
 };
 
 // ── THE FILE ────────────────────────────────────────────────────────────────────────────────────

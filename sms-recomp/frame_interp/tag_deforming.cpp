@@ -90,12 +90,21 @@
 //                              displaced along a camera-facing width vector (MapObjGrass.cpp:30).
 //                              Deforming, so the vertex path is the only thing that reaches it.
 //
-//                              ONLY drawNear is hooked, and that is deliberate twice over. It is
-//                              the f32 variant — drawFar emits GXPosition3s16, which the vertex
-//                              path does not handle (it requires direct f32 positions), so tagging
-//                              it would buy nothing. And drawFar's address is not written here
-//                              because no run has yet seen it draw; when one does, the registry
-//                              gets a row and the row is what adds the entry.
+//                              ONLY drawNear is hooked. It is the f32 variant; drawFar emits
+//                              GXPosition3s16, which the vertex path does not handle (it requires
+//                              direct f32 positions), so tagging it would buy nothing today.
+//
+//                              drawFar's address WAS unknown when this was written, because no run
+//                              had seen it draw. Stage 8 has now seen it and the registry named it:
+//                              0x801e9880, which the symbol list carries only as an offset into
+//                              __ct__17TMapObjGrassGroupFv. Disassembly confirms the identification
+//                              — same `unk78 == 1` gate and same GXBegin(GX_TRIANGLES, unk68*3) as
+//                              drawNear, then `lha` loads and `sth` into the FIFO where drawNear has
+//                              `lfs`/`stfs`. It stays untagged and files as camera-only, which for
+//                              far-LOD grass is the honest state, not a fix: 292 merged draws of
+//                              distant blades whose own sway is well under a pixel. Making it
+//                              interpolate means teaching patch_vertices the s16 position layout,
+//                              which is a change to the vertex path rather than a new seam.
 //
 //                              The LOD switch needs no special handling: a group that goes far
 //                              stops being tagged, and patch_vertices refuses a pair whose ticks
@@ -111,6 +120,35 @@
 //                              snaps. It is not a complete guard — one group leaving as another of
 //                              the same blade count joins would slip through — and that residual is
 //                              recorded here rather than left for someone to rediscover.
+//
+//   THangingBridge::perform    the rope bridge of Pianta Village, and the one seam here that is
+//                              deliberately hooked at the OWNER rather than at the draw call.
+//
+//                              Stage 8 showed why. The registry found seven new sites in one run:
+//                              THangingBridgeBoard::drawOneRope (camera-only, 292 draws) and SIX
+//                              GXBegin sites inside THangingBridge::drawRopeBetweenBoards, all six
+//                              filed `no-primitives` — the audit was live and classified draws for
+//                              other populations, and these produced none of their own. They did not
+//                              fail to draw: they drew with the same render state as the ropes right
+//                              before them and aurora merged the lot into ONE draw per tick, which
+//                              carried the first tag it saw. Seven emitters, one draw.
+//
+//                              perform (0x801f3ff8) drives all of it in one place: for each board it
+//                              copies two TVec3s (board+0x1a4 and +0x1b0) to the stack and calls
+//                              drawOneRope on each, then calls drawRopeBetweenBoards three times
+//                              (two mutually exclusive on the director state at gpMarDirector+0x7c,
+//                              plus one). So the bridge's ropes are ONE piece of geometry as far as
+//                              the GPU is concerned, and one owner-level scope gives them one honest
+//                              identity — the bridge instance — instead of seven per-call keys that
+//                              the merge would erase anyway.
+//
+//                              The rope vertices are f32 and rebuilt every tick from the boards'
+//                              swaying positions (drawOneRope emits 8 verts around its argument;
+//                              drawRopeBetweenBoards emits (boardCount+2)*n*2), so this is the vertex
+//                              path, and the count is stable while the bridge is. The scope opens
+//                              only for the DRAW phase (perform's flags bit 0x10, the same bit the
+//                              guest tests at 0x801f4000) so a movement-phase perform cannot label
+//                              anything.
 //
 //   SBR_TAGWIRE=0   disable all of them (they revert to the camera delta alone)
 
@@ -133,6 +171,7 @@ extern "C" void func_803330a4(CPUState&);   // JPADrawExecStripeCross::exec(cons
 extern "C" void func_800def6c(CPUState&);   // TConeBeam::drawConeBeam(const GXColor&)
 extern "C" void func_801f383c(CPUState&);   // TSwingBoard::drawOneRope(const TVec3&, const TVec3&)
 extern "C" void func_801e99a8(CPUState&);   // TMapObjGrassGroup::drawNear() const — unnamed in funcs.txt
+extern "C" void func_801f3ff8(CPUState&);   // THangingBridge::perform(u32, JDrama::TGraphics*)
 
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
@@ -158,6 +197,7 @@ unsigned long g_stripeCalls = 0, g_stripeStrips = 0, g_stripeNoEmitter = 0;
 unsigned long g_beamCalls = 0, g_beamFans = 0;
 unsigned long g_grassCalls = 0, g_grassPrims = 0;
 unsigned long g_ropeTagged = 0, g_ropeWithdrawn = 0;
+unsigned long g_bridgeCalls = 0, g_bridgePrims = 0, g_bridgeSkipped = 0;
 
 uint64_t tag_for(u32 self, unsigned strip) {
     // Strip index in the low bits, object in the high: the same shape the flag and the sea ripple
@@ -182,6 +222,7 @@ void count_mirror() { ++g_mirrorStrips; }
 void count_stripe() { ++g_stripeStrips; }
 void count_beam() { ++g_beamFans; }
 void count_grass() { ++g_grassPrims; }
+void count_bridge() { ++g_bridgePrims; }
 
 // JPADrawContext::mBaseEmitter is the first member (JPADrawVisitor.hpp:30 — `pcb` is static and
 // takes no space). r4 is the context: these are virtual methods, so r3 is the visitor singleton,
@@ -237,6 +278,25 @@ void ov_draw_mirror(CPUState& cpu) {
 void ov_grass_near(CPUState& cpu) {
     Scope s(SB_POP_GRASS, (u32)cpu.gpr[3], g_grassCalls, &count_grass);
     func_801e99a8(cpu);
+}
+
+// The bridge's flags bit for the draw phase, read straight off the guest's own test at 0x801f4000:
+// `rlwinm. r0, r4, 0, 28, 28` keeps PPC bit 28, and PPC numbers bits from the MSB, so that is
+// 1 << (31-28) = 0x8. (Read as an x86-style bit index it looks like 0x10, and the first version of
+// this seam said 0x10 — the report then read "0 draw-phase perform(s)" while the registry showed the
+// ropes drawing 292 times, which is exactly the contradiction a counted negative exists to expose.)
+// Opening the scope on a movement-phase perform would put a label on the stream for a call that
+// emits nothing, and any draw that happened to follow would wear it.
+constexpr u32 kPerformDraw = 0x8;
+
+void ov_hanging_bridge(CPUState& cpu) {
+    if (((u32)cpu.gpr[4] & kPerformDraw) == 0) {
+        ++g_bridgeSkipped;
+        func_801f3ff8(cpu);
+        return;
+    }
+    Scope s(SB_POP_BRIDGE, (u32)cpu.gpr[3], g_bridgeCalls, &count_bridge);
+    func_801f3ff8(cpu);
 }
 
 void ov_cone_beam(CPUState& cpu) {
@@ -351,6 +411,18 @@ void sbr_tag_wire_report() {
                        "hooked, so a stage of distant grass legitimately reports zero here)"
                      : "");
     lucent::info("taggap",
+                 "hanging bridge: {} rope primitive(s) tagged over {} draw-phase perform(s) ({} "
+                 "non-draw perform(s) correctly left unlabelled){}",
+                 g_bridgePrims, g_bridgeCalls, g_bridgeSkipped,
+                 g_bridgeCalls == 0
+                     ? "   <-- no bridge drew this run. Stage-dependent (Pianta Village), so this is "
+                       "not evidence the seam works; it is evidence it was never exercised."
+                     : g_bridgePrims == 0
+                         ? "   <-- the scope opened on a DRAW-phase perform and saw no primitive at "
+                           "all, which the draw-phase bit says should be impossible. The bit or the "
+                           "GXBegin seam is wrong."
+                         : "");
+    lucent::info("taggap",
                  "cone beams: {} fan(s) tagged over {} drawConeBeam call(s){}; swing-board ropes: "
                  "{} tagged, {} key(s) withdrawn for drawing twice in a tick",
                  g_beamFans, g_beamCalls,
@@ -376,6 +448,9 @@ SB_OVERRIDE(0x801983a8u, ov_draw_lower, "TMapWire::drawLower",
 SB_OVERRIDE(0x801e99a8u, ov_grass_near, "TMapObjGrassGroup::drawNear",
             "60fps: identity for a grass group's swaying blades, whose vertices are rebuilt every "
             "tick from the manager's sway table")
+SB_OVERRIDE(0x801f3ff8u, ov_hanging_bridge, "THangingBridge::perform",
+            "60fps: one identity for the whole rope bridge, whose rope strips are rebuilt every "
+            "tick from the swaying boards and merge into a single draw")
 SB_OVERRIDE(0x800def6cu, ov_cone_beam, "TConeBeam::drawConeBeam",
             "60fps: identity per fan for the light-shaft cone, whose vertices calcVertices rebuilds "
             "every tick")

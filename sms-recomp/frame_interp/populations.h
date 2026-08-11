@@ -35,6 +35,7 @@ enum SbPopulation : u8 {
     SB_POP_CONEBEAM       = 14,  // TConeBeam::drawConeBeam — the light-shaft cone, rebuilt per tick
     SB_POP_ROPE           = 15,  // TSwingBoard::drawOneRope — the swinging platform's ropes
     SB_POP_GRASS          = 16,  // TMapObjGrassGroup::drawNear — swaying grass blades
+    SB_POP_BRIDGE         = 17,  // THangingBridge::perform — the rope bridge's ropes, all of them
 };
 
 void sbr_gxfifo_draw_pop(u8 pop);
