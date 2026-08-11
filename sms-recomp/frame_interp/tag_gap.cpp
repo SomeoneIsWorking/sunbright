@@ -286,7 +286,14 @@ void ov_gx_begin(CPUState& cpu) {
 
 } // namespace
 
-void sbr_gxbegin_set_hook(void (*fn)()) { g_beginHook = fn; }
+// Returns the hook it replaced, so a seam can restore it: SMS_FillScreenAlpha is called from inside
+// other draw functions that install their own hook, and an inner seam that cleared to null would
+// silently disable the outer one for the rest of its call.
+void (*sbr_gxbegin_set_hook(void (*fn)()))() {
+    void (*prev)() = g_beginHook;
+    g_beginHook = fn;
+    return prev;
+}
 
 SB_OVERRIDE(0x8035df88u, ov_gx_begin, "GXBegin",
             "60fps (SBR_TAGGAP): attribute IMMEDIATE-MODE draws that carry no interpolation "

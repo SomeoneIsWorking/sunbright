@@ -82,6 +82,18 @@ interpolable and now are.
   `TMapWire::drawUpper+0x48 / +0x17c / +0x258`, and drawUpper contains exactly one `GXBegin` — two of
   the three were in `drawLower`.
 
+## Do not delete the file to "regenerate" it
+
+The curated columns live in the file and nowhere else — the game merges into it, it does not rebuild
+it. Deleting it and running the game produces a complete, correct-looking registry with every `re`
+and `note` gone. (Ask how this warning got written.) To re-measure, just run the game; to recover
+from a bad edit, `git checkout docs/graphics/graphics_db.tsv`.
+
+A row whose emitter later gets claimed by a hand-written seam stops being observed, and keeps the
+last verdict it was measured with. That is not a bug in the file — it is what "a census of what was
+observed" means — but it is why such rows should be curated with a note saying where the graphic
+went, rather than left to read as a live measurement.
+
 ## The control
 
 `(unlabelled)` — population 0 — is aurora's bucket for draws that **no** seam and **no** detected

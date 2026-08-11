@@ -57,6 +57,7 @@
 // the identity that is beyond doubt; SBR_TAGSHADOW=0 disables the lot.
 
 #include "../overrides/overrides.h"
+#include "mark_exact.h"
 #include "populations.h"
 
 #include <intrinsics.h>
@@ -374,6 +375,11 @@ void ov_sms_draw_shape(CPUState& cpu) {
 }
 
 void ov_draw_shine_shadow_volume(CPUState& cpu) {
+    // This function emits TWO things: the sphere-slice display lists, which interpolate and are
+    // tagged below, and two identity-matrix screen quads that are the same dst-alpha mask
+    // SMS_FillScreenAlpha draws. The scope marks only the IMMEDIATE primitives (see mark_exact.h),
+    // so the quads stop taking a camera delta they must not have and the slices are untouched.
+    SbExactScope exact;
     // Labelled ALWAYS, tagged only when the ordinal schemes are enabled. The audit must be able to
     // say "this population snaps, and here is why" even — especially — for the paths whose tagging
     // was deliberately withdrawn; unlabelled they would be indistinguishable from draws nobody has
@@ -577,6 +583,72 @@ u32 owner_of(u32 fp) {
 }
 
 
+// ── THE ALPHA-RESTORE CUBE (SMS_DrawCube from TMBindShadowManager::drawShadow) ──────────────────
+//
+// The graphics registry reported this population as camera-only: 15k draws a run, following the
+// camera but not their own motion. It is the dst-alpha box around each shadow GROUP — built from
+// the group's blend-quad extents in WORLD space (ShadowUtil.cpp:571), so it moves whenever the
+// actors under it do, and it was lagging them by half a tick on every in-between frame.
+//
+// WHERE THE GROUP COMES FROM, and why this is not a guess. SMS_DrawCube's arguments are two stack
+// vectors, so the group is not in the argument registers — but PPC r14-r31 are CALLEE-SAVED, so at
+// the callee's entry they still hold the caller's values. The disassembly of drawShadow around the
+// call (0x8022f220) shows the loop keeping the manager in r31 and the group's BYTE OFFSET in r25:
+//
+//     lwz   r4, 0x1c(r31)      ; mGroups
+//     addi  r0, r25, 0xc       ; + offsetof(TShadowGroup, mBoxHead)
+//     lwzx  r5, r4, r0
+//
+// which also confirms the group layout the header gives (mMask +0, mFpHead +4, mBoxHead +0xc).
+// Guarded by the return address: the registers only mean this when the caller is one of the three
+// call sites in drawShadow, and any other caller of SMS_DrawCube is left alone.
+//
+// THE IDENTITY IS THE GROUP'S MEMBERSHIP, not the group. A group is a CLUSTER of shadow footprints,
+// rebuilt every tick, and the box is the union of their extents — so "group 3" this tick and
+// "group 3" last tick can be different sets of actors, and pairing on the group index would lerp
+// between two unrelated boxes. Worse than the wire's case, the box always has 24 vertices, so the
+// vertex-count gate cannot catch it.
+//
+// So the tag is a fingerprint of the group's MEMBER OWNERS, walked from mFpHead down the mNext
+// chain and resolved through the same owner map the shadow volumes use. Membership changes ->
+// different key -> no pair -> the box snaps, which is the correct answer when the box it would pair
+// against is a different box. Membership stable -> the box interpolates with the actors it bounds.
+// A member whose owner cannot be established poisons the fingerprint, because a key that ignored it
+// would claim two different groups were the same one.
+constexpr u32 GROUP_FPHEAD = 0x04;
+constexpr u32 QUAD_MNEXT   = 0x6c;
+constexpr u32 MGR_MGROUPS  = 0x1c;
+
+// The three call sites in TMBindShadowManager::drawShadow, as return addresses (the instruction
+// after each bl). Listed rather than range-checked: a range would silently adopt a fourth call site
+// added by some other function that happens to sit nearby.
+bool cube_from_draw_shadow(u32 lr) {
+    return lr == 0x8022f224u || lr == 0x8022f434u || lr == 0x8022f478u;
+}
+
+unsigned long g_cubeTagged = 0, g_cubeUnowned = 0, g_cubeForeign = 0;
+
+u64 group_membership_key(u32 mgr, u32 groupOff) {
+    if (!sb_ram_fast(mgr + MGR_MGROUPS)) return 0;
+    const u32 groups = sb_r32(mgr + MGR_MGROUPS);
+    if (groups == 0 || !sb_ram_fast(groups + groupOff + GROUP_FPHEAD)) return 0;
+    u32 fp = sb_r32(groups + groupOff + GROUP_FPHEAD);
+    // FNV-1a over the member owners. Order matters and that is fine: the cluster is rebuilt by the
+    // same pass in the same order, and a reordering that produced the same box would only cost a
+    // snap.
+    u64 h = 1469598103934665603ull;
+    int members = 0;
+    while (fp != 0 && members < 64) {
+        const u32 owner = owner_of(fp);
+        if (owner == 0) return 0;   // an unidentifiable member: refuse the whole key
+        h = (h ^ (u64)owner) * 1099511628211ull;
+        if (!sb_ram_fast(fp + QUAD_MNEXT)) return 0;
+        fp = sb_r32(fp + QUAD_MNEXT);
+        ++members;
+    }
+    return members == 0 ? 0 : (h | 1ull);
+}
+
 void ov_draw_shadow_volume(CPUState& cpu) {
     // r5, NOT r4. drawShadowVolume is a MEMBER function — `void TMBindShadowManager::
     // drawShadowVolume(bool useNear, TAlphaShadowQuad* fp)` — so r3 is `this`, r4 is `useNear` and
@@ -668,6 +740,40 @@ void ov_draw_shadow_volume(CPUState& cpu) {
 
 } // namespace
 
+// The identity for the shadow group's alpha-restore cube, for the SMS_DrawCube seam in
+// populations.cpp — one address gets one override, and that one is already spoken for, so the
+// identity comes to it rather than the hook moving here. 0 means "do not tag": either the cube was
+// not drawn from TMBindShadowManager::drawShadow, or the group's membership could not be
+// established, and in both cases the camera delta alone is the honest answer.
+u64 sbr_shadow_cube_tag(const CPUState& cpu) {
+    if (!sbr_lerp_enabled()) return 0;
+    if (!cube_from_draw_shadow((u32)cpu.lr)) {
+        ++g_cubeForeign;
+        return 0;
+    }
+    const u64 key = group_membership_key((u32)cpu.gpr[31], (u32)cpu.gpr[25]);
+    if (key == 0) {
+        ++g_cubeUnowned;
+        return 0;
+    }
+    ++g_cubeTagged;
+    return key;
+}
+
+void sbr_shadow_cube_report() {
+    if (!sbr_lerp_enabled()) return;
+    lucent::info("taggap",
+                 "shadow alpha cube: {} tagged by their group's MEMBERSHIP, {} refused because a "
+                 "member's owner could not be established (those snap rather than pair with a "
+                 "differently-composed group), {} drawn from somewhere other than drawShadow and "
+                 "left alone{}",
+                 g_cubeTagged, g_cubeUnowned, g_cubeForeign,
+                 (g_cubeTagged + g_cubeUnowned) == 0
+                     ? "   <-- NO cube was seen from drawShadow at all. Either no shadow drew, or "
+                       "the return-address guard no longer matches this build's call sites, which "
+                       "would disable the identity silently."
+                     : "");
+}
 
 SB_OVERRIDE(0x80218020u, ov_request_shadow, "TLiveActor::requestShadow",
             "60fps: note which ACTOR is requesting a shadow, so its draws can be keyed by a real "

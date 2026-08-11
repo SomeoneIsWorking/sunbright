@@ -1484,8 +1484,6 @@ uint64_t sbr_gxfifo_pending_tag() { return g_pendingTagState; }
 static u8 g_pendingPop = 0;
 static bool g_pendingPopAuto = false;
 static int g_popEmitted = -1;   // -1 = nothing written to this frame's stream yet
-static bool g_pendingExact = false;
-static int g_exactEmitted = -1;
 
 u8 sbr_gxfifo_pending_pop() { return g_pendingPop; }
 bool sbr_gxfifo_pending_pop_auto() { return g_pendingPopAuto; }
@@ -1507,21 +1505,19 @@ void sbr_gxfifo_pop_stream_reset() {
     g_popEmitted = -1;
     g_pendingPop = 0;
     g_pendingPopAuto = false;
-    g_exactEmitted = -1;
-    g_pendingExact = false;
 }
 
-// "Present the draws that follow EXACTLY on an interpolated frame." For geometry that is in screen
-// space under a PERSPECTIVE projection — an identity position matrix with eye-space vertices — which
-// the ortho test cannot see and the camera delta must not touch. See GX_AURORA_DRAW_EXACT.
-void sbr_gxfifo_draw_exact(bool on) {
-    g_pendingExact = on;
-    if ((int)on == g_exactEmitted) return;
-    g_exactEmitted = (int)on;
+// "Present the NEXT draw EXACTLY on an interpolated frame." For geometry that is in screen space
+// under a PERSPECTIVE projection — an identity position matrix with eye-space vertices — which the
+// ortho test cannot see and the camera delta must not touch. See GX_AURORA_DRAW_EXACT.
+//
+// Emitted per primitive and consumed by the parser, so there is no dedup and no clear: a seam calls
+// it immediately before each primitive it means, and a primitive it does not precede is unaffected.
+void sbr_gxfifo_mark_exact() {
     gxfifo_drain_pending();
     put_u8 (g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_DRAW_EXACT);
-    put_u8 (g_out, on ? 1 : 0);
+    put_u8 (g_out, 1);
 }
 
 // The registry's label. Distinguished from the hand-written one so that an AUTO label can be

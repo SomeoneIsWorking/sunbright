@@ -31,6 +31,7 @@ enum SbPopulation : u8 {
     SB_POP_J2D            = 10,  // J2DPicture — 2D panes
     SB_POP_WIRE           = 11,  // TMapWire::drawUpper/drawLower — the rope, deforming per tick
     SB_POP_MIRROR         = 12,  // TModelWaterManager::drawMirror — the water-mirror mask fans
+    SB_POP_STRIPE         = 13,  // JPADrawExecStripe/StripeCross — a particle CHAIN as one strip
 };
 
 void sbr_gxfifo_draw_pop(u8 pop);

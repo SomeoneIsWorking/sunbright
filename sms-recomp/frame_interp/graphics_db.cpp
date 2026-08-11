@@ -258,6 +258,7 @@ constexpr Curated kCurated[] = {
     {SB_POP_J2D, "pop.j2d-pane", "2d"},
     {SB_POP_WIRE, "pop.wire", "deforming"},
     {SB_POP_MIRROR, "pop.water-mirror", "deforming"},
+    {SB_POP_STRIPE, "pop.particle-stripe", "deforming"},
 };
 
 // ── THE FILE ────────────────────────────────────────────────────────────────────────────────────

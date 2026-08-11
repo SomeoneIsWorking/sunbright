@@ -48,6 +48,7 @@ void sbr_pop_register_names() {
     aurora::gfx::interp::name_population(SB_POP_J2D, "J2D pane");
     aurora::gfx::interp::name_population(SB_POP_WIRE, "wire (deforming)");
     aurora::gfx::interp::name_population(SB_POP_MIRROR, "water mirror mask");
+    aurora::gfx::interp::name_population(SB_POP_STRIPE, "particle stripe (chain)");
 }
 
 namespace sb::frame_interp {

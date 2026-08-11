@@ -364,6 +364,8 @@ void sbr_tag_shadow_begin_tick();
 void sbr_tag_shadow_report();
 void sbr_tag_particle_report();
 void sbr_tag_wire_report();
+void sbr_mark_exact_report();
+void sbr_shadow_cube_report();
 
 extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
@@ -548,6 +550,8 @@ void video_wait_for_retrace(CPUState& cpu) {
         sbr_tag_shadow_report();
         sbr_tag_particle_report();
         sbr_tag_wire_report();
+        sbr_mark_exact_report();
+        sbr_shadow_cube_report();
         sbr_lerp_report_tag_coverage();
         sbr_camera_cut_report();
         sbr_afterimage_report();

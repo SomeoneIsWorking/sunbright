@@ -26,6 +26,7 @@ extern "C" void func_802f1b00(CPUState&);   // JUTResFont::drawChar_scale
 bool sbr_lerp_enabled();
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
+uint64_t sbr_shadow_cube_tag(const CPUState& cpu);
 
 namespace {
 
@@ -68,7 +69,16 @@ struct Deforming {
 
 void ov_flag(CPUState& cpu) { Deforming d(SB_POP_FLAG, (u32)cpu.gpr[3]); func_801dc34c(cpu); }
 void ov_wave(CPUState& cpu) { Deforming d(SB_POP_WAVE, (u32)cpu.gpr[3]); func_801dd21c(cpu); }
-void ov_cube(CPUState& cpu)      { Scope s(SB_POP_DRAW_CUBE); func_80225d00(cpu); }
+// The alpha-restore cube is no longer label-only: tag_shadow can give it the identity of the shadow
+// GROUP it bounds (sbr_shadow_cube_tag — the key is the group's MEMBERSHIP, so a re-clustered group
+// snaps instead of pairing with a different set of actors).
+void ov_cube(CPUState& cpu) {
+    Scope s(SB_POP_DRAW_CUBE);
+    const uint64_t tag = sbr_gxfifo_pending_tag() == 0 ? sbr_shadow_cube_tag(cpu) : 0;
+    if (tag != 0) sbr_gxfifo_draw_tag(tag);
+    func_80225d00(cpu);
+    if (tag != 0) sbr_gxfifo_draw_tag(0);
+}
 void ov_text(CPUState& cpu)      { Scope s(SB_POP_TEXT);      func_802f1b00(cpu); }
 
 } // namespace
