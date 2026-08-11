@@ -69,6 +69,15 @@ u8 sbr_gfxdb_site(u32 guestAddr, SbGfxWaist waist);
 // Fold this run's measurements into the on-disk registry and write it. Called periodically rather
 // than at exit only: automated runs are killed with SIGKILL, and a registry that is only written by
 // an orderly shutdown would be empty for exactly the runs that do the most drawing.
+// Record that a site's primitives were claimed by a hand-written SEAM, so the site's row can say so.
+//
+// Without this a site that GAINS a seam freezes at whatever verdict it last measured on its own. The
+// seam takes the label, the detector stops allocating the site a population, its row is never
+// rewritten, and the file keeps asserting `camera-only` for geometry that has interpolated since.
+// That is the confidently-wrong note this registry exists to avoid, and it is invisible: the row
+// looks like every other measured row.
+void sbr_gfxdb_note_claimed(u32 guestAddr, u8 byPop);
+
 void sbr_gfxdb_flush();
 
 // One-line summary with its denominators, for the run log.

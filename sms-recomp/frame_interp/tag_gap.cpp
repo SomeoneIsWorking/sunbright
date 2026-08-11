@@ -123,10 +123,22 @@ bool claimable() {
     return sbr_gxfifo_pending_pop() == SB_POP_UNLABELLED || sbr_gxfifo_pending_pop_auto();
 }
 
+// Called on the OTHER branch: a seam already holds the label, so this site gets no population and
+// its registry row will not be rewritten this run. Saying so is the difference between a row that
+// points at the seam holding its measurement and a row that keeps asserting a verdict from before
+// the seam existed.
+void note_claimed_by_seam(u32 lr) {
+    if (!sbr_gfxdb_enabled() || g_autoDepth != 0) return;
+    const u8 pop = sbr_gxfifo_pending_pop();
+    if (pop == SB_POP_UNLABELLED || sbr_gxfifo_pending_pop_auto()) return;
+    sbr_gfxdb_note_claimed(lr, pop);
+}
+
 // For waists whose geometry is emitted INSIDE the call (display lists, J3D shape draws).
 struct AutoLabel {
     bool on;
     AutoLabel(u32 lr, SbGfxWaist w) : on(claimable()) {
+        if (!on) note_claimed_by_seam(lr);
         if (on) {
             ++g_autoDepth;
             sbr_gxfifo_draw_pop_auto(sbr_gfxdb_site(lr, w));
@@ -144,7 +156,11 @@ struct AutoLabel {
 // label is latched rather than scoped — it stays in force until the next site latches its own,
 // which the next GXBegin does because an automatic label is always replaceable.
 void auto_latch_immediate(u32 lr) {
-    if (claimable()) sbr_gxfifo_draw_pop_auto(sbr_gfxdb_site(lr, SbGfxWaist::Immediate));
+    if (claimable()) {
+        sbr_gxfifo_draw_pop_auto(sbr_gfxdb_site(lr, SbGfxWaist::Immediate));
+    } else {
+        note_claimed_by_seam(lr);
+    }
 }
 
 void report() {

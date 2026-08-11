@@ -36,7 +36,8 @@ emitter address cannot.
   `2d-correct` (orthographic: there *is* no in-between, so snapping is right) · `exact-correct`
   (screen-space under a *perspective* projection — declared by a seam, because nothing else can
   detect it; it must not move) · `no-primitives` (the call site emits no geometry — a material
-  display list) · `unmeasured`.
+  display list) · `seam-owned` (a hand-written seam claims this site's primitives, so the site has
+  no verdict of its own — the note names the `pop.*` row that holds the measurement) · `unmeasured`.
 - `stages`, `first_seen`.
 
 There are deliberately **no draw counts**. A row is a flag that a source of visual output exists and

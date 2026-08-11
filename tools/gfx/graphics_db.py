@@ -101,7 +101,7 @@ def cmd_summary(args):
 
     for field, order in (("re", RE_VERDICTS), ("lerp", ("yes", "partial", "camera-only", "no",
                                                         "2d-correct", "no-primitives",
-                                                        "unmeasured"))):
+                                                        "seam-owned", "unmeasured"))):
         print(f"  by {field}:")
         seen = {}
         for r in rows:
@@ -149,7 +149,7 @@ def cmd_next(args):
     # ranked below everything that snaps rather than dropped.
     def rank(r):
         blocked = {"no": 0, "camera-only": 1, "partial": 2, "no-primitives": 4,
-                   "unmeasured": 3, "2d-correct": 5, "yes": 5}.get(r["lerp"], 3)
+                   "unmeasured": 3, "2d-correct": 5, "yes": 5, "seam-owned": 5}.get(r["lerp"], 3)
         return (blocked, r["key"])
     todo.sort(key=rank)
     if not todo:
@@ -165,6 +165,8 @@ def cmd_next(args):
                "unmeasured": "never measured — run with SBR_LERP60=1 first",
                "no-primitives": "emits no primitives; probably a state-only call site",
                "2d-correct": "screen-space; snapping is correct, only the RE verdict is missing",
+               "seam-owned": "a seam claims its primitives — the verdict lives in the pop.* row "
+                             "named in the note, not here",
                "yes": "interpolates; only the RE verdict is missing"}.get(r["lerp"], r["lerp"])
         print(f"  {r['key']:<12} {r['lerp']:<14} {r['symbol']}")
         print(f"  {'':<12} {'':<14} {why}  [seen: {r['stages']}]")

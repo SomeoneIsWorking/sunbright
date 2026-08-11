@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -466,6 +467,31 @@ u8 sbr_gfxdb_site(u32 guestAddr, SbGfxWaist waist) {
     return id;
 }
 
+namespace {
+
+// addr -> the curated population that claimed its primitives, and how many times. Filled at the
+// moment a site is refused a label because a seam already holds one.
+std::map<u32, std::pair<u8, unsigned long>> g_claimed;
+
+// The slug of a curated population, so a claimed site's row can point at the row that DOES hold its
+// measurement instead of keeping a verdict it can no longer earn.
+const char* curated_slug(u8 pop) {
+    for (const Curated& c : kCurated) {
+        if (c.pop == pop) return c.slug;
+    }
+    return "pop.?";
+}
+
+} // namespace
+
+void sbr_gfxdb_note_claimed(u32 guestAddr, u8 byPop) {
+    if (!sbr_gfxdb_enabled() || guestAddr == 0 || byPop == SB_POP_UNLABELLED) return;
+    if (g_attributeTo != 0) guestAddr = g_attributeTo;
+    auto& e = g_claimed[guestAddr];
+    e.first = byPop;
+    ++e.second;
+}
+
 void sbr_gfxdb_flush() {
     if (!sbr_gfxdb_enabled()) return;
     const std::string path = db_path();
@@ -501,6 +527,7 @@ void sbr_gfxdb_flush() {
         }
     }
 
+    unsigned long suppressed = 0, preserved = 0;
     auto upsert = [&](const std::string& key, const std::string& kind, const std::string& symbol,
                       u8 pop, unsigned long calls, const char* seedRe) {
         long row[kDispCount];
@@ -516,6 +543,12 @@ void sbr_gfxdb_flush() {
 
         const auto at = index.find(key);
         const bool fresh = at == index.end();
+        // A RUN WITH THE AUDIT OFF MUST NOT INVENT A ROW. With SBR_LERP60 off no seam labels
+        // anything, so an emitter a seam normally claims (J3DShape::draw, SMS_DrawCube, the water
+        // mirror) is detected as a bare SITE instead — and writing it would give the same graphic a
+        // second identity in the file, one that only exists in runs that cannot measure it. Existing
+        // rows still get their `stages` updated below; only the fabrication is refused.
+        if (fresh && !auditLive) { ++suppressed; return; }
         size_t idx;
         if (fresh) {
             db.push_back(Entry{});
@@ -541,7 +574,16 @@ void sbr_gfxdb_flush() {
             lucent::info("gfxdb", "{} ({}): interpolation verdict {} -> {} ({}% of draws that "
                                   "OUGHT to move do)", key, symbol, e.lerp, lerp, pct);
         }
-        e.lerp = lerp;
+        // NEVER DOWNGRADE A MEASUREMENT TO "unmeasured". The file's whole value is that it
+        // accumulates across runs, and a run with the audit off knows strictly less than the file
+        // does — overwriting a measured verdict with "the audit filed nothing" is destroying the
+        // record with the absence of one. (Written after doing exactly that: four probe runs
+        // without SBR_LERP60 rewrote every verdict in the registry to `unmeasured`.)
+        if (lerp != "unmeasured" || e.lerp.empty()) {
+            e.lerp = lerp;
+        } else {
+            ++preserved;
+        }
     };
 
     for (const Curated& c : kCurated) {
@@ -559,6 +601,44 @@ void sbr_gfxdb_flush() {
         const u32 fnStart = function_start(s.addr);
         const char* seed = (fnStart != 0 && override_exists(fnStart)) ? "native-override" : "unknown";
         upsert(key, waist_name(s.waist), symbolize(s.addr), (u8)id, s.calls, seed);
+    }
+
+    // A SITE WHOSE PRIMITIVES A SEAM NOW OWNS gets its row rewritten to point at the seam, because
+    // it can never again be measured on its own. Its last self-measurement is stale by construction
+    // — the seam exists precisely because that verdict was a defect — and leaving it would have the
+    // registry asserting `camera-only` for the very geometry the seam fixed. The measurement lives
+    // in the population row named here.
+    unsigned long claimedRows = 0;
+    for (const auto& kv : g_claimed) {
+        char key[16];
+        std::snprintf(key, sizeof(key), "0x%08x", kv.first);
+        const auto at = index.find(key);
+        if (at == index.end()) continue;   // never drew unclaimed, so it has no row to correct
+        Entry& e = db[at->second];
+        e.stages = join_stages(e.stages, stage);
+        e.lerp = std::string("seam-owned");
+        if (e.note == "-" || e.note.rfind("measured under ", 0) == 0) {
+            e.note = std::string("measured under ") + curated_slug(kv.second.first) +
+                     " — a seam claims this site's primitives, so it has no verdict of its own";
+        }
+        ++claimedRows;
+    }
+    if (claimedRows != 0) {
+        lucent::info("gfxdb", "{} site row(s) re-pointed at the seam that now owns them; their "
+                              "own verdicts were measured before the seam existed and cannot be "
+                              "refreshed.", claimedRows);
+    }
+
+    // Say what was NOT written. Both of these are silent refusals to record something, and a
+    // registry that quietly declines to write is indistinguishable from one with nothing to say.
+    if (suppressed != 0 || preserved != 0) {
+        lucent::info("gfxdb",
+                     "registry write: {} newly-detected site(s) NOT added and {} existing verdict(s) "
+                     "kept, because this run had the interpolation audit OFF. With no audit no seam "
+                     "labels anything, so a seam-owned emitter would be filed a second time as a "
+                     "bare site, and \"unmeasured\" would overwrite a real measurement. Run with "
+                     "SBR_LERP60=1 for a run that can add rows.",
+                     suppressed, preserved);
     }
 
     std::sort(db.begin(), db.end(), [](const Entry& a, const Entry& b) { return a.key < b.key; });

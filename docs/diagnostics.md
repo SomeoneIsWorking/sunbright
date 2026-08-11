@@ -208,7 +208,7 @@ logger — that is debt to convert, not a feature.
 | `SB_SKIP_WNEG_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3274` |  |
 | `SB_SKIP_WNEG_KIND` | 1 | `extern/aurora/lib/gx/command_processor.cpp:3292` |  |
 | `SB_SKY_DIM_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp:4623` | gated print |
-| `SB_STAGE` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:309` |  |
+| `SB_STAGE` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:310` |  |
 | `SB_STAGE_DUMP` | 1 | `decomp/sms/src/System/Application.cpp:1043` |  |
 | `SB_STATICOBJ_DBG` | 1 | `decomp/sms/src/Map/MapStaticObject.cpp:430` | gated print |
 | `SB_STRAT_DUMP` | 1 | `decomp/sms/src/Strategic/Strategy.cpp:106` | gated print |
@@ -260,12 +260,12 @@ logger — that is debt to convert, not a feature.
 | `SBR_DIAG_2D` | 1 | `sms-recomp/overrides/diag_2d.cpp:43` |  |
 | `SBR_DRAW_STATE` | 1 | `sms-recomp/runtime/render/scene.cpp:867` |  |
 | `SBR_DUMP_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp:655` |  |
-| `SBR_FASTBOOT` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:310` |  |
+| `SBR_FASTBOOT` | 2 | `sms-recomp/frame_interp/graphics_db.cpp:311` |  |
 | `SBR_FIFO_2D` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:150` |  |
 | `SBR_FIFO_STALL` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp:1382` |  |
 | `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/frame_interp/effects_afterimage.cpp:67` |  |
-| `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:75` |  |
-| `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:290` |  |
+| `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:76` |  |
+| `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp:291` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp:246` |  |
 | `SBR_INTERP60` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp:142` |  |
 | `SBR_INTERP60_ACTCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp:730` |  |
@@ -345,7 +345,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:122` |  |
 | `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:127` |  |
 | `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp:125` |  |
-| `SBR_STAGE` | 3 | `sms-recomp/frame_interp/graphics_db.cpp:308` |  |
+| `SBR_STAGE` | 3 | `sms-recomp/frame_interp/graphics_db.cpp:309` |  |
 | `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp:17` |  |
 | `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp:55` |  |
 | `SBR_TAGPARTICLE` | 1 | `sms-recomp/frame_interp/tag_particle.cpp:70` |  |
