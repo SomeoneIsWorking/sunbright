@@ -128,3 +128,38 @@ Beware the traps this probe has already fallen into, all fixed but all easy to r
     to, for the same reason;
   * getFreeSize() is the LARGEST FREE BLOCK, getTotalFreeSize() is the sum. Both are needed to tell
     exhaustion from fragmentation (here: both tiny, so exhausted).
+
+### Note (2026-08-11)
+REFRAMED (2026-08-11, later): Noki Bay does not need more memory. The system heap LOSES 79 KB.
+
+Walking the heap's own two block lists (JKRExpHeap keeps the free list at +0x74 and the used list at
++0x7C; each CMemBlock carries its size at +0x04 and its next link at +0x0C), at the same point in the
+load:
+
+    stage 8 (works):   used 69,988 + free 60,928 = 130,916 of 130,928   <- closes, 12 bytes of rounding
+    stage 9 (fails):   used 51,524 + free     96 =  51,620 of 130,928   <- 79,308 bytes in NEITHER list
+
+Both walks terminate normally and every link stays inside the heap's own address range, so this is
+not a smashed link that truncates the walk — the walk is complete and the memory is simply absent
+from both lists. Memory in neither list is memory the heap has lost: it cannot be allocated and it
+will never be freed.
+
+That is why every earlier line of attack came up empty. The allocation ledger built by shadowing all
+four JKRExpHeap entry points accounts for only ~70 KB, and it was right to — the missing memory was
+never handed out by them.
+
+## What to look at next
+
+Something takes memory out of the free list without putting it on the used list, during Noki Bay's
+load specifically. Candidates, in order of how cheaply they can be tested:
+
+  * a CHILD heap created inside the system heap (JKRSolidHeap::create / JKRExpHeap::createSolidHeap
+    with the system heap as parent) — a child's memory leaves the parent's free list, and if the
+    parent tracks it differently the parent's own accounting looks exactly like this;
+  * JKRExpHeap::allocFromTail carving without linking into the used list in our recompilation;
+  * a mistranslated block-splitting sequence in the ExpHeap allocator, which would show as the same
+    shortfall growing over the load.
+
+The instrument to use is already in diag_anmdata.cpp: `dump_used_blocks` prints both lists with a
+validity check. Call it repeatedly during the stage load and find the tick where the shortfall
+appears — the allocation that runs immediately before that is the one to read.

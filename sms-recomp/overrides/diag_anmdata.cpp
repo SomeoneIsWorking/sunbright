@@ -45,6 +45,10 @@ extern "C" void func_802c1f48(CPUState&);   // JKRExpHeap::getTotalFreeSize()
 extern "C" void func_802c138c(CPUState&);   // JKRExpHeap::alloc(u32 size, int alignment)
 extern "C" void func_802c1b88(CPUState&);   // JKRExpHeap::freeAll()
 extern "C" void func_802c52b0(CPUState&);   // JKRThread::JKRThread(u32 stackSize, int, int)
+extern "C" void func_802c14d0(CPUState&);   // JKRExpHeap::allocFromHead(u32, int)
+extern "C" void func_802c18dc(CPUState&);   // JKRExpHeap::allocFromTail(u32, int)
+extern "C" void func_802c17b0(CPUState&);   // JKRExpHeap::allocFromHead(u32)  — default alignment
+extern "C" void func_802c1a34(CPUState&);   // JKRExpHeap::allocFromTail(u32)  — default alignment
 
 namespace {
 
@@ -248,6 +252,53 @@ void dump_volume_list(const char* why) {
 // mixed-case lookup in EVERY stage, not only where the lookup failed. That is what makes stage 8
 // and stage 9 comparable at the same point in the load; a number only printed on failure can never
 // say how much margin the stages that survive actually have.
+// WALK THE HEAP'S OWN USED-BLOCK LIST. This is ground truth and it makes the shadow ledger's
+// disagreement measurable instead of arguable: JKRExpHeap keeps mHeadUsedList at +0x7C, each
+// CMemBlock carrying its size at +0x04, its group id at +0x03 and the next link at +0x0C, with the
+// 0x10-byte header sitting immediately before the content it hands out. If this total agrees with
+// the heap's size minus its free list, the accounting is closed; if it does not, the heap's own
+// bookkeeping is what is off, and no amount of hooking allocation entry points would ever have
+// found that.
+void dump_used_blocks(u32 hp) {
+    const u32 lo = sb_r32(hp + 0x30), hi = sb_r32(hp + 0x34);
+    u32 blk = sb_r32(hp + 0x7C);
+    unsigned long n = 0, bytes = 0;
+    unsigned long byGroup[8] = {};
+    const char* stopped = "the list ended normally";
+    while (blk != 0 && n < 4096) {
+        // WALK VALIDITY, checked at every step. A short walk and a corrupt list produce the same
+        // small total, and the difference is the whole finding: if a link leaves the heap's own
+        // range or a size is impossible, the walk must say so rather than return a tidy number.
+        if (blk < lo || blk >= hi) { stopped = "A LINK POINTED OUTSIDE THE HEAP — the list is corrupt"; break; }
+        if (sb_ram_fast(blk) == nullptr) { stopped = "a link pointed at unmapped memory"; break; }
+        const u32 size = sb_r32(blk + 0x04);
+        if (size > (hi - lo)) { stopped = "A BLOCK CLAIMED A SIZE LARGER THAN THE HEAP — the list is corrupt"; break; }
+        const u8 group = (u8)((sb_r32(blk + 0x00) >> 8) & 0xFF);
+        bytes += size + 0x10;   // the header is part of what the block occupies
+        ++byGroup[group & 7];
+        ++n;
+        blk = sb_r32(blk + 0x0C);
+    }
+    // The FREE list too, so the two totals can be added up against the heap's size. Memory in
+    // neither list is memory the heap has LOST, which is a different fault from memory in use.
+    unsigned long freeN = 0, freeBytes = 0;
+    for (u32 f = sb_r32(hp + 0x74); f != 0 && freeN < 4096 && f >= lo && f < hi; f = sb_r32(f + 0x0C)) {
+        freeBytes += sb_r32(f + 0x04) + 0x10;
+        ++freeN;
+    }
+    lucent::info("anmdata", "  heap accounting: used list {} bytes + free list {} bytes ({} free "
+                            "block(s)) = {} of {}. A shortfall is memory in NEITHER list — lost, not "
+                            "in use. Walk stopped because: {}",
+                 bytes, freeBytes, freeN, bytes + freeBytes, sb_r32(hp + 0x38), stopped);
+    lucent::Line l;
+    l.add("  heap used-block list: {} block(s) occupying {} bytes (content + 0x10 header each) of a "
+          "{} byte heap. By group id:", n, bytes, sb_r32(hp + 0x38));
+    for (int g = 0; g < 8; ++g) {
+        if (byGroup[g]) l.add(" {}:{}", g, byGroup[g]);
+    }
+    l.flush(lucent::Level::Info, "anmdata");
+}
+
 void dump_sys_heap(const CPUState& cpu) {
     const u32 hp = sys_heap(cpu);
     if (hp == 0) return;
@@ -261,6 +312,7 @@ void dump_sys_heap(const CPUState& cpu) {
                             "JKRAramStream, JKRDecomp) take 16 KB each in every stage, so 64 KB of "
                             "this is structural.",
                  hp, (s32)a.gpr[3], (s32)b.gpr[3], sb_r32(hp + 0x38));
+    dump_used_blocks(hp);
 }
 
 void dump_all_archives(const char* why) {
@@ -635,7 +687,7 @@ void ov_exp_alloc(CPUState& cpu) {
     const u32 size = (u32)cpu.gpr[4];
     func_802c138c(cpu);
     const u32 ptr = (u32)cpu.gpr[3];
-    if (ptr != 0 && heap == sys_heap(cpu)) {
+    if (ptr != 0) {
         g_live[ptr] = size;
         // WHO asked. A size on its own names a shape, not a system — and the four 16 KB blocks that
         // dominate this heap could be anything until their caller is named. The return address is
@@ -673,6 +725,53 @@ void ov_jkr_thread_ctor(CPUState& cpu) {
     func_802c52b0(cpu);
 }
 
+// THE TWO PATHS JKRExpHeap::alloc DELEGATES TO. The ledger built on ::alloc accounted for 69,600
+// bytes of a heap with 130,912 in use, and a probe that can only see half the allocations will
+// happily present the half it sees as the whole. allocFromHead/allocFromTail are where the memory
+// is actually taken, so recording there closes the gap — and if it does not close, the remainder is
+// a third path and the number stays honest about that.
+void record_live(const CPUState& cpu, u32 heapThis, u32 size, u32 ptr, u32 caller) {
+    (void)cpu;
+    (void)heapThis;
+    // RECORD EVERY HEAP, filter by address range at report time. Recording only allocations charged
+    // to sSystemHeap missed every block taken from this heap object BEFORE the static was pointed at
+    // it — i.e. the boot-time occupancy, which is most of it. The ledger accounted for 69,600 bytes
+    // of a heap with 130,912 in use, and a probe that sees half the memory will present that half as
+    // the whole unless the denominator is checked. It is checked: the report prints resident bytes
+    // against the heap's own size, and the two should now agree.
+    if (ptr == 0) return;
+    g_live[ptr] = size;
+    if (g_liveSite.find(ptr) == g_liveSite.end()) g_liveSite[ptr] = caller;
+}
+
+void ov_alloc_head(CPUState& cpu) {
+    const u32 heap = (u32)cpu.gpr[3], size = (u32)cpu.gpr[4], caller = (u32)cpu.lr;
+    func_802c14d0(cpu);
+    record_live(cpu, heap, size, (u32)cpu.gpr[3], caller);
+}
+
+void ov_alloc_tail(CPUState& cpu) {
+    const u32 heap = (u32)cpu.gpr[3], size = (u32)cpu.gpr[4], caller = (u32)cpu.lr;
+    func_802c18dc(cpu);
+    record_live(cpu, heap, size, (u32)cpu.gpr[3], caller);
+}
+
+// AND THE DEFAULT-ALIGNMENT OVERLOADS. Four entry points, not two: the ledger still showed 69,600
+// bytes in a heap with 130,912 in use after hooking the two-argument forms, and a gap that size is
+// not rounding. Hooking a subset of an overload set and reading the total as complete is the same
+// error this file has now made three times with three different functions.
+void ov_alloc_head1(CPUState& cpu) {
+    const u32 heap = (u32)cpu.gpr[3], size = (u32)cpu.gpr[4], caller = (u32)cpu.lr;
+    func_802c17b0(cpu);
+    record_live(cpu, heap, size, (u32)cpu.gpr[3], caller);
+}
+
+void ov_alloc_tail1(CPUState& cpu) {
+    const u32 heap = (u32)cpu.gpr[3], size = (u32)cpu.gpr[4], caller = (u32)cpu.lr;
+    func_802c1a34(cpu);
+    record_live(cpu, heap, size, (u32)cpu.gpr[3], caller);
+}
+
 void ov_heap_free(CPUState& cpu) {
     if ((u32)cpu.gpr[4] == sys_heap(cpu)) ++g_freeSys;
     func_802c37b8(cpu);
@@ -687,7 +786,7 @@ void ov_exp_free(CPUState& cpu) {
     ++g_expFreeAll;
     const u32 ptr = (u32)cpu.gpr[4];
     const auto it = g_live.find(ptr);
-    if (it != g_live.end()) g_live.erase(it);
+    if (it != g_live.end()) { g_live.erase(it); g_liveSite.erase(ptr); }
     else if (ptr != 0) ++g_liveMissedFree;
     func_802c1b14(cpu);
 }
@@ -710,6 +809,15 @@ void ov_archive_ctor_default(CPUState& cpu) {
 
 } // namespace
 
+SB_OVERRIDE(0x802c17b0u, ov_alloc_head1, "JKRExpHeap::allocFromHead(size)",
+            "diagnostic (SB_LOG=anmdata): the default-alignment overload — four entry points, not two")
+SB_OVERRIDE(0x802c1a34u, ov_alloc_tail1, "JKRExpHeap::allocFromTail(size)",
+            "diagnostic (SB_LOG=anmdata): the default-alignment tail overload")
+SB_OVERRIDE(0x802c14d0u, ov_alloc_head, "JKRExpHeap::allocFromHead",
+            "diagnostic (SB_LOG=anmdata): the path JKRExpHeap::alloc delegates to — where the memory "
+            "is actually taken")
+SB_OVERRIDE(0x802c18dcu, ov_alloc_tail, "JKRExpHeap::allocFromTail",
+            "diagnostic (SB_LOG=anmdata): the tail-allocation path, same reason")
 SB_OVERRIDE(0x802c52b0u, ov_jkr_thread_ctor, "JKRThread::JKRThread",
             "diagnostic (SB_LOG=anmdata): every JKRThread takes a 16 KB stack from the 128 KB system "
             "heap — count and caller")
