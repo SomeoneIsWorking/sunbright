@@ -23,10 +23,22 @@
 #include <lucent/log.h>
 
 #include <string>
+#include <vector>
 
 extern "C" void func_8023c328(CPUState&);   // MActorAnmData::init(const char*, const char**)
 extern "C" void func_8034b5ac(CPUState&);   // DVDConvertPathToEntrynum(const char*)
 extern "C" void func_802c31b0(CPUState&);   // JKRFileLoader::findFirstFile(const char*)
+extern "C" void func_802bc9f8(CPUState&);   // JKRArchive::JKRArchive(s32 entrynum, EMountMode)
+extern "C" void func_802bc9ac(CPUState&);   // JKRArchive::JKRArchive()  — the OTHER base ctor
+extern "C" void func_802c3124(CPUState&);   // JKRFileLoader::findVolume(const char**)
+extern "C" void func_802c3740(CPUState&);   // JKRHeap::alloc(u32 size, int align, JKRHeap*)
+extern "C" void func_802bf41c(CPUState&);   // JKRArchive::getFirstFile(const char*) const
+extern "C" void func_802bcb14(CPUState&);   // JKRArchive::findDirectory(const char*, u32) const
+extern "C" void func_802c3c38(CPUState&);   // operator new(size_t, JKRHeap*, int)
+extern "C" void func_802c1edc(CPUState&);   // JKRExpHeap::getFreeSize()
+extern "C" void func_802c37b8(CPUState&);   // JKRHeap::free(void*, JKRHeap*)
+extern "C" void func_802c1b14(CPUState&);   // JKRExpHeap::free(void*)
+extern "C" void func_802c1f48(CPUState&);   // JKRExpHeap::getTotalFreeSize()
 
 namespace {
 
@@ -61,6 +73,167 @@ void ov_path_to_entrynum(CPUState& cpu) {
     lucent::debug("anmdata", "DVDConvertPathToEntrynum(\"{}\") -> {}", path, (s32)cpu.gpr[3]);
 }
 
+// ── WHAT IS ACTUALLY IN THE MOUNTED ARCHIVE ─────────────────────────────────────────────────────
+//
+// Issue #1: stage 9 dies because findFirstFile("/scene/mapObj") returns null, and the two candidate
+// causes need opposite fixes — the directory is genuinely absent from mare0.szs, or our mount of it
+// is incomplete. Nothing measured so far can separate them, and both readings are consistent with
+// every number available (the DVD log shows the whole file streaming in cleanly; the RARC directory
+// table sits at the FRONT so late corruption could not drop an entry; but a retail disc whose Noki
+// Bay had no mapObj directory would crash on console too, which cannot be true).
+//
+// So this walks the archive's OWN node table and prints the directory names. Layout from the decomp
+// (JKRArchive.hpp): mArcInfoBlock at +0x44 { num_nodes, node_offset, num_file_entries,
+// file_entry_offset, string_table_length, string_table_offset }, mDirectories at +0x48, mStrTable
+// at +0x50, and each SDIDirEntry is { type, nameOffset, hash, num, firstIdx } — the name being an
+// offset into the string table. The volume name lives in JKRFileLoader at +0x28.
+//
+// Archives are collected by hooking the JKRArchive constructor rather than by chasing the loader's
+// static list, because the list is a JSU linked list whose layout would be one more thing to get
+// right, and a constructor hook cannot miss a mount that happened.
+constexpr u32 ARC_VOLNAME  = 0x28;
+constexpr u32 ARC_INFOBLK  = 0x44;
+constexpr u32 ARC_DIRS     = 0x48;
+constexpr u32 ARC_STRTAB   = 0x50;
+
+unsigned long g_allocNull = 0;
+unsigned long g_allocCalls = 0;   // the denominator: "0 failures" from a hook that never fires and
+                                  // "0 failures" from a healthy heap are the same line otherwise
+bool g_traceWalk = false;
+unsigned long g_newSys = 0, g_freeSys = 0, g_newSys36 = 0;
+unsigned long g_expFreeSys = 0, g_expFreeAll = 0;
+unsigned long g_newSysBytes = 0;
+unsigned long g_sizeHist[33] = {};
+std::vector<u32> g_archives;
+bool g_dumped = false;
+bool g_retried = false;
+bool g_apparatusChecked = false;
+u32 g_lastQueryEa = 0;
+std::string g_lastGood;
+
+void dump_archive(u32 arc) {
+    const u32 info = sb_r32(arc + ARC_INFOBLK);
+    const u32 dirs = sb_r32(arc + ARC_DIRS);
+    const u32 strs = sb_r32(arc + ARC_STRTAB);
+    if (info == 0 || dirs == 0 || strs == 0 || sb_ram_fast(info) == nullptr) {
+        lucent::info("anmdata", "  archive 0x{:08x} (\"{}\"): info/dirs/strtab = {:#x}/{:#x}/{:#x} — "
+                                "not walkable, so this says nothing about its contents.",
+                     arc, guest_str(sb_r32(arc + ARC_VOLNAME)), info, dirs, strs);
+        return;
+    }
+    const u32 numNodes = sb_r32(info + 0x00);
+    const u32 numFiles = sb_r32(info + 0x08);
+    // REFUSE an object that is constructed but not yet MOUNTED. Its fields are whatever the heap
+    // last held, and printing them as a directory listing is worse than printing nothing — the first
+    // version happily reported "2,166,314,068 directory nodes" for one. A real RARC has a handful.
+    if (numNodes == 0 || numNodes > 4096 || sb_ram_fast(strs) == nullptr) {
+        // PRINT THE NAME EVEN WHEN SKIPPING. The first version said only "constructed but not
+        // mounted", which drops the one field that decides whether this object matters: if a
+        // table-less loader is sitting in the volume list under the SAME name as a real archive,
+        // findVolume can resolve to it and every lookup through that name fails while the real
+        // archive sits right there holding the answer. A skip line without the name cannot show
+        // that, and "skipped" then reads as "irrelevant".
+        lucent::info("anmdata", "  archive 0x{:08x} volume \"{}\": no usable directory table (node "
+                                "count reads {}) — constructed but not mounted, OR a loader that is "
+                                "not a RARC at all.",
+                     arc, guest_str(sb_r32(arc + ARC_VOLNAME)), numNodes);
+        return;
+    }
+    lucent::info("anmdata", "  archive 0x{:08x} volume \"{}\": {} directory node(s), {} file "
+                            "entrie(s)",
+                 arc, guest_str(sb_r32(arc + ARC_VOLNAME)), numNodes, numFiles);
+    // THE ROOT DIRECTORY'S ENTRIES, which is what findDirectory actually searches. The node list
+    // below is every directory in the archive FLATTENED, so a name appearing there says nothing
+    // about whether "/scene/<name>" resolves — the lookup walks the root node's file entries and
+    // compares CArcName's lowercased hash, then strcmp's the stored name against that lowercased
+    // query (JKRArchivePri.cpp isSameName). A stored name with an uppercase letter can therefore
+    // never match anything, which is the kind of thing only this listing can show.
+    {
+        const u32 files = sb_r32(arc + 0x4C);
+        const u32 rootNum = sb_r32(dirs + 0x08) & 0xFFFF;
+        const u32 rootFirst = sb_r32(dirs + 0x0C);
+        lucent::info("anmdata", "    root node holds {} entrie(s) starting at file index {}:",
+                     rootNum, rootFirst);
+        for (u32 i = 0; i < rootNum && i < 64; ++i) {
+            const u32 fe = files + (rootFirst + i) * 0x14;
+            if (sb_ram_fast(fe) == nullptr) break;
+            const u32 flagsName = sb_r32(fe + 0x04);
+            const bool isDir = ((flagsName >> 24) & 0x02) != 0;
+            // THE HASH IS THE FIRST TEST isSameName APPLIES, and a mismatch there rejects the
+            // entry before the string is ever compared — so printing the name alone can show a
+            // directory that is present and still unreachable. Recompute it here exactly as
+            // CArcName::store does (h = tolower(c) + h*3, u16) and print both.
+            const std::string nm = guest_str(strs + (flagsName & 0xFFFFFF));
+            u16 want = 0;
+            for (char c : nm) {
+                const int lc = (c >= 'A' && c <= 'Z') ? (c - 'A' + 'a') : (unsigned char)c;
+                want = (u16)(lc + want * 3);
+            }
+            const u16 stored = (u16)(sb_r32(fe + 0x00) & 0xFFFF);
+            lucent::info("anmdata", "      {:<20} {}  hash stored {:#06x} vs computed {:#06x}{}", nm,
+                         isDir ? "DIR " : "file", stored, want,
+                         stored == want ? "" : "   <-- MISMATCH: this entry can never be found");
+        }
+    }
+    for (u32 i = 0; i < numNodes && i < 256; ++i) {
+        const u32 e = dirs + i * 0x10;
+        if (sb_ram_fast(e) == nullptr) break;
+        const u32 type = sb_r32(e + 0x00);
+        const u32 nameOff = sb_r32(e + 0x04);
+        const u32 num = sb_r32(e + 0x08) & 0xFFFF;
+        char t[5] = {(char)(type >> 24), (char)(type >> 16), (char)(type >> 8), (char)type, 0};
+        lucent::info("anmdata", "    node {:>3}  type '{}'  name \"{}\"  {} entrie(s)", i, t,
+                     guest_str(strs + nameOff), num);
+    }
+}
+
+// THE VOLUME LIST ITSELF, which is what findVolume walks and what the archive dump cannot see.
+//
+// An archive object can be intact in memory — right name, right directory table — and still be
+// unreachable, because mounting is LIST MEMBERSHIP and unmounting only unlinks. The dump of
+// constructed archives therefore proves nothing about what is mounted, and reading it as if it did
+// is what kept stage 9 looking like a missing directory for so long.
+//
+// Layout from findVolume's own disassembly (0x802c3124): the list head is a static at 0x804042B4;
+// each link holds the loader pointer at +0x00 and the next link at +0x0C; the loader's name is at
+// +0x28. Taken from the code that does the lookup rather than from a header, so the walk cannot
+// disagree with the game's.
+void dump_volume_list(const char* why) {
+    constexpr u32 kVolumeListHead = 0x804042B4u;
+    u32 link = sb_r32(kVolumeListHead);
+    lucent::info("anmdata", "JKRHeap::alloc has been called {} time(s) this run, {} returned NULL. "
+                            "A zero in the FIRST number means the hook never fired and the second "
+                            "number says nothing at all.",
+                 g_allocCalls, g_allocNull);
+    lucent::info("anmdata", "MOUNTED VOLUME LIST at the moment of: {}", why);
+    int n = 0;
+    while (link != 0 && n < 64 && sb_ram_fast(link) != nullptr) {
+        const u32 loader = sb_r32(link);
+        lucent::info("anmdata", "    volume {:>2}: loader {:#010x} name \"{}\"", n, loader,
+                     loader ? guest_str(sb_r32(loader + 0x28)) : std::string("<null>"));
+        link = sb_r32(link + 0x0C);
+        ++n;
+    }
+    if (n == 0) {
+        lucent::info("anmdata", "    THE LIST IS EMPTY — no volume is mounted at all, so every path "
+                                "lookup fails regardless of what any archive contains.");
+    }
+}
+
+void dump_all_archives(const char* why) {
+    if (g_dumped) return;   // once: the answer does not change and the list is long
+    g_dumped = true;
+    lucent::info("anmdata", "MOUNTED ARCHIVES at the moment of: {}  ({} archive(s) constructed this "
+                            "run){}",
+                 why, g_archives.size(),
+                 g_archives.empty()
+                     ? "   <-- NONE were recorded, so this listing proves nothing about what is "
+                       "mounted; the constructor hook did not fire."
+                     : "");
+    for (u32 a : g_archives) dump_archive(a);
+    dump_volume_list(why);
+}
+
 // THE ONE THAT MATTERS. MActorAnmData::init crashes when this returns null, and it returns null for
 // a directory no mounted archive contains. Logging the path with its result turns "null pointer in
 // an animation loader" into "this directory is not there" — and logging the SUCCESSES too is what
@@ -68,15 +241,350 @@ void ov_path_to_entrynum(CPUState& cpu) {
 // entirely or missing one directory.
 void ov_find_first_file(CPUState& cpu) {
     const std::string path = guest_str((u32)cpu.gpr[3]);
+    g_lastQueryEa = (u32)cpu.gpr[3];
     func_802c31b0(cpu);
     const u32 res = (u32)cpu.gpr[3];
     lucent::debug("anmdata", "findFirstFile(\"{}\") -> {}", path,
                   res == 0 ? std::string("NULL  <-- no mounted archive has this directory")
                            : std::string("ok"));
+    // VALIDATE THE APPARATUS BEFORE TRUSTING IT. The retry below calls the guest's findFirstFile
+    // from inside this override with a copied CPUState. If that calling convention were wrong, the
+    // retry would return null for every input and would look exactly like the failure it is trying
+    // to explain — the "instrument that cannot fail" trap. So the FIRST time a lookup SUCCEEDS, the
+    // same machinery repeats it: that call MUST come back ok, and if it does not, nothing else this
+    // probe says about retries means anything.
+    if (res != 0 && !g_apparatusChecked) {
+        g_apparatusChecked = true;
+        CPUState chk = cpu;
+        chk.gpr[3] = g_lastQueryEa;
+        func_802c31b0(chk);
+        lucent::info("anmdata",
+                     "APPARATUS CHECK: repeating the just-SUCCEEDED lookup \"{}\" through the same "
+                     "call path -> {}. This must read ok; a NULL here means the retry mechanism is "
+                     "broken and every conclusion drawn from a retry is void.",
+                     path, (u32)chk.gpr[3] == 0 ? "NULL  <-- BROKEN" : "ok");
+    }
+
+    // MIXED CASE IS THE WHOLE QUESTION HERE, so it gets its own line and its own dump.
+    //
+    // JKRArchive lookups are supposed to be case-insensitive: CArcName::store lowercases every
+    // character into both the hash and the stored string (JKRArchivePri.cpp:189), and isSameName
+    // then compares that lowercased query against the archive's own string table. Stage 9's
+    // "/scene/mapObj" fails while the scene archive demonstrably holds a root entry spelled
+    // "mapobj" — which can only happen if the lowercasing did not happen. Stage 8 runs the SAME
+    // query successfully, so dumping on the first mixed-case lookup in EITHER stage is what
+    // compares the two, rather than dumping only where it already failed.
+    bool mixedCase = false;
+    for (char c : path) {
+        if (c >= 'A' && c <= 'Z') { mixedCase = true; break; }
+    }
+    if (res != 0) g_lastGood = path;
+    if (mixedCase) {
+        lucent::debug("anmdata", "  ^ that query contains UPPERCASE. JKR lookups lowercase the "
+                                 "query before hashing, so it must match a lowercase-spelled entry; "
+                                 "result was {}.",
+                      res == 0 ? "NULL" : "ok");
+        dump_all_archives(path.c_str());
+    }
+    // THE EXPERIMENT THAT SEPARATES THE LAST TWO EXPLANATIONS. Everything static checks out: at the
+    // moment "/scene/mapObj" returns null, the scene archive is mounted, its root holds a DIR entry
+    // spelled "mapobj", and that entry's stored hash equals the one CArcName computes. So either the
+    // query's lowercasing is not happening (and only a lowercase query can match), or the failure is
+    // somewhere else entirely. Asking the guest's own findFirstFile the SAME question in lowercase
+    // answers that in one call.
+    //
+    // The path is lowercased IN PLACE and restored immediately, so the guest sees its own buffer
+    // unchanged; the retry runs the real function, so it is the game's answer and not a
+    // reimplementation of the lookup that could differ from it.
+    if (res == 0 && mixedCase && !g_retried) {
+        g_retried = true;
+        const u32 ea = (u32)cpu.gpr[3] != 0 ? (u32)cpu.gpr[3] : 0;
+        (void)ea;
+        std::string lower = path;
+        for (char& c : lower) {
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        }
+        const u32 buf = g_lastQueryEa;
+        g_traceWalk = true;
+        if (buf != 0) {
+            for (size_t i = 0; i < lower.size(); ++i) sb_w8(buf + (u32)i, (u8)lower[i]);
+            CPUState retry = cpu;
+            retry.gpr[3] = buf;
+            func_802c31b0(retry);
+            const u32 r2 = (u32)retry.gpr[3];
+            for (size_t i = 0; i < path.size(); ++i) sb_w8(buf + (u32)i, (u8)path[i]);
+            lucent::info("anmdata",
+                         "RETRY of the same lookup in lowercase (\"{}\") -> {}. If lowercase "
+                         "SUCCEEDS where mixed case failed, the query is not being lowercased and "
+                         "the fault is in tolower/CArcName; if it fails too, the case is innocent "
+                         "and the fault is in the volume or directory walk.",
+                         lower, r2 == 0 ? "NULL" : "ok");
+            // THE CONTROL. Ask for a directory that RESOLVED EARLIER IN THIS RUN, right now. If it
+            // answers, the lookup machinery is working at this instant and the fault is specific to
+            // this path; if it also returns null, nothing is resolvable at this moment and the fault
+            // is not about paths at all (an exhausted heap cannot allocate the finder, a volume list
+            // that has been torn down, and so on). Without this control, "path X fails" is
+            // indistinguishable from "everything fails".
+            // THE CONTROL STRING MUST BE ONE THIS RUN ACTUALLY RESOLVED, not one that ought to.
+            // The first version used "/scene/map" and called it "resolved earlier in this very run";
+            // it was not — what resolved was "/scene/map/map". A control that was never observed to
+            // succeed cannot distinguish "this path fails" from "that path was never valid", and it
+            // read as damning evidence for a whole round of investigation. The last successful query
+            // is now REMEMBERED and replayed verbatim.
+            const std::string known = g_lastGood;
+            for (u32 i = 0; i < (u32)known.size(); ++i) sb_w8(buf + i, (u8)known[i]);
+            sb_w8(buf + (u32)known.size(), 0);
+            CPUState ctl = cpu;
+            ctl.gpr[3] = buf;
+            func_802c31b0(ctl);
+            const u32 r3 = (u32)ctl.gpr[3];
+            for (size_t i = 0; i < path.size(); ++i) sb_w8(buf + (u32)i, (u8)path[i]);
+            sb_w8(buf + (u32)path.size(), 0);
+            // WHERE does it fail — picking the volume, or walking it? findVolume is the first half
+            // of findFirstFile and is callable on its own. Scratch lives below the guest stack
+            // pointer (unused space) so nothing live is disturbed: the string goes at +0x10 and the
+            // pointer-to-pointer findVolume expects at +0x00.
+            {
+                const u32 scratch = ((u32)cpu.gpr[1] - 0x400u) & ~3u;
+                for (u32 i = 0; i < (u32)known.size(); ++i) sb_w8(scratch + 0x10 + i, (u8)known[i]);
+                sb_w8(scratch + 0x10 + (u32)known.size(), 0);
+                sb_w32(scratch, scratch + 0x10);
+                CPUState fv = cpu;
+                fv.gpr[3] = scratch;
+                func_802c3124(fv);
+                const u32 vol = (u32)fv.gpr[3];
+                lucent::info("anmdata",
+                             "  findVolume(\"{}\") at the same instant -> {:#010x} name \"{}\". A "
+                             "volume HERE with a null lookup above puts the fault in the archive's "
+                             "directory walk; a null here puts it in volume resolution.",
+                             known, vol,
+                             vol ? guest_str(sb_r32(vol + 0x28)) : std::string("<none>"));
+            }
+            // sCurrentDirID IS THE PRIME SUSPECT and it is one word away.
+            //
+            // JKRArchive::getFirstFile (JKRArchivePub.cpp:269) only searches from the ROOT when the
+            // path it receives starts with '/'. findVolume CONSUMES the volume component, so what
+            // getFirstFile actually gets is "map/map" or "mapObj" — no leading slash — and those go
+            // to `findDirectory(path, sCurrentDirID)`, a STATIC current-directory id set by
+            // becomeCurrent. If that id is left pointing at some subdirectory, every relative lookup
+            // fails no matter what it asks for, which is exactly the path-independent failure the
+            // control measured.
+            //
+            // Addresses read from becomeCurrent's own disassembly (0x802bee30): it writes the
+            // current volume to r13-0x5f38 and the current dir id to r13-0x5f98.
+            {
+                const u32 sda = (u32)cpu.gpr[13];
+                const u32 curVol = sb_r32(sda - 0x5f38u);
+                const u32 curDir = sb_r32(sda - 0x5f98u);
+                lucent::info("anmdata",
+                             "  sSystemHeap = {:#010x}, sCurrentVolume = {:#010x} (\"{}\"), "
+                             "sCurrentDirID = {}. getFirstFile "
+                             "searches from THIS directory for any path without a leading slash, and "
+                             "findVolume strips the volume component before handing the rest over — "
+                             "so a non-zero id here means root is not being searched.",
+                             sb_r32(sda - 0x5f30u), curVol,
+                             curVol ? guest_str(sb_r32(curVol + 0x28)) : std::string("<none>"),
+                             (s32)curDir);
+            }
+            // HOW MUCH IS LEFT IN IT. A 36-byte allocation failing says either "exhausted" or "this
+            // heap object is broken", and the free size separates them: a heap with megabytes free
+            // that refuses 36 bytes is corrupt, one with nothing free is simply full.
+            {
+                CPUState fs = cpu;
+                fs.gpr[3] = sb_r32((u32)cpu.gpr[13] - 0x5f30u);
+                func_802c1edc(fs);
+                const u32 hp = sb_r32((u32)cpu.gpr[13] - 0x5f30u);
+                // BOTH NUMBERS, because they answer different questions and the names invite the
+                // wrong one. getFreeSize returns the LARGEST FREE BLOCK (JKRExpHeap.cpp:570 walks
+                // the free list keeping the maximum); getTotalFreeSize sums them. A large total with
+                // a tiny maximum is FRAGMENTATION; both tiny is exhaustion. Reading getFreeSize as
+                // "free memory" would have made a fragmented heap look full.
+                CPUState tf = cpu;
+                tf.gpr[3] = hp;
+                func_802c1f48(tf);
+                lucent::info("anmdata",
+                             "  sSystemHeap TOTAL free = {} bytes across the whole free list, while "
+                             "the LARGEST single free block is the number below. Both small means "
+                             "exhausted; a big total with a small largest means fragmented.",
+                             (s32)tf.gpr[3]);
+                lucent::info("anmdata",
+                             "  sSystemHeap {:#010x}: free {} bytes of a {} byte heap ({:#010x}..{:#010x}). "
+                             "The allocation that failed asked for 36. A heap this full is a MEMORY "
+                             "BUDGET fault in the port, not a JKR fault: the archive lookup it broke "
+                             "had already found its directory.",
+                             hp, (s32)fs.gpr[3], sb_r32(hp + 0x38), sb_r32(hp + 0x30),
+                             sb_r32(hp + 0x34));
+            }
+            lucent::info("anmdata",
+                         "  system-heap traffic so far: {} allocation(s) totalling {} bytes ({} of "
+                         "them 36 bytes, the finder size) against {} free(s) via JKRHeap::free and "
+                         "{} via JKRExpHeap::free ({} frees on all heaps). A large gap is a LEAK; a "
+                         "small one means the heap is legitimately full and the budget is the "
+                         "problem.",
+                         g_newSys, g_newSysBytes, g_newSys36, g_freeSys, g_expFreeSys, g_expFreeAll);
+            {
+                lucent::Line l;
+                l.add("  system-heap allocation sizes (32-byte buckets):");
+                for (int i = 0; i < 33; ++i) {
+                    if (g_sizeHist[i] != 0) {
+                        if (i == 32) l.add(" 1024+:{}", g_sizeHist[i]);
+                        else l.add(" {}-{}:{}", i * 32, i * 32 + 31, g_sizeHist[i]);
+                    }
+                }
+                l.flush(lucent::Level::Info, "anmdata");
+            }
+            lucent::info("anmdata",
+                         "CONTROL lookup of \"{}\" at the same instant -> {}. That exact string "
+                         "resolved earlier in THIS run, so a NULL here means the failure is not "
+                         "about the path being asked for.",
+                         known, r3 == 0 ? "NULL" : "ok");
+        }
+    }
+    g_traceWalk = false;
+    if (res == 0) dump_all_archives(path.c_str());
+}
+
+// BOTH base constructors, because hooking one of them is how a listing lies while looking complete.
+// The first version caught only JKRArchive(s32, EMountMode) and reported "2 archives" for a run in
+// which /scene/map/map had already resolved successfully — i.e. it was missing the very archive the
+// question was about. A derived archive (Mem/Aram/Dvd/Comp) runs exactly one of these two.
+void ov_archive_ctor(CPUState& cpu) {
+    const u32 self = (u32)cpu.gpr[3];
+    func_802bc9f8(cpu);
+    g_archives.push_back(self);
+}
+
+// WHICH VOLUME does a path resolve to? findFirstFile picks a mounted loader by the path's first
+// component, and every explanation left for stage 9 turns on that choice: the scene ARCHIVE holds a
+// root entry "mapobj" with a correct hash at the moment the lookup returns null, so either the
+// lookup is searching a different volume that also answers to "scene", or it is searching the right
+// one and failing inside. Printing the resolved volume separates those two in one run.
+// A NULL FROM THE ALLOCATOR IS A SILENT FAILURE EVERYWHERE IT HAPPENS. JKRHeap::alloc returns null
+// on exhaustion and the game's own code mostly does not check — which is how "findFirstFile returned
+// null" and "the finder could not be allocated" become the same observable. Counting them (and
+// naming the first few sizes) turns an unexplained null three layers up into a heap that is full.
+void ov_heap_alloc(CPUState& cpu) {
+    const u32 size = (u32)cpu.gpr[3];
+    ++g_allocCalls;
+    func_802c3740(cpu);
+    if ((u32)cpu.gpr[3] == 0) {
+        ++g_allocNull;
+        if (g_allocNull <= 8) {
+            lucent::info("anmdata", "JKRHeap::alloc({} bytes) returned NULL — allocation #{} to fail "
+                                    "this run. The caller almost certainly does not check.",
+                         size, g_allocNull);
+        }
+    }
+}
+
+// THE INNERMOST TWO STEPS. Everything outside them has now been measured and is healthy — the
+// volume resolves, the archive's tables are intact and hold the entry with a matching hash, the
+// allocator is not failing. So the next thing to observe is the walk itself: what path and which
+// starting directory findDirectory is given, and whether getFirstFile turns a found directory into
+// a finder. Logged only around a failure, so a healthy run stays quiet.
+void ov_get_first_file(CPUState& cpu) {
+    const std::string path = g_traceWalk ? guest_str((u32)cpu.gpr[4]) : std::string();
+    const u32 self = (u32)cpu.gpr[3];
+    func_802bf41c(cpu);
+    if (g_traceWalk) {
+        lucent::info("anmdata", "    JKRArchive::getFirstFile(archive {:#010x}, \"{}\") -> {:#010x}",
+                     self, path, (u32)cpu.gpr[3]);
+    }
+}
+
+void ov_find_directory(CPUState& cpu) {
+    const std::string path = g_traceWalk ? guest_str((u32)cpu.gpr[4]) : std::string();
+    const u32 dirId = (u32)cpu.gpr[5];
+    func_802bcb14(cpu);
+    if (g_traceWalk) {
+        lucent::info("anmdata", "    JKRArchive::findDirectory(\"{}\", dirId {}) -> {:#010x}", path,
+                     dirId, (u32)cpu.gpr[3]);
+    }
+}
+
+// THE LAST HOP. getFirstFile's disassembly (0x802bf47c) allocates its finder with
+// `operator new(0x24, sSystemHeap, 0)` — a DIFFERENT entry point from the JKRHeap::alloc this file
+// was already watching, which is why that hook reported 1,011 calls and no failures while the
+// allocation that actually matters was failing unobserved. Watching one allocator and concluding
+// "allocation is fine" is the same error as watching one call site and concluding "nothing else
+// draws cubes".
+// A 128 KB system heap with 8 bytes left, and the allocation that fails is a 36-byte FINDER — so
+// the question is whether finders are being freed. Counting both sides is the only way to tell a
+// leak from a heap that is legitimately full: "the heap is full" is a symptom of either.
+void ov_op_new_heap(CPUState& cpu) {
+    const u32 size = (u32)cpu.gpr[3];
+    const u32 heap = (u32)cpu.gpr[4];
+    if (heap == sb_r32((u32)cpu.gpr[13] - 0x5f30u)) {
+        ++g_newSys;
+        g_newSysBytes += size;
+        if (size == 36) ++g_newSys36;
+        // WHAT is filling it. A size histogram names the object class without needing a symbol for
+        // every caller: 36 is the finder, and whatever dominates here is the actual budget.
+        ++g_sizeHist[size < 1024 ? (size / 32) : 32];
+    }
+    func_802c3c38(cpu);
+    if ((u32)cpu.gpr[3] == 0 && g_traceWalk) {
+        lucent::info("anmdata", "    operator new({} bytes, heap {:#010x}) -> NULL  <-- this is what "
+                                "makes getFirstFile return null on a directory it FOUND",
+                     size, heap);
+    }
+}
+
+void ov_heap_free(CPUState& cpu) {
+    if ((u32)cpu.gpr[4] == sb_r32((u32)cpu.gpr[13] - 0x5f30u)) ++g_freeSys;
+    func_802c37b8(cpu);
+}
+
+// The virtual free, which is where a `delete` on an ExpHeap object lands. Hooking only the static
+// JKRHeap::free reported ZERO frees, and "zero frees" from an unhooked path and "zero frees"
+// because nothing is freed are the same number — the exact trap this file has already fallen into
+// once today with the allocator.
+void ov_exp_free(CPUState& cpu) {
+    if ((u32)cpu.gpr[3] == sb_r32((u32)cpu.gpr[13] - 0x5f30u)) ++g_expFreeSys;
+    ++g_expFreeAll;
+    func_802c1b14(cpu);
+}
+
+void ov_find_volume(CPUState& cpu) {
+    const u32 pp = (u32)cpu.gpr[3];
+    const std::string want = (pp != 0 && sb_ram_fast(pp)) ? guest_str(sb_r32(pp)) : std::string("<?>");
+    func_802c3124(cpu);
+    const u32 vol = (u32)cpu.gpr[3];
+    lucent::debug("anmdata", "findVolume(\"{}\") -> {:#010x} name \"{}\" type {:#x}", want, vol,
+                  vol ? guest_str(sb_r32(vol + 0x28)) : std::string("<none>"),
+                  vol ? sb_r32(vol + 0x2C) : 0);
+}
+
+void ov_archive_ctor_default(CPUState& cpu) {
+    const u32 self = (u32)cpu.gpr[3];
+    func_802bc9ac(cpu);
+    g_archives.push_back(self);
 }
 
 } // namespace
 
+SB_OVERRIDE(0x802c1b14u, ov_exp_free, "JKRExpHeap::free",
+            "diagnostic (SB_LOG=anmdata): the virtual free a delete actually reaches")
+SB_OVERRIDE(0x802c37b8u, ov_heap_free, "JKRHeap::free",
+            "diagnostic (SB_LOG=anmdata): the other half of the system-heap balance")
+SB_OVERRIDE(0x802c3c38u, ov_op_new_heap, "operator new(size, JKRHeap*, int)",
+            "diagnostic (SB_LOG=anmdata): the allocator getFirstFile actually uses")
+SB_OVERRIDE(0x802bf41cu, ov_get_first_file, "JKRArchive::getFirstFile",
+            "diagnostic (SB_LOG=anmdata): trace the archive-side half of a failed lookup")
+SB_OVERRIDE(0x802bcb14u, ov_find_directory, "JKRArchive::findDirectory",
+            "diagnostic (SB_LOG=anmdata): the innermost step — which path, from which directory id")
+SB_OVERRIDE(0x802c3740u, ov_heap_alloc, "JKRHeap::alloc",
+            "diagnostic (SB_LOG=anmdata): report allocations that return NULL — the game does not "
+            "check, so a full heap surfaces as an unrelated null pointer somewhere else")
+SB_OVERRIDE(0x802c3124u, ov_find_volume, "JKRFileLoader::findVolume",
+            "diagnostic (SB_LOG=anmdata): name the volume a path resolves to — two mounted loaders "
+            "can answer to the same first component")
+SB_OVERRIDE(0x802bc9acu, ov_archive_ctor_default, "JKRArchive::JKRArchive()",
+            "diagnostic (SB_LOG=anmdata): the other base constructor — hooking only one of the two "
+            "makes the archive listing silently incomplete")
+SB_OVERRIDE(0x802bc9f8u, ov_archive_ctor, "JKRArchive::JKRArchive(entrynum, mode)",
+            "diagnostic (SB_LOG=anmdata): remember every mounted archive so a failed directory "
+            "lookup can print what the archives actually contain")
 SB_OVERRIDE(0x802c31b0u, ov_find_first_file, "JKRFileLoader::findFirstFile",
             "diagnostic (SB_LOG=anmdata): report every directory lookup and whether it resolved — a "
             "null here is what MActorAnmData::init dereferences")
