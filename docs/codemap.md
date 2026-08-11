@@ -126,6 +126,35 @@ water refraction, dash blur, TScreenTexture) are FULLY implemented — see `docs
 | `tools/re/ppcdis.py`, `tools/re/disasm_range.py` | capstone disasm over the DOL with funcs.txt symbols |
 | `dol_sda.py`, `ghidra_scripts/` | SDA/r13 constants; analyzeHeadless helpers |
 | `scratch_clean.py` | gated scratch cleaner (refuses paths outside `scratch/`) |
+| `tools/gfx/graphics_db.py` | the graphics registry's worklist + curation (`docs/graphics/`) |
+| `tools/interp/cadence.py` | ALTERNATION/JUDDER at the PIXEL level — the metric that decides which 60fps mechanism ships |
+| `tools/oracle/capture.sh`, `record_fifo.sh` | pixel + FIFO ground truth from the Dolphin FORK (`extern/dolphin_fork`); both print WHICH binary they picked, because a stock Dolphin has none of the hooks and its capture looks identical |
+| `tools/render/gpu_preflight.py` | refuses to start a render run while the GPU is still settling after a reset; wired into `run-render.sh` |
+| `tools/info/registry_paths.py` | no live registry entry may name a file the tree does not have |
+| `tools/info/stale_triage.py` | splits the rot check's STALE list into "code EDITED" (needs a run) vs "file MOVED" (bookkeeping) |
+| `tools/docs/doc_paths.py` | no live document may name a source path the tree does not have |
+| `diag_registry.py` | no switch named in CLAUDE.md/docs/scripts may go unread by code |
+
+The last four are the repo's own **gates**: `diag_registry.py` and `doc_paths.py` run in
+`.githooks/pre-commit` (with `selftest_all.py`, which runs every tool's `--selftest`). Between them
+a name and a path in the documentation are both machine-checked — the two halves of the same
+defect. Five separate document-vs-tree reconciliations on 2026-08-12 each turned up a LIVE bug
+rather than confirming the document, which is why they are gates and not a habit.
+
+## The rest of the tree
+
+Subsystems that carry no status of their own — they are inputs, archives or one-off helpers — but
+which a session will look for and should not have to find by guessing.
+
+| Where | What |
+|---|---|
+| `decomp/sms/src/Player/MarioMain.cpp` (submodule `decomp/sms/`) | the reference decompilation. Compiles native under `SMS_NATIVE_PLATFORM=1`; also the source of truth every RE note is checked against |
+| `extern/dolphin_fork/` | the Dolphin FORK (SomeoneIsWorking/dolphin@sunbright) — the pixel and FIFO oracle, carrying the draw-log hook and `--fifo-record`. NOT retired. `extern/dolphin` is pinned upstream, never initialised, used by nothing |
+| `reference/sms_gmse01_funcs.txt` | US symbol + function-address list. Every address in an RE note resolves through it |
+| `sms-boot/assets/anm_swap.cpp` | byte-order swappers for the decomp runtime's asset loads — the BE-swap catalogue in practice |
+| `tools/audio/ab_harness.py` | the audio A/B harness and its residual set |
+| `tools/ghidra_scripts/DecompDump.py` | `analyzeHeadless` helpers — the default RE path |
+| `tools/perf/getenv_cost.c` | micro-benchmarks kept because a `getenv` in a hot loop was once a measurable frame cost |
 
 ## Live diagnostics (recomp, `SBR_PROBE=1` → 127.0.0.1:17654)
 
@@ -173,13 +202,17 @@ decomp/sms/       the reference decompilation (submodule)
 reference/        the US/JP symbol + function-address lists every RE note cites
 tools/            every tool lives under a subject directory; only diag_registry.py,
                   scratch_clean.py and selftest_all.py are repo-wide and sit at the root
-├─ recompiler/  render/  oracle/  interp/  re/  audio/  perf/  ghidra_scripts/
+├─ recompiler/  render/  oracle/  interp/  re/  audio/  perf/  ghidra_scripts/  gfx/
+└─ info/  docs/            the registries' own gates — see below
 docs/             docs/README.md is the index; codemap.md is the map
 debug_journal/    dated findings, dead ends included. NOT a place for current state
 ```
 
-Repo root holds four scripts and nothing else that runs: `play.sh` (the way to play),
-`run-recomp.sh` / `run.sh` / `run-render.sh` (the raw harnesses behind it).
+Repo root holds five scripts and nothing else that runs: `play.sh` (the way to play),
+`run-safe.sh` (the way to run a DIAGNOSTIC — conservative GPU settings, and it asks the kernel
+afterwards whether the run disturbed the card), and `run-recomp.sh` / `run.sh` / `run-render.sh`
+(the raw harnesses behind them). `run-render.sh` additionally requires `SBR_RENDER_APPROVED=1`
+from a human.
 
 ## Open heads (details in debug_journal/ and docs/)
 
