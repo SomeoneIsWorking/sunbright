@@ -51,6 +51,7 @@ void sbr_pop_register_names() {
     aurora::gfx::interp::name_population(SB_POP_STRIPE, "particle stripe (chain)");
     aurora::gfx::interp::name_population(SB_POP_CONEBEAM, "cone beam (deforming)");
     aurora::gfx::interp::name_population(SB_POP_ROPE, "swing-board rope");
+    aurora::gfx::interp::name_population(SB_POP_GRASS, "grass (deforming)");
 }
 
 namespace sb::frame_interp {

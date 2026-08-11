@@ -84,6 +84,34 @@
 //                              site seen drawing twice for one board in one tick has its premise
 //                              broken and loses its tag for the run, loudly.
 //
+//   TMapObjGrassGroup::drawNear  the grass. One GX_TRIANGLES primitive of unk68*3 vertices, rebuilt
+//                              every tick: each blade's middle vertex carries a sway offset from
+//                              the manager's 10-entry animation table, and the outer two are
+//                              displaced along a camera-facing width vector (MapObjGrass.cpp:30).
+//                              Deforming, so the vertex path is the only thing that reaches it.
+//
+//                              ONLY drawNear is hooked, and that is deliberate twice over. It is
+//                              the f32 variant — drawFar emits GXPosition3s16, which the vertex
+//                              path does not handle (it requires direct f32 positions), so tagging
+//                              it would buy nothing. And drawFar's address is not written here
+//                              because no run has yet seen it draw; when one does, the registry
+//                              gets a row and the row is what adds the entry.
+//
+//                              The LOD switch needs no special handling: a group that goes far
+//                              stops being tagged, and patch_vertices refuses a pair whose ticks
+//                              are not consecutive, so coming back near cannot pair across the gap.
+//
+//                              GRASS IS THE EXTREME CASE OF THE MERGE described above: every group
+//                              draws with identical state, so a measured 3,516 primitives become
+//                              292 draws — twelve groups per tick collapsing into one. The merged
+//                              draw carries the LAST group's tag and the whole merged vertex range
+//                              is lerped as a unit, which is correct only while the merged SET is
+//                              the same from tick to tick. What guards that is the vertex-count
+//                              gate: a group joining or leaving changes the total and the draw
+//                              snaps. It is not a complete guard — one group leaving as another of
+//                              the same blade count joins would slip through — and that residual is
+//                              recorded here rather than left for someone to rediscover.
+//
 //   SBR_TAGWIRE=0   disable all of them (they revert to the camera delta alone)
 
 #include "../overrides/overrides.h"
@@ -104,6 +132,7 @@ extern "C" void func_80332c34(CPUState&);   // JPADrawExecStripe::exec(const JPA
 extern "C" void func_803330a4(CPUState&);   // JPADrawExecStripeCross::exec(const JPADrawContext*)
 extern "C" void func_800def6c(CPUState&);   // TConeBeam::drawConeBeam(const GXColor&)
 extern "C" void func_801f383c(CPUState&);   // TSwingBoard::drawOneRope(const TVec3&, const TVec3&)
+extern "C" void func_801e99a8(CPUState&);   // TMapObjGrassGroup::drawNear() const — unnamed in funcs.txt
 
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
@@ -127,6 +156,7 @@ unsigned long g_strips = 0, g_upperCalls = 0, g_lowerCalls = 0, g_mirrorCalls = 
 unsigned long g_mirrorStrips = 0;
 unsigned long g_stripeCalls = 0, g_stripeStrips = 0, g_stripeNoEmitter = 0;
 unsigned long g_beamCalls = 0, g_beamFans = 0;
+unsigned long g_grassCalls = 0, g_grassPrims = 0;
 unsigned long g_ropeTagged = 0, g_ropeWithdrawn = 0;
 
 uint64_t tag_for(u32 self, unsigned strip) {
@@ -151,6 +181,7 @@ void count_wire() { ++g_strips; }
 void count_mirror() { ++g_mirrorStrips; }
 void count_stripe() { ++g_stripeStrips; }
 void count_beam() { ++g_beamFans; }
+void count_grass() { ++g_grassPrims; }
 
 // JPADrawContext::mBaseEmitter is the first member (JPADrawVisitor.hpp:30 — `pcb` is static and
 // takes no space). r4 is the context: these are virtual methods, so r3 is the visitor singleton,
@@ -201,6 +232,11 @@ void ov_draw_lower(CPUState& cpu) {
 void ov_draw_mirror(CPUState& cpu) {
     Scope s(SB_POP_MIRROR, (u32)cpu.gpr[3], g_mirrorCalls, &count_mirror);
     func_8027cc2c(cpu);
+}
+
+void ov_grass_near(CPUState& cpu) {
+    Scope s(SB_POP_GRASS, (u32)cpu.gpr[3], g_grassCalls, &count_grass);
+    func_801e99a8(cpu);
 }
 
 void ov_cone_beam(CPUState& cpu) {
@@ -308,6 +344,13 @@ void sbr_tag_wire_report() {
                        "this build does not know about)."
                      : "");
     lucent::info("taggap",
+                 "grass: {} primitive(s) tagged over {} drawNear call(s){}",
+                 g_grassPrims, g_grassCalls,
+                 g_grassCalls == 0
+                     ? " (no near grass drew — stage-dependent; drawFar is s16 and deliberately not "
+                       "hooked, so a stage of distant grass legitimately reports zero here)"
+                     : "");
+    lucent::info("taggap",
                  "cone beams: {} fan(s) tagged over {} drawConeBeam call(s){}; swing-board ropes: "
                  "{} tagged, {} key(s) withdrawn for drawing twice in a tick",
                  g_beamFans, g_beamCalls,
@@ -330,6 +373,9 @@ SB_OVERRIDE(0x80198278u, ov_draw_upper, "TMapWire::drawUpper",
 SB_OVERRIDE(0x801983a8u, ov_draw_lower, "TMapWire::drawLower",
             "60fps: identity per strip for the wire's two lower strips (same vertex count, so they "
             "must not be allowed to pair against each other)")
+SB_OVERRIDE(0x801e99a8u, ov_grass_near, "TMapObjGrassGroup::drawNear",
+            "60fps: identity for a grass group's swaying blades, whose vertices are rebuilt every "
+            "tick from the manager's sway table")
 SB_OVERRIDE(0x800def6cu, ov_cone_beam, "TConeBeam::drawConeBeam",
             "60fps: identity per fan for the light-shaft cone, whose vertices calcVertices rebuilds "
             "every tick")
