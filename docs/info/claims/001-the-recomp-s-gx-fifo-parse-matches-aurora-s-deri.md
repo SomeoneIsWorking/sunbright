@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-07-28
 tags: native-render
+depends: sms-recomp/runtime/render/state_oracle.cpp, sms-recomp/runtime/devices/dev_gxfifo.cpp
 ---
 
 ## Claim

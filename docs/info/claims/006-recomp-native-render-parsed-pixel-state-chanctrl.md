@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-07-28
 tags: 
+depends: sms-recomp/runtime/render/state_oracle.cpp
 ---
 
 ## Claim

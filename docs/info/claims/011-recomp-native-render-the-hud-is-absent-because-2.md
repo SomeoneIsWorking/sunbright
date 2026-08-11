@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-07-29
 tags: render
+depends: sms-recomp/runtime/render/scene.cpp, sms-recomp/overrides/j3d_capture.cpp
 ---
 
 ## Claim

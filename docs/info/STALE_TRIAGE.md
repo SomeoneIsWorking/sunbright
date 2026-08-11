@@ -1,4 +1,4 @@
-# The 23 stale claims, triaged (2026-08-12)
+# The stale claims, triaged (2026-08-12)
 
 `info.py claim check` reports a claim as STALE when the code its evidence rests on has changed
 since it was verified. That is the right default — it cannot know whether the change mattered — but
@@ -13,47 +13,44 @@ a real edit. Reproduce with the snippet at the bottom.
 the measurement, not an argument about whether the diff looked relevant. This is triage: it says
 which ones a run has to re-establish and which are stale for a bookkeeping reason.
 
-## EDITED — the code behind them really changed (11)
+## EDITED — the code behind them really changed (14)
 
-    C003  GX TEV compare mode: bias==3 selects compare
-    C005  BP write-mask register 0xFE is used constantly
-    C009  Delfino black background was an EFB-copy quad with no render-to-texture
-    C010  GX cull and per-draw scissor were never implemented
-    C012  2D/J2D override work already exists
-    C013  Super Mario Eclipse integration is deferred
-    C014  interp60 pairing tag must be (J3DShape << 32 | mDrawMatrices)
-    C028  the 60fps sub-frame's asymmetry is monotone in alpha
-    C033  interpolated 60fps requires a queued present mode
-    C040  the native renderer still scores edgeIoU 32.2% / lumaCorr +0.72
-    C041  no TEV-stage ablation recovers the gap; no draw samples above unit 0
+    C001 C002 C003 C005 C009 C010 C011 C012 C013 C014 C028 C033 C040 C041
 
-Two of these deserve a note rather than a queue slot. **C040 and C041 went stale on a single
-commit, 0ad8b3f** — the GPU submission ceiling — which touched `native_render.cpp` only to add a
-pass rate limit and a staleness flag on the readback. That changes WHICH frames get scored; it does
-not change whether pinning a texture unit alters a frame, which is a property of the scene. I am
-recording that reasoning and NOT confirming them on it: the whole point of the rot check is that
-"the diff looked irrelevant to me" is not evidence.
+These need a run. Two deserve a note rather than a queue slot: **C040 and C041 went stale on a
+single commit, 0ad8b3f** — the GPU submission ceiling — which touched `native_render.cpp` only to
+add a pass rate limit and a staleness flag on the readback. That changes WHICH frames get scored;
+it does not change whether pinning a texture unit alters a frame, which is a property of the scene.
+That reasoning is recorded and they are NOT confirmed on it: the point of a rot check is that "the
+diff looked irrelevant to me" is not evidence.
 
-## MOVED ONLY — stale for a bookkeeping reason (2)
+## MOVED ONLY — stale for a bookkeeping reason (1)
 
-    C015  the 22.4 MB/tick indexed-array storage upload is architectural
-    C038  the interpolation residual attributed to GAPS is not a fixable gap
+    C006
 
-Their dependency files were relocated by `010e232` ("split sms-recomp/runtime into devices/ and
-render/") with identical content. A move cannot invalidate a claim's subject — but it CAN leave the
-`depends:` path pointing somewhere wrong, which is what `tools/info/registry_paths.py` checks and
-what it found in C003 today.
+Its dependency was relocated with identical content. A move cannot invalidate a claim's subject —
+but it CAN leave the `depends:` path pointing somewhere wrong, which is what
+`tools/info/registry_paths.py` checks and what it found in C003.
 
 ## UNATTRIBUTABLE by this method (10)
 
-    C001 C002 C006 C011 C017 C019 C022 C025 C026 C035
+    C015 C016 C017 C019 C020 C022 C025 C026 C035 C038
 
-For these the dependency path does not appear under that name in the commits the check names —
-usually because the file was renamed at some earlier point, or because the dependency was inferred
-from the claim's prose rather than declared. **This is not a clean result for them.** They are
-stale, unattributed, and the honest reading is that this triage covered 13 of 23. Declaring
-`depends:` on them (see `info.py claim add --depends path.cpp#symbol`) is what would bring them
-into reach.
+The dependency path does not appear under that name in the commits the check names — the file was
+renamed at some earlier point, or the staleness comes from a symbol-scope match this comparison
+does not model. **This is not a clean result for them.** They are stale, unattributed, and this
+triage therefore covers 15 of 25.
+
+## What changed since the first pass
+
+The first run of this triage covered 13 of 23 and left 10 claims unreachable because they declared
+no dependency at all — the check was inferring one from their prose, or failing to. Six now declare
+what they rest on (C001, C002, C006, C011, C019, C020), chosen by reading each claim's evidence
+rather than by pattern-matching its text.
+
+The visible effect is that the stale count went UP, 23 to 25, and blind claims went 0 to 0 by way
+of 1. That is the honest direction: a claim nobody could check is now a claim known to need
+re-checking. A registry that reports fewer problems after an audit has usually hidden two.
 
 ## The dominant cause
 

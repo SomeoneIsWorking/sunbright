@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-07-28
 tags: native-render
+depends: sms-recomp/overrides/j3d_capture.cpp, sms-recomp/runtime/render/state_oracle.cpp
 ---
 
 ## Claim

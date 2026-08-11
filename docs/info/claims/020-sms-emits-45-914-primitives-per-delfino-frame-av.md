@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-05
 tags: perf,60fps
+depends: extern/aurora/lib/gfx/common.cpp, extern/aurora/lib/gx/command_processor.cpp
 ---
 
 ## Claim
