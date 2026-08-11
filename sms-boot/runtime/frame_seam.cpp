@@ -205,6 +205,35 @@ void sb_frame_present(unsigned retraces) {
                      (unsigned long)sb_trace_seq(), VIGetRetraceCount());
     }
 
+    // A CEILING ON GPU SUBMISSION THAT APPLIES EVEN IN TURBO. SB_TURBO exists to stop pacing the
+    // GAME to the wall clock; what it also did was remove the only limit on how fast this process
+    // hands work to the GPU. Aurora replays the whole GX stream and presents once per call here, so
+    // an unpaced run submitted thousands of frames a second back to back and left the graphics ring
+    // no gap for the compositor. On 2026-08-12 that helped make this machine unusable — see
+    // debug_journal/2026-08-12_gpu_hang_guards.md and the matching ceiling in the recomp's
+    // native_frame.cpp. Fast-forwarding does not need a frame per CPU-microsecond; the guest still
+    // runs unpaced between presents, only the submission rate is bounded. SB_MAX_PRESENT_HZ=0
+    // disables it, and has to be typed to do so.
+    {
+        static const int64_t s_minGapNs = [] {
+            const char* e = std::getenv("SB_MAX_PRESENT_HZ");
+            const double hz = e != nullptr ? std::strtod(e, nullptr) : 120.0;
+            return hz > 0.0 ? (int64_t)(1e9 / hz) : (int64_t)0;
+        }();
+        static int64_t s_nextSubmitNs = 0;
+        if (s_minGapNs != 0) {
+            const int64_t now = now_ns();
+            if (s_nextSubmitNs != 0 && now < s_nextSubmitNs) {
+                const int64_t d = s_nextSubmitNs - now;
+                timespec ts{ (time_t)(d / 1000000000LL), (long)(d % 1000000000LL) };
+                nanosleep(&ts, nullptr);
+            }
+            s_nextSubmitNs = (s_nextSubmitNs == 0 || now > s_nextSubmitNs + 4 * s_minGapNs)
+                                 ? now + s_minGapNs
+                                 : s_nextSubmitNs + s_minGapNs;
+        }
+    }
+
     if (!turbo()) {
         s_nextDeadlineNs += (int64_t)retraces * kFieldNs;
         int64_t now = now_ns();

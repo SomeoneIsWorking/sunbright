@@ -244,6 +244,13 @@ bool sbr_render_readback(uint8_t* rgba, int w, int h);
 // ---- Operation attribution (see render_compare.h) ----
 // How many ablations exist, what each is called, and re-rendering the current frame with one of
 // them applied. The result replaces g_cpu, so sbr_render_readback returns the variant.
+// GPU SAFETY. This renderer once hung the graphics ring badly enough that the driver reset the
+// card and the desktop session went down with it. sbr_render_guard_selftest (SBR_GPU_GUARD_SELFTEST=1)
+// proves the two guards that prevent it — the per-frame pass cap and the bounded fence wait —
+// actually fire; sbr_render_gpu_report says at shutdown whether the device survived the run.
+void sbr_render_guard_selftest();
+void sbr_render_gpu_report();
+
 int sbr_render_ablation_count();
 const char* sbr_render_ablation_name(int id);
 bool sbr_render_ablation_render(int id);

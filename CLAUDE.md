@@ -144,6 +144,32 @@ green) → `converge`. Hard-won rules:
 - A build-green convergence is NOT proof: a file can compile yet drop a native LP64/BE fix
   that only shows at runtime. Runtime-verify before trusting a big convergence batch.
 
+## ⛔ THE NATIVE RENDERER DOES NOT RUN WITHOUT THE USER'S EXPLICIT PER-RUN APPROVAL
+
+On 2026-08-12 the SDL3-GPU render path hung this machine's graphics ring repeatedly and took the
+desktop session down twice, the second time hard enough to need a reboot. The machine's owner
+reports that it becomes unusable when and only when this runs. That observation outranks any log
+of ours.
+
+- **`SBR_SDLGPU=1` is gated on `SBR_RENDER_APPROVED=1`**, enforced in `sbr_render_init` (not just
+  in `run-render.sh` — the runs that did the damage set `SBR_SDLGPU=1` on `run-recomp.sh` directly
+  and walked past the script). Without it the renderer stays off and says so; aurora renders the
+  frame exactly as usual.
+- **No agent may set that variable.** It comes from a human at the keyboard who accepts they may
+  lose their session. Ask, and take "no" as the answer.
+- **The first `VK_ERROR_DEVICE_LOST` ends GPU work for the session.** Not after one more check. A
+  following `XIO: fatal IO error` is the same event, not a new environmental one — reading it as
+  separate is what justified five more runs and the second crash.
+- This path renders OFFSCREEN and is only scored against aurora. It puts nothing on screen, so
+  skipping it costs a measurement and nothing else. No measurement is worth another reset.
+
+Guards, all runtime-verified: latch-off on first fault (`gpu_disable`), wall-clock-bounded fence
+waits (`SBR_GPU_FENCE_TIMEOUT`, 5s), ≤4 offscreen passes per frame, a 10 Hz sustained rate limit
+(`SBR_RENDER_MAX_HZ`) because unpaced turbo meant thousands of fenced full-target readbacks a
+second, and a cross-process interlock (`scratch/gpu_fault.stamp` + `tools/render/gpu_preflight.py`,
+15-minute cooldown after any amdgpu reset). Write-up:
+`debug_journal/2026-08-12_gpu_hang_guards.md`.
+
 ## 🚫 NO BANDAIDS — RE the intent, port it
 
 For any bug/crash/hang: find WHERE, name the ROOT CAUSE, then reverse-engineer the behavior

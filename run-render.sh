@@ -42,6 +42,43 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# HARD GATE — THE USER MUST APPROVE EACH RENDER RUN.
+#
+# This script is how the native SDL3-GPU renderer gets launched, and launching it is what makes
+# this machine unusable: on 2026-08-12 it hung the graphics ring repeatedly and took the desktop
+# session down twice, the second time hard enough to need a reboot. The owner of the machine
+# reports, plainly, that it becomes unusable when and only when this runs.
+#
+# So it does not run on anyone's judgement but theirs. No agent, no script, no automated sweep may
+# start it; SBR_RENDER_APPROVED=1 has to come from a human who is at the keyboard and willing to
+# lose their session. That is not a formality — it is the only control that has actually held.
+if [ "${SBR_RENDER_APPROVED:-}" != "1" ]; then
+    cat >&2 <<'GATE'
+[run-render] REFUSING TO START — this run needs explicit human approval.
+
+  The native renderer has hung this machine's GPU and cost the user their desktop session
+  twice. It is offscreen-only: it renders nothing you can see, it exists purely to be scored
+  against aurora. There is no measurement worth another reset.
+
+  If you are the user, at the keyboard, and you accept that this may take your session down:
+
+      SBR_RENDER_APPROVED=1 ./run-render.sh ...
+
+  If you are an agent: you may not set this. Ask.
+GATE
+    exit 1
+fi
+
+# INTERLOCK. This renderer has hung the graphics ring hard enough that amdgpu reset the card and
+# the desktop session went with it — and the runs that escalated it were the ones started right
+# after the previous reset, because nothing here knew a reset had happened. The preflight refuses
+# to start while the GPU is still settling, and says so; SBR_GPU_PREFLIGHT=off overrides it out
+# loud. It is deliberately before the timeout below: a run that should not start does not need a
+# time limit.
+if ! python3 "$HERE/tools/render/gpu_preflight.py"; then
+    exit 1
+fi
+
 # A render run without a timeout wedges the GPU for the next one; cap it by default.
 SECS="${SBR_RUN_SECS:-330}"
 exec timeout -s KILL "$SECS" "$HERE/run-recomp.sh" "${ARGS[@]}"

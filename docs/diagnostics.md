@@ -108,6 +108,7 @@ logger — that is debt to convert, not a feature.
 | `SB_MAPXLU_DBG` | 1 | `decomp/sms/src/Map/Map.cpp` |  |
 | `SB_MARIO_ANIM_DBG` | 1 | `decomp/sms/src/Player/MarioMain.cpp` | gated print |
 | `SB_MARIO_DBG` | 4 | `decomp/sms/src/Player/MarioCap.cpp` | gated print |
+| `SB_MAX_PRESENT_HZ` | 2 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SB_MIRRORBUF_DBG` | 1 | `decomp/sms/src/Map/MapMirror.cpp` | gated print |
 | `SB_MODEL_TRACE` | 5 | `decomp/sms/src/JSystem/J3D/J3DGraphLoader/J3DModelLoader.cpp` | gated print |
 | `SB_MSG_DBG` | 1 | `decomp/sms/src/GC2D/MessageUtil.cpp` | gated print |
@@ -268,6 +269,8 @@ logger — that is debt to convert, not a feature.
 | `SBR_FORCE_DASHBLUR` | 1 | `sms-recomp/frame_interp/effects_afterimage.cpp` |  |
 | `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
 | `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
+| `SBR_GPU_FENCE_TIMEOUT` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_GPU_GUARD_SELFTEST` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_INTERP60` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
 | `SBR_INTERP60_ACTCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
@@ -337,8 +340,10 @@ logger — that is debt to convert, not a feature.
 | `SBR_PTIME_LO` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_QUIT_AFTER` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_RASTER_SRC` | 1 | `sms-recomp/overrides/j3d_capture.cpp` |  |
+| `SBR_RENDER_APPROVED` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_RENDER_DEPTHVIZ` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
 | `SBR_RENDER_DUMP` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_RENDER_MAX_HZ` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_RENDER_SKIP_SKINNED` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
 | `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp` |  |
@@ -372,4 +377,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**351 switches; 69 still gate a raw print.**
+**356 switches; 69 still gate a raw print.**

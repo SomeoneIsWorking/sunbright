@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <map>
 #include <unordered_map>
 
@@ -51,6 +52,121 @@ SDL_GPUTransferBuffer* g_dl    = nullptr;   // download staging (w*h*4)
 int  g_w = 0, g_h = 0;
 int  g_lastBatches = 0;
 bool g_tried = false, g_ok = false;
+
+// ---- GPU SAFETY LATCH ----------------------------------------------------------------------
+// This renderer hung the graphics ring hard enough that amdgpu reset the device and took the
+// desktop session with it. A GPU hang is not like a host crash: the fault is asynchronous, it
+// belongs to the whole card rather than to this process, and the loser is whoever else is drawing
+// (the compositor). So the rules here are not "report the error and carry on", which is what this
+// file used to do — it logged fifteen consecutive VK_ERROR_DEVICE_LOST submits and kept queueing
+// more work into a device the kernel was already resetting.
+//
+// Once anything goes wrong on the device, this renderer STOPS. Permanently, for the process. The
+// picture is aurora's anyway (this path renders offscreen and is only scored against it), so
+// stopping costs a measurement and nothing else, while continuing costs the user their session.
+bool g_gpuDead = false;
+
+// Latch the renderer off and say why, exactly once. Every GPU entry point checks g_gpuDead first,
+// so this is the single place that decides the path is finished.
+void gpu_disable(const char* why) {
+    if (g_gpuDead) return;
+    g_gpuDead = true;
+    g_ok = false;
+    // Leave a mark the NEXT run can see. An in-process latch protects this run only, and the runs
+    // that escalated a single device loss into a session-killing sequence were the ones started
+    // afterwards — each looking exactly like the first because nothing persisted the failure.
+    // tools/render/gpu_preflight.py reads this and refuses to start until the cooldown passes.
+    if (FILE* f = std::fopen("scratch/gpu_fault.stamp", "wb")) {
+        std::fprintf(f, "%s\n", why);
+        std::fclose(f);
+    }
+    lucent::error("nrender",
+                  "NATIVE RENDERER DISABLED FOR THE REST OF THIS RUN: {}. Everything this path "
+                  "would submit from here is dropped. It renders offscreen and is only scored "
+                  "against aurora, so the frame you see is unaffected — but continuing to submit "
+                  "into a device that has faulted is how a GPU hang becomes a reset of the whole "
+                  "card, which takes the desktop session down with it.",
+                  why);
+}
+
+// Wait for a fence with a WALL-CLOCK BOUND. SDL_WaitForGPUFences blocks forever, so a hung ring
+// meant this process sat in an uninterruptible wait while the kernel reset the card underneath it,
+// and the run had to be killed from outside. A bound turns a hang into a diagnosis: if the GPU has
+// not finished a single offscreen pass in this long, it is not going to.
+//
+// The budget is generous on purpose — a heavily loaded card can legitimately take a while — but it
+// is finite, which is the entire point.
+// How many offscreen passes this path has submitted for the CURRENT frame. Each one is a full
+// re-render of every batch plus a fenced readback, and the attribution sweep used to queue sixteen
+// of them on top of the baseline — enough sustained work that the driver's ring timeout fired,
+// amdgpu reset the card, and the desktop session went with it. The cap is not a tuning knob: it is
+// the ceiling above which this renderer is known to be able to hang the machine.
+int g_passesThisFrame = 0;
+
+// WALL-CLOCK RATE LIMIT on offscreen passes. The per-frame cap bounds a burst; this bounds the
+// SUSTAINED load, which is the part that starves the compositor. Under SB_TURBO the game runs
+// unpaced, so "one pass per frame" was thousands of full re-renders and fenced full-target
+// readbacks per second — the graphics ring never got a gap, and kwin's own submissions timed out.
+//
+// The A/B comparator scores one frame in sixty; the measurement never needed every frame. A few
+// passes a second collects the same data and leaves the card to the desktop in between.
+double pass_rate_limit_hz() {
+    static const double v = [] {
+        const char* e = std::getenv("SBR_RENDER_MAX_HZ");
+        return e != nullptr ? std::strtod(e, nullptr) : 10.0;
+    }();
+    return v;
+}
+
+Uint64 g_lastPassNs = 0;
+long g_passesSkippedForRate = 0;
+// g_cpu holds the last frame that read back. When a frame's pass is skipped for the rate limit,
+// that content is a PREVIOUS frame — so readback must refuse rather than hand it over. A skipped
+// measurement is a gap in the data; a stale one scored as fresh is a wrong number.
+bool g_cpuStale = true;
+
+// True when this pass must be skipped to stay under the limit. Never applies to a pass the
+// comparator is waiting on — see the force flag at the call site — because silently dropping the
+// pass that a score is about to read would report a stale frame as a fresh one.
+bool rate_limited() {
+    const double hz = pass_rate_limit_hz();
+    if (hz <= 0.0) return false;                    // 0 disables the limit, deliberately explicit
+    const Uint64 now = SDL_GetTicksNS();
+    const Uint64 minGap = (Uint64)(1e9 / hz);
+    if (g_lastPassNs != 0 && now - g_lastPassNs < minGap) { ++g_passesSkippedForRate; return true; }
+    g_lastPassNs = now;
+    return false;
+}
+constexpr int kMaxPassesPerFrame = 4;   // baseline + reproducibility re-render + one sweep variant,
+                                        // with one spare. The sweep is round-robin precisely so it
+                                        // fits under this.
+
+// SBR_GPU_FENCE_TIMEOUT overrides the budget in seconds; the guard self-test sets it to 0 so the
+// timeout path can be exercised without needing an actually-hung GPU to produce one.
+double fence_timeout_secs() {
+    static const double v = [] {
+        const char* e = std::getenv("SBR_GPU_FENCE_TIMEOUT");
+        return e != nullptr ? std::strtod(e, nullptr) : 5.0;
+    }();
+    return v;
+}
+
+bool wait_fence_bounded(SDL_GPUFence* fence, const char* what) {
+    const Uint64 start = SDL_GetTicksNS();
+    for (;;) {
+        if (SDL_QueryGPUFence(g_dev, fence)) return true;
+        const double waited = (double)(SDL_GetTicksNS() - start) / 1e9;
+        if (waited > fence_timeout_secs()) {
+            lucent::error("nrender",
+                          "{}: the GPU has not signalled its fence in {:.1f}s. Treating the device "
+                          "as hung rather than waiting on it — an unbounded wait here just holds "
+                          "this process open while the driver resets the card.",
+                          what, waited);
+            return false;
+        }
+        SDL_DelayNS(200000);   // 0.2 ms — short enough not to add latency, long enough not to spin
+    }
+}
 
 std::vector<uint8_t> g_cpu;   // last frame read back, top-left origin RGBA8
 
@@ -91,7 +207,14 @@ struct Batch {
 // Textures produced by resolving the render target, keyed by the guest destination address the
 // game will bind. Guest memory is never written, exactly as on hardware+aurora; a bind of the
 // address resolves here instead of decoding zeros.
-std::unordered_map<uint32_t, SDL_GPUTexture*> g_copyTex;
+// The SIZE each copy texture was created at is kept alongside it. It is not decoration: the cache
+// is keyed by guest address alone, and the game is free to copy a different-sized region to the
+// same address later in the run (a half-res reflection buffer reused at full res, a copy whose
+// rect grows with the viewport). Blitting a 640x448 destination rect into a texture allocated at
+// 256x256 writes past the end of that allocation — a GPU-side out-of-bounds WRITE, which is
+// precisely the fault the driver reported (GPUVM fault, RW: 1) before it reset the card.
+struct CopyTex { SDL_GPUTexture* tex = nullptr; int w = 0, h = 0; };
+std::unordered_map<uint32_t, CopyTex> g_copyTex;
 struct CopyPoint { size_t batchIndex; uint32_t dest; int sx, sy, sw, sh, dw, dh; };
 std::vector<CopyPoint> g_copyPoints;
 
@@ -99,25 +222,42 @@ std::vector<CopyPoint> g_copyPoints;
 // Runs BETWEEN render passes — a blit is not a render-pass operation, and the pass must have ended
 // for the target's contents to be defined.
 void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
-    SDL_GPUTexture*& dst = g_copyTex[cp.dest];
+    if (g_gpuDead) return;
+    const int wantW = std::max(cp.dw, 1), wantH = std::max(cp.dh, 1);
+    CopyTex& slot = g_copyTex[cp.dest];
+    // A cached texture that no longer fits the requested destination is REPLACED, not reused. The
+    // alternative — clamping the blit to the old size — would silently resolve into a surface of
+    // the wrong dimensions and hand the game a stretched reflection, trading a GPU fault for a
+    // rendering defect nobody could trace back to here.
+    if (slot.tex != nullptr && (slot.w != wantW || slot.h != wantH)) {
+        lucent::info("nrender",
+                     "EFB copy 0x{:08x}: destination changed size {}x{} -> {}x{}; reallocating. "
+                     "Blitting the larger rect into the old allocation would have been an "
+                     "out-of-bounds GPU write.",
+                     cp.dest, slot.w, slot.h, wantW, wantH);
+        SDL_ReleaseGPUTexture(g_dev, slot.tex);
+        slot.tex = nullptr;
+    }
+    SDL_GPUTexture*& dst = slot.tex;
     if (dst == nullptr) {
         SDL_GPUTextureCreateInfo ci{};
         ci.type = SDL_GPU_TEXTURETYPE_2D;
         ci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        ci.width = (Uint32)std::max(cp.dw, 1);
-        ci.height = (Uint32)std::max(cp.dh, 1);
+        ci.width = (Uint32)wantW;
+        ci.height = (Uint32)wantH;
         ci.layer_count_or_depth = 1;
         ci.num_levels = 1;
         // COLOR_TARGET as well as SAMPLER: a blit writes the destination as a render target.
         ci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
         dst = SDL_CreateGPUTexture(g_dev, &ci);
         if (dst == nullptr) {
-            lucent::error("nrender", "EFB copy: CreateGPUTexture {}x{} failed: {}", cp.dw, cp.dh,
+            lucent::error("nrender", "EFB copy: CreateGPUTexture {}x{} failed: {}", wantW, wantH,
                           SDL_GetError());
             return;
         }
+        slot.w = wantW; slot.h = wantH;
         lucent::info("nrender", "EFB copy -> texture 0x{:08x}: EFB [{},{} {}x{}] -> {}x{}",
-                     cp.dest, cp.sx, cp.sy, cp.sw, cp.sh, cp.dw, cp.dh);
+                     cp.dest, cp.sx, cp.sy, cp.sw, cp.sh, wantW, wantH);
     }
     SDL_GPUBlitInfo bi{};
     bi.source.texture = g_color;
@@ -126,8 +266,10 @@ void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
     bi.source.w = (Uint32)std::clamp(cp.sw, 1, g_w - (int)bi.source.x);
     bi.source.h = (Uint32)std::clamp(cp.sh, 1, g_h - (int)bi.source.y);
     bi.destination.texture = dst;
-    bi.destination.w = (Uint32)std::max(cp.dw, 1);
-    bi.destination.h = (Uint32)std::max(cp.dh, 1);
+    // Belt and braces: the rect is clamped to the allocation that is actually bound, so even if the
+    // reallocation above were ever bypassed the blit cannot address memory outside the texture.
+    bi.destination.w = (Uint32)std::min(wantW, slot.w);
+    bi.destination.h = (Uint32)std::min(wantH, slot.h);
     bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
     bi.filter = SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cmd, &bi);
@@ -343,18 +485,23 @@ SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
     // subsystem entirely. Uploads are one-time per texture, so the wait costs nothing steady-state.
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (fence == nullptr) {
-        // NEVER silent. This path used to fall through with no else: the wait was skipped, g_dl was
-        // mapped anyway, and its STALE contents were copied into g_cpu — so a failing submit looked
-        // exactly like a frame that legitimately rendered nothing, forever. sbr_render_readback is
-        // only a memcpy of g_cpu, so every downstream consumer (coverage, the A/B, frame dumps)
-        // reports a frozen picture with no indication anything failed.
-        lucent::error("nrender", "submit+fence FAILED: {} — g_cpu keeps its previous contents, so "
-                                 "coverage/dumps from here are STALE, not empty",
-                      SDL_GetError());
+        // A failed submit is a DEAD DEVICE, not a skipped frame. This used to log and continue,
+        // which is how the run got fifteen consecutive VK_ERROR_DEVICE_LOST lines while the kernel
+        // was resetting the card.
+        gpu_disable(std::string("texture upload submit failed: ").append(SDL_GetError()).c_str());
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        SDL_ReleaseGPUTexture(g_dev, t);
+        return nullptr;
     }
-    if (fence != nullptr) {
-        SDL_WaitForGPUFences(g_dev, true, &fence, 1);
-        SDL_ReleaseGPUFence(g_dev, fence);
+    const bool signalled = wait_fence_bounded(fence, "texture upload");
+    SDL_ReleaseGPUFence(g_dev, fence);
+    if (!signalled) {
+        gpu_disable("the GPU stopped signalling fences during a texture upload");
+        // The staging buffer is deliberately LEAKED here. Freeing memory the GPU may still be
+        // reading is what caused a device loss in this function once already, and on a device we
+        // have just declared hung there is no fence that can tell us it is safe. A few hundred KB
+        // held to the end of a process that is shutting down anyway is the cheaper mistake.
+        return nullptr;
     }
     SDL_ReleaseGPUTransferBuffer(g_dev, tb);
     return t;
@@ -614,7 +761,27 @@ SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
 bool sbr_render_enabled() { return enabled(); }
 
 bool sbr_render_init(int w, int h) {
+    if (g_gpuDead) return false;   // never re-arm a path that has already faulted the device
     if (g_tried) return g_ok && g_w == w && g_h == h;
+
+    // THE HUMAN GATE. run-render.sh enforces this too, but the script is not the only way in — the
+    // runs that hung this machine were started by setting SBR_SDLGPU=1 on run-recomp.sh directly,
+    // which walked straight past it. The gate belongs where the device is created.
+    //
+    // This path renders OFFSCREEN and is scored against aurora; it puts nothing on screen. Its
+    // entire value is a measurement, and no measurement is worth another GPU reset on someone
+    // else's machine.
+    if (const char* ok = std::getenv("SBR_RENDER_APPROVED"); ok == nullptr || ok[0] != '1') {
+        g_tried = true;
+        g_ok = false;
+        lucent::warn("nrender",
+                     "the native renderer is GATED OFF: SBR_SDLGPU=1 was set, but "
+                     "SBR_RENDER_APPROVED=1 was not. This renderer has hung this machine's GPU and "
+                     "cost its owner their desktop session twice, so it starts only when a human "
+                     "at the keyboard says so. Aurora renders the frame as usual; only the native "
+                     "A/B measurement is missing from this run.");
+        return false;
+    }
     g_tried = true;
 
     // Aurora has already SDL_Init'd video (it owns the window); this reuses that. SDL3 GPU runs its
@@ -728,14 +895,20 @@ void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw,
 // copy replaces the frame while a transparent one leaves it alone.
 void sbr_render_dump_copy(uint32_t addr, const char* path) {
     const auto it = g_copyTex.find(addr);
-    if (it == g_copyTex.end() || it->second == nullptr) {
+    if (it == g_copyTex.end() || it->second.tex == nullptr) {
         lucent::info("nrender", "dump-copy 0x{:08x}: no copy surface registered", addr);
         return;
     }
-    int w = 0, h = 0;
-    for (const CopyPoint& cp : g_copyPoints)
-        if (cp.dest == addr) { w = cp.dw; h = cp.dh; }
-    if (w <= 0 || h <= 0) { w = 320; h = 224; }
+    // The size comes from the ALLOCATION, not from a copy point. The old code scanned
+    // g_copyPoints for a matching destination and fell back to a hardcoded 320x224 when it found
+    // none — either of which can name a larger rect than the texture actually is, making the
+    // download read past the end of it. The texture knows its own size; ask it.
+    const int w = it->second.w, h = it->second.h;
+    if (w <= 0 || h <= 0) {
+        lucent::info("nrender", "dump-copy 0x{:08x}: surface registered with no recorded size",
+                     addr);
+        return;
+    }
     SDL_GPUTransferBufferCreateInfo tci{};
     tci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
     tci.size = (Uint32)(w * h * 4);
@@ -744,13 +917,20 @@ void sbr_render_dump_copy(uint32_t addr, const char* path) {
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     SDL_GPUCopyPass* cp2 = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion reg{};
-    reg.texture = it->second; reg.w = (Uint32)w; reg.h = (Uint32)h; reg.d = 1;
+    reg.texture = it->second.tex; reg.w = (Uint32)w; reg.h = (Uint32)h; reg.d = 1;
     SDL_GPUTextureTransferInfo tti{};
     tti.transfer_buffer = tb; tti.pixels_per_row = (Uint32)w; tti.rows_per_layer = (Uint32)h;
     SDL_DownloadFromGPUTexture(cp2, &reg, &tti);
     SDL_EndGPUCopyPass(cp2);
     SDL_GPUFence* f = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
-    if (f != nullptr) { SDL_WaitForGPUFences(g_dev, true, &f, 1); SDL_ReleaseGPUFence(g_dev, f); }
+    if (f == nullptr) { gpu_disable("dump-copy submit failed"); SDL_ReleaseGPUTransferBuffer(g_dev, tb); return; }
+    if (!wait_fence_bounded(f, "dump-copy")) {
+        SDL_ReleaseGPUFence(g_dev, f);
+        gpu_disable("the GPU stopped signalling fences during an EFB-copy dump");
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        return;
+    }
+    SDL_ReleaseGPUFence(g_dev, f);
     if (void* m = SDL_MapGPUTransferBuffer(g_dev, tb, false)) {
         const uint8_t* px = (const uint8_t*)m;
         double sa = 0.0;
@@ -768,11 +948,12 @@ void sbr_render_dump_copy(uint32_t addr, const char* path) {
 
 bool sbr_render_is_copy_surface(uint32_t addr) {
     const auto it = g_copyTex.find(addr);
-    return it != g_copyTex.end() && it->second != nullptr;
+    return it != g_copyTex.end() && it->second.tex != nullptr;
 }
 
 void sbr_render_begin(float r, float g, float b, float a) {
-    if (!g_ok) return;
+    if (!g_ok || g_gpuDead) return;
+    g_passesThisFrame = 0;
     g_clear = SDL_FColor{r, g, b, a};
     g_verts.clear();
     g_batches.clear();
@@ -794,7 +975,7 @@ std::map<uint32_t, long> g_unit1Use;
 
 void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[8],
                      const SbrTevState& tevState) {
-    if (!g_ok || verts == nullptr || count < 3) return;
+    if (!g_ok || g_gpuDead || verts == nullptr || count < 3) return;
     for (unsigned st = 0; st < tevState.numStages && st < 16; ++st)
         if (tevState.stage[st].texEnable && (tevState.stage[st].texmap & 7) == 1) {
             g_unit1Use[tex[1].addr] += count;
@@ -847,7 +1028,7 @@ void render_pass_into_cpu(uint32_t ablation);
 // pass, fence, map — is the shape every later milestone keeps; only what goes INSIDE the render
 // pass grows (per-material pipelines, textures, TEV).
 void sbr_render_end() {
-    if (!g_ok) return;
+    if (!g_ok || g_gpuDead) return;
     g_lastVerts = (int)g_verts.size();
     g_lastBatches = (int)g_batches.size();
 
@@ -883,7 +1064,12 @@ void sbr_render_end() {
     }
 
     SDL_SubmitGPUCommandBuffer(cmd);
+    if (rate_limited()) {
+        g_cpuStale = true;   // nothing rendered this frame; readback refuses until one does
+        return;
+    }
     render_pass_into_cpu(0);
+    g_cpuStale = false;
     // IS THE PASS REPRODUCIBLE? Render the identical pass twice and compare. This separates "the
     // ablation changed the picture" from "re-rendering changes the picture", which the sweep's
     // control caught but could not localise.
@@ -922,6 +1108,20 @@ const int g_batchLimitEnv = [] {
 
 
 void render_pass_into_cpu(uint32_t ablation) {
+    if (g_gpuDead) return;
+    if (++g_passesThisFrame > kMaxPassesPerFrame) {
+        // Loud, and once per frame rather than per attempt: a silently dropped pass would show up
+        // as a stale readback scored as if it were fresh.
+        if (g_passesThisFrame == kMaxPassesPerFrame + 1)
+            lucent::error("nrender",
+                          "REFUSING a {}th offscreen pass this frame (cap {}). Each pass is a full "
+                          "re-render plus a fenced readback; queueing them without bound is what "
+                          "hung the graphics ring and cost the user their desktop session. "
+                          "Whatever asked for this pass must spread its work across frames — the "
+                          "ablation sweep does exactly that.",
+                          g_passesThisFrame, kMaxPassesPerFrame);
+        return;
+    }
     const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
     // Is the texture cache the SAME on a re-render as it was on the first render of this frame?
     // The control ablation renders untextured, and an empty/short g_texs is the only way this pass
@@ -1019,8 +1219,8 @@ void render_pass_into_cpu(uint32_t ablation) {
                 // memory (which the hardware never writes and which decodes to zeros).
                 const auto cpIt = g_copyTex.find(b.texAddr[m]);
                 const auto texIt = g_texs.find(b.texKey[m]);
-                tsb[m].texture = cpIt != g_copyTex.end() && cpIt->second != nullptr
-                                     ? cpIt->second
+                tsb[m].texture = cpIt != g_copyTex.end() && cpIt->second.tex != nullptr
+                                     ? cpIt->second.tex
                                      : (texIt != g_texs.end() ? texIt->second.tex : g_white);
                 slotMean[m] = (texIt != g_texs.end()) ? texIt->second.mean : -2.0f;
                 const auto sampIt = g_samplers.find(b.sampKey[m]);
@@ -1059,18 +1259,18 @@ void render_pass_into_cpu(uint32_t ablation) {
 
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (fence == nullptr) {
-        // NEVER silent. This path used to fall through with no else: the wait was skipped, g_dl was
-        // mapped anyway, and its STALE contents were copied into g_cpu — so a failing submit looked
-        // exactly like a frame that legitimately rendered nothing, forever. sbr_render_readback is
-        // only a memcpy of g_cpu, so every downstream consumer (coverage, the A/B, frame dumps)
-        // reports a frozen picture with no indication anything failed.
-        lucent::error("nrender", "submit+fence FAILED: {} — g_cpu keeps its previous contents, so "
-                                 "coverage/dumps from here are STALE, not empty",
-                      SDL_GetError());
+        // NEVER silent, and never continue. The old version logged and fell through: the wait was
+        // skipped, g_dl was mapped anyway, and its STALE contents were copied into g_cpu, so a
+        // failing submit looked exactly like a frame that legitimately rendered nothing — forever.
+        // It also kept submitting, which is the part that turned a fault into a card reset.
+        gpu_disable(std::string("render pass submit failed: ").append(SDL_GetError()).c_str());
+        return;
     }
-    if (fence != nullptr) {
-        SDL_WaitForGPUFences(g_dev, true, &fence, 1);
-        SDL_ReleaseGPUFence(g_dev, fence);
+    const bool signalled = wait_fence_bounded(fence, "render pass");
+    SDL_ReleaseGPUFence(g_dev, fence);
+    if (!signalled) {
+        gpu_disable("the GPU stopped signalling fences during an offscreen render pass");
+        return;   // g_cpu keeps its previous contents; nothing downstream may treat them as fresh
     }
     if (void* mapped = SDL_MapGPUTransferBuffer(g_dev, g_dl, false)) {
         std::memcpy(g_cpu.data(), mapped, g_cpu.size());
@@ -1335,7 +1535,10 @@ bool sbr_render_dump(const char* path) {
 }
 
 bool sbr_render_readback(uint8_t* rgba, int w, int h) {
-    if (!g_ok || w != g_w || h != g_h || rgba == nullptr) return false;
+    // g_gpuDead matters here even though this is a plain memcpy: g_cpu holds the LAST frame that
+    // read back successfully, and once the device is gone that content never refreshes. Returning
+    // it would feed the A/B comparator a frozen picture scored as a live one.
+    if (!g_ok || g_gpuDead || g_cpuStale || w != g_w || h != g_h || rgba == nullptr) return false;
     std::memcpy(rgba, g_cpu.data(), (size_t)w * h * 4);
     return true;
 }
@@ -1373,6 +1576,69 @@ const char* const kAblationName[] = {
 };
 }
 
+// PROVE THE GUARDS FIRE. A safety latch nobody has watched trip is indistinguishable from one
+// that cannot, and the whole reason these exist is that the renderer took the machine's GPU down
+// while every log line said things were fine. Run with SBR_GPU_GUARD_SELFTEST=1.
+//
+//   fence   — sets the wait budget to 0s, so the very first pass reports a hung GPU and latches
+//             the renderer off. The run MUST continue afterwards with aurora still presenting.
+//   passcap — asks for more offscreen passes in one frame than the cap allows and requires the
+//             surplus to be refused.
+//
+// Both are checked, and a self-test that fails to trip its guard is itself a failure — it reports
+// that the guard is inert rather than passing quietly.
+void sbr_render_guard_selftest() {
+    const char* e = std::getenv("SBR_GPU_GUARD_SELFTEST");
+    if (e == nullptr || e[0] != '1') return;
+    if (!g_ok || g_gpuDead) {
+        lucent::error("nrender", "GUARD SELF-TEST cannot run: the renderer is not initialised "
+                                 "(g_ok={}, gpuDead={}). This is not a pass.", g_ok, g_gpuDead);
+        return;
+    }
+
+    // The pass cap, on a live device: ask for more offscreen passes in one frame than the cap
+    // allows and require the surplus to be refused.
+    g_passesThisFrame = 0;
+    for (int i = 0; i < kMaxPassesPerFrame + 2; ++i) render_pass_into_cpu(0);
+    const bool capHeld = g_passesThisFrame > kMaxPassesPerFrame;
+    lucent::info("nrender", "GUARD SELF-TEST passcap: asked for {} passes with a cap of {}; "
+                            "counter reached {} -> {}",
+                 kMaxPassesPerFrame + 2, kMaxPassesPerFrame, g_passesThisFrame,
+                 capHeld ? "REFUSED the surplus, as required" : "NO REFUSAL — THE CAP IS INERT");
+    g_passesThisFrame = 0;
+
+    // The fence timeout and the latch are NOT exercised from here, and this says so rather than
+    // implying coverage it does not have. They cannot be: the budget is read once and cached, and
+    // the first thing that waits on a fence is the white-texture upload inside sbr_render_init —
+    // long before this runs. Exercising them is a whole run of its own:
+    //
+    //     SBR_GPU_FENCE_TIMEOUT=0 ... SBR_SDLGPU=1
+    //
+    // which must print "the GPU has not signalled its fence in 0.0s" followed by "NATIVE RENDERER
+    // DISABLED FOR THE REST OF THIS RUN", and must then complete normally with aurora presenting.
+    // Verified on 2026-08-12; see debug_journal/2026-08-12_gpu_hang_guards.md.
+    lucent::info("nrender", "GUARD SELF-TEST fence: NOT COVERED by this test — the budget is "
+                            "cached before this point. Run with SBR_GPU_FENCE_TIMEOUT=0 to "
+                            "exercise the timeout and the latch; the run must disable the "
+                            "renderer at init and still finish.");
+}
+
+// Reported at shutdown so a run that quietly lost its GPU is distinguishable from one that never
+// used it. Silence would otherwise read as success.
+void sbr_render_gpu_report() {
+    if (!enabled()) return;
+    if (g_gpuDead)
+        lucent::warn("nrender", "the native renderer was DISABLED mid-run after a GPU fault. Every "
+                                "native measurement after that point is missing, not zero.");
+    else if (g_ok)
+        lucent::info("nrender", "native renderer ran to the end with no GPU fault; fence budget "
+                                "{:.1f}s, at most {} offscreen passes per frame, rate limit "
+                                "{:.1f} Hz ({} frame(s) skipped to stay under it — those are gaps "
+                                "in the measurement, not zeroes).",
+                     fence_timeout_secs(), kMaxPassesPerFrame, pass_rate_limit_hz(),
+                     g_passesSkippedForRate);
+}
+
 int sbr_render_ablation_count() { return (int)(sizeof kAblationName / sizeof kAblationName[0]); }
 const char* sbr_render_ablation_name(int id) {
     return (id >= 0 && id < sbr_render_ablation_count()) ? kAblationName[id] : "?";
@@ -1381,7 +1647,7 @@ const char* sbr_render_ablation_name(int id) {
 // Re-render the frame already uploaded by sbr_render_end with one operation ablated. The result
 // lands in g_cpu, so sbr_render_readback returns it exactly as for the baseline.
 bool sbr_render_ablation_render(int id) {
-    if (!g_ok || id <= 0 || id >= sbr_render_ablation_count()) return false;
+    if (!g_ok || g_gpuDead || id <= 0 || id >= sbr_render_ablation_count()) return false;
     render_pass_into_cpu((uint32_t)id);
     return true;
 }

@@ -415,6 +415,7 @@ void interp_reports() {
 // everything it learned afterwards.
 void final_reports() {
     sbr_arena_guard_report();
+    sbr_render_gpu_report();
     sbr_gfxdb_flush();
     sbr_gfxdb_report();
     if (sbr_lerp_enabled()) {
@@ -423,8 +424,55 @@ void final_reports() {
     }
 }
 
+// A CEILING ON HOW FAST WE MAY HAND WORK TO THE GPU, which applies even under SB_TURBO.
+//
+// SB_TURBO exists to stop pacing the GAME to the wall clock, so a diagnostic run reaches its
+// interesting frame quickly. What it actually did was remove the only limit on how fast this
+// process submits GPU work: pace_fields() returns immediately, so aurora replayed the whole GX
+// stream and presented as fast as the CPU could drive it — thousands of frames a second, back to
+// back, leaving the graphics ring no gap for anyone else. On 2026-08-12 that was one of the two
+// ways this project made the machine unusable (the other was the native renderer's own passes).
+// Every automated run on this project sets SB_TURBO=1, so every automated run did this.
+//
+// Fast-forwarding does not require submitting a frame per CPU-microsecond. The ceiling is on
+// PRESENTS, so the guest keeps running unpaced between them and the run is still far faster than
+// real time; only the GPU load is bounded. 0 disables it, and has to be typed to do so.
+int64_t present_min_gap_ns() {
+    static const int64_t v = [] {
+        const char* e = std::getenv("SB_MAX_PRESENT_HZ");
+        const double hz = e != nullptr ? std::strtod(e, nullptr) : 120.0;
+        return hz > 0.0 ? (int64_t)(1e9 / hz) : (int64_t)0;
+    }();
+    return v;
+}
+
+// Sleep just enough to keep presents under the ceiling. Deliberately a SLEEP rather than a skip:
+// dropping a present would change what the game and every diagnostic see, and this needs to be a
+// change in timing only. Costs nothing when the ceiling is not being hit.
+void throttle_gpu_submission() {
+    const int64_t gap = present_min_gap_ns();
+    if (gap == 0) return;
+    static int64_t nextNs = 0;
+    static long throttled = 0;
+    const int64_t now = now_ns();
+    if (nextNs != 0 && now < nextNs) {
+        ++throttled;
+        const int64_t d = nextNs - now;
+        timespec ts{(time_t)(d / 1000000000), (long)(d % 1000000000)};
+        nanosleep(&ts, nullptr);
+        // Report on a slow cadence so a run that is being held back says so. Silence here would
+        // mean "the ceiling is not binding" and "the ceiling is not wired" look identical.
+        if ((throttled % 2000) == 0)
+            lucent::debug("frame", "GPU submission ceiling held back {} present(s) so far "
+                                   "({:.0f} Hz cap, SB_MAX_PRESENT_HZ=0 disables)",
+                          throttled, 1e9 / (double)gap);
+    }
+    nextNs = (nextNs == 0 || now > nextNs + 4 * gap) ? now + gap : nextNs + gap;
+}
+
 void present_and_reopen(bool& frameActive) {
     ++g_present_count;   // PRESENTS, not game ticks — the two coincide today (one present per tick)
+    throttle_gpu_submission();
 
     // SBR_PRESENT_TIMING=1: wall-clock gap between consecutive presents. A present COUNT of 60/s
     // says nothing about what reaches the display — if the two presents of a tick land back-to-back
@@ -613,6 +661,9 @@ void video_wait_for_retrace(CPUState& cpu) {
     // aurora continues to drive the actual picture, so it stays a valid oracle while this is
     // scored against it.
     if (sbr_render_enabled() && sbr_render_init(640, 448)) {
+        // Once per run, and only when asked for: proves the GPU safety guards can fire.
+        static bool guardTested = false;
+        if (!guardTested) { guardTested = true; sbr_render_guard_selftest(); }
         sbr_render_begin(0.10f, 0.40f, 0.80f, 1.0f);
         const float alpha = sbr_scene_render(sbr_scene_now(), sbr_scene_projection());
         sbr_render_end();
@@ -646,32 +697,39 @@ void video_wait_for_retrace(CPUState& cpu) {
                     if (FILE* f = std::fopen(path, "wb")) { std::fwrite(p.data(), 1, p.size(), f);
                                                             std::fclose(f); }
                 };
-                // Only on a frame that HAS geometry: the first presents are the loading screen,
+                // The checksum of each variant against the baseline's, ONE PER FRAME like the
+                // scoring itself. The control renders the real pipeline, so its checksum MUST
+                // equal the baseline's; if it does not, re-rendering the same frame is not
+                // reproducible and the whole attribution table is void.
+                //
+                // This used to sweep all fifteen variants at once on the first two frames with
+                // geometry, to get the checksums together. That is sixteen full offscreen passes
+                // in a single frame, which is exactly the burst that hung the graphics ring and
+                // cost the user their desktop session — the renderer now caps passes per frame and
+                // would refuse most of them anyway. Spreading the checksums costs nothing: each is
+                // a comparison against ITS OWN frame's baseline, which was never a cross-frame
+                // quantity.
+                //
+                // Only on frames that HAVE geometry: the first presents are the loading screen,
                 // where every ablation of an empty frame is trivially identical — a degenerate
                 // input that would read as "the sweep works" when it proves nothing.
-                static long once = 0;
-                const bool tell = sbr_render_last_vertex_count() > 1000 && once++ < 2;
-
-                if (tell) dump("scratch/bin/sweep_baseline.rgba", ab);
-                // ONE VARIANT PER SCORED FRAME, round-robin — not all sixteen. Sixteen extra
-                // 179-draw submit-and-wait passes on top of the baseline is enough sustained work
-                // to trip the driver's ring timeout on this card; amdgpu resets the device, names
-                // sms-recomp as the guilty process, and the run dies before the attribution table
-                // is ever printed (issue #4). Spreading them costs frames, not correctness: the
-                // delta each variant reports is PAIRED against the baseline of the frame it was
-                // rendered on, so variants measured on different frames never enter the same
-                // subtraction. The checksum block still needs the whole set at once, so the two
-                // `tell` frames sweep everything and only the steady state is round-robin.
+                static long told = 0;
+                const bool haveGeom = sbr_render_last_vertex_count() > 1000;
                 const int nAbl = sbr_render_ablation_count();
-                const int only = tell ? 0 : sbr_compare_ablation_to_render();
+                const int only = sbr_compare_ablation_to_render();
+                const bool tell = haveGeom && told < (long)nAbl * 2;
+
+                if (tell && told == 0) dump("scratch/bin/sweep_baseline.rgba", ab);
                 for (int a = 1; a < nAbl; ++a) {
-                    if (only != 0 && a != only) continue;
+                    if (a != only) continue;
                     if (sbr_render_ablation_render(a) && sbr_render_readback(ab.data(), 640, 448)) {
                         if (tell && a == 9) dump("scratch/bin/sweep_pinunit1.rgba", ab);
-                        if (tell)
+                        if (tell) {
+                            ++told;
                             lucent::info("ab", "   sweep checksum: baseline {:016x}  {} {:016x}{}",
                                          base, sbr_render_ablation_name(a), sum(ab),
                                          (sum(ab) == base) ? "  (identical)" : "");
+                        }
                         sbr_compare_submit_variant(a, sbr_render_ablation_name(a), ab.data(),
                                                    640, 448);
                     }

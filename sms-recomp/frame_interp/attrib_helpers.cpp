@@ -100,13 +100,25 @@ std::unordered_map<u32, Singleton> g_singleton;
 // is tagged by default: a cube from an unexamined site keeps the camera delta, which is the
 // conservative answer.
 bool is_known_singleton(u32 site) {
-    // OBSERVED addresses only. MarioMain.cpp has a THIRD GXDrawCube — the silhouette box at
-    // line 287, which only draws while Mario is behind geometry — and its address is deliberately
-    // absent here rather than guessed from an offset: an address nobody has seen the game reach is
-    // a magic constant, and a wrong one would tag some other system's cube. When that branch draws,
-    // the registry gets a row for it, and the row is what adds the entry.
+    // OBSERVED addresses only — an address nobody has seen the game reach is a magic constant, and
+    // a wrong one would tag some other system's cube. The third entry below arrived exactly the way
+    // this comment used to predict it would: the silhouette branch drew, the registry filed a row
+    // for it (`camera-only`, i.e. following the camera but not Mario), and the row is what added it.
+    //
+    // Each is confirmed against the DOL, not inferred from source order. At 0x8024dab0 the US
+    // binary has `bl GXDrawCube`, so 0x8024dab4 is its return address — the site key. The four
+    // instructions before it are `GXSetBlendMode(GX_BM_BLEND, GX_BL_DSTALPHA, GX_BL_INVDSTALPHA,
+    // GX_LO_NOOP)`, colour+alpha update on, `GXSetDstAlpha(GX_ENABLE, 0)`; the two after it are the
+    // `lwz/rlwinm/stw` of `j3dSys.offFlag(0x2)`. That is MarioMain.cpp:287's silhouette block and
+    // nothing else — the two occlusion probes set dst-alpha to 0x10 and 0 with colour update OFF
+    // and are not preceded by a blend-mode change.
+    //
+    // It is a singleton on the same terms as the other two: one TMario, and the site sits inside
+    // `if ((param_1 & 0x80000000) && (unk114 & UNK114_FLAG_VISIBLE))` in one perform pass. The
+    // draws-per-tick check below still polices that rather than trusting it.
     return site == 0x8024d8fcu    // TMario::perform+0x654 — occlusion probe, dst-alpha 0x10
-        || site == 0x8024d96cu;   // TMario::perform+0x6c4 — occlusion probe, dst-alpha 0
+        || site == 0x8024d96cu    // TMario::perform+0x6c4 — occlusion probe, dst-alpha 0
+        || site == 0x8024dab4u;   // TMario::perform+0x80c — silhouette box, blended DSTALPHA
 }
 
 uint64_t singleton_tag(u32 site) {
