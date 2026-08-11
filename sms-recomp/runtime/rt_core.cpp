@@ -265,6 +265,24 @@ void sb_watch_fire(u32 ea, u32 value, int width, void* ret) {
     rt_dump_guest_stack("watchpoint");
 }
 
+// THE WATCHPOINT ONLY SEES GUEST STORES, and that is a hole large enough to hide the bug that
+// prompted this: a heap block's next-link was zeroed while SBR_WATCH sat on it and
+// nothing fired, because the write did not come from recompiled code at all. Two native paths copy
+// straight into guest RAM behind sb_w* — the DVD DMA (dev_di.cpp) and the ARAM DMA (dev_aram.cpp) —
+// and any device that does the same must call this, or the watchpoint quietly under-reports.
+//
+// It reports the RANGE and the writer rather than a value, because that is what a bulk copy has:
+// the interesting fact is "this transfer covered your address", not which byte landed there.
+void sb_watch_range(u32 ea, u32 len, const char* who) {
+    if (g_watch_wa == 0 || len == 0) return;
+    if (g_watch_wa < ea || g_watch_wa >= ea + len) return;
+    lucent::warn("watch", "BULK WRITE from {} covered the watched address: 0x{:08x} + 0x{:x} bytes "
+                          "spans 0x{:08x} (offset 0x{:x} into the transfer). This is a native device "
+                          "copy, not a guest store, which is why the per-store watchpoint is silent.",
+                 who, ea, len, g_watch_wa, g_watch_wa - ea);
+    rt_dump_guest_stack("watchpoint (bulk)");
+}
+
 // ── Paired-single quantized load/store ───────────────────────────────────────
 // Ported from the retired memory_bridge.cpp, which had already root-caused the GQR
 // scale: it is a 6-bit SIGNED value (0-31 positive, 32-63 = -32..-1). Load

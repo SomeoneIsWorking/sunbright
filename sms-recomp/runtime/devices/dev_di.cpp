@@ -83,6 +83,7 @@ void dma_out(const void* src, u32 len) {
         lucent::error("di", "DMA target 0x{:08x} +0x{:x} is outside MEM1", reg(DI_MAR), len);
         std::abort();
     }
+    sb_watch_range(off, len, "DVD DMA (dev_di)");
     std::memcpy(g_ram_base + off, src, len);
 }
 

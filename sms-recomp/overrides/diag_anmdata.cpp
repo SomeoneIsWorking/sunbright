@@ -757,6 +757,7 @@ void record_live(const CPUState& cpu, u32 heapThis, u32 size, u32 ptr, u32 calle
 long g_lastShortfall = 0;
 bool g_shortfallSeen = false;
 unsigned long g_shortfallChanges = 0;
+std::vector<u32> g_prevChain;
 
 void watch_shortfall(const CPUState& cpu, u32 caller, u32 size) {
     const u32 hp = sys_heap(cpu);
@@ -765,8 +766,14 @@ void watch_shortfall(const CPUState& cpu, u32 caller, u32 size) {
     if (lo == 0 || hi <= lo) return;
     unsigned long used = 0, freeb = 0;
     int n = 0;
+    // Keep the CHAIN, not just its total. When the shortfall jumps, the useful question is not how
+    // much vanished but WHERE the list stops agreeing with itself a moment earlier — the last block
+    // still common to both walks is the one whose link was overwritten, and its header address is
+    // what a watchpoint should be pointed at.
+    std::vector<u32> chain;
     for (u32 b = sb_r32(hp + 0x7C); b != 0 && b >= lo && b < hi && n < 4096; b = sb_r32(b + 0x0C)) {
         used += sb_r32(b + 0x04) + 0x10;
+        chain.push_back(b);
         ++n;
     }
     n = 0;
@@ -792,6 +799,32 @@ void watch_shortfall(const CPUState& cpu, u32 caller, u32 size) {
     // nothing at all on a heap that ends up 79 KB short — the loss arrives in small steps, and a
     // threshold picked for readability hid every one of them. Capped at 12 lines so a steady drip
     // does not drown the log, with the count of suppressed changes reported at the end.
+    if (shortfall - g_lastShortfall > 4096) {
+        // The diff that names the broken link. Walk both chains together; the first position where
+        // they diverge is where the list was cut, and the block BEFORE it still holds the link that
+        // was overwritten.
+        size_t i = 0;
+        while (i < chain.size() && i < g_prevChain.size() && chain[i] == g_prevChain[i]) ++i;
+        if (i > 0 && i <= g_prevChain.size()) {
+            const u32 lastGood = chain.empty() ? 0 : chain[i - 1];
+            lucent::warn("anmdata",
+                         "USED LIST CUT: the chain agreed for {} block(s) and then diverged. Last "
+                         "common block {:#010x}; its next link now reads {:#010x}, previously "
+                         "{:#010x}. The word at {:#010x} is what to watch: run again with "
+                         "SBR_WATCH=0x{:08x} and the store that overwrites it will print "
+                         "its own guest stack.",
+                         i, lastGood, lastGood ? sb_r32(lastGood + 0x0C) : 0,
+                         i < g_prevChain.size() ? g_prevChain[i] : 0, lastGood + 0x0C,
+                         lastGood + 0x0C);
+        } else {
+            lucent::warn("anmdata",
+                         "USED LIST CUT at the very head: the previous chain had {} block(s), this "
+                         "one has {}, and they share no prefix. mHeadUsedList itself ({:#010x}) is "
+                         "what to watch.",
+                         g_prevChain.size(), chain.size(), hp + 0x7C);
+        }
+    }
+    g_prevChain.swap(chain);
     if (shortfall != g_lastShortfall) {
         ++g_shortfallChanges;
         if (g_shortfallChanges <= 12) {

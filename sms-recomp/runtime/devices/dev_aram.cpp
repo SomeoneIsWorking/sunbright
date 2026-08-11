@@ -22,6 +22,7 @@
 
 #include "mmio.h"
 #include "aram.h"
+#include "../intrinsics.h"
 
 #include <lucent/log.h>
 
@@ -75,6 +76,7 @@ void do_dma(u32 mm, u32 ar, u32 len, bool to_mram) {
                       mm, ar, len, to_mram ? "AR->MM" : "MM->AR");
         std::abort();
     }
+    if (to_mram) sb_watch_range(mm_off, len, "ARAM DMA (dev_aram, AR->MM)");
     if (to_mram) std::memcpy(g_ram_base + mm_off, g_aram + ar_off, len);
     else         std::memcpy(g_aram + ar_off, g_ram_base + mm_off, len);
 

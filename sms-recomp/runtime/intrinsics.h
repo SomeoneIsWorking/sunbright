@@ -59,11 +59,14 @@ inline u32 sb_r32(u32 ea) { if (u8* p = sb_ram_fast(ea)) { sb_poll_note(ea); u32
 inline u64 sb_r64(u32 ea) { if (u8* p = sb_ram_fast(ea)) { u64 v; __builtin_memcpy(&v,p,8); return __builtin_bswap64(v); } return mem_r64_slow(ea); }
 inline f32 sb_rf32(u32 ea) { u32 b = sb_r32(ea); f32 v; __builtin_memcpy(&v,&b,4); return v; }
 inline f64 sb_rf64(u32 ea) { u64 b = sb_r64(ea); f64 v; __builtin_memcpy(&v,&b,8); return v; }
-// SUNBRIGHT_WATCH_WADDR=hex — write-watch diagnostic: any guest store touching the watched
+// SBR_WATCH=hex — write-watch diagnostic: any guest store touching the watched
 // 8-byte window logs value + the emitted writer function (resolved via dladdr on the host
 // return address). g_watch_wa==0 (default) keeps the hot path to a single predictable branch.
 extern u32 g_watch_wa;                       // memory_bridge.cpp (env-initialized)
 void sb_watch_fire(u32 ea, u32 v, int width, void* host_ra);
+// Same watchpoint, for NATIVE bulk copies into guest RAM (device DMA). A device that memcpy's into
+// g_ram_base without calling this makes the watchpoint silently incomplete.
+void sb_watch_range(u32 ea, u32 len, const char* who);
 inline bool sb_watch_hit(u32 ea) { return __builtin_expect(g_watch_wa != 0, 0) && ((ea ^ g_watch_wa) & ~7u) == 0; }
 inline void sb_w8 (u32 ea, u8  v) { if (sb_watch_hit(ea)) sb_watch_fire(ea, v, 1, __builtin_return_address(0)); if (u8* p = sb_ram_fast(ea)) { *p = v; return; } mem_w8_slow(ea, v); }
 inline void sb_w16(u32 ea, u16 v) { if (sb_watch_hit(ea)) sb_watch_fire(ea, v, 2, __builtin_return_address(0)); if (u8* p = sb_ram_fast(ea)) { u16 b = __builtin_bswap16(v); __builtin_memcpy(p,&b,2); return; } mem_w16_slow(ea, v); }

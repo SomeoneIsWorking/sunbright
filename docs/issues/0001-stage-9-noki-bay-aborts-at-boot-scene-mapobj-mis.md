@@ -202,3 +202,39 @@ Note the counts are what to compare against stage 8, not the sizes: if our findF
 a different NUMBER of files than retail (duplicates, or the "." and ".." entries the archive dump
 shows in every directory), the six arrays are sized differently and the pass that fills them writes
 past the end.
+
+### Note (2026-08-11)
+THE CORRUPTING WRITE IS NAMED (2026-08-11): PSMTXCopy, writing into a CMemBlock HEADER.
+
+Arming the watchpoint on the link that gets cut (SBR_WATCH=0x804242fc) catches it:
+
+    [watch] write 0x00000000 (4 bytes) @ 0x804242fc
+      #2  func_803499bc+0x152   PSMTXCopy
+      #3  func_802d4cf0+0x1e6   (unnamed; symbol list places it inside
+                                 initMtxIndexArray__13J3DSkinDeformFP12J3DModelData)
+
+The block at 0x804242f0 has its 0x10-byte header at 0x804242f0..0x80424300, so its content starts at
+0x80424300 — and the write lands at 0x804242f8/fc, i.e. EIGHT BYTES BELOW the content it should be
+filling. A matrix copy is writing through a pointer that is one 8-byte step short of its buffer, and
+what it lands on is the block's next-link, which is why the used list loses its tail.
+
+That also explains why nothing else lined up: the memory is not over-allocated, no allocator
+misbehaves, and the archive lookup that appears to fail is simply the first caller to need 36 bytes
+after the heap's free list was orphaned.
+
+## Two instrument corrections needed to get here, both worth keeping
+
+  * THE WATCHPOINT ENV VAR IS `SBR_WATCH`, not the `SUNBRIGHT_WATCH_WADDR` that intrinsics.h had
+    documented for who knows how long. Three runs were made with the stale name, all reporting
+    silence from a watchpoint that was never armed. The comment is fixed.
+  * the watchpoint only sees GUEST stores. Two native paths copy straight into guest RAM behind it
+    (the DVD DMA in dev_di.cpp and the ARAM DMA in dev_aram.cpp), and both now call the new
+    sb_watch_range so a bulk transfer covering the watched address reports itself. Neither was the
+    culprit here, but "the watchpoint is silent" could not be trusted until they were covered.
+
+## Next
+
+Read the J3D skin-deform call site at 0x802d4cf0+0x1e6 against the decomp and find which pointer is
+short by 8 — a matrix array indexed from the wrong base, or a destination computed as
+`content - sizeof(header)` somewhere. This is now an ordinary RE question with a named function and
+a known-wrong offset, not a memory mystery.
