@@ -207,7 +207,82 @@ def cmd_set(args):
     print(f"{args.key}: " + ", ".join(f"{a}" for a in args.assignment))
 
 
+def selftest():
+    """Prove this tool can produce the OTHER answer — on both of the things it can get wrong.
+
+    A reader of a registry is only useful if it REFUSES a corpus it cannot read, and if its
+    worklist actually excludes finished work. Both are checked against inputs whose answer is
+    forced, because a tool that has only ever been run on the real file has only ever been shown
+    agreeing with it.
+    """
+    import tempfile
+    global DB
+    saved, failures = DB, []
+
+    def expect(name, fn, want_exit):
+        try:
+            fn()
+            got = "no-exit"
+        except SystemExit as e:
+            got = "exit" if e.code not in (0, None) else "exit0"
+        if got != want_exit:
+            failures.append(f"{name}: expected {want_exit}, got {got}")
+
+    with tempfile.TemporaryDirectory() as d:
+        # 1. A MISSING registry must refuse, not read as "no graphics".
+        DB = os.path.join(d, "absent.tsv")
+        expect("missing file refuses", load, "exit")
+
+        # 2. A registry with a header and no rows must refuse too: "the game drew nothing" and
+        #    "this file has never been written to" are the same emptiness otherwise.
+        DB = os.path.join(d, "empty.tsv")
+        with open(DB, "w", encoding="utf-8") as fh:
+            fh.write("# comment\n" + "\t".join(COLS) + "\n")
+        expect("header-only refuses", load, "exit")
+
+        # 3. A row whose column count is wrong must refuse rather than silently mis-map fields.
+        DB = os.path.join(d, "short.tsv")
+        with open(DB, "w", encoding="utf-8") as fh:
+            fh.write("\t".join(COLS) + "\n0xdead\ttoo\tfew\n")
+        expect("malformed row refuses", load, "exit")
+
+        # 4. The POSITIVE case: a well-formed file loads, and `next` offers only the uncurated row.
+        DB = os.path.join(d, "good.tsv")
+        rows = [
+            ["0xaaaa", "immediate", "sym_a", "plaza", "unknown", "no", "0.0", "500", "9", "1",
+             "2026-01-01", "2026-01-02", "-"],
+            ["0xbbbb", "indexed", "sym_b", "plaza", "yes", "no", "0.0", "9000", "9", "1",
+             "2026-01-01", "2026-01-02", "curated already"],
+        ]
+        with open(DB, "w", encoding="utf-8") as fh:
+            fh.write("\t".join(COLS) + "\n")
+            for r in rows:
+                fh.write("\t".join(r) + "\n")
+        loaded = load()
+        if len(loaded) != 2:
+            failures.append(f"positive case: loaded {len(loaded)} row(s), expected 2")
+        todo = [r for r in loaded if r["re"] in ("unknown", "native-override")]
+        # The bigger row is the curated one, so a worklist that ranked by draws alone would offer
+        # finished work first. This is the case that catches that.
+        if [r["key"] for r in todo] != ["0xaaaa"]:
+            failures.append(f"worklist offered {[r['key'] for r in todo]}, expected ['0xaaaa']")
+
+        # 5. A MEASURED field must be refused by `set`, or curation would be silently discarded by
+        #    the next run.
+        class A:
+            key, assignment = "0xaaaa", ["draws=1"]
+        expect("set refuses a measured field", lambda: cmd_set(A()), "exit")
+
+    DB = saved
+    for f in failures:
+        print(f"FAIL  {f}")
+    print(f"graphics_db selftest: {5 - len(failures)}/5 check(s) passed")
+    return 1 if failures else 0
+
+
 def main():
+    if "--selftest" in sys.argv[1:]:
+        sys.exit(selftest())
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
