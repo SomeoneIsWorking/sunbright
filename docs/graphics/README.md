@@ -41,6 +41,15 @@ emitter address cannot.
   (every draw was a FIRST SIGHTING — the graphic appeared on one tick and never again, so there was
   never a previous pose to interpolate from and there is no verdict to give) · `unmeasured`.
 
+  `2d-correct` is a statement about the PROJECTION, not a proof that nothing was lost. The audit's
+  screen-space motion report (`report_ortho_motion`) measures, per population, whether the ortho
+  geometry actually differs tick to tick. On Delfino exactly one population is provably still
+  (`fill_rect`); the screen wipes, the pollution layer, TSunGlass and the text glyphs all differ on
+  essentially every tick. That does NOT make them defects — a difference may be smooth motion,
+  which has an in-between, or a discrete content change such as a different glyph, which does not,
+  and the measure cannot separate them. Read `2d-correct` as "orthographic, and unexamined beyond
+  that" unless the motion report calls it provably still.
+
   A **first sighting is excluded from the percentage entirely**, on both sides. An object being
   drawn for the first time has nothing to pair with, so counting it as a failure made every
   once-per-tick emitter read `partial` at 99.7% forever, and counting it as a success would credit

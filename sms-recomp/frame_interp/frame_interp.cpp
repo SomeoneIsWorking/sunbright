@@ -25,6 +25,7 @@ void snap_next_interpolation();
 namespace interp {
 void name_population(uint8_t pop, const char* name);
 void report_audit();
+void report_ortho_motion();
 void report_vertex_interp();
 }
 } // namespace aurora::gfx
@@ -147,6 +148,7 @@ void report() {
     if (!is_enabled()) return;
     sbr_pop_register_names();
     aurora::gfx::interp::report_audit();
+    aurora::gfx::interp::report_ortho_motion();
     aurora::gfx::interp::report_vertex_interp();
     lucent::info("interp",
                  "frame interpolation: {} simulation tick(s), {} in-between frame(s) presented, "
