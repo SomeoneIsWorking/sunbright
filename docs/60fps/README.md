@@ -15,6 +15,33 @@ between them.
 
 ---
 
+## The named next piece of work: the MATRIX path refuses a gap, the vertex path does not
+
+Splitting the audit's `camera-only` column by cause (2026-08-11) showed the residual is not one
+failure but three, and which one dominates:
+
+| population | residual | skipped a tick | display-list length changed | refused as discontinuous |
+|---|---|---|---|---|
+| J3D shape (world) | 822 | **562** | 98 | 162 |
+| screen wipe | 304 | **293** | 11 | 0 |
+| shadow volume | 136 | **94** | 30 | 12 |
+| shadow alpha cube | 90 | **90** | 0 | 0 |
+| particle stripe (chain) | 60 | 0 | 60 | 0 |
+
+A gap is an object that drew, did not draw, and drew again. The VERTEX path already handles it: it
+pairs against the last sample up to four ticks old with `alpha` scaled by the spacing —
+`1 - (1 - alpha)/gap` — which is not a loosening of the rule but the correct weighting for two
+samples that are not one tick apart. The MATRIX path (`patch_draw`) refuses outright, so every one
+of those 562 + 293 + 94 + 90 draws snaps for the tick.
+
+Doing the same there means the matrix pairing table has to keep a per-tag STAMP and stop being a
+straight prev/cur swap, which is a change to the core pairing path — it wants its own session and
+its own before/after, not a bolt-on. The length-change residual is a real ceiling and stays: 397 of
+403 count-change draws align better as a suffix, but the winning alignment's mean per-coordinate
+distance is 9.315 against the loser's 10.297, so neither end corresponds.
+
+---
+
 ## What counts as a DEFECT (measured, 2026-08-11)
 
 Not everything that fails to interpolate is a failure. Three fates are correct by construction and
