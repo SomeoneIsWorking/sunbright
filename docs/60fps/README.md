@@ -198,7 +198,7 @@ Three things this had to get right, each of which fails silently otherwise:
   snapshot re-pushes them; vertices have no such path. The lerp is pushed as new vertex data and
   only the interpolated emission's command is repointed at it.
 * **Big-endian floats.** The buffer holds raw GC vertex records — the shader byte-swaps them
-  (`gx/shader.cpp` `bswap32`). A lerp on the native interpretation of those bytes produces garbage
+  (`extern/aurora/lib/gx/shader.cpp`, `bswap32`). A lerp on the native interpretation of those bytes produces garbage
   that still renders.
 * **It must run LAST.** "Direct f32 positions and a tag" also describes a JPA billboard, whose
   positions are baked in EYE space; lerping those across ticks mixes two view transforms. Running
@@ -246,7 +246,7 @@ verdicts in this arc stood on exactly that.
 | | A — stream interpolation | B — substitute & re-issue | C — record & replace |
 |---|---|---|---|
 | switch | `SBR_60FPS` (alias `SBR_LERP60`) | `SBR_INTERP60` + `_ALPHA` | `SBR_INTERP60_REPLACE` |
-| where | `runtime/lerp60.{h,cpp}` → `aurora::gfx::interp` (`extern/aurora/lib/gfx/common.cpp`) | `overrides/interp60_snapshot.cpp` (2951 lines) | `overrides/interp60_replace.{h,cpp}` |
+| where | `runtime/lerp60.{h,cpp}` → `aurora::gfx::interp` (`extern/aurora/lib/gfx/common.cpp`) | `overrides/interp60_snapshot.cpp` (2951 lines) — DELETED, see below | `overrides/interp60_replace.{h,cpp}` — DELETED, see below |
 | mechanism | record the tick's GX stream, rewrite the **recorded frame's matrices** in uniform staging toward the previous tick, present the packet twice | write an interpolated pose into the game's own objects, **re-run** the tick's draw lists from it, restore | record each `J3DModel`'s final draw matrices, **overwrite** the live buffer with `lerp(prev,cur)` for the duration of the sub-frame's draw, restore byte-exactly |
 | runs game code in the sub-frame | **no** | yes — the whole draw-list set | yes — the whole draw-list set |
 | identity/pairing | per-draw TAG emitted at `J3DShape::draw` | actor object address | `(J3DModel, matrix index)` |
@@ -316,28 +316,28 @@ marked otherwise.
 
 | Address | Symbol | File | What it is for |
 |---|---|---|---|
-| `0x802e0390` | `J3DShape::draw` | `overrides/j3d_capture.cpp` | emits the per-draw IDENTITY TAG that lets aurora pair a draw across ticks; untagged draws snap |
-| `0x800335d4` | `CPolarSubCamera::warpPosAndAt(Vec&,Vec&)` | `overrides/camera_cut.cpp` | the game's own camera-discontinuity signal → `snap_next_interpolation()` |
-| `0x80033390` | `CPolarSubCamera::warpPosAndAt(f32,s16)` | `overrides/camera_cut.cpp` | same signal, ratio/yaw overload |
-| `0x8019f83c` | `TShimmer::perform` | `overrides/screen_effects.cpp` | heat haze — records that it SAMPLED the screen this frame |
-| `0x8027c12c` | `TModelWaterManager::drawRefracAndSpec` | `overrides/screen_effects.cpp` | water refraction — same |
-| `TAfterEffect::perform` | dash blur | `overrides/widescreen_effects.cpp` → `overrides/afterimage.cpp` | identifies the EFB copy that is CROSS-FRAME feedback, so it advances once per tick and not twice |
-| `TBathWaterManager::draw_mist` | mist | `overrides/widescreen_effects.cpp` | screen-sampling notification |
-| `TMirrorCamera::perform` | mirror pre-render | `overrides/widescreen_effects.cpp` | screen-sampling notification |
+| `0x802e0390` | `J3DShape::draw` | `sms-recomp/overrides/j3d_capture.cpp` | emits the per-draw IDENTITY TAG that lets aurora pair a draw across ticks; untagged draws snap |
+| `0x800335d4` | `CPolarSubCamera::warpPosAndAt(Vec&,Vec&)` | `sms-recomp/frame_interp/camera.cpp` | the game's own camera-discontinuity signal → `snap_next_interpolation()` |
+| `0x80033390` | `CPolarSubCamera::warpPosAndAt(f32,s16)` | `sms-recomp/frame_interp/camera.cpp` | same signal, ratio/yaw overload |
+| `0x8019f83c` | `TShimmer::perform` | `sms-recomp/frame_interp/effects.h` | heat haze — records that it SAMPLED the screen this frame |
+| `0x8027c12c` | `TModelWaterManager::drawRefracAndSpec` | `sms-recomp/frame_interp/effects.h` | water refraction — same |
+| `TAfterEffect::perform` | dash blur | `sms-recomp/overrides/widescreen_effects.cpp` → `sms-recomp/frame_interp/effects_afterimage.cpp` | identifies the EFB copy that is CROSS-FRAME feedback, so it advances once per tick and not twice |
+| `TBathWaterManager::draw_mist` | mist | `sms-recomp/overrides/widescreen_effects.cpp` | screen-sampling notification |
+| `TMirrorCamera::perform` | mirror pre-render | `sms-recomp/overrides/widescreen_effects.cpp` | screen-sampling notification |
 
-Non-hook seams: `overrides/native_frame.cpp` calls `sbr_afterimage_tick()`,
+Non-hook seams: `sms-recomp/overrides/native_frame.cpp` calls `sbr_afterimage_tick()`,
 `sbr_gxfifo_view_matrix()`, `sbr_camera_cut_take()` → `snap_next_interpolation()`, and
-`sbr_camera_mode_tick()` once per tick; `host/main.cpp` arms `sbr_lerp_enabled()` before the first
+`sbr_camera_mode_tick()` once per tick; `sms-recomp/host/main.cpp` arms `sbr_lerp_enabled()` before the first
 frame is recorded.
 
 ### Path B — substitute & re-issue
 
 | Address | Symbol | File | What it is for |
 |---|---|---|---|
-| `0x802f80d0` | `JDrama::TDisplay::endRendering` | `overrides/interp60_snapshot.cpp` | the sub-frame's EFB→XFB copy |
-| `0x802a4e28` | `TPerformList::perform` | `overrides/interp60_snapshot.cpp` | records the tick's ordered draw lists, which the sub-frame re-issues |
-| `0x802deeb8` | `J3DModel::viewCalc` | `overrides/interp60_snapshot.cpp` | counts model-view rebuilds; **also the recorder for path C** |
-| `0x802fcc94` | `JDrama::TViewObj::testPerform` | `overrides/interp60_snapshot.cpp` | snapshots each actor's transform before its movement |
+| `0x802f80d0` | `JDrama::TDisplay::endRendering` | `overrides/interp60_snapshot.cpp` (DELETED) | the sub-frame's EFB→XFB copy |
+| `0x802a4e28` | `TPerformList::perform` | `overrides/interp60_snapshot.cpp` (DELETED) | records the tick's ordered draw lists, which the sub-frame re-issues |
+| `0x802deeb8` | `J3DModel::viewCalc` | `overrides/interp60_snapshot.cpp` (DELETED) | counts model-view rebuilds; **also the recorder for path C** |
+| `0x802fcc94` | `JDrama::TViewObj::testPerform` | `overrides/interp60_snapshot.cpp` (DELETED) | snapshots each actor's transform before its movement |
 
 Also inside B, not as `SB_OVERRIDE`s: `camera_apply`/`camera_restore` (pose lerp + `C_MTXLookAt`
 rebuild), `TMario::calcAnim` (US `0x80244800`) re-call for the player, and the `PreEntry` view-calc
@@ -498,3 +498,27 @@ final one in the water colour. Identity is (call site, repeat), reusing the same
 the repeat count being data-dependent costs nothing here because every repeat is the same box. All
 846 now interpolate, and the cube population reads **96.0%** at the audit level with zero
 unattributed draws.
+
+## Paths in this document (reconciled 2026-08-12)
+
+Every source path named above was checked against the tree. Two kinds of rot were found and both
+mattered, because this is the document a session reads to find the code:
+
+**Under-qualified paths, now fixed.** `overrides/j3d_capture.cpp`, `host/main.cpp`, `gx/shader.cpp`
+and the rest were written relative to roots that are not this repo's, so following them found
+nothing. They are now fully qualified — and where the code MOVED, the new home was located by its
+hook address rather than by guessing at a rename:
+
+| named as | actually | how confirmed |
+|---|---|---|
+| `overrides/camera_cut.cpp` | `sms-recomp/frame_interp/camera.cpp` | hooks `0x800335d4` / `0x80033390` |
+| `overrides/screen_effects.cpp` | `sms-recomp/frame_interp/effects.h` | hooks `0x8019f83c` / `0x8027c12c` |
+| `overrides/afterimage.cpp` | `sms-recomp/frame_interp/effects_afterimage.cpp` | defines `sbr_afterimage_tick` |
+| `gx/shader.cpp` | `extern/aurora/lib/gx/shader.cpp` | aurora, not this repo |
+
+**Paths that are genuinely gone**, marked `(DELETED)` in place rather than silently repaired:
+`overrides/interp60_snapshot.cpp` and `overrides/interp60_replace.{h,cpp}`, removed in `21aa561`
+when 60fps was rebuilt as one module — `sms-recomp/frame_interp/` — on dusklight's record-and-replace
+model. Paths A and B in the comparison table above therefore describe code that no longer exists.
+That is deliberate: the table's value is the comparison between the three approaches and why C won,
+and deleting the losing rows would delete the reasoning. They are labelled so nobody goes looking.
