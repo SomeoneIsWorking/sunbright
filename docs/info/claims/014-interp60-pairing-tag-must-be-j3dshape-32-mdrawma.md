@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-04
 tags: interp60,j3d
+depends: sms-recomp/frame_interp/tag_deforming.cpp, extern/aurora/lib/gfx/interp.cpp
 ---
 
 ## Claim

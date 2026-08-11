@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-05
 tags: decomp,rng
+depends: decomp/sms/src/MarioUtil/MathUtil.cpp
 ---
 
 ## Claim

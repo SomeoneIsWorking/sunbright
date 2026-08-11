@@ -4,6 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-12
 tags: 
+depends: sms-recomp/runtime/render/native_render.cpp, sms-recomp/runtime/render/render_compare.cpp
 ---
 
 ## Claim
