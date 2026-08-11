@@ -53,6 +53,7 @@ void sbr_pop_register_names() {
     aurora::gfx::interp::name_population(SB_POP_ROPE, "swing-board rope");
     aurora::gfx::interp::name_population(SB_POP_GRASS, "grass (deforming)");
     aurora::gfx::interp::name_population(SB_POP_BRIDGE, "hanging-bridge ropes");
+    aurora::gfx::interp::name_population(SB_POP_COGWHEEL, "balance scale (deforming)");
 }
 
 namespace sb::frame_interp {

@@ -163,6 +163,7 @@
 #include <cstdlib>
 #include <unordered_map>
 
+extern "C" void func_801da308(CPUState&);   // TCogwheel::draw() const
 extern "C" void func_80198278(CPUState&);   // TMapWire::drawUpper() const
 extern "C" void func_801983a8(CPUState&);   // TMapWire::drawLower() const — unnamed in funcs.txt
 extern "C" void func_8027cc2c(CPUState&);   // TModelWaterManager::drawMirror(MtxPtr)
@@ -192,6 +193,7 @@ bool enabled() {
 u32 g_self = 0;        // the object being drawn, 0 when no such draw is in progress
 unsigned g_strip = 0;  // which primitive of that object is about to be emitted
 unsigned long g_strips = 0, g_upperCalls = 0, g_lowerCalls = 0, g_mirrorCalls = 0;
+unsigned long g_cogCalls = 0, g_cogStrips = 0;
 unsigned long g_mirrorStrips = 0;
 unsigned long g_stripeCalls = 0, g_stripeStrips = 0, g_stripeNoEmitter = 0;
 unsigned long g_beamCalls = 0, g_beamFans = 0;
@@ -218,6 +220,7 @@ void on_gx_begin() {
 }
 
 void count_wire() { ++g_strips; }
+void count_cog() { ++g_cogStrips; }
 void count_mirror() { ++g_mirrorStrips; }
 void count_stripe() { ++g_stripeStrips; }
 void count_beam() { ++g_beamFans; }
@@ -268,6 +271,27 @@ void ov_draw_upper(CPUState& cpu) {
 void ov_draw_lower(CPUState& cpu) {
     Scope s(SB_POP_WIRE, (u32)cpu.gpr[3], g_lowerCalls, &count_wire);
     func_801983a8(cpu);
+}
+
+// TCogwheel::draw — Noki Bay's 天秤, the balance scale whose beam and pans hang on the cliff.
+//
+// The registry found it, not a person: the row for 0x801da3a4 (draw__9TCogwheelCFv+0x9c, the return
+// of its first GXBegin) appeared the moment stage 9 became bootable, reading `camera-only` — the one
+// verdict that means "this geometry follows the camera and not its own motion". It only draws in
+// Noki Bay, which is why it went unseen while that stage aborted at boot.
+//
+// It is IMMEDIATE MODE with direct f32 positions: the disassembly writes vertex floats straight into
+// the FIFO at 0xCC008000, computed as a centre plus and minus half-extents held in the object's own
+// fields, with two GXBegin calls per draw. So the motion is entirely in the vertices and no matrix
+// carries it — the vertex path is what reaches this, and all it needs is an identity.
+//
+// The identity is (this, strip index within the call), which is what Scope's GXBegin hook already
+// supplies. Two strips of the same vertex count in one call MUST get separate tags: sharing one
+// would let the second strip pair against the first's previous-tick positions, and they are
+// different parts of the object.
+void ov_cogwheel(CPUState& cpu) {
+    Scope s(SB_POP_COGWHEEL, (u32)cpu.gpr[3], g_cogCalls, &count_cog);
+    func_801da308(cpu);
 }
 
 void ov_draw_mirror(CPUState& cpu) {
@@ -430,6 +454,16 @@ void sbr_tag_wire_report() {
                                   : "",
                  g_ropeTagged, g_ropeWithdrawn);
     lucent::info("taggap",
+                 "balance scale (TCogwheel::draw): {} draw call(s), {} strip(s) tagged{}",
+                 g_cogCalls, g_cogStrips,
+                 g_cogCalls == 0
+                     ? "   <-- NONE. The scale only exists in Noki Bay, so this is expected "
+                       "everywhere else; it is NOT evidence the seam works. Check it in stage 9."
+                 : g_cogStrips == 0
+                     ? "   <-- the draw ran but emitted no primitive, so nothing was tagged. Either "
+                       "the GXBegin hook is not installed or the draw returned early."
+                     : "");
+    lucent::info("taggap",
                  "particle stripes: {} strip(s) tagged over {} chain draw(s); {} call(s) had no "
                  "readable emitter and were left alone{}",
                  g_stripeStrips, g_stripeCalls, g_stripeNoEmitter,
@@ -462,6 +496,10 @@ SB_OVERRIDE(0x80332c34u, ov_stripe, "JPADrawExecStripe::exec",
             "per-particle position can displace")
 SB_OVERRIDE(0x803330a4u, ov_stripe_cross, "JPADrawExecStripeCross::exec",
             "60fps: identity per strip for a crossed particle chain, same reason as Stripe")
+SB_OVERRIDE(0x801da308u, ov_cogwheel, "TCogwheel::draw",
+            "60fps: identity per strip for Noki Bay's balance scale, whose beam vertices are written "
+            "into the FIFO as direct floats every tick (found by the graphics registry, reading "
+            "camera-only, once the arena fix made stage 9 bootable)")
 SB_OVERRIDE(0x8027cc2cu, ov_draw_mirror, "TModelWaterManager::drawMirror",
             "60fps: identity per fan for the water-mirror mask, which is rebuilt every tick around "
             "Mario's position and so moves with him")

@@ -135,15 +135,24 @@ def scan_code():
 
 
 def macro_names():
-    """Names #defined in the code are MACROS, not switches. SB_LOGC and friends are the logger's own
-    API and matching them as phantom env vars is the tool inventing work — the same false-positive
-    class as counting comments when sizing a symbol."""
+    """Names DECLARED in the code are identifiers, not switches. SB_LOGC and friends are the logger's
+    own API and matching them as phantom env vars is the tool inventing work — the same
+    false-positive class as counting comments when sizing a symbol.
+
+    Enum constants count too, and for the same reason: `SB_POP_COGWHEEL = 18` in populations.h is
+    read by code, so a note that mentions it is pointing at something that exists — the opposite of
+    a phantom. This tool flagged exactly that and blocked a commit whose only sin was naming a real
+    C identifier in a registry note."""
     names = set()
     for path in tracked_files(CODE_DIRS):
         if not path.endswith((".h", ".hpp", ".c", ".cpp", ".cc")):
             continue
-        for m in re.finditer(r'^\s*#\s*define\s+((?:SB|SBR|AURORA)_[A-Z0-9_]+)', read_text(path),
-                             re.M):
+        text = read_text(path)
+        for m in re.finditer(r'^\s*#\s*define\s+((?:SB|SBR|AURORA)_[A-Z0-9_]+)', text, re.M):
+            names.add(m.group(1))
+        # Enum constants: `SB_POP_COGWHEEL = 18,` or a bare `SB_FOO,` inside an enum body.
+        for m in re.finditer(r'^\s*((?:SB|SBR|AURORA)_[A-Z0-9_]+)\s*(?:=[^,;]*)?,\s*(?://.*)?$',
+                             text, re.M):
             names.add(m.group(1))
     return names
 

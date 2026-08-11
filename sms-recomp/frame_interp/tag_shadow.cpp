@@ -64,9 +64,12 @@
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace aurora::gfx::interp { long tick_index(); }
 
@@ -285,6 +288,11 @@ unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
 // request() never fired with an actor in scope, or the position did not match at draw time — and
 // without these they are one number.
 unsigned long g_reqShadowCalls = 0, g_noteReqCalls = 0, g_noteReqWithActor = 0, g_lookupMiss = 0;
+// WHO ASKS FOR A SHADOW WITHOUT BEING AN ACTOR. "3,145 request() calls had no actor in scope" is a
+// count, and a count cannot be worked on — it names no code. These are the requests whose owner can
+// never be resolved, and one of them poisons its whole group's membership key, so the group's
+// alpha-restore box snaps for the tick. Keyed by the RETURN ADDRESS, which names the call site.
+std::unordered_map<u32, unsigned long> g_reqNoActorSite;
 unsigned long g_ownerGuardQuad = 0, g_ownerGuardReq = 0, g_ownerCalls = 0, g_lookupHit = 0;
 unsigned long g_mapMaxSize = 0;
 
@@ -338,6 +346,27 @@ void sbr_tag_shadow_report() {
                  "HIT; the position map peaked at {} entries in a tick.",
                  g_reqShadowCalls, g_noteReqCalls, g_noteReqWithActor, g_lookupMiss, g_ownerCalls,
                  g_ownerGuardQuad, g_ownerGuardReq, g_lookupHit, g_mapMaxSize);
+    // The un-owned requests, BY CALL SITE. Printed whether or not there are any: "no site" and "the
+    // histogram was never filled" are different facts, and only one of them means the join is
+    // complete.
+    if (g_reqNoActorSite.empty()) {
+        lucent::info("taggap", "shadow owner join: every request() this run arrived with an actor in "
+                               "scope — there is no un-owned call site left to find. (If the run "
+                               "drew no shadows at all this line says nothing; check the counts "
+                               "above.)");
+    } else {
+        std::vector<std::pair<u32, unsigned long>> sites(g_reqNoActorSite.begin(),
+                                                         g_reqNoActorSite.end());
+        std::sort(sites.begin(), sites.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (const auto& [lr, n] : sites) {
+            lucent::info("taggap",
+                         "shadow owner join: {} request(s) came from return address {:#010x} ({}) "
+                         "with NO actor in scope, so their owner cannot be established and every "
+                         "shadow GROUP containing one snaps instead of interpolating.",
+                         n, lr, sbr_gfxdb_symbolize(lr));
+        }
+    }
     lucent::info("taggap",
                  "shadow tagging: {} volume + {} shine-slice + {} model draw(s) given an identity "
                  "over {} tick(s); {} keyed by their OWNING ACTOR and {} still by slot (the owner "
@@ -487,6 +516,9 @@ void discover_layout(u32 manager, u32 req) {
 
 void note_request(CPUState& cpu) {
     ++g_noteReqCalls;
+    if (enabled() && sbr_lerp_enabled() && g_requestingActor == 0) {
+        ++g_reqNoActorSite[(u32)cpu.lr];
+    }
     if (!enabled() || !sbr_lerp_enabled() || g_requestingActor == 0) return;
     ++g_noteReqWithActor;
     const u32 req = (u32)cpu.gpr[4];
