@@ -18,6 +18,18 @@
 // same count, so the count gate would not catch it — and smear the rope between two of its own
 // faces. That is the marukage teleport again, and it is worse than snapping.
 //
+// TWO COUNTERS, TWO POPULATIONS — read the report with this in mind. The counts below are GUEST
+// PRIMITIVES (one per GXBegin); the interpolation audit counts GPU DRAWS, and aurora merges
+// consecutive primitives that share state into one. Measured on two independent seams: the wire
+// emits 1,779 primitives and the audit sees 1,184 draws (drawLower's two strips merge), and the
+// cone beam emits 7,008 fans for 3,492 draws (each Aux call's two fans merge). Neither is a loss;
+// they are different quantities, and this project has paid six times for comparing two of those.
+//
+// It also means the strip index is usually not load-bearing: merged primitives are ONE draw with
+// one tag, so they cannot pair against each other anyway. It stays because the merge is a property
+// of the state they happen to share — a future state change between two strips splits them again,
+// and then the index is the only thing standing between a rope and its own other face.
+//
 // So the tag carries a STRIP INDEX as well as the object. The index is an ordinal, which this
 // project has had to withdraw twice, and the difference here is what makes it sound rather than
 // convenient: both of drawLower's strips are UNCONDITIONAL and emitted in a fixed order in straight-
@@ -51,9 +63,31 @@
 // the same length — the vertex-count gate covers the rest. That is a much narrower window than the
 // particle pool's, which recycles addresses continuously by design.
 //
-//   SBR_TAGWIRE=0   disable both (they revert to the camera delta alone)
+// TWO MORE, FOUND THE SAME WAY — by playing a stage the registry had never seen. Running Gelato
+// (stage 4) and stage 6 added seven rows, two of them camera-only:
+//
+//   TConeBeam::drawConeBeam    the light-shaft cone. drawConeBeamAux emits TWO triangle fans of
+//                              mVtxCount+2 from a vertex array calcVertices rebuilds every tick,
+//                              and drawConeBeam calls it three times unconditionally plus a fourth
+//                              time when unk1C is set (decomp/sms src/Enemy/beam.cpp). Every fan
+//                              draws the SAME vertices under different render state, so fan k this
+//                              tick and fan k last tick are the same geometry — and because the
+//                              conditional call is LAST, indices 0..5 are a stable prefix and the
+//                              optional 6,7 simply have nothing to pair with on a tick where they
+//                              did not draw.
+//
+//   TSwingBoard::drawOneRope   the swinging platform's ropes. It emits exactly ONE primitive
+//                              (verified by disassembly: a single GXBegin in the whole function),
+//                              and TSwingBoard::draw calls it TWICE from two fixed call sites. So
+//                              the rope's identity is (board, call site) — two structural keys, no
+//                              ordinal — and it is self-checked the same way Mario's cubes are: a
+//                              site seen drawing twice for one board in one tick has its premise
+//                              broken and loses its tag for the run, loudly.
+//
+//   SBR_TAGWIRE=0   disable all of them (they revert to the camera delta alone)
 
 #include "../overrides/overrides.h"
+#include "frame_interp.h"
 #include "graphics_db.h"
 #include "populations.h"
 
@@ -61,12 +95,15 @@
 #include <lucent/log.h>
 
 #include <cstdlib>
+#include <unordered_map>
 
 extern "C" void func_80198278(CPUState&);   // TMapWire::drawUpper() const
 extern "C" void func_801983a8(CPUState&);   // TMapWire::drawLower() const — unnamed in funcs.txt
 extern "C" void func_8027cc2c(CPUState&);   // TModelWaterManager::drawMirror(MtxPtr)
 extern "C" void func_80332c34(CPUState&);   // JPADrawExecStripe::exec(const JPADrawContext*)
 extern "C" void func_803330a4(CPUState&);   // JPADrawExecStripeCross::exec(const JPADrawContext*)
+extern "C" void func_800def6c(CPUState&);   // TConeBeam::drawConeBeam(const GXColor&)
+extern "C" void func_801f383c(CPUState&);   // TSwingBoard::drawOneRope(const TVec3&, const TVec3&)
 
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
@@ -89,6 +126,8 @@ unsigned g_strip = 0;  // which primitive of that object is about to be emitted
 unsigned long g_strips = 0, g_upperCalls = 0, g_lowerCalls = 0, g_mirrorCalls = 0;
 unsigned long g_mirrorStrips = 0;
 unsigned long g_stripeCalls = 0, g_stripeStrips = 0, g_stripeNoEmitter = 0;
+unsigned long g_beamCalls = 0, g_beamFans = 0;
+unsigned long g_ropeTagged = 0, g_ropeWithdrawn = 0;
 
 uint64_t tag_for(u32 self, unsigned strip) {
     // Strip index in the low bits, object in the high: the same shape the flag and the sea ripple
@@ -111,6 +150,7 @@ void on_gx_begin() {
 void count_wire() { ++g_strips; }
 void count_mirror() { ++g_mirrorStrips; }
 void count_stripe() { ++g_stripeStrips; }
+void count_beam() { ++g_beamFans; }
 
 // JPADrawContext::mBaseEmitter is the first member (JPADrawVisitor.hpp:30 — `pcb` is static and
 // takes no space). r4 is the context: these are virtual methods, so r3 is the visitor singleton,
@@ -163,6 +203,62 @@ void ov_draw_mirror(CPUState& cpu) {
     func_8027cc2c(cpu);
 }
 
+void ov_cone_beam(CPUState& cpu) {
+    Scope s(SB_POP_CONEBEAM, (u32)cpu.gpr[3], g_beamCalls, &count_beam);
+    func_800def6c(cpu);
+}
+
+// ONE ROPE, ONE PRIMITIVE, so no strip counter — the identity is the board and the call site that
+// asked for this rope. Self-checking: the premise is that a site draws one rope per board per tick,
+// and a second draw for the same pair in one tick means the premise is false.
+struct RopeKey {
+    uint64_t lastTick = 0;
+    unsigned drawsThisTick = 0;
+    bool trusted = true;
+};
+std::unordered_map<uint64_t, RopeKey> g_ropes;
+
+void ov_one_rope(CPUState& cpu) {
+    const u32 self = (u32)cpu.gpr[3];
+    const u32 site = (u32)cpu.lr;
+    uint64_t tag = 0;
+    const bool eligible = enabled() && sbr_lerp_enabled() && self != 0 &&
+                          sbr_gxfifo_pending_tag() == 0;
+    if (eligible) {
+        // Both halves are structural: the board instance and the site in TSwingBoard::draw that
+        // draws this particular rope. Folded rather than concatenated because both are 32-bit and
+        // the tag is 64 — the fold keeps every bit of the object and enough of the site to separate
+        // two call sites eight instructions apart.
+        const uint64_t key = ((uint64_t)self << 32) ^ ((uint64_t)site << 3);
+        RopeKey& rk = g_ropes[key];
+        const uint64_t tick = sb::frame_interp::sim_tick_seq();
+        if (tick != rk.lastTick) {
+            rk.lastTick = tick;
+            rk.drawsThisTick = 0;
+        }
+        if (++rk.drawsThisTick > 1 && rk.trusted) {
+            rk.trusted = false;
+            ++g_ropeWithdrawn;
+            lucent::warn("taggap", "TSwingBoard rope key (board 0x{:08x}, site 0x{:08x}) drew twice "
+                                   "in one tick, so it is not the one-rope-per-site identity it "
+                                   "assumed. Withdrawn for the rest of the run — those ropes take "
+                                   "the camera delta rather than pairing with each other.",
+                         self, site);
+        }
+        if (rk.trusted) {
+            tag = key | 1u;
+            sbr_gxfifo_draw_pop(SB_POP_ROPE);
+            sbr_gxfifo_draw_tag(tag);
+            ++g_ropeTagged;
+        }
+    }
+    func_801f383c(cpu);
+    if (tag != 0) {
+        sbr_gxfifo_draw_tag(0);
+        sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+    }
+}
+
 void ov_stripe(CPUState& cpu) {
     const u32 emitter = emitter_of(cpu);
     if (emitter == 0) ++g_stripeNoEmitter;
@@ -212,6 +308,13 @@ void sbr_tag_wire_report() {
                        "this build does not know about)."
                      : "");
     lucent::info("taggap",
+                 "cone beams: {} fan(s) tagged over {} drawConeBeam call(s){}; swing-board ropes: "
+                 "{} tagged, {} key(s) withdrawn for drawing twice in a tick",
+                 g_beamFans, g_beamCalls,
+                 g_beamCalls == 0 ? " (none drew — stage-dependent, not evidence the seam works)"
+                                  : "",
+                 g_ropeTagged, g_ropeWithdrawn);
+    lucent::info("taggap",
                  "particle stripes: {} strip(s) tagged over {} chain draw(s); {} call(s) had no "
                  "readable emitter and were left alone{}",
                  g_stripeStrips, g_stripeCalls, g_stripeNoEmitter,
@@ -227,6 +330,12 @@ SB_OVERRIDE(0x80198278u, ov_draw_upper, "TMapWire::drawUpper",
 SB_OVERRIDE(0x801983a8u, ov_draw_lower, "TMapWire::drawLower",
             "60fps: identity per strip for the wire's two lower strips (same vertex count, so they "
             "must not be allowed to pair against each other)")
+SB_OVERRIDE(0x800def6cu, ov_cone_beam, "TConeBeam::drawConeBeam",
+            "60fps: identity per fan for the light-shaft cone, whose vertices calcVertices rebuilds "
+            "every tick")
+SB_OVERRIDE(0x801f383cu, ov_one_rope, "TSwingBoard::drawOneRope",
+            "60fps: identity for one swing-board rope, keyed by (board, call site) because the "
+            "board draws exactly one rope from each of two fixed sites")
 SB_OVERRIDE(0x80332c34u, ov_stripe, "JPADrawExecStripe::exec",
             "60fps: identity per strip for a particle CHAIN, which is emitter-level geometry no "
             "per-particle position can displace")

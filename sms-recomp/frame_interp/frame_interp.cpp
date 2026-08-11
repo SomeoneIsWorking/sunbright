@@ -49,6 +49,8 @@ void sbr_pop_register_names() {
     aurora::gfx::interp::name_population(SB_POP_WIRE, "wire (deforming)");
     aurora::gfx::interp::name_population(SB_POP_MIRROR, "water mirror mask");
     aurora::gfx::interp::name_population(SB_POP_STRIPE, "particle stripe (chain)");
+    aurora::gfx::interp::name_population(SB_POP_CONEBEAM, "cone beam (deforming)");
+    aurora::gfx::interp::name_population(SB_POP_ROPE, "swing-board rope");
 }
 
 namespace sb::frame_interp {

@@ -65,8 +65,10 @@ enum : int {
 };
 
 // The curated populations occupy the low ids (populations.h). Sites are allocated from here up, so
-// a hand-written label and an auto-detected site can never collide.
-constexpr int kFirstSiteId = 16;
+// a hand-written label and an auto-detected site can never collide. Raised from 16 when the curated
+// block reached 15 entries: a new label colliding with a site id would silently merge two
+// populations, and there is no shortage of room in a byte.
+constexpr int kFirstSiteId = 32;
 constexpr int kPopCount = 256;
 
 bool enabled_impl() {
@@ -259,6 +261,8 @@ constexpr Curated kCurated[] = {
     {SB_POP_WIRE, "pop.wire", "deforming"},
     {SB_POP_MIRROR, "pop.water-mirror", "deforming"},
     {SB_POP_STRIPE, "pop.particle-stripe", "deforming"},
+    {SB_POP_CONEBEAM, "pop.cone-beam", "deforming"},
+    {SB_POP_ROPE, "pop.swing-rope", "deforming"},
 };
 
 // ── THE FILE ────────────────────────────────────────────────────────────────────────────────────
