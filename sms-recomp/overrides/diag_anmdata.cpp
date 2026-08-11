@@ -50,6 +50,7 @@ extern "C" void func_802c18dc(CPUState&);   // JKRExpHeap::allocFromTail(u32, in
 extern "C" void func_802c17b0(CPUState&);   // JKRExpHeap::allocFromHead(u32)  — default alignment
 extern "C" void func_802c1a34(CPUState&);   // JKRExpHeap::allocFromTail(u32)  — default alignment
 extern "C" void func_802d4cf0(CPUState&);   // unnamed J3DSkinDeform-region function that recurses
+extern void rt_dump_guest_stack(const char* why);
 
 namespace {
 
@@ -916,6 +917,11 @@ void ov_deep_fn(CPUState& cpu) {
                     break;
                 }
             }
+            // AND THE PATH THAT GOT HERE. Which thread is only half the question; the other half is
+            // what put model calc on it. Dumped once, at the first entry, while the stack is still
+            // intact — the watchpoint's dump was taken after the overflow, when the frame chain can
+            // no longer be trusted.
+            rt_dump_guest_stack("first entry to the J3D calc recursion");
             if (detail.empty()) {
                 lucent::info("anmdata", "the recursion runs on a stack at {:#010x} which is {}", sp,
                              whose);

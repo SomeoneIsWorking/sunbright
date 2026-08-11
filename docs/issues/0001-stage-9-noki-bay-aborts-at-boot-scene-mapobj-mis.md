@@ -278,3 +278,38 @@ already spent, and whether retail's path is shallower. Two concrete comparisons:
 
 The instrument is in sms-recomp/overrides/diag_anmdata.cpp: it counts real recursion depth, records
 every JKRThread stack's address range, and names which thread a given stack pointer belongs to.
+
+### Note (2026-08-11)
+THE DEFECT, NAMED (2026-08-11): stage loading runs on the JKRDecomp thread's 16 KB stack instead of
+the setup thread's 64 KB one.
+
+Logging every OSCreateThread with its stack range (r6 = stack top, r7 = size — read BEFORE the
+super-call, since the recompiled body clobbers the argument registers; reading them after reported
+"1 byte" for every thread and made every thread overlap itself):
+
+    0x8041ba20  16,384 bytes  0x80417a00..0x8041ba00   JKRThread (JUTException)
+    0x8041fe60  16,384 bytes  0x8041be40..0x8041fe40   JKRThread (JKRAram)
+    0x80424300  16,384 bytes  0x804202e0..0x804242e0   JKRThread (JKRAramStream)
+    0x80428700  16,384 bytes  0x804246e0..0x804286e0   JKRThread (JKRDecomp)
+    0x803fcbe8  65,536 bytes  0x80569580..0x80579580   the SETUP thread, re-created per job
+    ... plus 4 KB helpers
+
+The J3D recursion that overflows runs with its stack pointer at 0x80426488 — inside the JKRDecomp
+thread's 16 KB block — and its call path is TMap::load -> TMapModelManager::init ->
+TJointModelManager::initJointModel -> TMapModel::initJointModel -> MActor::calc -> J3DModel::calc.
+That is stage loading, and the game has a 64 KB thread for exactly this work.
+
+So the recursion is not too deep: 64 levels at ~152 bytes is 9.6 KB, which fits a 64 KB stack four
+times over. It runs on the wrong thread, in a 16 KB stack that already had 8.8 KB used.
+
+Stages 1 and 8 reach the same code on the same thread and survive only because their models recurse
+16 levels deep instead of 64+ — measured, same instrument, same arrival stack pointer. So this is
+latent everywhere and Noki Bay is merely the first model deep enough to fall off the end.
+
+## The fix is a thread-routing question, not a stack-size one
+
+Find why the load continues on the decompression thread: our scheduler runs a JKRDecomp job and the
+load work proceeds on that stack, where retail hands it back to the setup thread. Look at
+gsched_create / the JKRDecomp work loop in sms-recomp/runtime/guest_sched.cpp and
+overrides/native_os_thread.cpp. Enlarging the JKRDecomp stack would hide it and leave the real
+routing wrong.

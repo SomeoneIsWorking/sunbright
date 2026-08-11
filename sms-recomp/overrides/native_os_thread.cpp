@@ -18,6 +18,8 @@
 
 #include <intrinsics.h>
 #include <lucent/log.h>
+
+#include <vector>
 #include <guest_sched.h>
 
 #include <cstdlib>
@@ -41,14 +43,46 @@ constexpr u32 T_SUSPEND = 716;
 void os_create_thread(CPUState& cpu) {
     const u32 os_thread = cpu.gpr[3];
     const u32 entry = cpu.gpr[4], param = cpu.gpr[5], stack = cpu.gpr[6];
+    // BEFORE the super-call: the recompiled body runs on this same CPUState and clobbers the
+    // argument registers. Reading the stack size afterwards gave 1 for every thread, and the
+    // overlap check then "found" every thread overlapping itself — a instrument reporting on
+    // registers that no longer hold arguments.
+    const u32 stack_size = (u32)cpu.gpr[7];
     const int prio  = (int)(s32)cpu.gpr[8];
 
     func_80348948(cpu);
     if (cpu.gpr[3] == 0) return;   // creation failed (bad priority)
 
     gsched_create(os_thread, entry, param, stack, prio);
-    lucent::debug("osthread", "create 0x{:08x} entry 0x{:08x} prio {}", os_thread, entry,
-                  prio);
+    // THE STACK RANGE, AND WHETHER IT OVERLAPS ANOTHER THREAD'S. Chasing a heap corruption in stage 9
+    // ended at a guest stack that ran off its bottom, and the only way to tell "this thread recursed
+    // too deep" from "two threads share a stack region" is to have every range on record. r6 is the
+    // stack TOP (stacks grow down) and r7 its size.
+    const u32 size = stack_size;
+    struct Range { u32 thread, lo, hi; };
+    static std::vector<Range> s_ranges;
+    const Range r{os_thread, stack - size, stack};
+    for (Range& o : s_ranges) {
+        // SMS REUSES ONE OSThread OBJECT AND ITS STACK for successive setup jobs, re-creating it
+        // with a different entry point each time. That is not an overlap and flagging it buried the
+        // real question in noise — only two DIFFERENT threads sharing a region is a fault.
+        if (o.thread == r.thread) { o = r; continue; }
+        if (r.lo < o.hi && o.lo < r.hi) {
+            lucent::warn("osthread",
+                         "THREAD STACKS OVERLAP: thread 0x{:08x} takes 0x{:08x}..0x{:08x} which "
+                         "intersects thread 0x{:08x}'s 0x{:08x}..0x{:08x}. Whichever runs deeper "
+                         "will write through the other's frames.",
+                         r.thread, r.lo, r.hi, o.thread, o.lo, o.hi);
+        }
+    }
+    bool known = false;
+    for (const Range& o : s_ranges) {
+        if (o.thread == r.thread) { known = true; break; }
+    }
+    if (!known) s_ranges.push_back(r);
+    lucent::info("osthread", "create 0x{:08x} entry 0x{:08x} prio {} stack 0x{:08x}..0x{:08x} "
+                             "({} bytes)",
+                 os_thread, entry, prio, r.lo, r.hi, size);
 }
 
 // OSResumeThread(OSThread*) -> previous suspend count. Retail decrements, clamps at 0, and
