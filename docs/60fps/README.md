@@ -52,6 +52,45 @@ loser's 10.297, so neither end corresponds.
 
 ---
 
+## Does any of it actually look smoother? (pixels, 2026-08-12)
+
+Every number above is a PAIRING percentage — the share of draws that received an interpolated pose.
+That is not the same as smoothness, and the project's own doctrine says so. Closing the loop means
+measuring the presented pixels, which `tools/interp/cadence.py` does: the mean absolute difference
+between consecutive presents, and the ratio between the two phases of the two-present cadence
+(ALTERNATION, where 1.0 means both presents advance the picture equally).
+
+**With the camera rotating** (`SBR_PAD_SCRIPT="400:CSTICK=100/0"`), Delfino, matched guest ticks
+1606-1684:
+
+| | mean step | ALTERNATION |
+|---|---|---|
+| `SBR_LERP60=1` | 13.34 | **1.19** (phase means 14.46 / 12.19) |
+| off | 19.45 | 1.01 (one present per tick — not a comparison, a scale check) |
+
+Both presents advance the picture, and each present moves the image about two thirds as far as a
+30 Hz present did. That is the result the pairing percentages predicted.
+
+**THE TRAP, because it caught me for several runs.** In a scene with little GEOMETRIC motion the
+same statistic reads catastrophically:
+
+| scene | mean step | ALTERNATION |
+|---|---|---|
+| plaza cutscene, near-static camera | 2.16 | 6.24 |
+| idle gameplay, static camera | 0.88 | 15.30 |
+| camera rotating | 13.34 | 1.19 |
+
+Those first two are not a regression and not a defect. ALTERNATION is the share of on-screen CHANGE
+landing on one of the two presents, and when the geometry is barely moving, the change is dominated
+by things no geometry interpolation can smooth — an animated texture, an EFB copy, a 2D layer — all
+of which update once per tick BY DESIGN. The statistic is then measuring the texture update rate.
+`cadence.py` now prints that warning, with these numbers, whenever alternation is high.
+
+`--crop x0,y0,x1,y1` (fractions of the frame) narrows the measurement to a region, for separating a
+HUD corner from the world.
+
+---
+
 ## What counts as a DEFECT (measured, 2026-08-11)
 
 Not everything that fails to interpolate is a failure. Three fates are correct by construction and

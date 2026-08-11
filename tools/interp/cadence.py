@@ -60,13 +60,39 @@ import numpy as np
 WIDTH_DEFAULT = 1280
 
 
-def load(path, width):
+def fraction_box(text):
+    parts = text.split(",")
+    if len(parts) != 4:
+        raise SystemExit(f"REFUSES: --crop wants x0,y0,x1,y1 as four fractions, got {text!r}.")
+    try:
+        v = [float(x) for x in parts]
+    except ValueError:
+        raise SystemExit(f"REFUSES: --crop values must be numbers, got {text!r}.")
+    if not all(0.0 <= x <= 1.0 for x in v) or v[0] >= v[2] or v[1] >= v[3]:
+        raise SystemExit(f"REFUSES: --crop {text!r} is not a box inside the frame (each value in "
+                         f"0..1, x0<x1, y0<y1).")
+    return tuple(v)
+
+
+def load(path, width, crop=None):
     raw = np.frombuffer(open(path, "rb").read(), dtype=np.uint8)
     if raw.size % (width * 4) != 0:
         raise SystemExit(f"REFUSES: {path} is {raw.size} bytes, not a multiple of width*4 "
                          f"({width * 4}). Wrong --width, or not an RGBA dump.")
     h = raw.size // (width * 4)
-    return raw.reshape(h, width, 4)[:, :, :3].astype(np.int16)
+    img = raw.reshape(h, width, 4)[:, :, :3].astype(np.int16)
+    if crop is None:
+        return img
+    x0, y0, x1, y1 = crop
+    # Fractions of the frame, not pixels: a crop written in pixels silently means a different part
+    # of the picture at a different window size, and these dumps are whatever SB_W/SB_H were set to.
+    a, b = int(round(y0 * h)), int(round(y1 * h))
+    c, d = int(round(x0 * width)), int(round(x1 * width))
+    if b - a < 8 or d - c < 8:
+        raise SystemExit(f"REFUSES: --crop {x0},{y0},{x1},{y1} leaves {d - c}x{b - a} pixels, which "
+                         f"is too small to say anything about motion. A crop that measures almost "
+                         f"nothing still prints a confident number.")
+    return img[a:b, c:d]
 
 
 def series_paths(prefix):
@@ -173,6 +199,16 @@ def score(steps, label="", ticks=None):
                   "presents are consecutive ticks and alternation MUST come out ~1.0. If it does "
                   "not, the scene itself pulses on a two-frame cycle (a flashing effect, a 2-frame "
                   "animation) and this number is measuring that instead.")
+            print(f"  ^ AND CHECK THE SCENE IS MOVING. Mean step here is {mean:.3f}. This statistic "
+                  f"is the share of on-screen CHANGE landing on one of the two presents, and in a "
+                  f"scene with little GEOMETRIC motion that change is dominated by things no "
+                  f"geometry interpolation can smooth — an animated texture, an EFB copy, a 2D "
+                  f"layer, all of which update once per tick by design. Measured on Delfino: a "
+                  f"near-static camera gives alternation 6.24 at mean step 2.16 and 15.30 at mean "
+                  f"step 0.88, while the SAME build with the camera rotating "
+                  f"(SBR_PAD_SCRIPT=\"400:CSTICK=100/0\") gives 1.19 at mean step 13.34. The "
+                  f"first two are not a regression; they are this metric measuring the texture "
+                  f"update rate. Drive the camera before concluding anything from a high value.")
     ppt = presents_per_label(ticks) if ticks else None
     if ppt is None:
         print("  RETRACE LABELS: absent — these dumps carry no `-t<n>` label, so this series "
@@ -244,6 +280,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("prefix", nargs="*", help="dump prefix, e.g. scratch/render/i60_a05.rgba")
     ap.add_argument("--width", type=int, default=WIDTH_DEFAULT)
+    # WHICH PART OF THE PICTURE. The whole-frame numbers are area-weighted, so one full-screen or
+    # corner element that snaps can dominate a frame in which everything else interpolates — which
+    # is not a hypothetical: measured ALTERNATION 6.26 whole-frame against a scene the per-draw
+    # audit scored at 99.7% interpolating. Cropping is how those two are reconciled rather than
+    # argued about.
+    ap.add_argument("--crop", type=fraction_box, default=None,
+                    help="x0,y0,x1,y1 as FRACTIONS of the frame (e.g. 0.15,0.15,0.85,0.8 for the "
+                         "world without the HUD corners)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -260,7 +304,7 @@ def main():
             print(f"  REFUSES: found {len(paths)} dump(s) matching '{prefix}.*'. That is not a "
                   f"series. Check the run actually dumped (SB_DUMP_FRAME_EVERY=1, _COUNT>=3).")
             continue
-        frames = [load(p, a.width) for p, _ in paths]
+        frames = [load(p, a.width, a.crop) for p, _ in paths]
         for p, _ in paths:
             print(f"    {os.path.basename(p)}")
         r = score(steps_of(frames), prefix, [t for _, t in paths])
