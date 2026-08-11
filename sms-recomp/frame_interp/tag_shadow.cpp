@@ -67,6 +67,8 @@
 #include <cstring>
 #include <unordered_map>
 
+namespace aurora::gfx::interp { long tick_index(); }
+
 extern "C" void func_802305dc(CPUState&);   // TMBindShadowManager::drawShadowVolume(bool, TAlphaShadowQuad*)
 extern "C" void func_8027c67c(CPUState&);   // TModelWaterManager::drawShineShadowVolume(MtxPtr)
 extern "C" void func_80225c30(CPUState&);   // SMS_DrawShape(J3DModelData*, u16)
@@ -627,25 +629,52 @@ bool cube_from_draw_shadow(u32 lr) {
 }
 
 unsigned long g_cubeTagged = 0, g_cubeUnowned = 0, g_cubeForeign = 0;
+std::unordered_map<u64, long> g_cubeKeyTick;
+unsigned long g_cubeKeyNew = 0, g_cubeKeyConsecutive = 0, g_cubeKeyGap = 0;
 
 u64 group_membership_key(u32 mgr, u32 groupOff) {
     if (!sb_ram_fast(mgr + MGR_MGROUPS)) return 0;
     const u32 groups = sb_r32(mgr + MGR_MGROUPS);
     if (groups == 0 || !sb_ram_fast(groups + groupOff + GROUP_FPHEAD)) return 0;
     u32 fp = sb_r32(groups + groupOff + GROUP_FPHEAD);
-    // FNV-1a over the member owners. Order matters and that is fine: the cluster is rebuilt by the
-    // same pass in the same order, and a reordering that produced the same box would only cost a
-    // snap.
-    u64 h = 1469598103934665603ull;
+    // ORDER-INDEPENDENT over the member owners — and it did NOT fix what it was written for, which
+    // is worth saying at the code so nobody reads it as the fix.
+    //
+    // This used to be an FNV-1a chain whose comment argued that order dependence "would only cost a
+    // snap". The vertex path's per-population breakdown looked like the bill for that assumption:
+    // 2,675 of 5,162 alpha cubes in a Pianta Village run had no consecutive previous tick, against
+    // 8 for the swing ropes and 1 for the bridge. Making the key order-independent changed those
+    // numbers by exactly zero (2,487 lerped of 5,162, both ways).
+    //
+    // What the churn actually is, measured afterwards by counting key lifetimes rather than
+    // theorising: the keys are STABLE. Over 290 ticks there were 62 first sightings, 2,538 keys seen
+    // again on the very next tick, and 2,664 seen again after a GAP. About sixty groups exist and
+    // each draws roughly every third or fourth tick — so the cubes are not changing identity, they
+    // are not drawing every tick, and pairing across a gap is a different question (whether an
+    // object that skipped a tick may interpolate across the skip) from the one this key answers.
+    //
+    // The order-independent form stays because it is the correct thing for a SET, and because the
+    // measurement above is only trustworthy if the key means what it says. Each owner is mixed on
+    // its own and the mixes are SUMMED, so the same actors give the same key whatever order the
+    // footprint chain is in; the per-owner mix carries the strength, since summing raw pointers
+    // would collide on any two groups whose addresses happen to sum alike.
+    u64 h = 0;
     int members = 0;
     while (fp != 0 && members < 64) {
         const u32 owner = owner_of(fp);
         if (owner == 0) return 0;   // an unidentifiable member: refuse the whole key
-        h = (h ^ (u64)owner) * 1099511628211ull;
+        u64 m = (1469598103934665603ull ^ (u64)owner) * 1099511628211ull;
+        m ^= m >> 29;
+        m *= 0xbf58476d1ce4e5b9ull;
+        m ^= m >> 32;
+        h += m;
         if (!sb_ram_fast(fp + QUAD_MNEXT)) return 0;
         fp = sb_r32(fp + QUAD_MNEXT);
         ++members;
     }
+    // The member COUNT rides along, so that two different sets whose mixes happen to sum alike are
+    // still separated whenever their sizes differ.
+    h = (h * 31ull) + (u64)members;
     return members == 0 ? 0 : (h | 1ull);
 }
 
@@ -757,11 +786,34 @@ u64 sbr_shadow_cube_tag(const CPUState& cpu) {
         return 0;
     }
     ++g_cubeTagged;
+    // IS THE KEY STABLE FROM TICK TO TICK? The vertex path reported 2,675 of 5,162 cubes with no
+    // consecutive previous tick, which is either a key that churns or a group that genuinely does
+    // not draw every tick. Those need opposite fixes, and only counting can separate them: a key
+    // seen last tick and again now is stable; a key never seen before is new.
+    {
+        const long tick = (long)aurora::gfx::interp::tick_index();
+        auto& seen = g_cubeKeyTick[key];
+        if (seen == 0) {
+            ++g_cubeKeyNew;
+        } else if (seen + 1 == tick) {
+            ++g_cubeKeyConsecutive;
+        } else {
+            ++g_cubeKeyGap;
+        }
+        seen = tick;
+    }
     return key;
 }
 
 void sbr_shadow_cube_report() {
     if (!sbr_lerp_enabled()) return;
+    lucent::info("taggap",
+                 "shadow alpha cube keys: {} first sighting(s), {} seen again on the NEXT tick "
+                 "(stable — these are the ones that can interpolate), {} seen again after a GAP of "
+                 "one or more ticks (the group did not draw, or its composition changed and changed "
+                 "back). A key that churns every tick and a group that draws every other tick both "
+                 "read as \"not consecutive\" in the vertex path; only this line separates them.",
+                 g_cubeKeyNew, g_cubeKeyConsecutive, g_cubeKeyGap);
     lucent::info("taggap",
                  "shadow alpha cube: {} tagged by their group's MEMBERSHIP, {} refused because a "
                  "member's owner could not be established (those snap rather than pair with a "

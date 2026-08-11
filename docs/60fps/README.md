@@ -355,3 +355,27 @@ Decisions this map settles:
    interpolator. That is dusklight's inversion and it is what stops the effect list going stale.
 5. **`request_presentation_sync()` replaces `snap_next_interpolation()`** — same idea, dusklight's
    name and semantics (step forced to 1.0, every replacement lookup disabled for that frame).
+
+
+## What the vertex path's per-population breakdown says (measured, stage 8, 290 ticks)
+
+`report_vertex_interp()` prints one line per population, because a single "63% interpolate" cannot
+be acted on: a mesh that CHANGED VERTEX COUNT has no correspondence and snapping is correct, while
+one with NO CONSECUTIVE TICK is a question about the seam. Same percentage, opposite conclusions.
+
+| population | lerped | not consecutive | count changed | reading |
+|---|---|---|---|---|
+| water mirror mask | 99.6% | 2 | 0 | at ceiling |
+| swing-board rope | 99.6% | 8 | 0 | at ceiling |
+| hanging-bridge ropes | 99.6% | 1 | 0 | at ceiling |
+| shadow volume | 96.3% | 58 | 0 | at ceiling |
+| particle stripe (chain) | 63.2% | 12 | **1,224** | **at its ceiling too** — a chain that gains or loses a link has no vertex correspondence |
+| shadow alpha cube | 48.2% | **2,675** | 0 | the real remaining gap |
+| JPA particle | 0% | 3,036 | 0 | these are the leftovers `patch_billboard` could not pair — new particles, correct to snap |
+
+The alpha cube's gap is **not** a key-quality problem, which is what it looked like. Counting key
+lifetimes: 62 first sightings, 2,538 keys seen again on the very next tick, 2,664 seen again after a
+gap. Roughly sixty groups exist, each drawing about every third or fourth tick. Making the key
+order-independent (the obvious suspect) changed the numbers by exactly zero. The open question is
+therefore whether an object that legitimately skips ticks may interpolate ACROSS the skip — a
+different question from identity, and not yet answered.
