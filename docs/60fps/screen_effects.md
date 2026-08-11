@@ -38,13 +38,13 @@ all of them at once — see `docs/60fps/widescreen_effects.md`.
 ## Why this matters for interp60
 
 interp60 presents each 30 Hz tick twice, the second with draw matrices blended toward the previous
-tick, by REPLAYING the frame's GX stream (see `sms-recomp/overrides/interp60.cpp`). The geometry
+tick, by REPLAYING the frame's GX stream (that file is GONE — the stream replay is now `extern/aurora/lib/gfx/interp.cpp`, driven from `sms-recomp/frame_interp/`). The geometry
 moves on the in-between field; the **screen capture does not** (it was produced once, from the real
 field's EFB). So every effect in the table that samples the capture will, on the in-between, distort
 a screen that does not match the blended geometry — the artifact the retired
 `efb_interp_freeze.cpp` / `shadow_interp.cpp` were built to handle.
 
-Owning this means interp60 does not guess: `sms-recomp/overrides/screen_effects.cpp` hooks each of
+Owning this means interp60 does not guess: `sms-recomp/frame_interp/effects.h` hooks each of (formerly `overrides/screen_effects.cpp`; the hook addresses 0x8019f83c / 0x8027c12c are what identify it)
 these and records, per frame, which screen-sampling effects fired (queryable at `/screenfx` and via
 `sb_screen_effects_this_frame()`), so the in-between handler acts on a named set — freeze the capture
 for the shimmer/blur, re-derive the water at the interpolated camera — instead of pattern-matching

@@ -1,6 +1,6 @@
 # 60fps and EFFECTS — the standing directives, the RE'd root cause, and the dead ends
 
-**Provenance.** Extracted from `docs/interp60_handoff.md` and `docs/interp60_efb_handoff.md` (June
+**Provenance.** Extracted from `docs/interp60_handoff.md` and `docs/interp60_efb_handoff.md` — both since DELETED; this document is what survives of them — (June
 2026), which are deleted. Those were session handoff briefs — an anti-pattern this project's own
 instructions ban — and every file they name (`interp_redraw.cpp`, `water_native.cpp`,
 `interp_capture.cpp`, `efb_native.cpp`) belongs to the retired Dolphin-substrate recomp era and no

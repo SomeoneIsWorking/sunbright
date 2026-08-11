@@ -1,5 +1,19 @@
 # Native rendering port + motion interpolation (N64Recomp-style) — design map
 
+> **Paths in this document (reconciled 2026-08-12).** It predates the June-era layout
+> reorganisation and the 60fps rewrite, so most `runtime/overrides/*.cpp` paths below name files
+> that no longer exist. Where the mechanism survives, it moved:
+>
+> | named as | now | confirmed by |
+> |---|---|---|
+> | `runtime/overrides/scene_render.cpp` | `sms-recomp/runtime/render/scene.{h,cpp}` | holds the `GXSetProjection` (0x80362c34) hook |
+> | `runtime/memory_bridge.cpp` | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | the gather-pipe route |
+> | `runtime/overrides/hud.cpp` | `sms-recomp/overrides/hud.cpp` | same file, qualified |
+>
+> `runtime/overrides/scene_id.cpp` and its `SUNBRIGHT_2DID` switch are GONE — no such file and no
+> such switch is read anywhere in the tree. Treat that paragraph as a record of what was once
+> built, not as a tool you can run.
+
 > ## 🛑 ARCHITECTURE RULING (user, 2026-06-12; AMENDED 2026-07-11) — object level, NOT stream level
 > A FIFO-replay design (capture gather-pipe bytes, strip tokens, patch CP
 > ARRAY_BASE loads, re-push through GPFifo, juggle XFB presents) was built and
@@ -128,7 +142,7 @@ keyed by a stable per-model ID.
 >   → a PNG. The log uses the pane's GLOBAL (absolute screen) rect at +0x24/0x28/0x2c/0x30, so
 >   nested panes crop correctly too (verified: 'shn0' → shine icon, 'yaji' → OPTIONS arrow). Use
 >   this to classify elements for the per-element widescreen fixes (full-screen fill vs edge-anchor).
-> - **✅ HUD FULLY OWNED (2026-06-04) — `runtime/overrides/hud.cpp`.** The in-game HUD's per-element
+> - **✅ HUD FULLY OWNED (2026-06-04) — `sms-recomp/overrides/hud.cpp`.** The in-game HUD's per-element
 >   widescreen layout is now owned natively. Every HUD picture draws through
 >   `J2DPicture::drawFullSet(this,x,y,w,h,…)` (0x802cc838), dest rect in the ARGS, so `hud.cpp` takes
 >   over that function and rewrites x per element. Each element is classified by its `.blo` NAME

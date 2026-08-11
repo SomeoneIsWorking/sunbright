@@ -1,5 +1,19 @@
 # Widescreen screenspace effects — inventory & status
 
+> **Paths in this document (reconciled 2026-08-12).** It predates the June-era layout
+> reorganisation and the 60fps rewrite, so most `runtime/overrides/*.cpp` paths below name files
+> that no longer exist. Where the mechanism survives, it moved:
+>
+> | named as | now | confirmed by |
+> |---|---|---|
+> | `runtime/overrides/scene_render.cpp` | `sms-recomp/runtime/render/scene.{h,cpp}` | holds the `GXSetProjection` (0x80362c34) hook |
+> | `runtime/memory_bridge.cpp` | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | the gather-pipe route |
+> | `runtime/overrides/hud.cpp` | `sms-recomp/overrides/hud.cpp` | same file, qualified |
+>
+> `runtime/overrides/scene_id.cpp` and its `SUNBRIGHT_2DID` switch are GONE — no such file and no
+> such switch is read anywhere in the tree. Treat that paragraph as a record of what was once
+> built, not as a tool you can run.
+
 How 16:9 works here (see `runtime/overrides/scene_render.cpp`): the GXSetProjection
 override pre-squeezes every projection by 0.75 — perspective gets a wider FOV (true
 Hor+), 2D orthos render anamorphically so menus present correct-aspect, CENTERED in

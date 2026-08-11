@@ -18,7 +18,7 @@ problem, and it is not the one the matrix path can solve.
 
 ## Why tagging them would do nothing
 
-`JPADrawExecBillBoard::exec` (decomp `JSystem/JParticle/JPADrawVisitor.cpp`):
+`JPADrawExecBillBoard::exec` (decomp `decomp/sms/src/JSystem/JParticle/JPADrawVisitor.cpp`):
 
 ```cpp
 particle->getGlobalPosition(pt);
@@ -105,7 +105,7 @@ paths — 22.7% of immediate-mode draws, and the fountain.
 
 ## LANDED (2026-08-06) — particles interpolate
 
-`frame_interp/tag_particle.cpp` + `aurora::gfx::interp::{set_tag_world_pos,patch_billboard}`.
+`sms-recomp/frame_interp/tag_particle.cpp` + `aurora::gfx::interp::{set_tag_world_pos,patch_billboard}`.
 
 Measured on a plaza run with the camera rotating:
 
