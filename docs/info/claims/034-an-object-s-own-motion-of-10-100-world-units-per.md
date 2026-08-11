@@ -1,10 +1,11 @@
 ---
 id: C034
 kind: claim
-status: holds
+status: falsified
 created: 2026-08-11
 tags: 60fps
 depends: sms-recomp/frame_interp/motion_truth.cpp
+falsified_on: 2026-08-11
 ---
 
 ## Claim
@@ -18,3 +19,9 @@ sms-recomp/frame_interp/motion_truth.cpp reads gpMario (0x8040E10C) once per tic
 ## What would falsify it
 
 a stage where an ordinary object routinely exceeds 100 units/tick (a fast vehicle, a launched Mario, a scripted mover) would move the boundary; and Mario is ONE object, so this bounds a player character's speed, not every object's
+
+## FALSIFIED 2026-08-11
+
+Superseded rather than wrong: C034's OBSERVATION (10-100 units/tick is ordinary motion) still holds and stage 8 confirms it, but the BOUND it justified — a fixed 100-unit discontinuity gate — is falsified. Pianta Village has an object moving 250-320 units/tick along a smooth continuous arc, and the gate snapped it every frame for 282 ticks (12791 refusals, 12657 of them in [100,1k) contiguous with the accepted bulk). Replaced by the per-object continuity test in C035.
+
+> Anything that cited this claim as proof must be re-checked. Grep the repo for it.

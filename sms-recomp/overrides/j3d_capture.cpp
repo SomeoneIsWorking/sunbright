@@ -46,6 +46,10 @@ void sbr_mtx_report_index();
 
 extern "C" void func_802e0390(CPUState&);   // J3DShape::draw() const
 
+// Does (shape, mDrawMatrices) actually name ONE object? Measured, not assumed — see
+// frame_interp/shape_identity.cpp.
+void sbr_shape_identity_probe(u32 shape, u32 instance, u32 lr, u32 callerR31);
+
 namespace {
 
 // J3DShape (J3DShape.hpp): the fields this seam needs.
@@ -165,6 +169,7 @@ void ov_shape_draw(CPUState& cpu) {
     // Emitted BEFORE the draw — the tag has to precede the GX it labels in the stream.
     if (sbr_lerp_enabled()) {
         const u32 instance = sb_r32(shape + SHAPE_DRAW_MATRICES);
+        sbr_shape_identity_probe(shape, instance, (u32)cpu.lr, (u32)cpu.gpr[31]);
         sbr_gxfifo_draw_pop(SB_POP_J3D_SHAPE);
         sbr_gxfifo_draw_tag(((uint64_t)shape << 32) | (uint64_t)instance);
     }

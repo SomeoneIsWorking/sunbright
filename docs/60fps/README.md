@@ -22,11 +22,21 @@ false: `gpMario`, driven by a pad script, spends 90 of 593 ticks in `[10,100)` a
 units/tick** (`sms-recomp/frame_interp/motion_truth.cpp` measures it every run; claim **C034**). The
 old wording condemned 84,507 legitimate draws on a plaza run — 12.5% of world geometry.
 
-The boundary that survives measurement is **100 units/tick**, and paired draws beyond it are now
-snapped rather than interpolated (`kDiscontinuity` in aurora's `interp.cpp`). On the same run that
-refuses 186 draws out of 670,000; the largest ACCEPTED delta was 96.3, and the report prints that
-margin every run so a scene with genuinely faster objects shows up as the margin closing rather
-than as a silent loss of interpolation.
+**No fixed speed bound survived measurement, and the replacement is a per-object continuity test.**
+A 100 units/tick bound was tried, justified on the plaza numbers above — then Pianta Village showed
+what a plaza-derived constant cannot see. There it refused 12,791 of 231,011 paired draws, and the
+refused deltas were *contiguous* with the accepted ones (12,657 in `[100,1k)` against 41,939
+accepted in `[10,100)`) rather than a separated cluster. Printing the coordinates one line per tick
+settled it: a single object walking 323.8 → 318.3 → 313.0 → 307.7 units/tick along a smooth
+decelerating arc, correctly paired and genuinely fast.
+
+The test is now the object's OWN continuity: a draw is refused when it moved further in one tick
+than **4× what that same object moved the tick before**, with the 100-unit figure surviving only as
+the floor for an object with no history yet. A teleport is a step change; real motion, however fast,
+is smooth at 30 Hz. Result: Pianta Village 12,791 → 199 refusals with J3D shape interpolation going
+93.3% → 99.2%, while the plaza keeps refusing its 154 genuine `[10k,∞)` teleports. Claim **C035**;
+the ratio's own failure mode (a *sustained* mispair legitimises itself after one tick) is stated at
+the code rather than left to be discovered.
 
 It is a threshold, so it carries its own evidence and its own asymmetry argument at the use site.
 The short version: snapping a fast object costs one frame on a handful of draws; interpolating a

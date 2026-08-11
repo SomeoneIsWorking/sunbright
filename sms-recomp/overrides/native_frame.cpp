@@ -362,12 +362,16 @@ extern "C" void aurora_replay_midpoint() {
 
 void sbr_tag_shadow_begin_tick();
 void sbr_tag_shadow_report();
+void sbr_shape_identity_tick();
+void sbr_shape_identity_report();
 void sbr_tag_particle_report();
 void sbr_tag_wire_report();
 void sbr_mark_exact_report();
 void sbr_shadow_cube_report();
 void sbr_motion_truth_tick();
 void sbr_motion_truth_report();
+
+namespace aurora::gfx::interp { void report(); }
 
 extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
@@ -383,6 +387,34 @@ namespace {
 // Getting this wrong made the per-frame staging buffer accumulate across frames instead of
 // resetting: ~291 KB of stream per frame reached aurora's 48 MB limit after roughly 170 frames
 // and aborted with "mapped ByteBuffer overflow".
+// Every interpolation instrument's end-of-run word, in one place so the cadence path and the
+// shutdown path cannot drift into reporting different things.
+void interp_reports() {
+    sb::frame_interp::report();
+    sbr_tag_shadow_report();
+    sbr_tag_particle_report();
+    sbr_tag_wire_report();
+    sbr_mark_exact_report();
+    sbr_shadow_cube_report();
+    sbr_motion_truth_report();
+    sbr_lerp_report_tag_coverage();
+    sbr_camera_cut_report();
+    sbr_afterimage_report();
+    sbr_shape_identity_report();
+}
+
+// The last thing a run says. The registry flush belongs here too: it is on the same 300-present
+// cadence, so a run that stopped at present 500 persisted what it knew at 300 and threw away
+// everything it learned afterwards.
+void final_reports() {
+    sbr_gfxdb_flush();
+    sbr_gfxdb_report();
+    if (sbr_lerp_enabled()) {
+        interp_reports();
+        aurora::gfx::interp::report();
+    }
+}
+
 void present_and_reopen(bool& frameActive) {
     ++g_present_count;   // PRESENTS, not game ticks — the two coincide today (one present per tick)
 
@@ -478,6 +510,14 @@ void present_and_reopen(bool& frameActive) {
     if (exit_requested) {
         lucent::info("frame", "{} — shutting down",
                      g_quit_requested ? "signal received" : "window closed");
+        // REPORT AT THE END, not only on the cadence. Every report above fires on
+        // `g_present_count % 300 == 0`, which includes present ZERO — so a run that stops between
+        // multiples of 300 prints the STARTUP snapshot as its last word. That is not a missing
+        // number, it is a wrong one: a 298-tick run of Pianta Village ended with "vertex
+        // interpolation: NO deforming draw was ever offered to it", the empty report from before
+        // the first frame, while the same run had in fact lerped thousands of rope and grass
+        // vertices. A cadence-only instrument reports whatever last happened to line up.
+        final_reports();
         aurora_shutdown();
         std::_Exit(0);
     }
@@ -551,16 +591,7 @@ void video_wait_for_retrace(CPUState& cpu) {
 
     // Interpolation tag coverage, on a slow cadence. Inert unless SBR_LERP60 is set.
     if (sbr_lerp_enabled() && (g_present_count % 300) == 0) {
-        sb::frame_interp::report();
-        sbr_tag_shadow_report();
-        sbr_tag_particle_report();
-        sbr_tag_wire_report();
-        sbr_mark_exact_report();
-        sbr_shadow_cube_report();
-        sbr_motion_truth_report();
-        sbr_lerp_report_tag_coverage();
-        sbr_camera_cut_report();
-        sbr_afterimage_report();
+        interp_reports();
     }
 
     // Native SDL3-GPU renderer (SBR_SDLGPU=1): draw the interpolated scene from the game's own
@@ -778,6 +809,7 @@ void present_tail(CPUState& cpu) {
     // so it must run once per tick and before anything registers for the NEXT in-between frame.
     sb::frame_interp::begin_sim_tick();
     sbr_tag_shadow_begin_tick();
+    sbr_shape_identity_tick();
     if (sbr_lerp_enabled()) sbr_afterimage_tick();
     if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
     // The camera cut goes through the unified API rather than straight to aurora's snap: a cut is
