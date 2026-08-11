@@ -63,5 +63,13 @@ void sbr_compare_submit_variant(int id, const char* name, const uint8_t* rgba, i
 // True if the ablation sweep is on.
 bool sbr_compare_ablate_enabled();
 
+// WHICH ablation to render on this frame, when sweeping one variant per frame. The rotation is
+// advanced by the SCORER, not by the caller: the sweep runs once per present while scoring runs
+// once per A/B frame, and a caller-side counter aliases against that ratio — with 60 presents per
+// scored frame and 15 variants it stuck on a single id and gave it every sample, leaving the other
+// fourteen at n=0 for the whole run. Advancing on the event that actually consumes a variant
+// cannot alias, whatever the two cadences are.
+int sbr_compare_ablation_to_render();
+
 // Ranked attribution table: every variant's mean score and its delta from the baseline.
 void sbr_compare_report_attribution();

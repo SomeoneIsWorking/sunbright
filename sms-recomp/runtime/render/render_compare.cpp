@@ -3,6 +3,8 @@
 
 #include "render_compare.h"
 
+#include "native_render.h"   // sbr_render_ablation_count/name — to name the variants NOT yet sampled
+
 #include "frame_smoothness.h"
 
 #include <aurora/aurora.h>
@@ -113,10 +115,17 @@ bool selftest() {
 struct Variant { int id = 0; uint64_t seq = 0; std::string name; std::vector<uint8_t> rgba;
                  int w = 0, h = 0; };
 std::vector<Variant> g_variants;
-struct VarAcc { std::string name; double iou = 0, corr = 0; long n = 0; };
+// dIou/dCorr are PAIRED differences: variant-minus-baseline measured on the SAME frame against the
+// SAME aurora capture, summed. The mean of those is drift-free by construction. The obvious
+// alternative — mean(variant) - mean(baseline over every scored frame) — is not: variants are only
+// scored on frames where the sweep completed and met its baseline, so the two means are taken over
+// different frame sets, and this project's own rule is that aggregates at different sample counts
+// are not comparable. That subtraction was here and is what this replaces.
+struct VarAcc { std::string name; double iou = 0, corr = 0; double dIou = 0, dCorr = 0; long n = 0; };
 std::map<int, VarAcc> g_varAcc;
 uint64_t g_nativeSeq = 0;      // bumped per baseline submit; variants carry the value they saw
 long g_variantDropped = 0;     // variant sets that never met their baseline — reported, not hidden
+int g_ablNext = 1;             // rotation cursor, advanced only when a variant is actually scored
 
 bool ablate() {
     static int v = -1;
@@ -229,8 +238,21 @@ void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
             score_against(v.rgba.data(), v.w, v.h, rgba, (int)w, (int)h, vi, vc);
             VarAcc& a = g_varAcc[v.id];
             a.name = v.name;
-            a.iou += vi; a.corr += vc; ++a.n;
+            a.iou += vi; a.corr += vc;
+            a.dIou += vi - iou; a.dCorr += vc - corr;   // paired with THIS frame's baseline
+            ++a.n;
+            // This variant has now been consumed; move the rotation on so the next swept frame
+            // renders a different one. See sbr_compare_ablation_to_render for why the cursor lives
+            // here rather than at the call site.
+            const int nAbl = sbr_render_ablation_count();
+            if (nAbl > 1) g_ablNext = (v.id % (nAbl - 1)) + 1;
         }
+    // Emit the table as it accumulates, not only at shutdown. The sweep re-renders the frame 16
+    // times and has taken the GPU device down mid-run (RADV GPUVM fault -> VK_ERROR_DEVICE_LOST),
+    // and a run that aborts never reaches the final reports — so a shutdown-only table meant every
+    // such run produced checksums and no attribution at all.
+    if (lit > 0 && !g_varAcc.empty() && (g_scored.size() <= 5 || (g_scored.size() % 10) == 0))
+        sbr_compare_report_attribution();
     g_variants.clear();
     g_native.valid = false;   // consume: never score the same native frame against two oracles
 }
@@ -296,6 +318,8 @@ void sbr_compare_submit_variant(int id, const char* name, const uint8_t* rgba, i
 // THE ATTRIBUTION TABLE. Ranked by how much each ablation RECOVERS over the baseline, so the
 // answer to "which operation is wrong" is the first row, with a number attached — not an
 // inference drawn from two runs of different length.
+int sbr_compare_ablation_to_render() { return g_ablNext; }
+
 void sbr_compare_report_attribution() {
     if (g_varAcc.empty()) return;
     double bi = 0, bc = 0;
@@ -303,22 +327,56 @@ void sbr_compare_report_attribution() {
     if (n <= 0) return;
     for (const auto& s : g_scored) { bi += s.iou; bc += s.corr; }
     bi /= n; bc /= n;
-    struct Row { std::string name; double iou, corr, d; long n; };
+    struct Row { std::string name; double iou, corr, d, dc; long n; };
     std::vector<Row> rows;
     for (const auto& [id, a] : g_varAcc) {
         if (a.n == 0) continue;
         const double mi = a.iou / (double)a.n, mc = a.corr / (double)a.n;
-        rows.push_back({a.name, mi, mc, mi - bi, a.n});
+        rows.push_back({a.name, mi, mc, a.dIou / (double)a.n, a.dCorr / (double)a.n, a.n});
     }
     std::sort(rows.begin(), rows.end(), [](const Row& x, const Row& y) { return x.d > y.d; });
     if (g_variantDropped > 0)
         lucent::info("ab", "   ({} variant samples dropped: their baseline was consumed by an "
                            "aurora frame before the sweep finished)", g_variantDropped);
     lucent::info("ab", "OPERATION ATTRIBUTION — baseline edgeIoU {:.1f}% lumaCorr {:+.3f} over {} "
+                       "scored frames. The delta is PAIRED (variant minus baseline on the same "
+                       "frame, same aurora capture), so it is not affected by the drift between "
                        "frames. A POSITIVE delta means replacing that operation with a neutral "
                        "reference moved the frame TOWARD aurora, i.e. this port gets it wrong.",
                  bi, bc, (long)n);
-    for (const Row& r : rows)
-        lucent::info("ab", "   {:+6.1f}  {:<22} edgeIoU {:.1f}%  lumaCorr {:+.3f}  (n={})",
-                     r.d, r.name, r.iou, r.corr, r.n);
+    int flat = 0;
+    for (const Row& r : rows) {
+        if (r.d == 0.0 && r.dc == 0.0) ++flat;
+        lucent::info("ab", "   {:+6.1f}  {:<22} edgeIoU {:.1f}%  lumaCorr {:+.3f} (d {:+.3f})  "
+                           "(n={}){}",
+                     r.d, r.name, r.iou, r.corr, r.dc, r.n,
+                     (r.d == 0.0 && r.dc == 0.0) ? "  <- IDENTICAL to baseline" : "");
+    }
+    // A row at exactly zero is not "this operation is already right". It is far more often "this
+    // operation is not exercised by the frame at all" — the plaza frames measured on 2026-08-12
+    // bind no texture unit above 0, so the seven per-unit pins CANNOT move, and reading their 0.0
+    // as evidence about unit routing would be reading the absence of an input as a result.
+    // WHAT THIS TABLE DOES NOT COVER. The sweep is round-robin (one variant per scored frame), so
+    // an early table is genuinely partial — and a partial table with no statement of what is
+    // missing reads exactly like a complete one. Name the absentees.
+    {
+        std::string missing;
+        int nmiss = 0;
+        for (int a = 1; a < sbr_render_ablation_count(); ++a)
+            if (g_varAcc.find(a) == g_varAcc.end() || g_varAcc[a].n == 0) {
+                if (!missing.empty()) missing += ", ";
+                missing += sbr_render_ablation_name(a);
+                ++nmiss;
+            }
+        if (nmiss > 0)
+            lucent::info("ab", "   NOT YET SAMPLED ({} of {}): {} — this table is partial, not a "
+                               "finished ranking.",
+                         nmiss, sbr_render_ablation_count() - 1, missing);
+    }
+    if (flat > 0)
+        lucent::info("ab", "   ({} of {} ablations scored EXACTLY 0.0 on both metrics. That is "
+                           "the signature of an operation the frame never performs, not of one "
+                           "this port already gets right — check that the frame exercises it "
+                           "before drawing any conclusion from the row.",
+                     flat, (int)rows.size());
 }

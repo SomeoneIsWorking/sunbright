@@ -1,0 +1,70 @@
+---
+id: 4
+title: the ablation sweep hangs the GPU ring: amdgpu resets the device mid-run, no attribution table ever printed
+status: open
+symptom: VK_ERROR_DEVICE_LOST during ./run-render.sh SBR_ABLATE=1; radv GPUVM fault at 0x800000000000; 'XIO: fatal IO error 2 on X server :0' at startup afterwards
+tags: render,gpu,ablation,environment
+created: 2026-08-12
+updated: 2026-08-12
+---
+
+## What happens
+
+`./run-render.sh SBR_ABLATE=1 SBR_AB=1 SBR_QUIT_AFTER=2000` renders two full 16-variant sweeps,
+prints their checksums, and then dies:
+
+    radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+    radv: GPUVM fault detected at address 0x800000000000.  ... RW: 1, CLIENT_ID: (CPG)
+    ERROR: vkQueueSubmit VK_ERROR_DEVICE_LOST
+    [fatal] [aurora::gpu] Device lost: vkQueueSubmit failed with VK_ERROR_DEVICE_LOST
+
+A run started shortly after fails at SDL video init with `XIO: fatal IO error 2 ... after 241
+requests` — the display session is still recovering from the reset.
+
+## It is a kernel-level ring timeout, not an X problem
+
+I first attributed this to the X server dropping. That was wrong; `journalctl -k` names it:
+
+    amdgpu: ring gfx_0.0.0 timeout, signaled seq=4053345, emitted seq=4053347
+    amdgpu:  Process sms-recomp pid 425515 ...
+    amdgpu: Starting gfx_0.0.0 ring reset / reset succeeded / device wedged, but no recovery needed
+
+`sms-recomp` is named as the guilty process on 3 timeouts today. So is `kwin_wayland` (17),
+`plasmashell` (3), and two unrelated GPU programs on this box (`xenia_oracle`, `lf2`) — the machine
+has broader GPU instability today, so ours is not the only offender, but our render runs do hang
+rings. The X failure is downstream of the reset, not its cause.
+
+## What is ruled out
+
+* SDL3 GPU shader resource counts (the known previous cause of device loss here): the fragment
+  shader declares 8 samplers + 1 uniform buffer and uses exactly `set=2 binding=0..7` plus
+  `set=3 binding=0`. They match.
+* API misuse the validation layers can see: the device is created with `debug=true` and
+  `vulkan-validation-layers` is installed; the layers report nothing before the fault.
+* A resource leak in the sweep: EFB-copy destinations are cached in `g_copyTex` by guest address,
+  the vertex/transfer buffers are reused, and each pass fences and waits before the next.
+* Non-reproducible re-render: `pass reproducibility: first ... second ... -> IDENTICAL` on every
+  frame, and the `control:no-op` ablation checksums byte-identical to the baseline.
+
+Untested, and the most likely remaining shape: 17 submit-and-wait passes per scored frame (179
+draws each) is simply enough sustained work to trip the driver's timeout on this card while the
+compositor is also submitting.
+
+## Consequence
+
+The operation-attribution table has never printed. The plain A/B run (no sweep) survives 4000
+presents and reaches `COMPARABLE @ N=59`, so the renderer measurement itself is fine — it is only
+the 16x re-render that takes the device down.
+
+## What landed anyway
+
+`sbr_compare_report_attribution` now (a) reports PAIRED deltas — variant minus baseline on the same
+frame against the same aurora capture — instead of subtracting two means taken over different frame
+sets, and (b) emits the table as it accumulates rather than only at shutdown, so an aborted run
+still yields whatever it measured.
+
+## Next step when the machine is stable
+
+Sweep one variant per scored frame instead of all sixteen (16x fewer passes per frame, same paired
+deltas, just spread over more frames), and re-run. That is the change that makes the tool fit inside
+the GPU's timeout budget rather than working around the symptom.

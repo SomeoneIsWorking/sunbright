@@ -1,0 +1,19 @@
+---
+id: C041
+kind: claim
+status: holds
+created: 2026-08-12
+tags: 
+---
+
+## Claim
+
+no TEV-stage ablation recovers the native renderer's edgeIoU gap, and no draw in a plaza frame samples a texture unit above 0
+
+## Evidence
+
+scratch/logs/ablate5.log, 2026-08-12: the round-robin ablation sweep sampled all 15 variants against paired baselines over 17 scored frames. Largest positive paired delta +1.3 edgeIoU (tev->passthrough, n=1); texfetch->white -5.6. 'pin unit1->0' through 'pin unit7->0' and 'texmap->unit0' all render BYTE-IDENTICAL frames (checksums in ablate.log confirm on two independent frames), as does control:no-op. The same run reports 'unit 1: 0 distinct addresses' and 0 TX_SETIMAGE0 writes for unit 1. So the ~68% edgeIoU gap is not in texgen, texmap routing, konst, the alpha test or per-unit binding.
+
+## What would falsify it
+
+a plaza frame that binds a texture unit above 0, or an ablation reaching n>=5 with a paired delta above +2

@@ -653,7 +653,19 @@ void video_wait_for_retrace(CPUState& cpu) {
                 const bool tell = sbr_render_last_vertex_count() > 1000 && once++ < 2;
 
                 if (tell) dump("scratch/bin/sweep_baseline.rgba", ab);
-                for (int a = 1; a < sbr_render_ablation_count(); ++a)
+                // ONE VARIANT PER SCORED FRAME, round-robin — not all sixteen. Sixteen extra
+                // 179-draw submit-and-wait passes on top of the baseline is enough sustained work
+                // to trip the driver's ring timeout on this card; amdgpu resets the device, names
+                // sms-recomp as the guilty process, and the run dies before the attribution table
+                // is ever printed (issue #4). Spreading them costs frames, not correctness: the
+                // delta each variant reports is PAIRED against the baseline of the frame it was
+                // rendered on, so variants measured on different frames never enter the same
+                // subtraction. The checksum block still needs the whole set at once, so the two
+                // `tell` frames sweep everything and only the steady state is round-robin.
+                const int nAbl = sbr_render_ablation_count();
+                const int only = tell ? 0 : sbr_compare_ablation_to_render();
+                for (int a = 1; a < nAbl; ++a) {
+                    if (only != 0 && a != only) continue;
                     if (sbr_render_ablation_render(a) && sbr_render_readback(ab.data(), 640, 448)) {
                         if (tell && a == 9) dump("scratch/bin/sweep_pinunit1.rgba", ab);
                         if (tell)
@@ -663,6 +675,7 @@ void video_wait_for_retrace(CPUState& cpu) {
                         sbr_compare_submit_variant(a, sbr_render_ablation_name(a), ab.data(),
                                                    640, 448);
                     }
+                }
             }
         }
 

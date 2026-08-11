@@ -779,11 +779,17 @@ void sbr_render_begin(float r, float g, float b, float a) {
     g_copyPoints.clear();
 }
 
-// Which textures the stages that NAME unit 1 actually bind, weighted by vertices. Unit 1 is the
-// whole routing deficit (per-unit ablation: pinning it alone recovers +6.0, units 2-7 recover
-// nothing), and we bind the same address aurora does for 99.35% of those stages — so the question
-// is which CONTENT lands there. Vertices, not draws, because a 60-vertex horizon strip and a
-// 26k-vertex batch are not equally responsible for a black region.
+// Which textures the stages that NAME unit 1 actually bind, weighted by vertices. Vertices, not
+// draws, because a 60-vertex horizon strip and a 26k-vertex batch are not equally responsible for
+// a black region.
+//
+// NO LONGER TRUE (measured 2026-08-12): this used to say "unit 1 is the whole routing deficit —
+// pinning it alone recovers +6.0, units 2-7 recover nothing". The ablation sweep now renders
+// `pin unit1->0` and gets a BYTE-IDENTICAL frame, as do units 2-7 and `texmap->unit0`; the run's
+// own instrumentation agrees, reporting "unit 1: 0 distinct addresses" and zero TX_SETIMAGE0
+// writes for unit 1. No draw in these plaza frames samples any unit above 0, so the +6.0 cannot
+// be reproduced and nothing here is currently a deficit. Whatever scene that number came from, it
+// is not this one.
 std::map<uint32_t, long> g_unit1Use;
 
 void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[8],
