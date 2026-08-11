@@ -155,6 +155,11 @@ long g_frameSplitN = 0;
 // safe — a handler cannot do that itself.
 volatile std::sig_atomic_t g_quit_requested = 0;
 
+// A value no real signal number can be, so the shutdown message can tell the counter from a signal.
+// Signals are small positive integers; this is deliberately outside that range rather than a magic
+// number chosen to look unlikely.
+constexpr int kQuitAfterReached = 1 << 20;
+
 extern "C" void sb_quit_signal(int sig) { g_quit_requested = sig; }
 
 // SIGINT (Ctrl-C) and SIGTERM (kill, and what a session manager sends at logout) must both bring
@@ -500,7 +505,7 @@ void present_and_reopen(bool& frameActive) {
         if (quitAfter > 0 && (long)g_present_count >= quitAfter) {
             lucent::info("frame", "SBR_QUIT_AFTER={} reached at present {} — shutting down",
                          quitAfter, g_present_count);
-            g_quit_requested = 1;
+            g_quit_requested = kQuitAfterReached;
         }
     }
 
@@ -511,8 +516,14 @@ void present_and_reopen(bool& frameActive) {
         ++event;
     }
     if (exit_requested) {
+        // NAME THE ACTUAL CAUSE. g_quit_requested is set by the SIGINT/SIGTERM handler AND by the
+        // SBR_QUIT_AFTER counter above, so reading it as "signal received" printed a signal that
+        // was never sent on every bounded diagnostic run — and a log line that misattributes its
+        // own cause is worse than one that says nothing, because it is believed.
         lucent::info("frame", "{} — shutting down",
-                     g_quit_requested ? "signal received" : "window closed");
+                     g_quit_requested == kQuitAfterReached ? "SBR_QUIT_AFTER reached"
+                     : g_quit_requested                    ? "signal received"
+                                                           : "window closed");
         // REPORT AT THE END, not only on the cadence. Every report above fires on
         // `g_present_count % 300 == 0`, which includes present ZERO — so a run that stops between
         // multiples of 300 prints the STARTUP snapshot as its last word. That is not a missing

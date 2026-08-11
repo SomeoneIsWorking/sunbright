@@ -235,6 +235,7 @@ extern "C" void rt_fatal_signal(int sig, siginfo_t* info, void*) {
                            : sig == SIGBUS  ? "SIGBUS"
                            : sig == SIGFPE  ? "SIGFPE"
                            : sig == SIGILL  ? "SIGILL"
+                           : sig == SIGABRT ? "SIGABRT"
                                             : "fatal signal";
         lucent::error("rt", "{} at fault address {} — the host call stack follows. A frame named "
                             "func_<addr> is GUEST code at that guest address; frames without one "
@@ -268,7 +269,12 @@ void rt_install_crash_handler() {
     sa.sa_sigaction = &rt_fatal_signal;
     sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
     sigemptyset(&sa.sa_mask);
-    for (int sig : {SIGSEGV, SIGBUS, SIGFPE, SIGILL}) sigaction(sig, &sa, nullptr);
+    // SIGABRT TOO. It was left out at first because "we don't call abort()" — but the runtime does,
+    // every hard-stop path in this file does, an unhandled C++ exception does, and so does Dawn when
+    // a GPU assertion fails. Exit code 134 with no other output is the same unattributable silence
+    // that kept issue #2 open for a SIGSEGV, and it turned up the same day on a shutdown path.
+    // SA_RESETHAND plus the re-raise means the second abort dies plainly rather than looping.
+    for (int sig : {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) sigaction(sig, &sa, nullptr);
 
     if (const char* e = std::getenv("SBR_CRASH_SELFTEST"); e != nullptr && e[0] == '1') {
         lucent::info("rt", "SELF-TEST: dereferencing a null pointer on purpose. The correct outcome "
