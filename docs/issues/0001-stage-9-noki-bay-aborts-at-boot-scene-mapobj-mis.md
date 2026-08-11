@@ -163,3 +163,42 @@ load specifically. Candidates, in order of how cheaply they can be tested:
 The instrument to use is already in diag_anmdata.cpp: `dump_used_blocks` prints both lists with a
 validity check. Call it repeatedly during the stage load and find the tick where the shortfall
 appears — the allocation that runs immediately before that is the one to read.
+
+### Note (2026-08-11)
+LOCALISED (2026-08-11, final measurement of the session): the 79 KB does not drain away — it
+disappears in a SINGLE step, inside MActorAnmData::init.
+
+Sampling the heap accounting after every allocation, every free, and at every findFirstFile:
+
+    shortfall 0 -> 12 bytes      (a 16,384-byte allocation; alignment rounding)
+    shortfall 12 -> 24 bytes     (a 1,024-byte allocation; alignment rounding)
+    shortfall 24 -> 12 bytes     (init__13MActorAnmDataFPCcPPCc+0x94)
+    shortfall 12 -> 79,308 bytes (init__13MActorAnmDataFPCcPPCc+0x94)   <- one step
+
+Two 12-byte rounding steps, then 79,296 bytes in one jump between two of MActorAnmData::init's own
+findFirstFile calls.
+
+Reading: this is USED-LIST CORRUPTION, not allocation. The blocks are still allocated as far as the
+game is concerned, but they are no longer reachable from mHeadUsedList — stage 9's used list walks
+13 blocks where stage 8's walks 22, and the walk terminates "normally" because the surviving chain
+ends in a null link. Memory unreachable from that list can never be coalesced or freed, which is
+exactly the shape of the shortfall.
+
+What happens in that window (JKRArchivePri/MActorData.cpp:120-200): the first findFirstFile
+enumeration and its addFileNum counting, then six `new MActorAnmDataEach<...>(count)` arrays sized
+from those counts, `delete fileFinder`, then a second findFirstFile and the addFileTable pass. A
+write past one of those arrays would smash the CMemBlock header of the block after it and unlink
+exactly this way.
+
+## Next step, and the tool for it
+
+The runtime already has watchpoints (sb_watch_hit / sb_watch_fire in intrinsics.h). Put one on the
+system heap's mHeadUsedList word and on the CMemBlock header of the last block that is still
+reachable, then re-run stage 9: the write that breaks the chain will name itself. That is a much
+sharper question than "who allocates too much", which is what this issue looked like for three
+sessions.
+
+Note the counts are what to compare against stage 8, not the sizes: if our findFirstFile enumerates
+a different NUMBER of files than retail (duplicates, or the "." and ".." entries the archive dump
+shows in every directory), the six arrays are sized differently and the pass that fills them writes
+past the end.

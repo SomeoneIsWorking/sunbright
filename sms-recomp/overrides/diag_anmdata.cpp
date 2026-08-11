@@ -110,6 +110,7 @@ unsigned long g_allocNull = 0;
 unsigned long g_allocCalls = 0;   // the denominator: "0 failures" from a hook that never fires and
                                   // "0 failures" from a healthy heap are the same line otherwise
 bool g_traceWalk = false;
+void watch_shortfall(const CPUState& cpu, u32 caller, u32 size);
 // The system heap, captured ONCE. Reading it from r13 at every call site looked equivalent and is
 // not: r13 is per-CPUState in this runtime, so a call arriving on another thread compares against
 // whatever that thread's SDA slot holds — which is how the resident ledger came to claim 200,672
@@ -337,6 +338,11 @@ void dump_all_archives(const char* why) {
 void ov_find_first_file(CPUState& cpu) {
     const std::string path = guest_str((u32)cpu.gpr[3]);
     g_lastQueryEa = (u32)cpu.gpr[3];
+    // Sample the heap accounting from HERE too. The allocation-side watch reported only two 12-byte
+    // rounding changes on a heap that ends 79 KB short, which means the loss happens between the
+    // operations it can see. findFirstFile is called throughout the stage load and is not an
+    // allocator, so it brackets those gaps.
+    watch_shortfall(cpu, (u32)cpu.lr, 0);
     func_802c31b0(cpu);
     const u32 res = (u32)cpu.gpr[3];
     lucent::debug("anmdata", "findFirstFile(\"{}\") -> {}", path,
@@ -611,6 +617,7 @@ void ov_heap_alloc(CPUState& cpu) {
     // wrapper as its caller (alloc__7JKRHeapFUliP7JKRHeap+0x3c for every block), which names the
     // allocator and not the system doing the allocating — one frame short of the answer.
     if ((u32)cpu.gpr[3] != 0) g_liveSite[(u32)cpu.gpr[3]] = wrapperCaller;
+    watch_shortfall(cpu, wrapperCaller, size);
     if ((u32)cpu.gpr[3] == 0) {
         ++g_allocNull;
         if (g_allocNull <= 8) {
@@ -744,16 +751,72 @@ void record_live(const CPUState& cpu, u32 heapThis, u32 size, u32 ptr, u32 calle
     if (g_liveSite.find(ptr) == g_liveSite.end()) g_liveSite[ptr] = caller;
 }
 
+// WATCH THE SHORTFALL GROW. The two lists are short (tens of blocks), so recomputing the accounting
+// after every system-heap allocation costs nothing measurable — and a shortfall that appears
+// between two allocations names the one that did it, which no end-of-run total can.
+long g_lastShortfall = 0;
+bool g_shortfallSeen = false;
+unsigned long g_shortfallChanges = 0;
+
+void watch_shortfall(const CPUState& cpu, u32 caller, u32 size) {
+    const u32 hp = sys_heap(cpu);
+    if (hp == 0) return;
+    const u32 lo = sb_r32(hp + 0x30), hi = sb_r32(hp + 0x34);
+    if (lo == 0 || hi <= lo) return;
+    unsigned long used = 0, freeb = 0;
+    int n = 0;
+    for (u32 b = sb_r32(hp + 0x7C); b != 0 && b >= lo && b < hi && n < 4096; b = sb_r32(b + 0x0C)) {
+        used += sb_r32(b + 0x04) + 0x10;
+        ++n;
+    }
+    n = 0;
+    for (u32 f = sb_r32(hp + 0x74); f != 0 && f >= lo && f < hi && n < 4096; f = sb_r32(f + 0x0C)) {
+        freeb += sb_r32(f + 0x04) + 0x10;
+        ++n;
+    }
+    const long shortfall = (long)sb_r32(hp + 0x38) - (long)(used + freeb);
+    // THE FIRST SAMPLE MUST BE PRINTED, whatever it is. A watcher that only reports GROWTH cannot
+    // report a shortfall that was already present when it started looking — it would sit silent
+    // through exactly the case it was built for, which is what happened on the first two runs of
+    // this: no output at all, from a heap that was 79 KB short.
+    if (!g_shortfallSeen) {
+        g_shortfallSeen = true;
+        g_lastShortfall = shortfall;
+        lucent::info("anmdata", "SYSTEM HEAP baseline: shortfall is {} bytes at the first sample "
+                                "(caller {}). Anything already missing here happened before this "
+                                "watch began.",
+                     shortfall, sbr_gfxdb_symbolize(caller));
+        return;
+    }
+    // ANY change, not a 4 KB one. The first version required growth over 4,096 bytes and reported
+    // nothing at all on a heap that ends up 79 KB short — the loss arrives in small steps, and a
+    // threshold picked for readability hid every one of them. Capped at 12 lines so a steady drip
+    // does not drown the log, with the count of suppressed changes reported at the end.
+    if (shortfall != g_lastShortfall) {
+        ++g_shortfallChanges;
+        if (g_shortfallChanges <= 12) {
+            lucent::info("anmdata",
+                         "SYSTEM HEAP SHORTFALL {} -> {} bytes (change #{}) across a {}-byte "
+                         "operation from {} ({}).",
+                         g_lastShortfall, shortfall, g_shortfallChanges, size, caller,
+                         sbr_gfxdb_symbolize(caller));
+        }
+    }
+    if (shortfall != g_lastShortfall) g_lastShortfall = shortfall;
+}
+
 void ov_alloc_head(CPUState& cpu) {
     const u32 heap = (u32)cpu.gpr[3], size = (u32)cpu.gpr[4], caller = (u32)cpu.lr;
     func_802c14d0(cpu);
     record_live(cpu, heap, size, (u32)cpu.gpr[3], caller);
+    if (heap == sys_heap(cpu)) watch_shortfall(cpu, caller, size);
 }
 
 void ov_alloc_tail(CPUState& cpu) {
     const u32 heap = (u32)cpu.gpr[3], size = (u32)cpu.gpr[4], caller = (u32)cpu.lr;
     func_802c18dc(cpu);
     record_live(cpu, heap, size, (u32)cpu.gpr[3], caller);
+    if (heap == sys_heap(cpu)) watch_shortfall(cpu, caller, size);
 }
 
 // AND THE DEFAULT-ALIGNMENT OVERLOADS. Four entry points, not two: the ledger still showed 69,600
@@ -789,6 +852,10 @@ void ov_exp_free(CPUState& cpu) {
     if (it != g_live.end()) { g_live.erase(it); g_liveSite.erase(ptr); }
     else if (ptr != 0) ++g_liveMissedFree;
     func_802c1b14(cpu);
+    // FREES TOO. No shortfall growth was seen across allocations, which leaves the other side of the
+    // ledger: a free that unlinks a block from the used list without returning it to the free list
+    // loses exactly this way, and would be invisible to an allocation-only watch.
+    if ((u32)cpu.gpr[3] == sys_heap(cpu)) watch_shortfall(cpu, (u32)cpu.lr, 0);
 }
 
 void ov_find_volume(CPUState& cpu) {
