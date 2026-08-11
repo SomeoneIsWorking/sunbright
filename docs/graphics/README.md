@@ -43,12 +43,25 @@ emitter address cannot.
 
   `2d-correct` is a statement about the PROJECTION, not a proof that nothing was lost. The audit's
   screen-space motion report (`report_ortho_motion`) measures, per population, whether the ortho
-  geometry actually differs tick to tick. On Delfino exactly one population is provably still
-  (`fill_rect`); the screen wipes, the pollution layer, TSunGlass and the text glyphs all differ on
-  essentially every tick. That does NOT make them defects — a difference may be smooth motion,
-  which has an in-between, or a discrete content change such as a different glyph, which does not,
-  and the measure cannot separate them. Read `2d-correct` as "orthographic, and unexamined beyond
-  that" unless the motion report calls it provably still.
+  geometry differs tick to tick — and it reports WHICH DATA it hashed, because that decides how much
+  the row is worth:
+
+  - **own vertices** — the strong form. Only the screen wipe qualifies on Delfino; every other 2D
+    population has no direct f32 positions.
+  - **position matrix** — the element's PLACEMENT. A row reading 0% means "the placement did not
+    move", not "nothing changed": a shape carried in vertices this path never saw is invisible to
+    it. `fill_rect`'s provably-still verdict is this weaker claim.
+
+  Either way a difference is not a defect. It may be smooth motion, which has an in-between, or a
+  discrete content change such as a different glyph, which does not, and the measure cannot separate
+  them. Read `2d-correct` as "orthographic, and unexamined beyond that" unless the motion report
+  calls the row provably still — and then read which data it used.
+
+  The report also prints how many DISTINCT position matrices the 2D draws carried per tick. That
+  line exists because six unrelated sites once all read exactly "387 of 388", which is what one
+  shared quantity reported under six names looks like; the count refuted it (12.48 per tick, 31 at
+  most — the matrices are per-element and the identical counts were saturation). A near-1 count
+  would mean every matrix-hashed row is the same global value wearing different labels.
 
   A **first sighting is excluded from the percentage entirely**, on both sides. An object being
   drawn for the first time has nothing to pair with, so counting it as a failure made every
