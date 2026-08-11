@@ -281,8 +281,44 @@ unsigned long g_addrHit = 0, g_addrMiss = 0, g_rescans = 0;
 // were removed rather than left in place doing nothing at the cost of a wrapper on one of the
 // hottest functions in the game.
 //
-// What would work instead: hook the pass-4 loop itself, or find the concat retail actually calls.
-// Neither is done here.
+// BOTH REMAINING OPTIONS ARE NOW ANSWERED, from the DOL (2026-08-12), and the conclusion above is
+// WRONG on its central claim: the quad DOES reach the call.
+//
+// "Find the concat retail actually calls" — there is none. Disassembling drawShadow
+// (0x8022f014..0x8022fa40) gives 132 bl sites over 27 distinct targets, and they are GX setters,
+// SMS_SettingDrawShape / SMS_DrawShape / SMS_DrawCube, ReInitializeGX, drawShadowVolume and
+// PSMTXIdentity. No concat entry point of any kind. Retail inlined the multiply, so the earlier
+// measurement of "PSMTXConcat called ZERO times" was not a missed symbol — that route is closed
+// permanently, not pending a better hook.
+//
+// "Hook the pass-4 loop itself" — unnecessary. The loop is at 0x8022f3a4..0x8022f3f0 and keeps the
+// quad in a NON-VOLATILE register across the draw:
+//
+//     8022f39c  lwzx   r24, r3, r0     ; r24 = grp.mFpHead                -> fp
+//     8022f3a4  lwz    r3, 0x68(r24)   ; fp->mReq        (+0x68, as documented above)
+//     8022f3a8  lbz    r0, 0x1c(r3)    ; mReq->unk1C
+//     8022f3ac  cmplwi r0, 3           ; the type-3 gate
+//     8022f3b4  addi   r3, r24, 4      ; &fp->mMtx       (+0x04, as documented above)
+//     8022f3e4  bl     SMS_DrawShape   ; <- the draw
+//     8022f3e8  lwz    r24, 0x6c(r24)  ; fp = fp->mNext  (+0x6c)
+//
+// r24 is callee-saved, so it survives the intervening `bl SMS_SettingDrawShape` and still holds the
+// quad at the draw. That is the same shape as the group recovery at SMS_DrawCube (callee-saved
+// r31/r25), and it yields the SAME join that already works for the volume population: read
+// fp = cpu.gpr[24], req = sb_r32(fp + 0x68), owner = owner_for(req).
+//
+// The site must be discriminated by RETURN ADDRESS — only LR == 0x8022f3e8 is the pass-4 call. The
+// other two SMS_DrawShape sites in drawShadow (0x8022f73c, 0x8022f76c) are in a different loop
+// (r26 index, r27 stride 0x70, bound at 0x14(r31)), where r24 is not a quad, and ModelWaterManager
+// calls SMS_DrawShape too.
+//
+// DELIBERATELY NOT IMPLEMENTED HERE. It replaces this population's ordinal key with a per-instance
+// one, and an identity change in this file has cost this project 1,128 mispairs once already; the
+// rule that came out of that is that identity changes are measured before they ship, and the GPU
+// this would be measured on is the one the renderer took down on 2026-08-12. The recipe above is
+// complete — what it needs is a run:
+//     ./run-safe.sh SBR_STAGE=1 SBR_LERP60=1 SBR_QUIT_AFTER=600
+// and the gate is the mispairing count against the no-tagging control of 4, not the coverage %.
 u32 g_requestingActor = 0;
 unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
 // The JOIN's own denominators. "0 owners resolved" has three causes — requestShadow never fired,
