@@ -49,6 +49,7 @@ extern "C" void func_802c14d0(CPUState&);   // JKRExpHeap::allocFromHead(u32, in
 extern "C" void func_802c18dc(CPUState&);   // JKRExpHeap::allocFromTail(u32, int)
 extern "C" void func_802c17b0(CPUState&);   // JKRExpHeap::allocFromHead(u32)  — default alignment
 extern "C" void func_802c1a34(CPUState&);   // JKRExpHeap::allocFromTail(u32)  — default alignment
+extern "C" void func_802d4cf0(CPUState&);   // unnamed J3DSkinDeform-region function that recurses
 
 namespace {
 
@@ -724,12 +725,25 @@ void ov_exp_free_all(CPUState& cpu) {
 // creates more threads than another, or one that creates them per load without destroying them,
 // shows up here immediately.
 unsigned long g_threads = 0;
+struct ThreadStack { u32 base, size, creator; };
+std::vector<ThreadStack> g_threadStacks;
 
 void ov_jkr_thread_ctor(CPUState& cpu) {
     ++g_threads;
-    lucent::debug("anmdata", "JKRThread #{} constructed: stack {} bytes, from {:#010x} ({})",
-                  g_threads, (u32)cpu.gpr[4], (u32)cpu.lr, sbr_gfxdb_symbolize((u32)cpu.lr));
+    const u32 size = (u32)cpu.gpr[4];
+    const u32 caller = (u32)cpu.lr;
     func_802c52b0(cpu);
+    // RECORD THE STACK'S ADDRESS RANGE, not just its size. The recursion that overflows runs with a
+    // stack pointer somewhere in one of these blocks, and "which thread is this running on" is the
+    // question that decides whether the recursion is too deep or simply on the wrong thread.
+    // The block address is the most recent system-heap allocation of exactly `size` bytes.
+    u32 blk = 0;
+    for (const auto& kv : g_live) {
+        if (kv.second == size && kv.first > blk) blk = kv.first;
+    }
+    g_threadStacks.push_back({blk, size, caller});
+    lucent::info("anmdata", "JKRThread #{}: stack {} bytes at {:#010x}..{:#010x}, created by {}",
+                 g_threads, size, blk, blk + size, sbr_gfxdb_symbolize(caller));
 }
 
 // THE TWO PATHS JKRExpHeap::alloc DELEGATES TO. The ledger built on ::alloc accounted for 69,600
@@ -868,6 +882,61 @@ void ov_alloc_tail1(CPUState& cpu) {
     record_live(cpu, heap, size, (u32)cpu.gpr[3], caller);
 }
 
+// IS IT REALLY RECURSING? The watchpoint's stack dump showed 54 identical frames, and that dump was
+// taken from a stack that is by then demonstrably corrupt — a walker following a smashed LR chain
+// prints exactly this. Counting entries and exits settles it without trusting the walk, and the
+// guest stack pointer at each level says how much stack a level actually costs.
+unsigned long g_deepDepth = 0, g_deepMax = 0;
+u32 g_deepSpTop = 0, g_deepSpLow = 0xFFFFFFFFu;
+
+void ov_deep_fn(CPUState& cpu) {
+    ++g_deepDepth;
+    const u32 sp = (u32)cpu.gpr[1];
+    if (g_deepDepth == 1) {
+        g_deepSpTop = sp;
+        // Name the stack this recursion is running on, once. A 16 KB JKR worker stack and the main
+        // game stack are the difference between "this recursion is too deep" and "this work is on
+        // the wrong thread", and the depth alone cannot tell them apart.
+        static bool once = false;
+        if (!once) {
+            once = true;
+            const char* whose = "NOT any JKRThread stack (the main thread, or a stack this probe "
+                                "did not see created)";
+            std::string detail;
+            for (const auto& t : g_threadStacks) {
+                if (sp >= t.base && sp < t.base + t.size) {
+                    detail = sbr_gfxdb_symbolize(t.creator);
+                    whose = detail.c_str();
+                    lucent::info("anmdata", "the recursion runs on the JKRThread created by {} — a {} "
+                                            "byte stack at {:#010x}..{:#010x}, with the stack pointer "
+                                            "already at {:#010x} ({} bytes used before the recursion "
+                                            "even starts)",
+                                 detail, t.size, t.base, t.base + t.size, sp,
+                                 t.base + t.size - sp);
+                    break;
+                }
+            }
+            if (detail.empty()) {
+                lucent::info("anmdata", "the recursion runs on a stack at {:#010x} which is {}", sp,
+                             whose);
+            }
+        }
+    }
+    if (sp < g_deepSpLow) g_deepSpLow = sp;
+    if (g_deepDepth > g_deepMax) {
+        g_deepMax = g_deepDepth;
+        // Powers of two all the way up: the question is whether this terminates at a plausible
+        // scene-graph depth or runs away, and a threshold list that stops at 128 cannot tell.
+        if ((g_deepMax & (g_deepMax - 1)) == 0) {
+            lucent::info("anmdata", "0x802d4cf0 recursion depth reached {} — stack from {:#010x} down "
+                                    "to {:#010x} ({} bytes used)",
+                         g_deepMax, g_deepSpTop, sp, g_deepSpTop - sp);
+        }
+    }
+    func_802d4cf0(cpu);
+    --g_deepDepth;
+}
+
 void ov_heap_free(CPUState& cpu) {
     if ((u32)cpu.gpr[4] == sys_heap(cpu)) ++g_freeSys;
     func_802c37b8(cpu);
@@ -911,6 +980,9 @@ void ov_archive_ctor_default(CPUState& cpu) {
 
 SB_OVERRIDE(0x802c17b0u, ov_alloc_head1, "JKRExpHeap::allocFromHead(size)",
             "diagnostic (SB_LOG=anmdata): the default-alignment overload — four entry points, not two")
+SB_OVERRIDE(0x802d4cf0u, ov_deep_fn, "J3DSkinDeform-region recursive function",
+            "diagnostic (SB_LOG=anmdata): count real recursion depth and guest stack usage — the "
+            "watchpoint's 54 repeated frames were read off an already-corrupt stack")
 SB_OVERRIDE(0x802c1a34u, ov_alloc_tail1, "JKRExpHeap::allocFromTail(size)",
             "diagnostic (SB_LOG=anmdata): the default-alignment tail overload")
 SB_OVERRIDE(0x802c14d0u, ov_alloc_head, "JKRExpHeap::allocFromHead",

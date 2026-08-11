@@ -238,3 +238,43 @@ Read the J3D skin-deform call site at 0x802d4cf0+0x1e6 against the decomp and fi
 short by 8 — a matrix array indexed from the wrong base, or a destination computed as
 `content - sizeof(header)` somewhere. This is now an ordinary RE question with a named function and
 a known-wrong offset, not a memory mystery.
+
+### Note (2026-08-11)
+ROOT CAUSE (2026-08-11): a guest STACK OVERFLOW on the JKRDecomp thread, smashing the heap block
+below it. Every earlier layer of this issue was a downstream symptom.
+
+The chain, complete:
+
+  MActor::calc -> J3DModel::calc -> an unnamed recursive J3D function at 0x802d4cf0, which
+  RECURSES (measured by counting entries and exits, not by reading the corrupt stack's frames):
+
+      depth  8   1,064 bytes of guest stack
+      depth 16   2,280
+      depth 32   4,712
+      depth 64   9,576          ~152 bytes per level
+
+  It runs on the JKRThread created by JKRDecomp's constructor: a 16,384-byte stack at
+  0x804246e0..0x804286e0. The stack pointer is ALREADY at 0x80426488 when the recursion begins —
+  8,792 bytes consumed before the first level. 8,792 + 9,576 > 16,384, so the stack runs off the
+  bottom of its block and writes into the CMemBlock header of the block below (0x804242f0), zeroing
+  its next-link via a PSMTXCopy of a matrix onto stack that is no longer inside the stack.
+
+  That unlinks the tail of the system heap's used list: 79,308 bytes become unreachable, the heap
+  cannot satisfy a 36-byte allocation, JKRArcFinder cannot be created, getFirstFile returns null on
+  a directory it FOUND, and MActorAnmData::init dereferences it.
+
+## What to check next, before choosing a fix
+
+Do NOT simply enlarge the thread's stack — the size comes from the game's own JKRDecomp constructor
+and matches retail. The question is why this call arrives on the decompression thread with 8.8 KB
+already spent, and whether retail's path is shallower. Two concrete comparisons:
+
+  * dump the guest call chain from the JKRDecomp thread's entry down to MActor::calc and check it
+    against the decomp's own flow — if our port runs model calc inside a decompression callback that
+    retail runs elsewhere, that is the defect;
+  * measure the same recursion's depth and per-level stack on a stage that WORKS (stage 8 reaches
+    the same code with the same 16 KB stack), which says whether Noki Bay's models are simply deeper
+    or whether the arrival stack differs.
+
+The instrument is in sms-recomp/overrides/diag_anmdata.cpp: it counts real recursion depth, records
+every JKRThread stack's address range, and names which thread a given stack pointer belongs to.
