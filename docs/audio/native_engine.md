@@ -40,7 +40,7 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    WSYS/IBNK/sequence.arc from the ROM at first SE, runs the REAL init/SE BMS (offset 0 of
    sequence.arc) through a TSeqParser/TTrack port, and synthesizes voices (IBNK keymap →
    WSYS wave → AFC PCM, TOscillator ADSR, C5BASE pitch). Intake = override on
-   JAIBasic::startSoundBasic 0x803020ac (`runtime/overrides/se_native.cpp`): SE ids tee to
+   JAIBasic::startSoundBasic 0x803020ac (`runtime/overrides/se_native.cpp` (DELETED)): SE ids tee to
    `njas_se_start(id)`, original still runs (guest bookkeeping until M4). The engine does
    the exact JAIBasic port protocol: find idle worker track exporting `port9 == (id>>12)&0xFF`,
    write `port4 = id&0x3FF`, `port0 = 1`. Output mixes into the DSP stream inside
@@ -59,7 +59,7 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
    - **Per-sound move-param slots** (9× vol/pitch/pan, JAISound::initMoveParameter
      semantics) flushed to the worker's outer params once per JAI frame (60 Hz tick
      derived from the subframe clock), like sendSeAllParameter → setSePortParameter.
-   - **Tees** (`overrides/se_native.cpp`, keyed by sound id read from guest JAISound+0x8):
+   - **Tees** (`overrides/se_native.cpp` (DELETED), keyed by sound id read from guest JAISound+0x8):
      stopSoundHandle 0x80302224 (fade = vol slot 6 → 0 over N frames, then stop — matching
      `setSeInterVolume(6, 0, fade)`), JAISound::setVolume/setPan/setPitch
      0x8030a57c/a604/a68c, setSeCategoryVolume 0x803029a4 (`unk28[cat] = v/127`).

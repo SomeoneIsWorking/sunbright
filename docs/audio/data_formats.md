@@ -13,7 +13,7 @@ emulation. Verified by ear: `w1stLoad_0.aw` wave 2 IS the boot-jingle sound.
 - `/AudioRes/mSound.asn` — sound-ID name table (text), not init data.
 - `/AudioRes/Seqs/sequence.arc` — BMS sequences; `/AudioRes/Streams/title.afc` — streamed DTK.
 
-## Formats (all parsed by `tools/jingle/jingle.py`)
+## Formats (all parsed by `tools/jingle/jingle.py` (DELETED))
 - **Yaz0**: standard RLE back-reference scheme; header `Yaz0` + u32 decompressed size.
 - **RARC**: nodes @+0x24, file entries @+0x2C, strings @+0x34, data @ +0xC (+0x20 each).
 - **AAF**: chunk-ID stream. IDs 1/4/5/6/7 = single (offset,size,flag); IDs 2/3 = list of
@@ -27,7 +27,7 @@ emulation. Verified by ear: `w1stLoad_0.aw` wave 2 IS the boot-jingle sound.
 - **AFC decode** (= what the DSP does, cf. Dolphin `ZeldaAudioRenderer::DecodeAFC`):
   block header byte = `(delta_exp << 4) | coef_index`; 16 nibbles follow;
   `sample = (delta*nib + yn1*c0 + yn2*c1) >> 11`, nibble sign-extended then `<<11`.
-  Canonical 16-pair coefficient table in `tools/jingle/jingle.py` (verified correct by ear).
+  Canonical 16-pair coefficient table in `tools/jingle/jingle.py` (DELETED) (verified correct by ear).
 
 ## Gotcha that produced "garbage audio"
 Decoding an .aw as one flat AFC stream does NOT work: each wave starts at its own WSYS
@@ -36,10 +36,10 @@ wrong. Always split per the WSYS wave table first.
 
 ## Tools
 - `build/sunbright-jingle <rom> [--list] [--extract <prefix> <outdir>]` — DiscIO-based FST
-  lister/extractor (`tools/jingle/jingle_extract.cpp`).
+  lister/extractor (`tools/jingle/jingle_extract.cpp` (DELETED)).
 - `tools/jingle/jingle.py <nintendo.szs> <banks_dir> <outdir>` — Yaz0→RARC→AAF→WSYS→AFC,
   writes one WAV per wave at its true sample rate.
-- `tools/jingle/afc_decode.py` — raw AFC-stream decoder (alignment caveat above).
+- `tools/jingle/afc_decode.py` (DELETED) — raw AFC-stream decoder (alignment caveat above).
 - `tools/audio/run_check.sh [secs] [ENV=V…]` — headless run + per-second WAV profile.
 
 ## Boot-jingle ground truth

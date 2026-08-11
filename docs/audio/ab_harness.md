@@ -14,13 +14,13 @@ enough context to fix it.
   gotchas). Events are emitted at the moment of truth (voice start/end), missing nothing.
 
 ## Event sources (both write the same JSONL schema)
-- **Oracle**: `runtime/vpb_trace.cpp` (`--wrap` on `ZeldaAudioRenderer::FetchVPB`, the
+- **Oracle**: `runtime/vpb_trace.cpp` (DELETED) (`--wrap` on `ZeldaAudioRenderer::FetchVPB`, the
   per-voice per-frame HLE entry). `SUNBRIGHT_AB_EVENTS=<path>`: on a voice's `enabled`
   rising edge emit `von` {t_ms, voice, ratio (4.12), hash}; on falling edge / `done` emit
   `voff` {dur_frames, peak_vol}. `hash` = FNV-1a of the first 64 ARAM bytes at the VPB base
   address — the **join key**, identical bytes to the native side's `Wave.srcHash` (first 64
   raw `.aw` bytes).
-- **Native**: `runtime/native_jas.cpp` same env var: `von` {t_ms, hash, ratio, bank, prog,
+- **Native**: `runtime/native_jas.cpp` (DELETED) same env var: `von` {t_ms, hash, ratio, bank, prog,
   key, vel, seq_off (BMS offset of the noteon), id (owning SE/BGM sound id)}; `voff`
   {dur_subframes, peak_vol}; plus **anchor events**: `bgm` {id, name} and `se` {id} starts
   and stops. The native extras are what turns "voice differs" into a *cause* (which BMS

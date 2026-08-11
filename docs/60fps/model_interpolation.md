@@ -6,11 +6,11 @@
 >
 > | named as | now | confirmed by |
 > |---|---|---|
-> | `runtime/overrides/scene_render.cpp` | `sms-recomp/runtime/render/scene.{h,cpp}` | holds the `GXSetProjection` (0x80362c34) hook |
-> | `runtime/memory_bridge.cpp` | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | the gather-pipe route |
-> | `runtime/overrides/hud.cpp` | `sms-recomp/overrides/hud.cpp` | same file, qualified |
+> | `sms-recomp/runtime/render/scene.cpp` | `sms-recomp/runtime/render/scene.{h,cpp}` | holds the `GXSetProjection` (0x80362c34) hook |
+> | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | the gather-pipe route |
+> | `sms-recomp/overrides/hud.cpp` | `sms-recomp/overrides/hud.cpp` | same file, qualified |
 >
-> `runtime/overrides/scene_id.cpp` and its `SUNBRIGHT_2DID` switch are GONE — no such file and no
+> `runtime/overrides/scene_id.cpp` (DELETED) and its `SUNBRIGHT_2DID` switch are GONE — no such file and no
 > such switch is read anywhere in the tree. Treat that paragraph as a record of what was once
 > built, not as a tool you can run.
 
@@ -106,7 +106,7 @@ keyed by a stable per-model ID.
 >
 > This one interception layer serves BOTH open render problems:
 > 1. **Widescreen — DONE natively (2026-06-03).** Removed the `.data` patch + Dolphin's
->    ForceWide. `runtime/overrides/scene_render.cpp` hooks **`GXSetProjection` (0x80362c34)** —
+>    ForceWide. `sms-recomp/runtime/render/scene.cpp` hooks **`GXSetProjection` (0x80362c34)** —
 >    the universal projection point Dolphin's `AspectMode::Auto` heuristic reads — and squeezes
 >    the projection by 0.75=(4:3)/(16:9): perspective m[0][0] → wider FOV; ortho m[0][0]+m[0][3]
 >    → 2D shrinks toward centre so after the 16:9 present it's correct-aspect + CENTERED, not
@@ -133,7 +133,7 @@ keyed by a stable per-model ID.
 >     matrix bytes + guest addr; hook `drawFadeinout`, temporarily restore that matrix and re-call
 >     `GXSetProjection` (recomp_raw 0x80362c34) so the quad loads full-range, super-call, done; or
 >     (b) intercept the quad's GXPosition X coords and widen 0→-107 / 640→747. (a) is cleaner.
-> - **2D-element identification tool — DONE (`SUNBRIGHT_2DID=1`, `runtime/overrides/scene_id.cpp`).**
+> - **2D-element identification tool — DONE (`SUNBRIGHT_2DID=1`, `runtime/overrides/scene_id.cpp` (DELETED)).**
 >   Wraps J2DScreen::draw + J2DPicture/J2DTextBox::drawSelf and writes a compact per-screen inventory
 >   to `scratch/2d_elements/elements.log`: each element's type, NAME, screen rect, object-ID.
 >   **J2DPane layout decoded:** +0x08 type fourCC, **+0x10 NAME fourCC** (the .blo tag, e.g. `'yaji'`
@@ -264,7 +264,7 @@ The authoritative per-object transform each frame is therefore the **J3DMtxBuffe
 
 - GX FIFO base register holds `0xCC010000`; writes target the **write-gather pipe at
   0xCC008000** (base − 0x8000). 127 functions in the DOL write it (the GX library).
-- **We already own this path** — `runtime/memory_bridge.cpp` routes gather-pipe
+- **We already own this path** — `sms-recomp/runtime/devices/dev_gxfifo.cpp` routes gather-pipe
   writes to `GPFifo::Write*`. So every matrix that reaches the GPU passes through us.
 - GX library state (`__GXData`) is around `0x803F43C0`.
 - Matrices reach the GPU via `GXLoadPosMtxImm` / `GXLoadNrmMtxImm` (small leaf funcs
@@ -426,7 +426,7 @@ Scope confirmed above (own object model, keep Dolphin GPU). Pinned draw hooks (U
 - `J2DScreen::drawSelf` 0x802d01c8, `J2DPicture::draw` 0x802ccef4, `J2DTextBox::draw`
   0x802d0b28 — leaf 2D elements (image / text).
 
-  → **First increment — DONE (foundation):** `runtime/overrides/scene_render.cpp` hooks
+  → **First increment — DONE (foundation):** `sms-recomp/runtime/render/scene.cpp` hooks
   `J2DScreen::draw` and *super-calls* the original via the new `recomp_raw(addr)` (runtime
   `SUNBRIGHT_RENDERPORT=1`). Verified: the hook fires, the original draw runs, the frame is
   unchanged (no regression) — i.e. we can now wrap any draw, observe/adjust state, then run the

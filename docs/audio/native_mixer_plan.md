@@ -20,7 +20,7 @@ piece — the DSP-ucode voice renderer — is ported to C++. Output through
 
 `DSPInterface::DSPBuffer` (JASDSPInterface.hpp) is byte-for-byte the **Zelda
 ucode VPB** (voice parameter block) — the decomp itself links Dolphin's
-`UCodes/Zelda.cpp` (ZeldaAudioRenderer). SMS ships the Zelda-class JAudio ucode;
+`UCodes/Zelda.cpp` (in the Dolphin fork, not this repo) (ZeldaAudioRenderer). SMS ships the Zelda-class JAudio ucode;
 the native mixer = a C++ reimplementation of that ucode's per-voice render loop
 over the decomp's live DSPBuffer array:
 
@@ -39,7 +39,7 @@ per 5ms DAC frame (x subframes):
 The decomp's now-native sequencer fills the voice state; M2 just renders it. Source of truth
 = `JASystem::TDSPChannel::DSPCH[64]` (static in JASDSPChannel.cpp), 64 voices. Each
 `DSPCH[i].unkC` is a `DSPInterface::DSPBuffer*` = the **Zelda-ucode VPB**
-(JASDSPInterface.hpp; the decomp itself notes it matches Dolphin `UCodes/Zelda.cpp`).
+(JASDSPInterface.hpp; the decomp itself notes it matches Dolphin `UCodes/Zelda.cpp` (in the Dolphin fork, not this repo)).
 Per-voice render params (set by DSPBuffer::setWaveInfo/setOscInfo/setPitch/setMixerVolume
 in JASDSPInterface.cpp):
 - `unk110` (s16*) = decoded/encoded wave base; `unk114` = length; `unk118` = loop/osc info.
@@ -84,7 +84,7 @@ than duplicating state.
   runtime/native_jas.cpp) — proven AFC decoder, IBNK/WSYS parsing, ADSR.
 - `scratch/audio_ref/native_audio_engine.md` + `audio_data_formats.md` — the
   recomp-era engine docs (also recovered; formats + verified test vectors).
-- Dolphin `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.cpp` — the same ucode's HLE,
+- Dolphin `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.cpp` (in the Dolphin fork, not this repo) — the same ucode's HLE,
   field-by-field reference for the VPB semantics (consult for layout/semantics;
   implement from the decomp + RE, keep provenance clean).
 - `JASAiCtrl.cpp` (updateDac/vframeWork/mix* — already decompiled), `JASDSPBuf.cpp`

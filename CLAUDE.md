@@ -86,11 +86,11 @@ HW/OS APIs (GX, DVD, PAD, VI, audio). That is the N64Recomp / Zelda64Recompiled 
   worked — retired 2026-06-18 by directive ("I don't want a recomp") while live in Delfino at
   ~2.16M recomp calls/sec. Only the flip engine failed.
 - It said native-only is "REQUIRED for interpolated 60fps". Overstated: the recomp era
-  interpolated via `runtime/interp60.h` by capturing `J3DModel::viewCalc` matrices.
+  interpolated via `runtime/interp60.h` (DELETED; recoverable from git at `9283f44^`) by capturing `J3DModel::viewCalc` matrices.
 
 **Resurrect, do not rebuild.** In git at `9283f44^`: `tools/recompiler/` (188 `case PPCOp::`
 emitter cases, 41 `ps_*` mnemonics, `PSQ_L/LU/ST/LX/STX` with GQR dequantization),
-`runtime/native_threads.cpp` (431 lines; interrupt delivery already fully PC-native, a behaviour
+`runtime/native_threads.cpp` (DELETED; recoverable from git at `9283f44^`) (431 lines; interrupt delivery already fully PC-native, a behaviour
 port of OSInterrupt.c), and 74 files of `runtime/overrides/` (ngx renderer, native JAS audio, EFB,
 matrix, widescreen, the interp60 stack). The genuinely NEW work is swapping **Dolphin's** substrate
 (JIT dispatch, MMIO, interrupt sources) for **aurora's**, which did not exist maturely in June.

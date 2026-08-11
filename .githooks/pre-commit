@@ -29,6 +29,27 @@ fi
 # demonstrate it can produce the OTHER answer. They existed and nothing ran them, which is the
 # same defect one level up: a broken instrument still reports a clean negative, now with a
 # reassuring --selftest in its docstring.
+# Paths named in the LIVE docs must exist. The switch registry above catches an env var that no
+# code reads; this catches a FILE that no tree contains — the same defect one level over. It is how
+# docs/60fps/ came to name nine files that resolved to nothing, including a "DONE" tool whose
+# switch and source were both absent, and how tools/oracle/capture.sh spent months looking for its
+# Dolphin binary in an uninitialised submodule and silently using a stock build instead.
+# A path that is genuinely gone is exempted by marking it (DELETED) on the same line.
+if ! python3 "$REPO/tools/docs/doc_paths.py"; then
+  cat >&2 <<'EOM'
+
+A live document names a source path that does not exist. A reader follows it, finds nothing,
+and cannot tell whether the file moved or was deleted.
+
+  fix:  qualify the path, or locate where the code MOVED — find it by a hook address or a
+        symbol it defines, never by guessing at a plausible rename
+  or:   if it is genuinely gone and the history is the point, mark it (DELETED) on the same
+        line, which exempts it
+  see:  python3 tools/docs/doc_paths.py
+EOM
+  exit 1
+fi
+
 if ! python3 "$REPO/tools/selftest_all.py"; then
     cat >&2 <<'MSG'
 

@@ -31,7 +31,7 @@ counter, NOT the DAC DMA engine.
 - `9283f44^:runtime/overrides/zelda_ucode_native.cpp` (393 lines) — an SMS-specific Zelda-ucode mail
   state machine driving Dolphin's `ZeldaAudioRenderer`, with root causes already in-comment.
 - `aid_native.cpp`, `jas_driver_native.cpp`, `dsp_update_native.cpp`, `native_dsp_regs.cpp`.
-- `extern/dolphin_fork/Source/Core/Core/HW/DSPHLE/` — full DSPHLE incl. `UCodes/Zelda.cpp` (1964 lines).
+- `extern/dolphin_fork/Source/Core/Core/HW/DSPHLE/` — full DSPHLE incl. `UCodes/Zelda.cpp` (in the Dolphin fork, not this repo) (1964 lines).
 - SMS's ucode confirmed: CRC `0x56D36052` → `ZeldaUCode`, flags `SYNC_PER_FRAME | NO_CMD_0D`,
   standard protocol, ARAM present. `JASDSPInterface.hpp` even cites `Zelda.cpp:683` for the 0x180-byte VPB.
 
@@ -39,8 +39,8 @@ Licensing is a non-issue for this project (user directive).
 
 ## STATUS — AUDIBLE (2026-08-07). Steps 0-4 landed.
 
-`runtime/devices/dev_aid.cpp` is the AID engine + delivery + the DSP frame's interrupts;
-`runtime/devices/dsp_mixer.cpp` is the voice renderer. Measured, SBR_FASTBOOT, 155 s:
+`sms-recomp/runtime/devices/dev_aid.cpp` is the AID engine + delivery + the DSP frame's interrupts;
+`sms-recomp/runtime/devices/dsp_mixer.cpp` is the voice renderer. Measured, SBR_FASTBOOT, 155 s:
 
 | gate | result |
 |---|---|

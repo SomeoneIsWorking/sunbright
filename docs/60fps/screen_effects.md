@@ -44,7 +44,7 @@ field's EFB). So every effect in the table that samples the capture will, on the
 a screen that does not match the blended geometry — the artifact the retired
 `efb_interp_freeze.cpp` / `shadow_interp.cpp` were built to handle.
 
-Owning this means interp60 does not guess: `sms-recomp/frame_interp/effects.h` hooks each of (formerly `overrides/screen_effects.cpp`; the hook addresses 0x8019f83c / 0x8027c12c are what identify it)
+Owning this means interp60 does not guess: `sms-recomp/frame_interp/effects.h` hooks each of (formerly `sms-recomp/frame_interp/effects.h` (formerly `overrides/screen_effects.cpp`, DELETED); the hook addresses 0x8019f83c / 0x8027c12c are what identify it)
 these and records, per frame, which screen-sampling effects fired (queryable at `/screenfx` and via
 `sb_screen_effects_this_frame()`), so the in-between handler acts on a named set — freeze the capture
 for the shimmer/blur, re-derive the water at the interpolated camera — instead of pattern-matching

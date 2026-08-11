@@ -6,15 +6,15 @@
 >
 > | named as | now | confirmed by |
 > |---|---|---|
-> | `runtime/overrides/scene_render.cpp` | `sms-recomp/runtime/render/scene.{h,cpp}` | holds the `GXSetProjection` (0x80362c34) hook |
-> | `runtime/memory_bridge.cpp` | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | the gather-pipe route |
-> | `runtime/overrides/hud.cpp` | `sms-recomp/overrides/hud.cpp` | same file, qualified |
+> | `sms-recomp/runtime/render/scene.cpp` | `sms-recomp/runtime/render/scene.{h,cpp}` | holds the `GXSetProjection` (0x80362c34) hook |
+> | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | `sms-recomp/runtime/devices/dev_gxfifo.cpp` | the gather-pipe route |
+> | `sms-recomp/overrides/hud.cpp` | `sms-recomp/overrides/hud.cpp` | same file, qualified |
 >
 > `runtime/overrides/scene_id.cpp` and its `SUNBRIGHT_2DID` switch are GONE — no such file and no
 > such switch is read anywhere in the tree. Treat that paragraph as a record of what was once
 > built, not as a tool you can run.
 
-How 16:9 works here (see `runtime/overrides/scene_render.cpp`): the GXSetProjection
+How 16:9 works here (see `sms-recomp/runtime/render/scene.cpp`): the GXSetProjection
 override pre-squeezes every projection by 0.75 — perspective gets a wider FOV (true
 Hor+), 2D orthos render anamorphically so menus present correct-aspect, CENTERED in
 the 4:3 middle of the 16:9 frame. Consequence: anything that fills "the screen" with
