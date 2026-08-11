@@ -145,3 +145,40 @@ is a list with a counter for everything missed.
 
 The file is rewritten every 300 presents rather than at exit, because automated runs end in
 `SIGKILL` and an exit-only write would be empty for exactly the runs that draw the most.
+
+## How complete is this census? (measured 2026-08-12)
+
+The header already warns that a graphic which has never drawn in a recorded run is ABSENT, not
+non-existent. Here is what that amounts to right now, so nobody has to infer it from row counts.
+
+All 24 stages (1–15, 20–28) have contributed at least one row, which reads like full coverage and
+is not. Eight of them — **stage10, stage11, stage12, stage15, stage25, stage26, stage27, stage28** —
+each contributed exactly 15 rows, and those row sets are **identical to one another**. A run that
+observes the same fifteen generic emitters as seven other stages and nothing else has not sampled
+its stage; it has sampled the scaffolding every stage draws.
+
+Two things could produce that, and this registry cannot tell them apart:
+
+* the stage genuinely draws nothing beyond the common set (plausible for stage15, which is
+  file-select, and possibly for some of 25–28), or
+* the run never reached the stage's own content — it booted, drew the shared populations, and hit
+  its present cap before anything distinctive loaded.
+
+Until one of those is established per stage, treat a row's `seen:` list as evidence of where a
+graphic HAS been observed and never as evidence of where it is absent.
+
+The rest of the picture, for scale:
+
+| | |
+|---|--:|
+| rows | 65 |
+| rows present in EVERY sampled stage | 1 |
+| stages contributing beyond the common set | 16 |
+| stages whose sample is the common set only | 8 |
+| rows observed in exactly one stage | 20 |
+
+Stage-exclusive rows cluster in the stages that were actually played through — stage8 (8 rows),
+stage4 and stage9 (3 each), stage6, stage1 and stage2 (2 each). That distribution is the honest
+shape of this census: deep in a handful of stages, shallow in the rest.
+
+Reproduce with the snippet in `debug_journal/2026-08-12_graphics_census_coverage.md`.
