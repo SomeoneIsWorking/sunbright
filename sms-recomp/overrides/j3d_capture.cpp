@@ -293,11 +293,6 @@ void ov_shape_draw(CPUState& cpu) {
                         dr.key = (key << 8) | (uint64_t)gxSlot;
                         dr.geom = sbr_scene_geometry_for_slot(key, geom, (uint32_t)gxSlot);
                         if (dr.geom == 0) continue;   // this element has no vertices on that slot
-                        // From the COMMAND STREAM (BP 0x40/0x41), not the SDK overrides. J3D sets
-                        // z-mode and blend by replaying display lists, so GXSetZMode/GXSetBlendMode
-                        // never see them: 43% of draws (2.3M of 5.4M) had the two sources
-                        // disagreeing, typically SDK depth-WRITE on where the stream says off —
-                        // which makes a background draw occlude everything behind it.
                         // From the COMMAND STREAM (BP 0x40/0x41), which is where the game puts it.
                         // PROVEN correct rather than preferred: the state oracle compares this
                         // port's raster state against aurora's per draw, and the stream-derived
@@ -314,22 +309,45 @@ void ov_shape_draw(CPUState& cpu) {
                         {   // Do the SDK-captured and FIFO-derived raster states agree? If they do
                             // not, every draw this port rendered used state the game never set for
                             // it. Measured before switching the renderer over, not assumed.
-                            const SbrDepthState fz = sbr_gx_current_zmode();
+                            //
+                            // Named by SOURCE, not by which variable happens to hold them. The
+                            // previous version printed dr.depth as "SDK" and sbr_gx_current_zmode()
+                            // as "FIFO", which is exactly backwards — dr.depth is the FIFO state in
+                            // the default configuration. Two mislabelled columns is how this
+                            // project has lost days before, so the labels are now tied to the call
+                            // that produced each value.
+                            const SbrDepthState sdkZ  = sbr_gx_current_zmode();
+                            const SbrDepthState fifoZ = sbr_gx_fifo_zmode();
                             static long same = 0, diff = 0;
-                            const bool eq = fz.test == dr.depth.test && fz.func == dr.depth.func &&
-                                            fz.write == dr.depth.write &&
-                                            fz.blend == dr.depth.blend &&
-                                            fz.srcFac == dr.depth.srcFac &&
-                                            fz.dstFac == dr.depth.dstFac;
+                            const bool eq = sdkZ.test == fifoZ.test && sdkZ.func == fifoZ.func &&
+                                            sdkZ.write == fifoZ.write &&
+                                            sdkZ.blend == fifoZ.blend &&
+                                            sdkZ.srcFac == fifoZ.srcFac &&
+                                            sdkZ.dstFac == fifoZ.dstFac;
                             eq ? ++same : ++diff;
+                            // Report a DISAGREEING pair, not whatever draw the counter happened to
+                            // land on. The line prints two state triples next to "N DIFFER", and a
+                            // reader takes those to BE the disagreement — but the sampled draw is
+                            // usually one of the agreeing majority, so the two columns printed
+                            // identical values under a count of 107093 differences.
+                            static SbrDepthState lastSdk{}, lastFifo{};
+                            static bool haveDiff = false;
+                            if (!eq) { lastSdk = sdkZ; lastFifo = fifoZ; haveDiff = true; }
+                            const SbrDepthState& showSdk  = haveDiff ? lastSdk : sdkZ;
+                            const SbrDepthState& showFifo = haveDiff ? lastFifo : fifoZ;
                             if (((same + diff) % 200000) == 0)
                                 lucent::info("nrender", "raster source check: {} draws agree, {} "
-                                             "DIFFER (SDK z t{}w{}f{} bl{}/{}/{} vs FIFO "
-                                             "t{}w{}f{} bl{}/{}/{})",
-                                             same, diff, dr.depth.test, dr.depth.write,
-                                             dr.depth.func, dr.depth.blend, dr.depth.srcFac,
-                                             dr.depth.dstFac, fz.test, fz.write, fz.func,
-                                             fz.blend, fz.srcFac, fz.dstFac);
+                                             "DIFFER — SDK(GXSetZMode/BlendMode) t{}w{}f{} "
+                                             "bl{}/{}/{} vs FIFO(BP 0x40/0x41) t{}w{}f{} "
+                                             "bl{}/{}/{} ({}). The renderer is using {}.",
+                                             same, diff, showSdk.test, showSdk.write, showSdk.func,
+                                             showSdk.blend, showSdk.srcFac, showSdk.dstFac,
+                                             showFifo.test, showFifo.write, showFifo.func,
+                                             showFifo.blend, showFifo.srcFac, showFifo.dstFac,
+                                             haveDiff ? "a draw where they DISAGREE"
+                                                      : "no disagreement seen yet — this is an "
+                                                        "agreeing draw",
+                                             useSdk ? "SDK (SBR_RASTER_SRC=sdk)" : "FIFO");
                         }
                         // From the COMMAND STREAM, not GXLoadTexObj: J3D binds material textures by
                         // replaying baked display lists, so the SDK entry point only ever sees the
