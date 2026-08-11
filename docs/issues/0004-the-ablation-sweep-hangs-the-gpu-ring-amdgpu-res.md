@@ -68,3 +68,6 @@ still yields whatever it measured.
 Sweep one variant per scored frame instead of all sixteen (16x fewer passes per frame, same paired
 deltas, just spread over more frames), and re-run. That is the change that makes the tool fit inside
 the GPU's timeout budget rather than working around the symptom.
+
+### Note (2026-08-12)
+Recurred WITHOUT the sweep: a plain SBR_SDLGPU render run at 600 presents now dies the same way (radv GPUVM fault at 0x800000040000 -> VK_ERROR_DEVICE_LOST), and after each loss the next process cannot reach the display (XIO fatal IO error 2 at SDL init). The same run survived 4000 presents earlier the same day, so the card/driver state has degraded over the session rather than a code change causing it. The round-robin sweep fix (one variant per scored frame) is still correct and did let a 1500-present sweep complete; it is not sufficient on a degraded device. Recommend a session/reboot before further render runs.
