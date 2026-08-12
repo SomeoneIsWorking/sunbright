@@ -161,7 +161,6 @@ void TPinnaCoaster::initMapObj() { SB_STUB_HIT("TPinnaCoaster::initMapObj"); }
 void TResetFruit::appearing() { SB_STUB_HIT("TResetFruit::appearing"); }
 void TResetFruit::breaking() { SB_STUB_HIT("TResetFruit::breaking"); }
 void TResetFruit::checkGroundCollision(JGeometry::TVec3<float>*) { SB_STUB_HIT("TResetFruit::checkGroundCollision"); }
-void TResetFruit::control() { SB_STUB_HIT("TResetFruit::control"); }
 u32 TResetFruit::getLivingTime() const { SB_STUB_HIT("TResetFruit::getLivingTime"); return 0; }
 void TResetFruit::hold(TTakeActor*) { SB_STUB_HIT("TResetFruit::hold"); }
 // TResetFruit::initMapObj now PORTED in MapObjBall.cpp (RE'd 2026-07-17).

@@ -84,7 +84,22 @@ def find_ptr(val, lo=0x80300000):
 
 def vtable_base(anchor_method_addr):
     """Find the vtable slot0 by locating anchor_method_addr in .data and walking back to slot0.
-    Returns (slot0_rva, index_of_anchor)."""
+    Returns (slot0_rva, index_of_anchor).
+
+    THE RETURNED slot0 IS NOT RELIABLY THE REAL START OF THE VTABLE, and the index it implies is
+    therefore not an absolute vtable slot number. A pure virtual is a ZERO word sitting INSIDE the
+    table, and the walk below stops at it, reporting a start that is too high. Measured 2026-08-12:
+    this walk placed __vt__10TBGTakeHit at 0x90 bytes when the symbol table says 0xB4, because
+    TTakeActor::getTakingMtx is pure.
+
+    That does not invalidate this tool's ANSWER, because resolve() aligns the two vtables by
+    voting on a DELTA between them and reads at the voted index -- a uniformly wrong start on one
+    side is absorbed by the delta. It does mean the printed "slot index" is informational only.
+    Never convert one of these indices into a byte offset and compare it against a `lwz r12,X(r12)`
+    dispatch: those offsets are measured from the vtable OBJECT start and include the two leading
+    zero words (slot 0 is at byte 8 -- verified by the fact that X=0 and X=4 occur nowhere in the
+    US .text while X=8 occurs 174 times). Mixing the two conventions is a two-slot error that reads
+    as a plausible but wrong method name; see docs/re_notes/tresetfruit_control_state_map.md."""
     locs = find_ptr(anchor_method_addr)
     if not locs:
         sys.exit(f"[vtable_re] anchor method {anchor_method_addr:08x} not found in any vtable")
