@@ -1868,11 +1868,12 @@ void sbr_gxfifo_report_2d_gate() {
                            "the matrix work newly enabled, and a wrong matrix would put it "
                            "somewhere the first is not. It does NOT check that the geometry is the "
                            "RIGHT geometry, only that it lands on screen.)");
-    if (g_2dTexMtxIdxDraws != 0)
-        lucent::info("gxfifo", "    NOT A DECLINE, a KNOWN GAP: {} DECODED draw(s) carried "
-                               "per-vertex TexMtxIdx. Their index bytes are consumed so the vertex "
-                               "stride is right, but no texgen matrix is applied, so their UVs are "
-                               "the raw attribute values and may be wrong.", g_2dTexMtxIdxDraws);
+    // UNCONDITIONAL. This is a gap disclosure, not a decline, and printing it only when nonzero
+    // would make "checked, and there are none" indistinguishable from "never looked".
+    lucent::info("gxfifo", "    known gap, checked: {} DECODED draw(s) carried per-vertex "
+                           "TexMtxIdx. Their index bytes are consumed so the vertex stride is "
+                           "right, but no texgen matrix is applied, so any such draw's UVs are the "
+                           "raw attribute values and may be wrong.", g_2dTexMtxIdxDraws);
     if (g_2dDeclClr != 0)
         lucent::info("gxfifo", "    {:>8} non-RGBA8 colour0", g_2dDeclClr);
     if (g_2dDeclCount != 0)
