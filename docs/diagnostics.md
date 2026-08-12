@@ -54,7 +54,7 @@ logger — that is debt to convert, not a feature.
 | `SB_DIRECT_BR` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp` |  |
 | `SB_DL_SANITIZE_DBG` | 1 | `extern/aurora/lib/dolphin/gx/GXDispList.cpp` | gated print |
 | `SB_DL_TAG` | 1 | `extern/aurora/lib/dolphin/gx/GXDispList.cpp` |  |
-| `SB_DL_VALIDATE` | 4 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DPacket.cpp` | gated print |
+| `SB_DL_VALIDATE` | 3 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DPacket.cpp` |  |
 | `SB_DOUBLE_DRAW` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp` |  |
 | `SB_DRAWBUF_CHECK` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp` |  |
 | `SB_DRAWBUF_STATS` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DDrawBuffer.cpp` |  |
@@ -378,4 +378,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**357 switches; 69 still gate a raw print.**
+**357 switches; 68 still gate a raw print.**

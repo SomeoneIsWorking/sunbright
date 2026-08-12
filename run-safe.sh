@@ -22,9 +22,16 @@
 # It cannot pass vacuously: if the kernel log cannot be read, that is reported as UNKNOWN rather
 # than clean, because "nothing happened" and "I could not look" must not share an output.
 #
-# Usage:  ./run-safe.sh [NAME=VALUE ...] [-- args to run-recomp.sh]
+# Usage:  ./run-safe.sh [NAME=VALUE ...] [-- args to the runner]
 #   ./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=400
 #   ./run-safe.sh SBR_LERP60=1 SB_MAX_PRESENT_HZ=30 SBR_QUIT_AFTER=600
+#   SB_RUNNER=run.sh ./run-safe.sh SB_STAGE=1        # the decomp runtime, same protections
+#
+# SB_RUNNER picks which runtime to launch (default run-recomp.sh). It exists because the decomp
+# runtime had NO safe launcher at all, so verifying an upstream convergence at runtime — which a
+# green build does not do, since a converged file can compile and still have dropped a native
+# LP64/BE fix — meant hand-assembling a command line, and every run that made this machine
+# unusable was hand-assembled.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -74,7 +81,14 @@ echo "[run-safe] amdgpu events in the 2 min before this run: ${BEFORE}"
 
 SECS="${SB_RUN_SECS:-240}"
 set +e
-timeout -s KILL "$SECS" "$HERE/run-recomp.sh" "${ARGS[@]}"
+RUNNER="${SB_RUNNER:-run-recomp.sh}"
+if [ ! -x "$HERE/$RUNNER" ]; then
+    echo "[run-safe] SB_RUNNER=$RUNNER is not an executable script in $HERE. Refusing to run" >&2
+    echo "           anything rather than silently falling back to a different runtime." >&2
+    exit 4
+fi
+echo "[run-safe] runner: $RUNNER"
+timeout -s KILL "$SECS" "$HERE/$RUNNER" "${ARGS[@]}"
 RC=$?
 set -e
 

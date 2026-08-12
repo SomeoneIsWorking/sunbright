@@ -99,8 +99,7 @@ int  TMtxSwingRZCallBack(J3DNode*, int) { SB_STUB_HIT("TMtxSwingRZCallBack"); re
 int  TMtxSwingRZReverseXZCallBack(J3DNode*, int) { SB_STUB_HIT("TMtxSwingRZReverseXZCallBack"); return 0; }
 int  TMtxTimeLagCallBack(J3DNode*, int) { SB_STUB_HIT("TMtxTimeLagCallBack"); return 0; }
 
-// ---- spc trace (Strategic/spcinterp.hpp) ----
-void SpcTrace(const char*, ...) {}
+// SpcTrace is now UPSTREAM, inline in Strategic/spcinterp.hpp.
 
 // ---- JAS kernel probe (no native profiler) ----
 void JASystem::Kernel::probeStart(s32, char*) {}

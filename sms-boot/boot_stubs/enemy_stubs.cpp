@@ -123,7 +123,9 @@ TSurfGesso::TSurfGesso(const char* name)
 // ---------------------------------------------------------------------------
 #include <MoveBG/MapObjBase.hpp>
 
-void TMapObjBase::appear() { SB_STUB_HIT("TMapObjBase::appear"); }
+// appear() now UPSTREAM, inline in MoveBG/MapObjBase.hpp, and it is not empty: it calls
+// makeObjAppeared(). Our stub was a silent no-op, so anything that made a map object appear
+// did nothing here.
 // calc/draw/dead now defined in decomp/sms/src/MoveBG/MapObjBase.cpp
 // alongside the perform() port (all four are byte-exact `blr` in the
 // binary — empty stubs for vtable slot fill).
