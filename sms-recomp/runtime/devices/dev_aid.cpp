@@ -104,6 +104,8 @@ void audio_init() {
     lucent::info("aid", "host audio open at {} Hz, {} ch", kSampleRate, kChannels);
 }
 
+unsigned long g_emitted = 0, g_emittedSilent = 0, g_emitNoTake = 0;
+
 // Emit one 32-byte block. Guest memory is big-endian; the host stream is native-endian s16.
 void emit_block(u32 addr) {
     // The samples come from the RENDERER, not from the guest's DMA buffer. On hardware the DSP
@@ -118,16 +120,28 @@ void emit_block(u32 addr) {
     }
 
     int16_t frames[kBlockFrames * kChannels];
+    bool took = true;
     if (!sbr_dsp_take(frames, kBlockFrames)) {
+        took = false;
         // Before the renderer has produced anything (early boot, and any starve) emit true silence
         // rather than the guest buffer's contents, which are stale or uninitialised.
         std::memset(frames, 0, sizeof(frames));
     }
+    // What the DAC ACTUALLY receives, counted at the last possible moment. The renderer reports it
+    // is producing audio; if this says the emitted blocks are silent then the loss is in the
+    // hand-off between them, not in either end.
+    {
+        bool nz = false;
+        for (unsigned i = 0; i < kBlockFrames * kChannels && !nz; ++i) nz = frames[i] != 0;
+        ++g_emitted;
+        if (!nz) ++g_emittedSilent;
+        if (!took) ++g_emitNoTake;
+    }
 
-    // SBR_MUTE=1 keeps the whole audio path running — mixer, pacing, the counters — and only stops
-    // the host DAC. Muting by skipping the render would change the engine's timing and make a muted
-    // run a different run; this way an automated or agent-driven run is silent to the person at the
-    // machine while still measuring exactly what an audible one does.
+    // SBR_MUTE=1 keeps the whole audio path running — mixer, pacing, the silence counters above —
+    // and only stops the host DAC. Muting by skipping the render would change the engine's timing
+    // and make a muted run a different run; this way an automated or agent-driven run is silent to
+    // the person at the machine while still measuring exactly what an audible one does.
     static const bool muted = [] {
         const char* e = std::getenv("SBR_MUTE");
         return e != nullptr && e[0] != '0' && e[0] != '\0';
@@ -388,10 +402,10 @@ extern "C" void sbr_audio_frame() {
     if (secs != last_report) {
         last_report = secs;
         lucent::debug("aid", "queued={} blocks={} wraps={} (+{}/s) delivered={} (+{}/s) "
-                             "dspFrames={} subframes={} badSub={} cb=0x{:08x}",
+                             "dspFrames={} subframes={} badSub={} emitted={} ofWhichSilent={} noTake={} cb=0x{:08x}",
                       queued, g_blocks, g_wraps, g_wraps - last_wraps, g_delivered,
-                      g_delivered - last_delivered, g_dsp_frames, g_dsp_subframes, g_dsp_badSub,
-                      sb_r32(AID_CALLBACK_GLOBAL));
+                      g_delivered - last_delivered, g_dsp_frames, g_dsp_subframes, g_dsp_badSub, g_emitted, g_emittedSilent,
+                      g_emitNoTake, sb_r32(AID_CALLBACK_GLOBAL));
         last_wraps = g_wraps;
         last_delivered = g_delivered;
     }

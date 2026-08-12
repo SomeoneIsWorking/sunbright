@@ -131,3 +131,11 @@ add_executable(gx_light_test tests/gx_light_test.cpp runtime/render/gx_light.cpp
 target_link_libraries(gx_light_test PRIVATE lucent::lucent)
 target_include_directories(gx_light_test PRIVATE runtime runtime/render runtime/devices)
 add_test(NAME gx_light COMMAND gx_light_test)
+
+# The interpolation pairing self-test, reached through the main binary with SBR_INTERP_SELFTEST=1.
+# It is pure CPU work — local buffers and aurora's own pairing tables — but until now it only ran
+# from inside interpolate_recorded_frame, so proving the pairing maths required a GPU frame. It is
+# the one part of the 60fps stack that can be checked without a run, and it was the part that could
+# not be. No window, no ROM, no device is created on this path.
+add_test(NAME interp_pairing COMMAND sms-recomp)
+set_tests_properties(interp_pairing PROPERTIES ENVIRONMENT "SBR_INTERP_SELFTEST=1")

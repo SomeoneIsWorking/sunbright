@@ -416,6 +416,7 @@ void interp_reports() {
 void final_reports() {
     sbr_arena_guard_report();
     sbr_render_gpu_report();
+    sbr_gxfifo_report_2d_gate();
     sbr_gfxdb_flush();
     sbr_gfxdb_report();
     if (sbr_lerp_enabled()) {

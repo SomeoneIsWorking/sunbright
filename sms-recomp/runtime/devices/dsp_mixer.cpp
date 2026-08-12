@@ -42,6 +42,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,14 @@ constexpr u32 kVpbBus0        = 0x010;    // Channel[6], stride 8: id+0, target+
 constexpr u32 kVpbBusStride   = 0x008;
 constexpr u32 kVpbBusTarget   = 0x002;
 constexpr u32 kVpbBusCurrent  = 0x004;
+// The AUTO MIXER (setAutoMixer @0x803153d8, initAutoMixer @0x803153ac). When it is active the game
+// does NOT write the six bus volumes at all — setMixerVolume even returns early — and the DSP
+// derives them from a compact (volume, pan, fxmix) triple instead. Most voices use it.
+constexpr u32 kVpbAmPan        = 0x050;   // u16: pan in the HIGH byte, sub-pan in the low
+constexpr u32 kVpbAmFx         = 0x052;   // u16: fxmix in the high byte (aux send; not rendered)
+constexpr u32 kVpbAmVolCur     = 0x054;   // u16 Q15, ramps toward the target
+constexpr u32 kVpbAmVolTarget  = 0x056;   // u16 Q15
+constexpr u32 kVpbAmEnabled    = 0x058;   // u16, non-zero = the auto mixer owns this voice
 constexpr u32 kVpbBlockSamps  = 0x064;    // u16: 16 = AFC, 1 = PCM
 constexpr u32 kVpbBlockBytes  = 0x100;    // u16: AFC 9 (hq) / 5 (lq); PCM 16 / 8 (bits)
 constexpr u32 kVpbLoopFlag    = 0x102;    // u16
@@ -83,13 +92,22 @@ constexpr u32 kVpbWaveAddr    = 0x118;    // u32, an ARAM address (NOT a main-RA
 constexpr u32 kVpbLength      = 0x11C;    // u32, length in SAMPLES
 
 // ── AFC ─────────────────────────────────────────────────────────────────────────────────────────
-// The same coefficient table and decoder as the decomp's proven renderer. Kept byte-identical to
-// that one on purpose: it is the component with a verified test vector, and two divergent copies
-// of a decoder is how a fidelity bug becomes unattributable.
+// The same coefficient table and decoder as the decomp's proven renderer
+// (sms-boot/runtime/jas_kernel_native.cpp). It MUST stay byte-identical to that one, and
+// `tools/audio/afc_table_check.py` (wired into the commit gate) enforces it.
+//
+// This table was first transcribed BY HAND and entries 8-15 came out wrong, while the comment here
+// asserted it was byte-identical — a claim nobody had checked. The result was not silence or a
+// crash: every AFC block whose predictor index landed in the wrong half decoded with the wrong
+// coefficients, so the waveform was continuous, in tune and in time, and simply wrong. It measured
+// perfectly on every metric this file reports. Only an ear caught it, and only a direct diff
+// against the proven copy located it. That is why the check is now automated rather than asserted
+// in a comment.
 const s16 kAfcCoef[16][2] = {
-    {0, 0},        {2048, 0},     {0, 2048},     {1024, 1024}, {4096, -2048}, {3584, -1536},
-    {3072, -1024}, {4608, -2560}, {4096, -2048}, {3584, -1536}, {3072, -1024}, {2048, 0},
-    {4096, -2048}, {3584, -1536}, {3072, -1024}, {2560, -512},
+    {0, 0}, {2048, 0}, {0, 2048}, {1024, 1024},
+    {4096, -2048}, {3584, -1536}, {3072, -1024}, {4608, -2560},
+    {4200, -2248}, {4800, -2300}, {5120, -3072}, {2048, -2048},
+    {1024, -1024}, {-1024, 1024}, {-1024, 0}, {-2048, 0},
 };
 
 // Decode `nSamples` AFC samples. The VPB length is a SAMPLE count: AFC packs 16 samples per block
@@ -153,6 +171,13 @@ unsigned long g_starved = 0;
 unsigned long g_frames = 0, g_noTable = 0, g_rendered = 0, g_decodes = 0;
 unsigned long g_seenAllocated = 0, g_seenPaused = 0, g_seenNoWave = 0, g_seenUndecodable = 0;
 unsigned long g_keyOns = 0;
+// Which mixing path each rendered voice took, and the observed range of the pan byte. The pan
+// SCALE is the one thing here not pinned by disassembly — kAmPanCentre is an assumption, so the
+// observed range is printed and a value outside it would show up as a number rather than as a
+// mix that merely sounds off-centre.
+unsigned long g_amVoices = 0, g_explicitVoices = 0;
+unsigned g_amPanMin = 0xFFFF, g_amPanMax = 0;
+constexpr u16 kAmPanCentre = 64;   // JAudio pan is 0..127 with 64 centre; verified by the range below
 unsigned long g_loopFlagged=0, g_loopRejZero=0, g_loopRejBig=0, g_loopRejOrder=0;
 long g_peak = 0;
 
@@ -295,6 +320,7 @@ extern "C" void sbr_dsp_mix(u32 frames) {
                     // ramp above exists to remove, just once per note instead of once per sub-frame.
                     sb_w16(vpb + kVpbBus0 + 0 * kVpbBusStride + kVpbBusCurrent, 0);
                     sb_w16(vpb + kVpbBus0 + 1 * kVpbBusStride + kVpbBusCurrent, 0);
+                    sb_w16(vpb + kVpbAmVolCur, 0);
                     ++g_keyOns;
                 }
             }
@@ -323,15 +349,79 @@ extern "C" void sbr_dsp_mix(u32 frames) {
                 const s16 s = (s16)v;
                 return s > 0 ? (float)s / 32768.0f : 0.0f;
             };
+            // ONE-SHOT: what the six bus slots actually route to. `setBusConnect` @0x803155b8
+            // stores a routing CODE into unk10[bus].id from a table at 0x803e3000, so the slot
+            // index is not itself a destination — assuming slot 0 = L and slot 1 = R is an
+            // assumption, and this prints whether it holds.
+            {
+                static int shown = 0;
+                bool sounding = false;
+                for (int k = 0; k < 6; ++k)
+                    if ((s16)sb_r16(vpb + kVpbBus0 + (u32)k * kVpbBusStride + kVpbBusTarget) > 0)
+                        sounding = true;
+                if (sounding && shown < 12) {
+                    ++shown;
+                    std::string b;
+                    for (int k = 0; k < 6; ++k) {
+                        const u32 e = vpb + kVpbBus0 + (u32)k * kVpbBusStride;
+                        b += " [" + std::to_string(k) + "] id=0x" +
+                             [](u16 v){ char t[8]; std::snprintf(t, sizeof t, "%04x", v); return std::string(t); }(sb_r16(e)) +
+                             " tgt=" + std::to_string((s16)sb_r16(e + kVpbBusTarget)) +
+                             " cur=" + std::to_string((s16)sb_r16(e + kVpbBusCurrent));
+                    }
+                    lucent::debug("dspmix", "ch{} buses:{}", ch, b);
+                }
+            }
             const u32 busL = vpb + kVpbBus0 + 0 * kVpbBusStride;
             const u32 busR = vpb + kVpbBus0 + 1 * kVpbBusStride;
-            const float gL0 = q15(sb_r16(busL + kVpbBusCurrent));
-            const float gR0 = q15(sb_r16(busR + kVpbBusCurrent));
-            const float gL  = q15(sb_r16(busL + kVpbBusTarget));
-            const float gR  = q15(sb_r16(busR + kVpbBusTarget));
+            float gL0, gR0, gL, gR;
+            const bool autoMixer = sb_r16(vpb + kVpbAmEnabled) != 0;
+            if (autoMixer) {
+                // THE AUTO MIXER, and this is why most of the mix was missing. Reading only the six
+                // explicit bus volumes looked correct — the fields are real, the layout was RE'd
+                // from the setters, and the handful of voices that do write them came out right. It
+                // just left every auto-mixed voice at gain zero. Measured: live voices carrying
+                // full-scale decoded audio (samples of +-10989, +-7475) with cur=0 tgt=0 on both
+                // main buses, so they rendered and contributed nothing.
+                const u16 pan = (u16)((sb_r16(vpb + kVpbAmPan) >> 8) & 0xFF);
+                float x = (float)pan / (float)kAmPanCentre * 0.5f;   // 0 = hard left, 1 = hard right
+                if (x < 0.0f) x = 0.0f; else if (x > 1.0f) x = 1.0f;
+                ++g_amVoices;
+                if (pan < g_amPanMin) g_amPanMin = pan;
+                if (pan > g_amPanMax) g_amPanMax = pan;
+                const float v0 = q15(sb_r16(vpb + kVpbAmVolCur));
+                const float v1 = q15(sb_r16(vpb + kVpbAmVolTarget));
+                // Linear pan for v1. The ucode uses a table and an equal-power curve; that is a
+                // fidelity refinement, and getting these voices AUDIBLE at roughly the right
+                // position is the correctness step. Stated rather than left to be inferred.
+                gL0 = v0 * (1.0f - x); gR0 = v0 * x;
+                gL  = v1 * (1.0f - x); gR  = v1 * x;
+            } else {
+                ++g_explicitVoices;
+                gL0 = q15(sb_r16(busL + kVpbBusCurrent));
+                gR0 = q15(sb_r16(busR + kVpbBusCurrent));
+                gL  = q15(sb_r16(busL + kVpbBusTarget));
+                gR  = q15(sb_r16(busR + kVpbBusTarget));
+            }
             const float dgL = (gL - gL0) / (float)frames;
             const float dgR = (gR - gR0) / (float)frames;
 
+            // Which of the two possible zeros this is: no VOLUME, or silent SAMPLES. They have
+            // opposite fixes and the render count cannot tell them apart.
+            {
+                static long n = 0;
+                if ((++n % 20000) == 0) {
+                    s16 mx = 0;
+                    for (s16 v : hv.pcm) { const s16 a = v < 0 ? (s16)-v : v; if (a > mx) mx = a; }
+                    lucent::debug("dspmix", "live ch{}: gainL={:.4f} gainR={:.4f} (cur={} tgt={}) "
+                                            "pcm |max|={} len={} step={:.3f} cursor={:.0f} "
+                                            "sample@cursor={} contribution={:.1f}",
+                                  ch, gL, gR, (s16)sb_r16(busL + kVpbBusCurrent),
+                                  (s16)sb_r16(busL + kVpbBusTarget), mx, hv.pcm.size(), step,
+                                  hv.cursor, (size_t)hv.cursor < hv.pcm.size() ? hv.pcm[(size_t)hv.cursor] : (s16)0,
+                                  ((size_t)hv.cursor < hv.pcm.size() ? hv.pcm[(size_t)hv.cursor] : (s16)0) * gL);
+                }
+            }
             const size_t len = hv.pcm.size();
             const size_t boundary = hv.loop ? hv.loopEnd : len;
             double c = hv.cursor;
@@ -354,8 +444,12 @@ extern "C" void sbr_dsp_mix(u32 frames) {
             // The ramp completed, so current IS the target now. Written back because the DSP writes
             // the VPB back after rendering; skipping it would leave `current` stale and the next
             // sub-frame would ramp from the wrong place every time.
-            sb_w16(busL + kVpbBusCurrent, sb_r16(busL + kVpbBusTarget));
-            sb_w16(busR + kVpbBusCurrent, sb_r16(busR + kVpbBusTarget));
+            if (autoMixer) {
+                sb_w16(vpb + kVpbAmVolCur, sb_r16(vpb + kVpbAmVolTarget));
+            } else {
+                sb_w16(busL + kVpbBusCurrent, sb_r16(busL + kVpbBusTarget));
+                sb_w16(busR + kVpbBusCurrent, sb_r16(busR + kVpbBusTarget));
+            }
             ++g_rendered;
         }
     }
@@ -388,12 +482,13 @@ extern "C" void sbr_dsp_mix(u32 frames) {
         lucent::debug("dspmix",
                       "{} sub-frame(s): {} voice-renders, {} key-on(s), {} wave decode(s), peak {}. "
                       "Channel scan saw {} allocated, {} paused, {} with no wave, {} undecodable; "
-                      "{} frame(s) found NO channel table at all. DAC hand-off starved {} time(s) "
+                      "{} frame(s) found NO channel table at all. Voices mixed: {} via the AUTO MIXER (pan byte seen in [{}, {}], centre assumed {}), {} via explicit bus volumes. DAC hand-off starved {} time(s) "
                       "(a non-zero count means blocks were emitted with no rendered audio behind "
                       "them, which is audible). Loops: {} flagged, rejected "
                       "{} zero-end / {} past-end / {} out-of-order.{}",
                       g_frames, g_rendered, g_keyOns, g_decodes, g_peak, g_seenAllocated, g_seenPaused,
-                      g_seenNoWave, g_seenUndecodable, g_noTable, g_starved, g_loopFlagged, g_loopRejZero, g_loopRejBig, g_loopRejOrder,
+                      g_seenNoWave, g_seenUndecodable, g_noTable, g_amVoices, g_amPanMin == 0xFFFF ? 0u : g_amPanMin, g_amPanMax,
+                      (unsigned)kAmPanCentre, g_explicitVoices, g_starved, g_loopFlagged, g_loopRejZero, g_loopRejBig, g_loopRejOrder,
                       g_rendered == 0
                           ? "   <-- NOTHING RENDERED. Read the scan counts: all-free means the "
                             "sequencer never allocated a channel, all-paused means it did and the "

@@ -73,8 +73,25 @@ void guest_write(u32 addr, const u8* src, u32 size) {
 
 } // namespace
 
+// The interpolation pairing self-test lives in aurora and is pure — local buffers and the module's
+// own tables — but it only ever ran from inside interpolate_recorded_frame, i.e. only during a real
+// game frame with 60fps on. That put a CPU-only proof of the pairing maths behind a GPU run, which
+// is the wrong dependency in both directions: it cannot be checked when the GPU is unavailable, and
+// nothing in the test suite covers it. This entry point reaches it directly.
+namespace aurora::gfx::interp { bool selftest(); }
+
 int main(int argc, char** argv) {
     lucent::config::set_prefix("SBR_");   // SBR_LUCENT_DEBUG=mmio,rt,poll
+
+    // SBR_INTERP_SELFTEST=1: run the interpolation pairing self-test and exit. No aurora, no
+    // window, no GPU, no ROM — so it is runnable in a session where GPU work is not permitted, and
+    // by ctest. Exits non-zero on failure so a harness can gate on it.
+    if (const char* e = std::getenv("SBR_INTERP_SELFTEST"); e != nullptr && e[0] == '1') {
+        const bool ok = aurora::gfx::interp::selftest();
+        lucent::info("selftest", "interpolation pairing self-test: {}",
+                     ok ? "PASSED" : "FAILED — see the lines above for which case");
+        return ok ? 0 : 1;
+    }
 
     std::string dol_path = argc > 1 ? argv[1] : "scratch/bin/sms.dol";
 

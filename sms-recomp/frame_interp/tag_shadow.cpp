@@ -335,13 +335,33 @@ unsigned long g_pass4Owned = 0, g_pass4NoOwner = 0, g_pass4Seen = 0;
 // a run. So the code is here, ready, behind SBR_TAGSHADOW=pass4owner, and the gate it has to clear
 // is the mispairing count against the no-tagging control of 4 — NOT its coverage percentage, which
 // is what made the slot key look good.
-bool pass4_owner_on() {
-    static const bool v = [] {
-        const char* e = std::getenv("SBR_TAGSHADOW");
-        return e != nullptr && std::strcmp(e, "pass4owner") == 0;
-    }();
-    return v;
-}
+// PROMOTED TO DEFAULT 2026-08-12, on measurement rather than on the argument that it is sound.
+// It runs whenever shadow tagging runs at all, because the identity it produces — the actor that
+// requested the quad — is the same one the volume population already uses, and it is strictly
+// better than the ordinal key it displaces for these draws.
+//
+// Measured, SBR_STAGE=1, 600 presents, two runs per mode. Refusals ([100,inf) object motion, the
+// mispairing proxy) split by population:
+//
+//     mode          total   J3D world   shadow volume   shadow model
+//     fp (control)    174       162           12             -          run 1
+//     fp (control)    170       162            8             -          run 2
+//     pass4owner      170       162            8             0          run 1
+//     pass4owner      168       162            6             0          run 2
+//
+// 550 draws per run gained a per-instance identity and contributed ZERO refusals in both. J3D
+// world is stable at 162 in all four runs, so the instrument is not drifting; shadow volume varies
+// 6-12 run to run and that spread is what a 2-4 count difference is worth — which is why the
+// conclusion rests on the shadow-model column being 0, not on the totals.
+//
+// The comparison is against `fp` and not against tagging-off, because SBR_TAGSHADOW=pass4owner also
+// selects Scheme::FpOnly; comparing it to a no-tagging run would have credited this join with the
+// whole difference between two schemes.
+//
+// SBR_TAGSHADOW=0 still disables everything. There is no switch to turn only this off, because a
+// wrong identity here is the failure this whole file is about and a half-disabled state is not one
+// anybody should be measuring in.
+bool pass4_owner_on() { return enabled(); }
 
 u32 g_requestingActor = 0;
 unsigned long g_ownerTagged = 0, g_ownerMissed = 0;

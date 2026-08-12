@@ -216,6 +216,10 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
 // Per-BP-register write counts, so the per-unit texture BIND RATE is measurable rather than
 // inferred (TX_SETIMAGE3 is 0x94+m for units 0-3).
 void sbr_gxfifo_report_bp_writes();
+// The FIFO 2D gate's own telemetry (SBR_FIFO_2D). Reported independently of the native renderer:
+// it describes the stream PARSE, and gating it behind the GPU path made it unreachable exactly
+// when the HUD-capture question needed answering.
+void sbr_gxfifo_report_2d_gate();
 
 // Re-decode every texture that cached black and report whether its guest bytes have since changed.
 void sbr_render_recheck_black();

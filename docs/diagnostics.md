@@ -319,6 +319,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_INTERP60_VIEWSEQ_MIN` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
 | `SBR_INTERP60_VIEWWHO` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
 | `SBR_INTERP_CAMONLY` | 1 | `extern/aurora/lib/gfx/interp.cpp` |  |
+| `SBR_INTERP_SELFTEST` | 1 | `sms-recomp/host/main.cpp` |  |
 | `SBR_INTERP_TEXMTX` | 1 | `extern/aurora/lib/gfx/interp.cpp` |  |
 | `SBR_J2D_CAPTURE` | 1 | `sms-recomp/overrides/diag_2d.cpp` |  |
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp` |  |
@@ -356,7 +357,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_STATE_DIFF` | 1 | `sms-recomp/runtime/render/state_oracle.cpp` |  |
 | `SBR_TAGGAP` | 1 | `sms-recomp/frame_interp/tag_gap.cpp` |  |
 | `SBR_TAGPARTICLE` | 1 | `sms-recomp/frame_interp/tag_particle.cpp` |  |
-| `SBR_TAGSHADOW` | 2 | `sms-recomp/frame_interp/tag_shadow.cpp` |  |
+| `SBR_TAGSHADOW` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp` |  |
 | `SBR_TAGWIRE` | 1 | `sms-recomp/frame_interp/tag_deforming.cpp` |  |
 | `SBR_TEV_TRACE` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
 | `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
@@ -377,4 +378,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**356 switches; 69 still gate a raw print.**
+**357 switches; 69 still gate a raw print.**
