@@ -81,27 +81,7 @@ gpu_events() {
     printf '%s\n' "$out" | grep -cE 'amdgpu.*(ring .* timeout|ring reset|device wedged|GPUVM fault)' || true
 }
 
-START_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
-BEFORE="$(gpu_events '-2min')"
-echo "[run-safe] present ceiling ${SB_MAX_PRESENT_HZ} Hz, headless, no native renderer, cap ${SBR_QUIT_AFTER} presents."
-echo "[run-safe] amdgpu events in the 2 min before this run: ${BEFORE}"
-
-SECS="${SB_RUN_SECS:-240}"
-set +e
-RUNNER="${SB_RUNNER:-run-recomp.sh}"
-if [ ! -x "$HERE/$RUNNER" ]; then
-    echo "[run-safe] SB_RUNNER=$RUNNER is not an executable script in $HERE. Refusing to run" >&2
-    echo "           anything rather than silently falling back to a different runtime." >&2
-    exit 4
-fi
-echo "[run-safe] runner: $RUNNER"
-timeout -s KILL "$SECS" "$HERE/$RUNNER" "${ARGS[@]}"
-RC=$?
-set -e
-
-AFTER="$(gpu_events "$START_STAMP")"
-echo "[run-safe] game exit=${RC}; amdgpu events DURING this run: ${AFTER}"
-
+gpu_verdict() {
 if [ "$AFTER" = "UNKNOWN" ]; then
     echo "[run-safe] GPU HEALTH UNKNOWN — the kernel log could not be read, so this run is NOT" >&2
     echo "           certified clean. That is a different result from 'no events'." >&2
@@ -117,4 +97,59 @@ if [ "$AFTER" != "0" ]; then
 fi
 
 echo "[run-safe] GPU clean: the kernel logged no ring timeout, reset or fault during this run."
+}
+
+
+START_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
+BEFORE="$(gpu_events '-2min')"
+echo "[run-safe] present ceiling ${SB_MAX_PRESENT_HZ} Hz, headless, no native renderer, cap ${SBR_QUIT_AFTER} presents."
+echo "[run-safe] amdgpu events in the 2 min before this run: ${BEFORE}"
+
+SECS="${SB_RUN_SECS:-240}"
+set +e
+RUNNER="${SB_RUNNER:-run-recomp.sh}"
+if [ ! -x "$HERE/$RUNNER" ]; then
+    echo "[run-safe] SB_RUNNER=$RUNNER is not an executable script in $HERE. Refusing to run" >&2
+    echo "           anything rather than silently falling back to a different runtime." >&2
+    exit 4
+fi
+echo "[run-safe] runner: $RUNNER"
+
+# When a frame is being dumped, attach the texture mip decisions to it. Issue #5 is an
+# intermittent frame that differs from the usual one only in texture SHARPNESS, and it resists
+# reproduction — 7 consecutive instrumented runs failed to produce it. Provoking a rare state on
+# demand is the wrong approach; recording enough alongside every dump that whichever run finally
+# hits it is diagnosable after the fact is the right one. The channel emits ~131 lines a run, so
+# this costs nothing, and it is scoped to dumping runs so ordinary runs are untouched.
+if [ -n "${SB_DUMP_FRAME:-}" ]; then
+    case ",${LUCENT_DEBUG:-}," in
+        *,texresolve,*|*,all,*) ;;
+        *) export LUCENT_DEBUG="${LUCENT_DEBUG:+$LUCENT_DEBUG,}texresolve" ;;
+    esac
+    MANIFEST="${SB_DUMP_FRAME}.textures.txt"
+    timeout -s KILL "$SECS" "$HERE/$RUNNER" "${ARGS[@]}" 2>&1 | tee "$HERE/scratch/.run-safe-out.$$"
+    RC=${PIPESTATUS[0]}
+    grep -a "^\[texresolve\] static " "$HERE/scratch/.run-safe-out.$$" > "$MANIFEST" 2>/dev/null || true
+    rm -f "$HERE/scratch/.run-safe-out.$$"
+    if [ -s "$MANIFEST" ]; then
+        echo "[run-safe] texture manifest beside the dump: $MANIFEST ($(wc -l < "$MANIFEST") texture(s), \
+$(grep -c 'mips=1 ' "$MANIFEST" || true) single-level)"
+    else
+        echo "[run-safe] NO texture manifest was captured, so this dump is NOT comparable against" >&2
+        echo "           another one for issue #5. That is a broken capture, not a clean run." >&2
+    fi
+    set -e
+    AFTER="$(gpu_events "$START_STAMP")"
+    echo "[run-safe] game exit=${RC}; amdgpu events DURING this run: ${AFTER}"
+    gpu_verdict
+    exit "$RC"
+fi
+timeout -s KILL "$SECS" "$HERE/$RUNNER" "${ARGS[@]}"
+RC=$?
+set -e
+
+AFTER="$(gpu_events "$START_STAMP")"
+echo "[run-safe] game exit=${RC}; amdgpu events DURING this run: ${AFTER}"
+
+gpu_verdict
 exit "$RC"
