@@ -179,11 +179,63 @@ def main():
     print(f"aligned by voting: delta={delta} with {nvotes} agreeing shared slots")
     print(f"override slot index = {over_idx}  ->  base slot index = {slot}")
     print(f"base method US addr = {tgt:08x}  ({resolve(tgt)})")
-    if nvotes < 3:
-        print(f"WARNING: only {nvotes} agreeing slots — alignment may be unreliable; verify by hand.")
+    for line in check_result(slot, nvotes, tgt):
+        print(line)
     print("disasm:")
     for ln in peek(tgt, n_insns):
         print(ln)
+
+
+# Minimum agreeing slots to believe an alignment. Calibrated against BOTH classes on 2026-08-12:
+# a correct same-immediate-base alignment (TResetFruit vs TMapObjGeneral) scored 87, while three
+# alignments that were provably wrong scored 6 and 8. Anything in single digits is two classes
+# sharing only a shallow JDrama::TViewObj prefix, where the vote has nothing to lock onto.
+MIN_VOTES = 20
+
+
+def looks_like_entry(addr):
+    """Does `addr` begin like a real function? A wrong alignment lands MID-function, and this is
+    the cheapest structural way to notice. MWCC function entries here start by saving LR
+    (`mflr r0`) or opening a frame (`stwu r1, -N(r1)`); a leaf may start with neither, so a False
+    here is a WARNING and not by itself a refusal."""
+    try:
+        w = rd(addr)
+    except Exception:
+        return False
+    return w == 0x7C0802A6 or (w >> 16) == 0x9421
+
+
+def check_result(slot, nvotes, tgt):
+    """Refuse a result that cannot be right, instead of printing it confidently.
+
+    WHY THIS EXISTS. On 2026-08-12 this tool resolved three weak methods to slot indices of -110,
+    -43 and -45 and printed the addresses without comment; each landed deep inside an unrelated
+    function (`getNextIndex+0x123c`, `resetLife+0x1930`). A NEGATIVE vtable slot is structurally
+    impossible, so that answer was never a near miss — it was noise with a confident face on it.
+    A porter following one of those addresses would have transcribed the middle of another class's
+    method as their function body, and nothing downstream would have said otherwise.
+    """
+    out = []
+    fatal = []
+    if slot < 0:
+        fatal.append(f"base slot index {slot} is NEGATIVE, which is structurally impossible — "
+                     f"the alignment is wrong, not merely uncertain.")
+    if nvotes < MIN_VOTES:
+        fatal.append(f"only {nvotes} agreeing shared slots (need >= {MIN_VOTES}). The two classes "
+                     f"probably share just a shallow base prefix, so the vote had nothing to lock "
+                     f"onto. Pick an override from a class with the SAME immediate base.")
+    if fatal:
+        for f in fatal:
+            out.append(f"REFUSED: {f}")
+        out.append("REFUSED: no address is reported as a result. Re-run with a better-matched "
+                   "override symbol; do NOT port from the address printed above.")
+        print("\n".join(out), file=sys.stderr)
+        sys.exit(2)
+    if not looks_like_entry(tgt):
+        out.append("WARNING: the target does not start with `mflr r0` or `stwu r1,-N(r1)`. That is "
+                   "normal for a leaf function and suspicious for anything else — confirm the "
+                   "disassembly below reads as a function ENTRY before porting it.")
+    return out
 
 if __name__ == "__main__":
     main()
