@@ -168,6 +168,24 @@ unsigned long g_2dDeclAttrPos[4] = {}, g_2dDeclAttrT0[4] = {};
 unsigned long g_2dIdxNearCapture = 0, g_2dIdxFarFromCapture = 0;
 unsigned long g_2dDeclArrayMiss = 0;
 unsigned long g_2dDeclMtxUnset = 0;
+
+// Where the DECODED vertices actually land, in clip space, split by whether the draw used a
+// per-vertex position-matrix index. This is the control on the decode itself. Accepting a draw is
+// not evidence of decoding it correctly, and after the matrix and format gates came out the decoder
+// accepts 99.96% of orthographic draws — a gate that accepts everything and a gate that was deleted
+// produce the same number. So the two classes are scored against each other: draws WITHOUT an index
+// went through the path that was already working and give the baseline in-volume rate, and the
+// newly-enabled indexed class has to be comparable to it. If the position matrices were being
+// resolved wrongly, indexed draws would land somewhere else entirely and this says so.
+//  [0] = no per-vertex matrix index, [1] = indexed.
+unsigned long g_2dInVol[2] = {}, g_2dPartVol[2] = {}, g_2dOutVol[2] = {};
+
+// The residency check ALONE cannot catch the failure it most needs to. A position matrix resolved
+// from the wrong bytes — or from zeros — collapses every vertex of a draw onto one point, and for
+// an orthographic projection that point lands at NDC (P[3], P[7]), i.e. a screen corner, which is
+// INSIDE the volume. So a total decode failure would score 100% resident, which is exactly what the
+// indexed class scores. This counts draws with no extent, which is the shape that failure has.
+unsigned long g_2dCollapsed[2] = {};
 unsigned long g_2dTexMtxIdxDraws = 0;   // indexed, but the array was unregistered or out of range
 
 bool fifo2d_on() {
@@ -363,7 +381,9 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
     const u32 t0_elem = (v.fmt0 >> 21) & 1;
     const u32 t0_fmt  = (v.fmt0 >> 22) & 7;
     const u32 t0_shift = (v.fmt0 >> 25) & 0x1F;
-    if (pos_fmt != 3 && pos_fmt != 4) {   // s16 / f32 are what 2D actually emits
+    // s16 / u16 / f32. u16 was excluded on the same "2D only emits these" reasoning as the gates
+    // above, and is 870 draws a run. It differs from s16 only in the sign of the decode.
+    if (pos_fmt != 2 && pos_fmt != 3 && pos_fmt != 4) {
         ++g_2dDeclPosFmt;
         ++g_2dDeclPosFmtSeen[pos_fmt & 7];
         return false;
@@ -375,7 +395,7 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
     if (verts < 3 || verts > 512) { ++g_2dDeclCount; return false; }
 
     const u32 vsize = vertex_size(0xFF & (op & 7));
-    const float posDiv = (pos_fmt == 3) ? (float)(1u << pos_shift) : 1.0f;
+    const float posDiv = (pos_fmt == 2 || pos_fmt == 3) ? (float)(1u << pos_shift) : 1.0f;
     const float texDiv = (t0_fmt == 2 || t0_fmt == 3) ? (float)(1u << t0_shift) : 1.0f;
 
     // STATIC, not stack. These are ~117KB and ~39KB; as locals they put ~160KB on the stack of a
@@ -402,7 +422,7 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
         q += idx_prefix;
 
         // Resolve an indexed attribute to a pointer into its array. GX array ids: 0 POS, 1 NRM,
-        // 2 CLR0, 3 CLR1, 4..7 TEX0..TEX3. Returns nullptr when the array was never registered or
+        // 2 CLR0, 3 CLR1, 4..11 TEX0..TEX7, 12..15 XF_A..XF_D (the matrix arrays). Returns nullptr when the array was never registered or
         // the element would run past MEM1 — the caller then declines the whole draw rather than
         // decoding whatever bytes happen to be there, because a plausible-but-wrong vertex is this
         // project's most-repeated failure and is far worse than a missing one.
@@ -432,6 +452,11 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
             px = (float)(s16)((q[0] << 8) | q[1]) / posDiv;
             py = (float)(s16)((q[2] << 8) | q[3]) / posDiv;
             if (pos_cnt == 3) pz = (float)(s16)((q[4] << 8) | q[5]) / posDiv;
+            q += pos_cnt * 2;
+        } else if (pos_fmt == 2) {
+            px = (float)(u16)((q[0] << 8) | q[1]) / posDiv;
+            py = (float)(u16)((q[2] << 8) | q[3]) / posDiv;
+            if (pos_cnt == 3) pz = (float)(u16)((q[4] << 8) | q[5]) / posDiv;
             q += pos_cnt * 2;
         } else {
             union { u32 u; float f; } c;
@@ -568,6 +593,24 @@ bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
     dr.mtx[0] = dr.mtx[5] = dr.mtx[10] = 1.0f;   // PNMTX0 already applied per vertex
     sbr_scene_add(dr);
     if (has_texmtxidx) ++g_2dTexMtxIdxDraws;   // counted only on a draw that WAS captured
+    {   // Clip-space residency of what we just decoded, per the note on g_2dInVol.
+        unsigned inside = 0;
+        for (u32 k = 0; k < verts; ++k) {
+            const float nx2 = g_fifoProj[0] * vtx[k].x + g_fifoProj[3];
+            const float ny2 = g_fifoProj[5] * vtx[k].y + g_fifoProj[7];
+            if (nx2 >= -1.05f && nx2 <= 1.05f && ny2 >= -1.05f && ny2 <= 1.05f) ++inside;
+        }
+        const int cls = has_pnidx ? 1 : 0;
+        float lox = vtx[0].x, hix = lox, loy = vtx[0].y, hiy = loy;
+        for (u32 k = 1; k < verts; ++k) {
+            lox = std::min(lox, vtx[k].x); hix = std::max(hix, vtx[k].x);
+            loy = std::min(loy, vtx[k].y); hiy = std::max(hiy, vtx[k].y);
+        }
+        if ((hix - lox) < 1e-3f && (hiy - loy) < 1e-3f) ++g_2dCollapsed[cls];
+        if (inside == verts)   ++g_2dInVol[cls];
+        else if (inside != 0)  ++g_2dPartVol[cls];
+        else                   ++g_2dOutVol[cls];
+    }
     return true;
 }
 
@@ -1326,6 +1369,31 @@ size_t parse(const u8* p, size_t n, int depth) {
                 lucent::warn("gxfifo", "indexed XF load op 0x{:02x} dstAddr=0x{:03x} len={} "
                                        "is outside XF matrix memory — likely mis-framed",
                              op, da, ((w >> 12) & 0xF) + 1);
+            // Resolve LOAD_INDX_A into our own copy of position-matrix memory. Forwarding the
+            // command to aurora is not enough: the 2D decoder transforms by these matrices, and
+            // without this it saw only the ones written by immediate XF writes. 1843 ortho draws
+            // per plaza run indexed a row it had never seen loaded, and were declined.
+            //
+            // CP array id 12 is GX_VA_XF_A, the position-matrix array; the payload's index selects
+            // an element of it by the stride in 0xBC. As everywhere in this decoder, an
+            // unregistered array or an element past MEM1 leaves the rows UNSET rather than
+            // fabricating a matrix — a draw that names an unknown matrix must stay declined.
+            if (op == 0x20 && da + ((w >> 12) & 0xF) + 1 <= 256) {
+                const u32 len  = ((w >> 12) & 0xF) + 1;
+                const u32 elem = w >> 16;
+                const u32 base = g_arrBase[12], stride = g_arrStride[12];
+                if (base != 0 && stride != 0) {
+                    const u32 off = (base & 0x01FFFFFFu) + elem * stride;
+                    if ((u64)off + (u64)len * 4 <= 0x01800000ull) {
+                        for (u32 w2 = 0; w2 < len; ++w2) {
+                            union { u32 u; float f; } cv;
+                            cv.u = be32(g_ram_base + off + w2 * 4);
+                            g_posmtx[da + w2] = cv.f;
+                            g_posmtxSet[(da + w2) >> 2] = true;
+                        }
+                    }
+                }
+            }
             g_out.insert(g_out.end(), p + i, p + i + 5);
             i += 5; continue;
         }
@@ -1778,6 +1846,28 @@ void sbr_gxfifo_report_2d_gate() {
                                "out-of-range row) — declined rather than transformed by zeros, "
                                "which would collapse the draw onto a point and still look decoded",
                      g_2dDeclMtxUnset);
+    for (int cls = 0; cls < 2; ++cls) {
+        const unsigned long tot = g_2dInVol[cls] + g_2dPartVol[cls] + g_2dOutVol[cls];
+        if (tot == 0) {
+            lucent::info("gxfifo", "  clip-space residency, {}: NO DRAWS OF THIS CLASS. The "
+                                   "comparison below has only one side and proves nothing.",
+                         cls ? "per-vertex matrix index" : "no matrix index");
+            continue;
+        }
+        lucent::info("gxfifo", "  clip-space residency, {:<24}: {:>6} fully inside ({:.1f}%), "
+                               "{:>6} straddling, {:>6} entirely outside",
+                     cls ? "per-vertex matrix index" : "no matrix index",
+                     g_2dInVol[cls], 100.0 * (double)g_2dInVol[cls] / (double)tot,
+                     g_2dPartVol[cls], g_2dOutVol[cls]);
+        lucent::info("gxfifo", "        of which {} had NO EXTENT (every vertex on one point). "
+                               "That is the shape a wrong matrix makes, and for an orthographic "
+                               "projection it lands in a corner and scores as resident, so the "
+                               "percentage above cannot see it.", g_2dCollapsed[cls]);
+    }
+    lucent::info("gxfifo", "    (the two rows are each other's control: the second class is the one "
+                           "the matrix work newly enabled, and a wrong matrix would put it "
+                           "somewhere the first is not. It does NOT check that the geometry is the "
+                           "RIGHT geometry, only that it lands on screen.)");
     if (g_2dTexMtxIdxDraws != 0)
         lucent::info("gxfifo", "    NOT A DECLINE, a KNOWN GAP: {} DECODED draw(s) carried "
                                "per-vertex TexMtxIdx. Their index bytes are consumed so the vertex "
