@@ -205,11 +205,8 @@ void TWireBell::control() { SB_STUB_HIT("TWireBell::control"); }
 // 2D/ARAM archive subsystem step the whole stage-15/file-select load was blocked on);
 // TGuide's own pane build + perform() remain unported stubs (it draws nothing yet),
 // which is fine — the console graphics come from game_6 via TConsoleStr.
-void TGuide::load(JSUMemoryInputStream& stream)
-{
-	JDrama::TViewObj::load(stream); // read NameRef header so search("ガイド画面") finds it
-	SMSMountAramArchive(gpMarDirector->unkD8, gArBkGuide);
-}
+// TGuide::load is now PORTED in decomp/sms/src/GC2D/Guide.cpp, where it sits beside the
+// file-scope mount countdown it writes. It used to live here because Guide.cpp was empty.
 // TMBindShadowManager::load lives natively in decomp/sms/src/MarioUtil/ShadowUtil.cpp
 // TPauseMenu2::load now provided natively in decomp/sms/src/GC2D/PauseMenu2.cpp.
 

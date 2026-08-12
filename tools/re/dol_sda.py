@@ -26,7 +26,10 @@ the value AND (for pointers) the resolved symbol name.
 
 import os, sys, struct
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# THREE dirnames: this file is at <repo>/tools/re/dol_sda.py, so two levels reach <repo>/tools
+# and the DOL path resolved to <repo>/tools/scratch/bin/sms.dol — which does not exist, so the
+# tool died on import with a FileNotFoundError for anyone who ran it from a checkout.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOL_PATH  = os.path.join(REPO_ROOT, "scratch/bin/sms.dol")
 FUNCS_TXT = os.path.join(REPO_ROOT, "reference/sms_gmse01_funcs.txt")
 
@@ -54,6 +57,17 @@ KNOWN_SDA1 = {
     -0x7160: "MSGBasic",                # MSoundSE::startSoundActorInner — JAIBasic cast of MSGMSound
     -0x7164: "MSGMSound",               # MSoundSE::startSoundActorInner — .unkD1 = stage sound bank
     -0x7168: "MSSeCallBack::smWaterFilter",  # u16, NOT a pointer (in-place value)
+    -0x6010: "gArBkGuide",               # TARAMBlock for guide.arc. Identified structurally, not
+                                         # by name: the DOL forms this address in 5 places (TGuide
+                                         # dtor/setup/load, TApplication::mountStageArchive x2) and
+                                         # at the mountStageArchive sites +0x0 is filled by
+                                         # JKRDvdAramRipper::loadToAram with a u8 flag at +0x4 --
+                                         # TARAMBlock's layout.
+    -0x63a8: "TGuide::sMountCountdown",  # u8, NOT a pointer. Touched by exactly 5 instructions in
+                                         # the image, ALL in TGuide, so it is that class's
+                                         # file-scope static: setup/load set it to 0x10 when there
+                                         # is no archive to mount, and the dtor decrements it and
+                                         # calls SMSSwitch2DArchive when it reaches 0.
     # -0x5db8: setup-holder used by MammaMirror loadAfter ((unaff_r13-0x5db8)+4)
     # -0x6044: (TSunMgr reads [+0x7c] after — sibling of gpMarDirector; maybe gpApplication child)
     # -0x7100: (TSunMgr/LensFlare test bit at +0x15 — maybe cinematics-manager, TApplication child)

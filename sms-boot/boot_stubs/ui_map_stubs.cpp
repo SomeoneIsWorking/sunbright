@@ -30,8 +30,9 @@ TGuide::TGuide(const char* name)
     : JDrama::TViewObj(name)
 {
 }
-void TGuide::setup(JKRMemArchive*) { SB_STUB_HIT("TGuide::setup"); }
-void TGuide::startMoveCursor() { SB_STUB_HIT("TGuide::startMoveCursor"); }
+// TGuide::setup and TGuide::startMoveCursor are now PORTED, from the US disassembly, in
+// decomp/sms/src/GC2D/Guide.cpp. Both were complete functions; setup's stub silently skipped the
+// archive mount it exists to perform.
 
 // TPauseMenu2 fully implemented natively in decomp/sms/src/GC2D/PauseMenu2.cpp.
 
