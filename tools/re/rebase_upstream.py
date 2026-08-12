@@ -45,7 +45,20 @@ SUBMODULE = os.path.abspath(os.path.join(HERE, "..", "..", "decomp", "sms"))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 # Markers that indicate a file legitimately carries native-port changes.
+# A file carrying any of these is NOT a free convergence candidate: adopting upstream's copy
+# would drop work of ours.
+#
+# The first group is native-platform adaptation (LP64/BE/host seams). The second was added
+# 2026-08-12 after a converge run silently deleted TBathtubKillerManager::countActiveKillers — a
+# function we had reverse-engineered from the US DOL and ported by hand — and a declaration in
+# AnimalBase.hpp added for a native port. Both files build green without them, because nothing
+# in the boot path calls either yet, so neither the compiler nor the runtime check could notice.
+#
+# That is the whole hazard: an unported gap we FILLED is invisible to a marker scheme that only
+# looks for platform adaptation. Our hand-RE'd ports carry a provenance comment naming the US
+# address they came from, and that comment is what makes them findable.
 NATIVE_MARKERS = (
+    # native-platform adaptation
     "SMS_NATIVE_PLATFORM",
     "SMS_AURORA",
     "sb_log",
@@ -53,6 +66,10 @@ NATIVE_MARKERS = (
     "sb_host_alloc",
     "uintptr_t",
     "STOPGAP",
+    # hand-RE'd ports filling a decomp gap — provenance comments
+    "Native port of",
+    "RE'd",
+    "for the native port",
 )
 
 SRC_DIRS = ["src", "include"]
@@ -273,8 +290,53 @@ def cmd_audit(args):
             print("   " + e.strip()[:150])
 
 
+def unitise(files):
+    """Group candidates so a header and its .cpp move TOGETHER.
+
+    The module docstring has said since 2026-07-17 that resolution must be file-level and that
+    header+cpp must move together, because a class whose .hpp and .cpp come from different sides
+    will not build. The batching then sliced the candidate list arbitrarily, which is the same
+    mistake one level up: a 10-file slice could take a header while leaving its .cpp on our side,
+    fail to build for that reason alone, and revert nine innocent files with it.
+
+    Grouped by basename stem, which is how this decomp names pairs (include/Foo/Bar.hpp with
+    src/Foo/Bar.cpp). A stem that only appears once is simply a unit of one.
+    """
+    groups = {}
+    for f in files:
+        groups.setdefault(os.path.splitext(os.path.basename(f))[0], []).append(f)
+    return list(groups.values())
+
+
+def _try_units(units, depth=0):
+    """Adopt what builds, bisecting on failure. Returns (adopted_units, reverted_units).
+
+    The previous version reverted a whole failing batch and moved on, so ONE poisonous file cost
+    the other nine in its slice. Against this tree that meant 0 files adopted out of 40 — four
+    batches, four reverts — and a convergence tool that converges nothing reads as "upstream has
+    nothing to give us", which is the opposite of true.
+    """
+    if not units:
+        return [], []
+    flat = [f for u in units for f in u]
+    git("checkout", "upstream/main", "--", *flat)
+    ok, n = build()
+    if ok:
+        print(f"  {'  ' * depth}[+] adopted {len(units)} unit(s), {len(flat)} file(s)")
+        return units, []
+    git("checkout", "HEAD", "--", *flat)
+    if len(units) == 1:
+        print(f"  {'  ' * depth}[-] kept ours: {', '.join(units[0])} ({n} errors)")
+        return [], units
+    mid = len(units) // 2
+    print(f"  {'  ' * depth}[/] {len(units)} unit(s) RED ({n} errors) — bisecting")
+    la, lr = _try_units(units[:mid], depth + 1)
+    ra, rr = _try_units(units[mid:], depth + 1)
+    return la + ra, lr + rr
+
+
 def cmd_converge(args):
-    """Greedily adopt upstream's version of unmarked files; keep only if green."""
+    """Adopt upstream's version of unmarked files wherever it stays green."""
     ensure_clean()
     files = diverging_files()
     _, unmarked = classify(files)
@@ -283,28 +345,27 @@ def cmd_converge(args):
     if ours_only:
         print(f"[converge] skipping {len(ours_only)} file(s) upstream does not have "
               f"(our own additions, nothing to converge to)")
+    units = unitise(unmarked)
     if args.limit:
-        unmarked = unmarked[: args.limit]
-    if not unmarked:
+        units = units[: args.limit]
+    if not units:
         print("no convergence candidates.")
         return
     ok, _ = build()
     if not ok:
         sys.exit("build is RED before converging — fix that first.")
-    print(f"[converge] {len(unmarked)} candidate(s), batch size {args.batch}")
-    adopted, reverted = [], []
-    for i in range(0, len(unmarked), args.batch):
-        batch = unmarked[i : i + args.batch]
-        git("checkout", "upstream/main", "--", *batch)
-        ok, n = build()
-        if ok:
-            adopted += batch
-            print(f"  [+] adopted {len(batch)} (total {len(adopted)})")
-        else:
-            git("checkout", "HEAD", "--", *batch)
-            reverted += batch
-            print(f"  [-] reverted {len(batch)} ({n} errors) — keeps our version")
-    print(f"\nadopted {len(adopted)} file(s); kept ours for {len(reverted)}")
+    nfiles = sum(len(u) for u in units)
+    paired = sum(1 for u in units if len(u) > 1)
+    print(f"[converge] {len(units)} unit(s) / {nfiles} file(s); {paired} unit(s) are a "
+          f"header+cpp pair moved together")
+    adopted, reverted = _try_units(units)
+    na = sum(len(u) for u in adopted)
+    nr = sum(len(u) for u in reverted)
+    print(f"\nadopted {na} file(s) in {len(adopted)} unit(s); kept ours for {nr} file(s) in "
+          f"{len(reverted)} unit(s)")
+    if nr:
+        print("Kept-ours units are where upstream and our tree genuinely disagree — those are the "
+              "ones worth reading, and each is named above with its error count.")
     print("REVIEW THE DIFF AND RUNTIME-VERIFY before committing: a file can build")
     print("fine yet drop a native LP64/BE fix that only shows up at runtime.")
 
@@ -330,8 +391,10 @@ def main():
                    ).set_defaults(func=cmd_audit)
 
     cv = sub.add_parser("converge", help="adopt upstream's version where it stays green")
-    cv.add_argument("--limit", type=int, default=0, help="max candidates to try")
-    cv.add_argument("--batch", type=int, default=10, help="files per build")
+    cv.add_argument("--limit", type=int, default=0,
+                    help="max UNITS to try (a unit is a header+cpp pair, or a lone file)")
+    cv.add_argument("--batch", type=int, default=10,
+                    help="deprecated; adoption now bisects, so there is no fixed batch")
     cv.set_defaults(func=cmd_converge)
 
     args = ap.parse_args()
