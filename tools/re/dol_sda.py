@@ -66,8 +66,12 @@ KNOWN_SDA1 = {
     -0x63a8: "TGuide::sMountCountdown",  # u8, NOT a pointer. Touched by exactly 5 instructions in
                                          # the image, ALL in TGuide, so it is that class's
                                          # file-scope static: setup/load set it to 0x10 when there
-                                         # is no archive to mount, and the dtor decrements it and
-                                         # calls SMSSwitch2DArchive when it reaches 0.
+                                         # is no archive to mount, and TGuide::perform (0x801791d0,
+                                         # weak, so absent from the US list) decrements it and
+                                         # calls SMSSwitch2DArchive at 0. A frame delay, not a
+                                         # refcount -- an earlier note here said "the dtor", which
+                                         # was the disassembly rendering perform's body as
+                                         # __dt__6TGuideFv+0x.. because perform is unlisted.
     # -0x5db8: setup-holder used by MammaMirror loadAfter ((unaff_r13-0x5db8)+4)
     # -0x6044: (TSunMgr reads [+0x7c] after — sibling of gpMarDirector; maybe gpApplication child)
     # -0x7100: (TSunMgr/LensFlare test bit at +0x15 — maybe cinematics-manager, TApplication child)
