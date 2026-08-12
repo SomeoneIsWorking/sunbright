@@ -43,6 +43,13 @@ export SB_TURBO="${SB_TURBO:-1}"
 export SB_MAX_PRESENT_HZ="${SB_MAX_PRESENT_HZ:-60}"
 export SBR_MUTE="${SBR_MUTE:-1}"
 export SBR_FASTBOOT="${SBR_FASTBOOT:-1}"
+# SBR_SCENARIO=0 is NOT optional with fastboot, and omitting it fails in the worst possible way.
+# Plain SBR_FASTBOOT=1 SBR_STAGE=1 derives a non-rendering episode from the save, so the stage
+# loads, the run exits cleanly, and every interpolation seam reports "0 draws — either nothing
+# drew or the hook never fired". That reads exactly like a broken hook, and on 2026-08-12 it cost
+# three runs and a false "the pass-4 site discriminator never matched" conclusion before the cause
+# was the episode. run-render.sh has always set it; this wrapper did not.
+export SBR_SCENARIO="${SBR_SCENARIO:-0}"
 export SBR_QUIT_AFTER="${SBR_QUIT_AFTER:-400}"
 
 ARGS=()
