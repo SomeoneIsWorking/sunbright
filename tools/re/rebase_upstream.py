@@ -65,6 +65,13 @@ NATIVE_MARKERS = (
     "sb_be",
     "sb_host_alloc",
     "uintptr_t",
+    "LP64",          # e.g. "NOTE (LP64/native):" — the file-overlay structs whose "pointers" are
+                     # 32-bit FILE OFFSETS, typed u32 here so the struct still matches the file.
+                     # Adopting upstream's void* version of J3DModelLoader.hpp built green and
+                     # segfaulted on every run: nothing in the file mentions SMS_NATIVE_PLATFORM
+                     # or uintptr_t, so it classified as a free candidate.
+    "big-endian",
+    "byteswap",
     "STOPGAP",
     # hand-RE'd ports filling a decomp gap — provenance comments
     "Native port of",
@@ -366,8 +373,49 @@ def cmd_converge(args):
     if nr:
         print("Kept-ours units are where upstream and our tree genuinely disagree — those are the "
               "ones worth reading, and each is named above with its error count.")
-    print("REVIEW THE DIFF AND RUNTIME-VERIFY before committing: a file can build")
-    print("fine yet drop a native LP64/BE fix that only shows up at runtime.")
+    if na:
+        runtime_gate()
+    print("REVIEW THE DIFF: a green build and a surviving run still do not prove a converged")
+    print("file kept every native fix — only that it kept the ones this stage exercises.")
+
+
+def runtime_gate():
+    """Actually RUN the thing once, because building it is not the test.
+
+    Added 2026-08-12, immediately after a 48-file convergence built green and then segfaulted on
+    every single run. The file was J3DModelLoader.hpp, whose J3D2 block structs overlay raw file
+    bytes: every "pointer" in them is a 32-bit FILE OFFSET, typed u32 on our side so the struct
+    still matches the on-disk layout. Upstream's void* version is 8 bytes per field on a 64-bit
+    host, so every offset in every loaded model came out of the wrong place. Nothing about that is
+    visible to a compiler.
+
+    This is a SMOKE test and says so: one short run, one stage. It cannot prove a convergence kept
+    every native fix — only that the boot path still works. A clean result here is the floor, not
+    the verification.
+    """
+    runner = os.path.join(REPO, "run-safe.sh")
+    if not os.path.exists(runner):
+        print("\n  RUNTIME GATE SKIPPED: run-safe.sh not found, so NOTHING was run. That is not a "
+              "pass — the adopted files are unverified at runtime.")
+        return
+    print("\n[converge] runtime smoke test (one short run of the decomp runtime) ...")
+    env = dict(os.environ, SB_RUNNER="run.sh", SB_RUN_SECS="100")
+    # errors="replace", NOT text=True: the boot log is Shift-JIS, and a strict utf-8 decode raises
+    # UnicodeDecodeError from inside subprocess — the gate would abort with a traceback instead of
+    # reporting on the run it just did, which is a gate that fails closed in the least useful way.
+    r = subprocess.run([runner, "SB_STAGE=1"], cwd=REPO, env=env,
+                       capture_output=True, text=True, errors="replace")
+    # 137 is our own SIGKILL at the wall-clock cap: the run survived to the end of its budget.
+    if r.returncode in (0, 137):
+        print("[converge] runtime smoke test PASSED (the boot path still runs). This is a floor, "
+              "not proof: it exercises one stage and cannot see a fix the boot path never uses.")
+        return
+    print(f"[converge] *** RUNTIME SMOKE TEST FAILED, exit {r.returncode} "
+          f"{'(SEGFAULT)' if r.returncode == 139 else ''} ***")
+    print("           The adoption BUILT but does not RUN. Bisect the adopted set by reverting")
+    print("           halves and re-running — a header that overlays file bytes or carries an")
+    print("           LP64/BE fix is the usual cause, and the compiler cannot see either.")
+    print("           Adopted files are still in the worktree; nothing was committed.")
 
 
 def main():
