@@ -230,7 +230,14 @@ def main() -> int:
         f, b = clean_one(d, args.glob)
         total_f += f
         total_b += b
-        sys.stderr.write(f"[scratch_clean] {d}: removed {f} file(s), {b/1e6:.1f} MB — now empty\n")
+        # "now empty" was unconditional and false whenever --glob was used: it describes the
+        # MATCHED SET, but reads as the directory. Deleting one core dump printed "now empty" for
+        # a directory still holding every reference frame, which is a heart-stopping thing to read
+        # and could easily provoke a needless re-capture.
+        left = sum(1 for _ in os.scandir(d)) if os.path.isdir(d) else 0
+        tail = "directory now empty" if left == 0 else f"{left} file(s) left in place"
+        sys.stderr.write(
+            f"[scratch_clean] {d}: removed {f} file(s), {b/1e6:.1f} MB — {tail}\n")
     sys.stderr.write(f"[scratch_clean] total: {total_f} file(s), {total_b/1e6:.1f} MB\n")
     return 0
 
