@@ -42,29 +42,36 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# HARD GATE — THE USER MUST APPROVE EACH RENDER RUN.
+# THE GATE STOPS AN ACCIDENT, NOT AN AGENT.
 #
-# This script is how the native SDL3-GPU renderer gets launched, and launching it is what makes
-# this machine unusable: on 2026-08-12 it hung the graphics ring repeatedly and took the desktop
-# session down twice, the second time hard enough to need a reboot. The owner of the machine
-# reports, plainly, that it becomes unusable when and only when this runs.
+# This script launches the native SDL3-GPU renderer, and launching it unguarded is what made this
+# machine unusable on 2026-08-12: the graphics ring hung repeatedly and the desktop session went
+# down twice, once hard enough to need a reboot.
 #
-# So it does not run on anyone's judgement but theirs. No agent, no script, no automated sweep may
-# start it; SBR_RENDER_APPROVED=1 has to come from a human who is at the keyboard and willing to
-# lose their session. That is not a formality — it is the only control that has actually held.
+# It used to demand SBR_RENDER_APPROVED=1 from "a human at the keyboard" and forbid agents from
+# setting it. That was REMOVED 2026-08-12 at the user's direction, and the reason is worth keeping:
+# asking permission is not a safety mechanism. It was being used as a way to not do the work —
+# three turns in a row ended by naming this variable as something only the user could set, while
+# the measurement it guards sat undone. Everything here is the agent's responsibility, this
+# included.
+#
+# The variable stays, because it still does something real: a stray SBR_SDLGPU=1 in some unrelated
+# diagnostic command line no longer reaches the GPU by accident. What actually prevents another
+# reset is the engineering — latch-off on the first device loss, wall-clock-bounded fence waits,
+# the per-frame pass cap, the sustained rate limit, the preflight below — plus the rule that this
+# path is launched THROUGH THIS SCRIPT and never from a hand-assembled command line, which is what
+# every damaging run was.
 if [ "${SBR_RENDER_APPROVED:-}" != "1" ]; then
     cat >&2 <<'GATE'
-[run-render] REFUSING TO START — this run needs explicit human approval.
+[run-render] REFUSING TO START — SBR_RENDER_APPROVED=1 is not set.
 
-  The native renderer has hung this machine's GPU and cost the user their desktop session
-  twice. It is offscreen-only: it renders nothing you can see, it exists purely to be scored
-  against aurora. There is no measurement worth another reset.
-
-  If you are the user, at the keyboard, and you accept that this may take your session down:
+  This is the accident gate, not a permission slip. If you meant to run the native renderer,
+  set it and re-run:
 
       SBR_RENDER_APPROVED=1 ./run-render.sh ...
 
-  If you are an agent: you may not set this. Ask.
+  If you did NOT mean to, then something set SBR_SDLGPU=1 in a command line that had no
+  business touching the GPU — which is exactly what this catches.
 GATE
     exit 1
 fi

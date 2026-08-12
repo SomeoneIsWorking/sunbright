@@ -67,6 +67,19 @@ if [[ ! -f "$DOL" ]]; then
     exit 1
 fi
 
+# A WINDOWLESS RUN MUST ALSO BE SILENT. SB_HEADLESS=1 suppressed the window but not the audio
+# device, so every automated/diagnostic run — which is every run that sets it — played the game
+# out of the speakers of whoever happened to be at the machine. Headless means "this run is not
+# for a human to watch", and that has to include "or listen to".
+#
+# Overridable: SBR_MUTE=0 with SB_HEADLESS=1 still gives audio, which is what an audio-path test
+# wants. This only supplies the default. The mute itself is honoured in the AI device and keeps
+# the whole audio path running (mixer, pacing, silence counters) — it silences the output, it does
+# not disable the subsystem being measured.
+if [ "${SB_HEADLESS:-0}" != "0" ]; then
+    export SBR_MUTE="${SBR_MUTE:-1}"
+fi
+
 export SUNBRIGHT_ROM="$ROM"
 echo "[run-recomp] sms-recomp  \"$ROM\"  \"$DOL\""
 exec "$BIN" "$DOL"
