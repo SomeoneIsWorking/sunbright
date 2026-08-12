@@ -110,10 +110,37 @@ Do NOT walk backwards from a vtable word to find its start by scanning for two z
 pure virtual is a zero slot INSIDE the table and stops the walk early. That was tried here and
 reported TBGTakeHit's vtable as 0x90 bytes when it is 0xB4.
 
-## Ported 2026-08-12
+## Ported 2026-08-12 — ALL FOURTEEN STATES
 
-`decomp/sms/src/MoveBG/MapObjBall.cpp` now implements `control`: state 6 complete, the seven
-no-op states as explicit empty cases, and states above 13 ignored (retail's `cmplwi r0,0xd; bgt`
-guard). States 1, 2/3, 11, 12 and 13 report `[STUB-CALLED]` once each with their address and
-instruction count rather than silently doing nothing -- an unported state that no-ops in silence
-is a behaviour change wearing a stub's clothes.
+`decomp/sms/src/MoveBG/MapObjBall.cpp` implements the whole function. Nothing about it is a stub
+any more, and the loud per-state reporter that carried the gap has been deleted along with the gap.
+
+| state(s) | what it does |
+|---|---|
+| 0, 4, 5, 7, 8, 9, 10 | nothing (their table entries are the epilogue) |
+| 1 | lying in the world: clear hit bit 0, run the collision list through `TMapObjBall::touchActor`, arm `MAP_OBJ_FLAG_DISAPPEARING` with `getLivingTime()`, go to 11; rebuild the matrix if the ground plane belongs to an actor |
+| 2, 3 | carried / in flight: `TMapObjGeneral::control`, tick `unk194` down, track the holder's `getTakingMtx()` lifted by `unk190`, else rebuild the matrix unless at rest on static ground |
+| 6 | drop check while carried -> release the holder, kill velocity, go to 12 |
+| 11 | settled, plus the Gelato (map 4) sand case: push the fruit up 20/frame while `SMS_GetSandRiseUpRatio` is still RISING -> then the same release-and-drop tail as state 6 |
+| 12 | vanish: restore scale, `PARTICLE_MS_ENM_DISAP_A_W`, `MSD_SE_SMOKE_EFFECT`, sleep 0xf0 frames, go to 13 |
+| 13 | respawn: white tint back, `awake`, default/dead/`calcRootMatrix`/`J3DModel::calc`, wait 360, clear DISAPPEARING, go to 10 (and straight back to dead on Ricco with `unk1a4`) |
+| >13 | ignored, by retail's own `cmplwi r0,0xd; bgt` |
+
+States 6 and 11 end in the same 21 instructions; that shared tail is written once, as the inline
+it evidently was, rather than copy-pasted.
+
+Two things fell out of this that matter beyond the fruit:
+
+* **The rest threshold in `TResetFruit::perform` was a STOPGAP and was wrong by four orders of
+  magnitude.** That line hard-coded 0.01 with a comment saying the real SDA2 constant had not
+  been looked up. States 2 and 3 load the same constant, so it got looked up: the word at guest
+  0x804147a8 is 0x36800000 = 3.8147e-06. Fixed there too.
+* **`unk194` is not initialised by retail's constructor.** `TResetFruit::kicked` stores to it and
+  states 2/3 decrement it while non-zero. On the host the port zeroes it in the constructor,
+  which is a deliberate deviation recorded in the header -- inheriting heap garbage would count
+  down for two billion frames.
+
+Verified on a real SB_STAGE=1 run: the fruit reaches state 1 and stays there, no crash, and
+run-safe.sh reports zero amdgpu events. States 6/11/12/13 are the pickup-and-throw path and are
+not exercised by a run that never touches a fruit; that is a coverage gap in the VERIFICATION,
+not in the port, and is stated here rather than left for a reader to assume.
