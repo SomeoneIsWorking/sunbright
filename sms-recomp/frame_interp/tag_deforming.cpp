@@ -90,21 +90,16 @@
 //                              displaced along a camera-facing width vector (MapObjGrass.cpp:30).
 //                              Deforming, so the vertex path is the only thing that reaches it.
 //
-//                              ONLY drawNear is hooked. It is the f32 variant; drawFar emits
-//                              GXPosition3s16, which the vertex path does not handle (it requires
-//                              direct f32 positions), so tagging it would buy nothing today.
-//
-//                              drawFar's address WAS unknown when this was written, because no run
-//                              had seen it draw. Stage 8 has now seen it and the registry named it:
+//                              Both drawNear and drawFar are hooked. drawFar's address WAS unknown
+//                              when this was written, because no run had seen it draw. Stage 8
+//                              named it:
 //                              0x801e9880, which the symbol list carries only as an offset into
 //                              __ct__17TMapObjGrassGroupFv. Disassembly confirms the identification
 //                              — same `unk78 == 1` gate and same GXBegin(GX_TRIANGLES, unk68*3) as
 //                              drawNear, then `lha` loads and `sth` into the FIFO where drawNear has
-//                              `lfs`/`stfs`. It stays untagged and files as camera-only, which for
-//                              far-LOD grass is the honest state, not a fix: 292 merged draws of
-//                              distant blades whose own sway is well under a pixel. Making it
-//                              interpolate means teaching patch_vertices the s16 position layout,
-//                              which is a change to the vertex path rather than a new seam.
+//                              `lfs`/`stfs`. The generic vertex path now preserves the direct s16
+//                              VAT fraction and writes an interpolated big-endian s16 stream, so
+//                              this uses the same object identity and merge guard as drawNear.
 //
 //                              The LOD switch needs no special handling: a group that goes far
 //                              stops being tagged, and patch_vertices refuses a pair whose ticks
@@ -174,6 +169,7 @@ extern "C" void func_80332c34(CPUState&);   // JPADrawExecStripe::exec(const JPA
 extern "C" void func_803330a4(CPUState&);   // JPADrawExecStripeCross::exec(const JPADrawContext*)
 extern "C" void func_800def6c(CPUState&);   // TConeBeam::drawConeBeam(const GXColor&)
 extern "C" void func_801f383c(CPUState&);   // TSwingBoard::drawOneRope(const TVec3&, const TVec3&)
+extern "C" void func_801e9880(CPUState&);   // TMapObjGrassGroup::drawFar() const — unnamed
 extern "C" void func_801e99a8(CPUState&);   // TMapObjGrassGroup::drawNear() const — unnamed in funcs.txt
 extern "C" void func_801f3ff8(CPUState&);   // THangingBridge::perform(u32, JDrama::TGraphics*)
 
@@ -209,7 +205,7 @@ u32 g_wipeNthMax = 0;
 unsigned long g_mirrorStrips = 0;
 unsigned long g_stripeCalls = 0, g_stripeStrips = 0, g_stripeNoEmitter = 0;
 unsigned long g_beamCalls = 0, g_beamFans = 0;
-unsigned long g_grassCalls = 0, g_grassPrims = 0;
+unsigned long g_grassNearCalls = 0, g_grassFarCalls = 0, g_grassPrims = 0;
 unsigned long g_ropeTagged = 0, g_ropeWithdrawn = 0;
 unsigned long g_bridgeCalls = 0, g_bridgePrims = 0, g_bridgeSkipped = 0;
 
@@ -358,8 +354,13 @@ void ov_draw_mirror(CPUState& cpu) {
 }
 
 void ov_grass_near(CPUState& cpu) {
-    Scope s(SB_POP_GRASS, (u32)cpu.gpr[3], g_grassCalls, &count_grass);
+    Scope s(SB_POP_GRASS, (u32)cpu.gpr[3], g_grassNearCalls, &count_grass);
     func_801e99a8(cpu);
+}
+
+void ov_grass_far(CPUState& cpu) {
+    Scope s(SB_POP_GRASS, (u32)cpu.gpr[3], g_grassFarCalls, &count_grass);
+    func_801e9880(cpu);
 }
 
 // The bridge's flags bit for the draw phase, read straight off the guest's own test at 0x801f4000:
@@ -486,11 +487,11 @@ void sbr_tag_wire_report() {
                        "this build does not know about)."
                      : "");
     lucent::info("taggap",
-                 "grass: {} primitive(s) tagged over {} drawNear call(s){}",
-                 g_grassPrims, g_grassCalls,
-                 g_grassCalls == 0
-                     ? " (no near grass drew — stage-dependent; drawFar is s16 and deliberately not "
-                       "hooked, so a stage of distant grass legitimately reports zero here)"
+                 "grass: {} primitive(s) tagged over {} drawNear + {} drawFar call(s){}",
+                 g_grassPrims, g_grassNearCalls, g_grassFarCalls,
+                 g_grassNearCalls + g_grassFarCalls == 0
+                     ? " (no grass drew — stage-dependent; a nonzero far count proves the direct-s16 "
+                       "vertex path was reached)"
                      : "");
     lucent::info("taggap",
                  "hanging bridge: {} rope primitive(s) tagged over {} draw-phase perform(s) ({} "
@@ -551,6 +552,9 @@ SB_OVERRIDE(0x801983a8u, ov_draw_lower, "TMapWire::drawLower",
 SB_OVERRIDE(0x801e99a8u, ov_grass_near, "TMapObjGrassGroup::drawNear",
             "60fps: identity for a grass group's swaying blades, whose vertices are rebuilt every "
             "tick from the manager's sway table")
+SB_OVERRIDE(0x801e9880u, ov_grass_far, "TMapObjGrassGroup::drawFar",
+            "60fps: identity for far-LOD grass; the shared vertex path interpolates its direct "
+            "signed-16 positions using the VAT fractional shift")
 SB_OVERRIDE(0x801f3ff8u, ov_hanging_bridge, "THangingBridge::perform",
             "60fps: one identity for the whole rope bridge, whose rope strips are rebuilt every "
             "tick from the swaying boards and merge into a single draw")
