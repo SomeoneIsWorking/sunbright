@@ -15,5 +15,10 @@ values. Runtime evidence (`scratch/logs/recomp_announcement_fixed2.log`, local/u
 For the scrolling announcement, `/2dclass` identified text panes `tet1`/`tet2` and `J2DWindow`
 pane `te_w`; its content rect was 427 units wide. The fix widens both outer and content rectangles
 at `J2DWindow::draw_private` by the shared widescreen pillar, then restores them. A content-only
-attempt was rejected because the unchanged outer clip cut the extension off. The tick-1202
-1280x960 capture showed the backdrop spanning the scrolling text across the frame.
+attempt was rejected because the unchanged outer clip cut the extension off. The final code restores
+`unkEC` before `J2DWindow::drawSelf` applies it to child panes, which keeps `tet1`/`tet2` structurally
+clipped inside the box through every scroll phase. Pixel bounds in the tick-1202 1280x960 capture:
+box x=61..1085, near-white text x=149..999 (88 px left and 86 px right padding), nearest FLUDD HUD
+pixel x=1120 (34 px clear gap). The measurement scanned all 58 announcement rows and 194 columns to
+the right; it matched 7,486 text pixels and 137 HUD-bearing columns rather than silently reporting
+an empty result.

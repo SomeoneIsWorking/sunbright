@@ -159,8 +159,11 @@ actually ran this session, and how often. Measure before believing this table.
    `J2DWindow` pane `te_w`, identified by adding the actual `drawContents` path to `/2dclass`. Its
    content rect measured 427 units wide while the text used the 16:9 side space. `hud.cpp` now
    widens both `draw_private` rectangles by the shared widescreen pillar; widening only
-   `drawContents` was rejected because the unchanged outer clip cut the added area back off. A
-   1280x960 capture at tick 1202 shows the band covering the full scrolling-text span.
+   `drawContents` was rejected because the unchanged outer clip cut the added area back off. The
+   original `unkEC` clip is deliberately restored before `J2DWindow::drawSelf` clips and draws its
+   child text panes, so widening the frame cannot let `tet1`/`tet2` escape it. In the 1280x960
+   tick-1202 capture, the box is x=61..1085, text pixels x=149..999 (88/86 px padding), and the
+   nearest FLUDD UI begins at x=1120: 34 clear pixels between box and HUD.
 
 ## Diagnostics (all live, all on the probe)
 
