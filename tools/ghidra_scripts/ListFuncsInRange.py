@@ -1,4 +1,5 @@
 #@runtime Jython
+# -*- coding: utf-8 -*-
 # ListFuncsInRange — print entry points of all functions in [SMS_LO, SMS_HI).
 import os
 lo = int(os.environ.get("SMS_LO","0"),16); hi = int(os.environ.get("SMS_HI","0"),16)
