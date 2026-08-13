@@ -158,9 +158,12 @@
 #include <cstdlib>
 #include <unordered_map>
 
+namespace aurora::gfx::interp { long tick_index(); }
+
 extern "C" void func_801813d4(CPUState&);   // Hxs2_Circle  (hx_wiper)
 extern "C" void func_801817a4(CPUState&);   // Hxs1_Circle  (hx_wiper)
 extern "C" void func_801824b4(CPUState&);   // __Hx_FrBufferMorf (hx_wiper)
+extern "C" void func_8017df74(CPUState&);   // Hx_Test5 (guide wave wipe)
 extern "C" void func_801da308(CPUState&);   // TCogwheel::draw() const
 extern "C" void func_80198278(CPUState&);   // TMapWire::drawUpper() const
 extern "C" void func_801983a8(CPUState&);   // TMapWire::drawLower() const — unnamed in funcs.txt
@@ -194,6 +197,8 @@ unsigned g_strip = 0;  // which primitive of that object is about to be emitted
 unsigned long g_strips = 0, g_upperCalls = 0, g_lowerCalls = 0, g_mirrorCalls = 0;
 unsigned long g_cogCalls = 0, g_cogStrips = 0;
 unsigned long g_wipeCalls = 0, g_wipeStrips = 0;
+unsigned long g_test5Calls = 0, g_test5Strips = 0;
+long g_test5FirstTick = -1, g_test5LastTick = -1;
 // The wipe functions are FREE FUNCTIONS — there is no `this` to key on, and the identity has to be
 // the call site. That is sound only while a site draws once per tick, so it is CHECKED rather than
 // assumed: the occurrence index is folded into the identity and its maximum is reported. A number
@@ -230,6 +235,7 @@ void on_gx_begin() {
 void count_wire() { ++g_strips; }
 void count_cog() { ++g_cogStrips; }
 void count_wipe() { ++g_wipeStrips; }
+void count_test5() { ++g_wipeStrips; ++g_test5Strips; }
 void count_mirror() { ++g_mirrorStrips; }
 void count_stripe() { ++g_stripeStrips; }
 void count_beam() { ++g_beamFans; }
@@ -341,6 +347,22 @@ void ov_wipe_hxs1(CPUState& cpu) {
 void ov_wipe_morf(CPUState& cpu) {
     Scope s(SB_POP_WIPE, wipe_self(0x801824b4u), g_wipeCalls, &count_wipe);
     func_801824b4(cpu);
+}
+
+void ov_wipe_test5(CPUState& cpu) {
+    // Hx_Test5 emits the whole 64x64 framebuffer wave grid directly rather than calling one of
+    // the Hxs*_Circle helpers. Without an owner scope every strip reaches the stream as anonymous
+    // orthographic geometry and is deliberately snapped. The function runs once per wipe update;
+    // Scope's GXBegin hook makes the stable identity (site occurrence, strip index).
+    const bool willTag = enabled() && sbr_lerp_enabled() && sbr_gxfifo_pending_tag() == 0;
+    Scope s(SB_POP_WIPE, wipe_self(0x8017df74u), g_wipeCalls, &count_test5);
+    if (willTag) {
+        ++g_test5Calls;
+        const long tick = aurora::gfx::interp::tick_index();
+        if (g_test5FirstTick < 0) g_test5FirstTick = tick;
+        g_test5LastTick = tick;
+    }
+    func_8017df74(cpu);
 }
 
 void ov_cogwheel(CPUState& cpu) {
@@ -524,6 +546,17 @@ void sbr_tag_wire_report() {
                        "carrying that difference rather than the call site alone."
                      : "");
     lucent::info("taggap",
+                 "guide wave wipe (Hx_Test5): {} call(s), {} grid strip(s) tagged over tick(s) "
+                 "{}..{}{}",
+                 g_test5Calls, g_test5Strips, g_test5FirstTick, g_test5LastTick,
+                 g_test5Calls == 0
+                     ? "   <-- NONE. This run never entered the guide wave transition; it does "
+                       "not exercise the missing-lerp fix."
+                     : g_test5Strips != g_test5Calls * 80
+                         ? "   <-- MISMATCH: retail emits exactly 10 columns x 8 rows per call. "
+                           "A shortfall means some moving grid primitives have no identity."
+                         : "");
+    lucent::info("taggap",
                  "balance scale (TCogwheel::draw): {} draw call(s), {} strip(s) tagged{}",
                  g_cogCalls, g_cogStrips,
                  g_cogCalls == 0
@@ -576,6 +609,9 @@ SB_OVERRIDE(0x801817a4u, ov_wipe_hxs1, "Hxs1_Circle (hx_wiper)",
             "60fps: identity per strip for the circle wipe's inner layer, same reason as Hxs2")
 SB_OVERRIDE(0x801824b4u, ov_wipe_morf, "__Hx_FrBufferMorf (hx_wiper)",
             "60fps: identity per strip for the framebuffer-morph wipe")
+SB_OVERRIDE(0x8017df74u, ov_wipe_test5, "Hx_Test5 (guide wave wipe)",
+            "60fps: identity per strip for the guide transition's deforming framebuffer grid; "
+            "measured to move on every transition tick and previously snapped as anonymous 2D")
 SB_OVERRIDE(0x801da308u, ov_cogwheel, "TCogwheel::draw",
             "60fps: identity per strip for Noki Bay's balance scale, whose beam vertices are written "
             "into the FIFO as direct floats every tick (found by the graphics registry, reading "
