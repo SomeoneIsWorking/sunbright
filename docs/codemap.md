@@ -107,7 +107,7 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 | FIFO replay harness | 🟡 | `sms-boot/runtime/fifo_player.cpp` | CI-format TLUT synthesis missing (fail-fast) |
 | audio pump | ✅ | `sms-boot/runtime/audio_out.cpp`, `sms-boot/runtime/jas_kernel_native.cpp` | native voice renderer; title BGM audible + WAV-verified (2026-07-17) |
 | SDK stubs | 🟡 | `sms-boot/runtime/sdk_stubs.cpp` | audited; every stub documented or loud |
-| decomp shims/stubs | 🟡 | `sms-boot/shims/`, `sms-boot/boot_stubs/` | each boot_stub = porting worklist |
+| decomp shims/stubs | 🟡 | `sms-boot/shims/`, `sms-boot/boot_stubs/` | each boot_stub = porting worklist; `TGuide::load`/`perform` are the current guide/map-screen gap, so keyboard C/Z transitions black rather than being a threading fault (issue #7) |
 
 ## Reference decomp (`decomp/sms` — submodule, SomeoneIsWorking/sms fork)
 
