@@ -188,8 +188,11 @@ A/B with `SBR_INTERP_TEXMTX=0`.
 ### Deforming geometry — the vertex path (2026-08-07)
 
 Flags and the sea ripple grid rebuild their mesh every tick, so their motion lives in the VERTEX
-DATA and no matrix reaches them. `interp::patch_vertices` lerps the positions directly: 86,910 of
-107,813 offered draws (80.6%), with both populations at 100% of what the audit can see.
+DATA and no matrix reaches them. `interp::patch_vertices` decodes and lerps XYZ plus every other
+DIRECT f32 attribute in the VAT record (normals and texture coordinates). The original path lerped
+XYZ only, so its “100%” report was true but incomplete: the flag's ST pair and the sea's two ST
+pairs still stepped at 30 Hz. A 1,250-tick Plaza run now reports 11,169/11,178 flag draws with
+1,300,568 extra values patched and 1,241/1,242 sea draws with 6,711,328 extra values patched.
 
 Three things this had to get right, each of which fails silently otherwise:
 
@@ -205,6 +208,9 @@ Three things this had to get right, each of which fails silently otherwise:
   the vertex path first did exactly that and moved 516,562 particle draws off the correct
   billboard-translation path onto this one. It is now the fallback after the specific paths, and
   particles are back at 414,241 billboard / 0 vertex.
+* **Byte offsets, not word offsets.** A direct matrix-index byte can leave later ST floats
+  unaligned. The self-test uses XYZ at byte 0 and ST at bytes 13/17, and requires the exact halfway
+  values on both classes. A positions-only implementation fails this control visibly.
 
 A draw whose vertex COUNT changed between ticks is snapped, not smeared between two unrelated
 meshes (7,882 per run), and one with no consecutive previous tick snaps too (20,903).

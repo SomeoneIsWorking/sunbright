@@ -50,8 +50,11 @@
 
 extern "C" void func_802cd2ec(CPUState&);   // the 2D quad emitter
 extern "C" void func_80362e0c(CPUState&);   // GXLoadPosMtxImm
+extern "C" void func_802d18ec(CPUState&);   // J2DWindow::draw_private
+extern "C" void func_802d1f88(CPUState&);   // J2DWindow::drawContents
 
 int sbr_ws_pillar();   // widescreen.cpp — half the width the 2D squeeze frees at each side
+void sbr_diag_2d_note_window(u32 self, u32 rect);
 
 namespace {
 
@@ -206,6 +209,52 @@ void ov_quad(CPUState& cpu) {
     if (moved) guest_set_f32(self + PANE_MTX + MTX_M03, m03);
 }
 
+// The scrolling announcement uses J2DWindow pane `te_w` for its translucent backdrop and
+// J2DTextBox panes `tet1`/`tet2` for the text. The text renderer naturally uses the extra 16:9
+// width, but the window remains authored for 4:3, leaving the letters outside the black band.
+// Extend BOTH rectangles at draw_private: r4 is the outer/frame rect and r5 is the content/clip
+// rect. Extending only drawContents looked plausible but the original outer clip cut the added
+// area back off. Both caller-owned rectangles are restored immediately after the draw.
+bool is_announcement_window(u32 self) {
+    char nm[5];
+    read_fourcc(self, nm);
+    return nm[0] == 't' && nm[1] == 'e' && nm[2] == '_' && nm[3] == 'w';
+}
+
+void widen_rect_x(u32 rect, int pillar, u32& x1, u32& x2) {
+    x1 = sb_r32(rect + 0x00);
+    x2 = sb_r32(rect + 0x08);
+    sb_w32(rect + 0x00, x1 - static_cast<u32>(pillar));
+    sb_w32(rect + 0x08, x2 + static_cast<u32>(pillar));
+}
+
+void restore_rect_x(u32 rect, u32 x1, u32 x2) {
+    sb_w32(rect + 0x00, x1);
+    sb_w32(rect + 0x08, x2);
+}
+
+void ov_window_private(CPUState& cpu) {
+    const u32 outer = cpu.gpr[4], content = cpu.gpr[5];
+    const int pillar = sbr_ws_pillar();
+    const bool widen = pillar != 0 && is_announcement_window(cpu.gpr[3]) &&
+                       guest_obj(outer) && guest_obj(content);
+    u32 ox1 = 0, ox2 = 0, cx1 = 0, cx2 = 0;
+    if (widen) {
+        widen_rect_x(outer, pillar, ox1, ox2);
+        widen_rect_x(content, pillar, cx1, cx2);
+    }
+    func_802d18ec(cpu);
+    if (widen) {
+        restore_rect_x(content, cx1, cx2);
+        restore_rect_x(outer, ox1, ox2);
+    }
+}
+
+void ov_window_contents(CPUState& cpu) {
+    sbr_diag_2d_note_window(cpu.gpr[3], cpu.gpr[4]);
+    func_802d1f88(cpu);
+}
+
 // ── The draws that bypass the quad emitter ───────────────────────────────────────────────
 // GXLoadPosMtxImm call sites (cpu.lr) inside the TGCConsole2 FLUDD-gauge draws. Each loads an
 // identity position matrix and then draws part of the gauge in the 2D ortho, so shifting that
@@ -277,3 +326,7 @@ SB_OVERRIDE(QUAD_EMITTER, ov_quad, "J2D 2D quad emitter",
 SB_OVERRIDE(GX_LOAD_POS_MTX_IMM, ov_load_pos_mtx_imm, "GXLoadPosMtxImm",
             "widescreen HUD: anchor the gauge draws that bypass the quad emitter, keyed by call "
             "site, and stretch the fade curtain to the full screen")
+SB_OVERRIDE(0x802d1f88u, ov_window_contents, "J2DWindow::drawContents",
+            "diagnostic: record the live window content rect")
+SB_OVERRIDE(0x802d18ecu, ov_window_private, "J2DWindow::draw_private",
+            "widescreen announcement: extend the te_w frame, content and clip into 16:9")

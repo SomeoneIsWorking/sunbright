@@ -98,6 +98,25 @@ void note(const char* cls, u32 self) {
     e.colorAlpha = (int)sb_r8(self + 0xCD);
 }
 
+void note_rect(const char* cls, u32 self, u32 rect) {
+    note(cls, self);
+    if (!guest_obj(self) || !guest_obj(rect)) return;
+    const u32 t = sb_r32(self + 0x10);
+    char nm[5];
+    for (int i = 0; i < 4; ++i) {
+        const u8 c = (t >> (24 - i * 8)) & 0xff;
+        nm[i] = (c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '.';
+    }
+    nm[4] = '\0';
+    char key[64];
+    std::snprintf(key, sizeof key, "%-18s %s", cls, nm);
+    auto& e = g_seen[key];
+    e.gx1 = static_cast<int>(sb_r32(rect + 0x00));
+    e.gy1 = static_cast<int>(sb_r32(rect + 0x04));
+    e.gx2 = static_cast<int>(sb_r32(rect + 0x08));
+    e.gy2 = static_cast<int>(sb_r32(rect + 0x0c));
+}
+
 const bool g_probe = [] {
     sb_probe_register("/2dclass", "which J2D class drew each pane (needs SBR_DIAG_2D=1)",
                       [](const ProbeArgs&) {
@@ -294,8 +313,13 @@ void ov_screen_drawself(CPUState& cpu) {
     if (diag_on()) note("J2DScreen::drawSelf", cpu.gpr[3]);
     func_802d01c8(cpu);
 }
-
 } // namespace
+
+// The window override lives in hud.cpp because it also performs the widescreen correction. Keep
+// the census here so the diagnostic and shipping path observe the exact same draw and rect.
+void sbr_diag_2d_note_window(u32 self, u32 rect) {
+    if (diag_on()) note_rect("J2DWindow::rect", self, rect);
+}
 
 SB_OVERRIDE(0x802cc758u, ov_pic_drawself,    "J2DPicture::drawSelf", "diagnostic: 2D class census")
 SB_OVERRIDE(0x802cc7c0u, ov_pic_drawself_mtx, "J2DPicture::drawSelf(Mtx)",

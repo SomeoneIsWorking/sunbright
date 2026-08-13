@@ -155,9 +155,12 @@ actually ran this session, and how often. Measure before believing this table.
    subtitle band that is narrower than its text (user report, pre-existing since the Dolphin era) is
    drawn by **`J2DTextBox` panes `tet1`/`tet2`**, identified live via `/2dclass` — the telop/message
    system, not `TMovieSubTitle`'s `me_a`/`me_b`. It is also NOT `fill_rect` (`/fills` shows only
-   fades) and NOT the quad emitter (`/2d` does not list it). STILL OPEN: the band pane itself has
-   not been identified — it is neither a J2DPicture nor a J2DTextBox, so the next step is
-   `J2DPane::drawSelf`, the base-class path this diagnostic does not yet hook.
+   fades) and NOT the quad emitter (`/2d` does not list it). RESOLVED 2026-08-13: the band is
+   `J2DWindow` pane `te_w`, identified by adding the actual `drawContents` path to `/2dclass`. Its
+   content rect measured 427 units wide while the text used the 16:9 side space. `hud.cpp` now
+   widens both `draw_private` rectangles by the shared widescreen pillar; widening only
+   `drawContents` was rejected because the unchanged outer clip cut the added area back off. A
+   1280x960 capture at tick 1202 shows the band covering the full scrolling-text span.
 
 ## Diagnostics (all live, all on the probe)
 

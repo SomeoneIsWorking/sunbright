@@ -1,7 +1,10 @@
 # Immediate-mode geometry and 60fps — why the fountain jitters, and what fixing it requires
 
-The fountain, the waving flags and the sea ripple grid all jitter under interpolation. They are one
-problem, and it is not the one the matrix path can solve.
+The fountain, the waving flags and the sea ripple grid originally jittered under interpolation.
+They are one problem, and it is not the one the matrix path can solve. The fountain now uses the
+billboard path; flags and the sea use the generic raw-vertex path. As of 2026-08-13 that path lerps
+DIRECT f32 texture coordinates as well as XYZ—positions-only interpolation left both visibly
+stepping while the old coverage report incorrectly appeared complete.
 
 ## The population, attributed
 
