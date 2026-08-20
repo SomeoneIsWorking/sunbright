@@ -12,6 +12,7 @@ changes a subsystem.
 | `DO_NOT_REVISIT_FLIP.md` | a settled question. Read before proposing recomp↔decomp interop |
 | `60fps/` | interpolated 60fps: the map of the paths, the effect work, screen effects |
 | `audio/` | the JAS mixer port, data formats, the A/B harness |
+| `app/` | launcher-owned settings, renderer selection, frame-rate policy, and RmlUi behavior |
 | `port/` | the porting roadmap, worklist, workflow, threading model, renderer plan |
 | `re_notes/` | per-subject reverse-engineering notes, one file per mechanism |
 | `info/` | the CLAIMS and INSTRUMENTS registries (`tools/../project-info`) — what was proven, and which tools can be trusted. Machine-maintained; use the CLI |

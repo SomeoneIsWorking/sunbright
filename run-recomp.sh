@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch sms-recomp — Super Mario Sunshine's real PowerPC code, statically recompiled,
-# running on native device models + Aurora (the second of the project's two runtimes;
-# ./run.sh launches the decomp one).
+# running on native device models + Aurora. This is the raw development launcher; ./run.sh is the
+# product path and ./run-decomp.sh launches the decomp verification oracle.
 #
 # Usage:
 #   ./run-recomp.sh                  # ROM via $SUNBRIGHT_ROM, .env, or rom.rvz drop-in
@@ -41,11 +41,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
 NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
-# Native Wayland can't create the Vulkan surface on this machine; XWayland works.
-if [[ "$(uname)" != "Darwin" ]]; then
-    export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
-    export DISPLAY="${DISPLAY:-:0}"
-fi
+. "$HERE/tools/launch/sdl_video.sh"
+configure_sunbright_sdl_video
 
 BIN="$HERE/build-sms-recomp/sms-recomp"
 if [[ ! -x "$BIN" ]]; then

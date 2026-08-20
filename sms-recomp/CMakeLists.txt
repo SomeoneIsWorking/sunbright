@@ -68,12 +68,28 @@ target_link_libraries(sms-recomp-frame-interp PUBLIC nod::nod aurora::gx aurora:
 # DVD stays OFF: this runtime serves the disc itself through nod (runtime/devices/disc.cpp).
 set(AURORA_ENABLE_GX ON CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_DVD OFF CACHE BOOL "" FORCE)
+set(AURORA_ENABLE_RMLUI ON CACHE BOOL "Enable the Dusklight-style Sunbright settings UI" FORCE)
+set(AURORA_BUILD_TESTS OFF CACHE BOOL "Do not register Aurora's standalone tests when embedded" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora" aurora-build EXCLUDE_FROM_ALL)
 
 set(AURORA_NOD_PROVIDER "auto" CACHE STRING "")
 set(AURORA_NOD_LINKAGE "static" CACHE STRING "")
 set(AURORA_NOD_VERSION "v2.0.0-alpha.10" CACHE STRING "")
 include("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/cmake/AuroraNodProvider.cmake")
+
+# Application policy and UI follow Dusklight's ownership split: typed settings are independent of
+# RmlUi, while ui/ owns documents and presentation. Runtime seams consume sms-recomp-app directly;
+# they never ask the menu what a setting means.
+add_library(sms-recomp-app STATIC app/settings.cpp app/frame_rate.cpp)
+target_include_directories(sms-recomp-app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(sms-recomp-app PUBLIC lucent::lucent)
+
+add_library(sms-recomp-ui STATIC ui/event.cpp ui/document.cpp ui/settings_menu.cpp ui/ui.cpp)
+target_include_directories(sms-recomp-ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(sms-recomp-ui PUBLIC sms-recomp-app aurora::core lucent::lucent)
+
+target_link_libraries(sms-recomp-overrides PUBLIC sms-recomp-app)
+target_link_libraries(sms-recomp-frame-interp PUBLIC sms-recomp-app)
 
 add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/devices/mmio.cpp
                                  runtime/devices/dev_aram.cpp
@@ -110,7 +126,8 @@ add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/render/tev_ev
 # is the guest call stack — but only if the names resolve.
 target_link_options(sms-recomp PRIVATE -rdynamic)
 target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
-                      sms-recomp-overrides sms-recomp-frame-interp lucent::lucent
+                      sms-recomp-overrides sms-recomp-frame-interp sms-recomp-app sms-recomp-ui
+                      lucent::lucent
                       # aurora_core and aurora_gx reference each other, so both must be on
                       # the link line together for the static archives to resolve.
                       aurora::core aurora::gx aurora::core
@@ -131,6 +148,10 @@ add_executable(gx_light_test tests/gx_light_test.cpp runtime/render/gx_light.cpp
 target_link_libraries(gx_light_test PRIVATE lucent::lucent)
 target_include_directories(gx_light_test PRIVATE runtime runtime/render runtime/devices)
 add_test(NAME gx_light COMMAND gx_light_test)
+
+add_executable(settings_test tests/settings_test.cpp)
+target_link_libraries(settings_test PRIVATE sms-recomp-app)
+add_test(NAME settings COMMAND settings_test)
 
 # The interpolation pairing self-test, reached through the main binary with SBR_INTERP_SELFTEST=1.
 # It is pure CPU work — local buffers and aurora's own pairing tables — but until now it only ran

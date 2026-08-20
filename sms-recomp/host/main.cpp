@@ -10,8 +10,14 @@
 #include "guest_sched.h"
 #include "intrinsics.h"
 #include "../frame_interp/stream_interp.h"
+#include "app/frame_rate.h"
+#include "app/settings.h"
+#include "ui/ui.h"
 
 #include <aurora/aurora.h>
+
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_stdinc.h>
 
 #include <lucent/config.h>
 #include <lucent/log.h>
@@ -19,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -71,6 +78,33 @@ void guest_write(u32 addr, const u8* src, u32 size) {
         if (u8* p = sb_ram_fast(addr + i)) *p = src[i];
 }
 
+std::string user_path() {
+    char* raw = SDL_GetPrefPath(nullptr, "sunbright-recomp");
+    if (raw == nullptr) {
+        lucent::error("settings", "SDL_GetPrefPath failed: {}", SDL_GetError());
+        return {};
+    }
+    std::string path(raw);
+    SDL_free(raw);
+    return path;
+}
+
+std::string resource_path(const char* argv0) {
+    std::error_code error;
+    const auto executable = std::filesystem::absolute(argv0 != nullptr ? argv0 : "", error);
+    if (!error) {
+        const auto besideExecutable = executable.parent_path();
+        if (std::filesystem::is_directory(besideExecutable / "res"))
+            return besideExecutable.string() + '/';
+        const auto sourceRoot = besideExecutable.parent_path();
+        if (std::filesystem::is_directory(sourceRoot / "res")) return sourceRoot.string() + '/';
+    }
+    const auto working = std::filesystem::current_path(error);
+    if (!error && std::filesystem::is_directory(working / "res")) return working.string() + '/';
+    lucent::error("ui", "cannot locate the res/ directory from executable '{}' or cwd", argv0);
+    return {};
+}
+
 } // namespace
 
 // The interpolation pairing self-test lives in aurora and is pure — local buffers and the module's
@@ -94,12 +128,19 @@ int main(int argc, char** argv) {
     }
 
     std::string dol_path = argc > 1 ? argv[1] : "scratch/bin/sms.dol";
+    const std::string userPath = user_path();
+    const std::string resourcesPath = resource_path(argc > 0 ? argv[0] : nullptr);
+    if (userPath.empty() || resourcesPath.empty() ||
+        !sb::app::settings().load(std::filesystem::path(userPath) / "sunbright.ini"))
+        return 1;
 
     // Aurora provides the GX implementation. mem1Size/mem2Size are 0: this runtime owns its
     // guest memory (rt_mem_init), and aurora is handed real host pointers for anything it
     // needs to read out of it.
     AuroraConfig acfg = {};
     acfg.appName        = "sunbright-recomp";
+    acfg.userPath       = userPath.c_str();
+    acfg.resourcesPath  = resourcesPath.c_str();
     acfg.desiredBackend = BACKEND_VULKAN;
     acfg.msaa           = 1;
     // PRESENT MODE, and why interpolated 60fps REQUIRES vsync on.
@@ -120,7 +161,10 @@ int main(int argc, char** argv) {
     //
     // Off (Mailbox) when interpolation is off, because then there IS only one image per tick and
     // the latency trade goes the other way.
-    acfg.vsync          = std::getenv("SBR_60FPS") != nullptr || std::getenv("SBR_LERP60") != nullptr;
+    // The prelaunch menu can change frame mode after the device is initialized. Strict FIFO works
+    // for every mode and is REQUIRED for interpolation, so initialize once with the invariant
+    // policy instead of making the menu and swapchain disagree until a restart.
+    acfg.vsync          = true;
     acfg.windowWidth    = std::getenv("SB_W") ? (u32)std::strtoul(std::getenv("SB_W"), nullptr, 0) : 1280u;
     acfg.windowHeight   = std::getenv("SB_H") ? (u32)std::strtoul(std::getenv("SB_H"), nullptr, 0) : 960u;
     acfg.mem1Size       = 0;
@@ -128,6 +172,31 @@ int main(int argc, char** argv) {
     AuroraInfo ainfo = aurora_initialize(argc, argv, &acfg);
     lucent::info("rt", "aurora up: backend={} fb={}x{}", (int)ainfo.backend,
                  ainfo.windowSize.fb_width, ainfo.windowSize.fb_height);
+    if (const char* value = std::getenv("SBR_UI_SELFTEST"); value != nullptr && value[0] != '0') {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        const unsigned frames = end != value && *end == '\0' && parsed > 0
+                                    ? static_cast<unsigned>(parsed)
+                                    : 2u;
+        const bool ok = sb::ui::render_settings_control(frames);
+        aurora_shutdown();
+        return ok ? 0 : 1;
+    }
+    if (!sb::ui::run_prelaunch()) {
+        aurora_shutdown();
+        return 0;
+    }
+    if (!sb::app::frame_rate::is_supported(sb::app::settings().effective().frameRate)) {
+        lucent::error("settings", "cannot launch with {}: {}",
+                      sb::app::display_name(sb::app::settings().effective().frameRate),
+                      sb::app::frame_rate::unsupported_reason(
+                          sb::app::settings().effective().frameRate));
+        aurora_shutdown();
+        return 1;
+    }
+    lucent::info("settings", "renderer={} framerate={}",
+                 sb::app::display_name(sb::app::settings().effective().renderer),
+                 sb::app::display_name(sb::app::settings().effective().frameRate));
     // Arm interpolated 60fps BEFORE the first frame is recorded. sbr_lerp_enabled() configures
     // aurora on its first call, and leaving that to whichever seam happened to ask first is how a
     // mode ends up half-on for the opening frames.

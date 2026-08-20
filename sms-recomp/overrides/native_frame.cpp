@@ -17,6 +17,7 @@
 #include "../frame_interp/stream_interp.h"
 #include "../frame_interp/frame_interp.h"
 #include "../frame_interp/graphics_db.h"
+#include "app/frame_rate.h"
 
 // Declared rather than included: aurora's gfx headers are internal to the library, and the recomp
 // links it statically so the symbol resolves directly. Same approach lerp60.cpp uses for aurora's
@@ -134,12 +135,7 @@ int64_t now_ns() {
 }
 
 bool turbo() {
-    static int v = -1;
-    if (v < 0) {
-        const char* e = std::getenv("SB_TURBO");
-        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
-    }
-    return v == 1;
+    return !sb::app::frame_rate::host_pacing_enabled();
 }
 
 int64_t g_nextDeadlineNs = 0;
@@ -240,8 +236,7 @@ extern "C" void aurora_replay_midpoint() {
     // Kept behind SBR_MIDPOINT_SLACK so the two policies remain comparable — the in-run A/B that
     // measured the sleep is still the right instrument if the present mode ever changes back.
     // Callbacks are dispatched ABOVE this line and are unaffected: they must fire every tick.
-    static const bool s_queuedPresent = std::getenv("SBR_60FPS") != nullptr ||
-                                        std::getenv("SBR_LERP60") != nullptr;
+    static const bool s_queuedPresent = sb::app::frame_rate::interpolates();
     static const bool s_slackForced = std::getenv("SBR_MIDPOINT_SLACK") != nullptr;
     if (s_queuedPresent && !s_slackForced) return;
     if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0) return;
@@ -806,7 +801,11 @@ void video_wait_for_retrace(CPUState& cpu) {
     // early. Return immediately and let the copy be the only thing that happens.
     if (sbr_interp60_in_subframe()) return;
 
-    // Let the game do its own frame bookkeeping first.
+    // Let the game do its own frame bookkeeping first. Native frame-rate modes override the
+    // game's own TDisplay retrace interval (r4), the same value retail passes from TDisplay::unk4C;
+    // this advances simulation, animation and timers at 60 Hz instead of merely presenting the
+    // same 30 Hz state twice.
+    cpu.gpr[4] = sb::app::frame_rate::game_retrace_count(cpu.gpr[4]);
     func_802fc9a4(cpu);
 
     // The tick's scene is complete (the capture hooks ran during the game's draw). Rotate it so the

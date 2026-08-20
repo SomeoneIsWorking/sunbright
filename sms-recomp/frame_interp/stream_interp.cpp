@@ -2,6 +2,8 @@
 
 #include "stream_interp.h"
 
+#include "app/frame_rate.h"
+
 #include <lucent/log.h>
 
 #include <cstdlib>
@@ -26,11 +28,10 @@ void force_interpolation(float alpha);
 bool sbr_lerp_enabled() {
     static int v = -1;
     if (v < 0) {
-        // SBR_60FPS is the switch a person uses; SBR_LERP60 is the same thing under its development
-        // name, kept because existing scripts and journal entries use it.
-        const char* e = std::getenv("SBR_60FPS");
-        if (e == nullptr || e[0] == '\0') e = std::getenv("SBR_LERP60");
-        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+        // The settings model is the authority. It folds the legacy SBR_60FPS/SBR_LERP60
+        // environment inputs in once at startup, so scripts remain compatible without making the
+        // interpolation subsystem parse a second copy of the policy.
+        v = sb::app::frame_rate::interpolates() ? 1 : 0;
         if (v == 1) {
             // Turn the WHOLE feature on from here rather than making the user set aurora's two env
             // vars to agree with this one. Three switches that must agree is three ways to run a

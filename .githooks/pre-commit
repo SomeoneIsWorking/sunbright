@@ -3,7 +3,7 @@
 #   git config core.hooksPath .githooks
 #
 # WHAT IT GUARDS. Diagnostic switches rot in a specific, expensive way: a switch named in
-# CLAUDE.md, docs/ or a run script that NO code reads sends a session chasing a control that does
+# AGENTS.md, CLAUDE.md, docs/ or a run script that NO code reads sends a session chasing a control that does
 # not exist. That has happened here (SB_SKIP_GHOST was cited in the project instructions for a
 # while and was never in the source at all), and a stale generated registry hides the drift.
 #
@@ -57,6 +57,15 @@ pre-commit: a diagnostic tool's own self-test failed, so that tool cannot be tru
   answer it is about to be used for. Run it directly to see which case broke:
     python3 tools/selftest_all.py
     python3 tools/selftest_all.py --list    # what is covered at all
+MSG
+    exit 1
+fi
+
+if ! python3 "$REPO/tools/structure_check.py"; then
+    cat >&2 <<'MSG'
+
+pre-commit: the host application structure ratchet failed. Split the named file at its cohesive
+  ownership boundary; do not raise the limit to land growth.
 MSG
     exit 1
 fi

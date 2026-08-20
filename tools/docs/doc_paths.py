@@ -39,8 +39,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 # Documents that describe the code as it IS. Everything else under docs/ is archive.
-LIVE_ROOTS = ("CLAUDE.md", "docs/README.md", "docs/codemap.md", "docs/60fps", "docs/graphics",
-              "docs/audio", "docs/info")
+LIVE_ROOTS = ("AGENTS.md", "CLAUDE.md", "docs/README.md", "docs/codemap.md", "docs/app",
+              "docs/60fps", "docs/graphics", "docs/audio", "docs/info")
 ARCHIVE = ("docs/re_notes", "docs/port", "debug_journal")
 
 PATH_RE = re.compile(r"`([A-Za-z0-9_][\w./-]*\.(?:cpp|h|hpp|py|sh|glsl|tsv))`")

@@ -25,7 +25,7 @@
 # Usage:  ./run-safe.sh [NAME=VALUE ...] [-- args to the runner]
 #   ./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=400
 #   ./run-safe.sh SBR_LERP60=1 SB_MAX_PRESENT_HZ=30 SBR_QUIT_AFTER=600
-#   SB_RUNNER=run.sh ./run-safe.sh SB_STAGE=1        # the decomp runtime, same protections
+#   SB_RUNNER=run-decomp.sh ./run-safe.sh SB_STAGE=1 # the decomp runtime, same protections
 #
 # SB_RUNNER picks which runtime to launch (default run-recomp.sh). It exists because the decomp
 # runtime had NO safe launcher at all, so verifying an upstream convergence at runtime — which a
@@ -130,7 +130,7 @@ if [ -n "${SB_DUMP_FRAME:-}" ]; then
     timeout -s KILL "$SECS" "$HERE/$RUNNER" "${ARGS[@]}" 2>&1 | tee "$HERE/scratch/.run-safe-out.$$"
     RC=${PIPESTATUS[0]}
     grep -a "^\[texresolve\] static " "$HERE/scratch/.run-safe-out.$$" > "$MANIFEST" 2>/dev/null || true
-    rm -f "$HERE/scratch/.run-safe-out.$$"
+    python3 "$HERE/tools/scratch_clean.py" --glob ".run-safe-out.$$" "$HERE/scratch" >/dev/null
     if [ -s "$MANIFEST" ]; then
         echo "[run-safe] texture manifest beside the dump: $MANIFEST ($(wc -l < "$MANIFEST") texture(s), \
 $(grep -c 'mips=1 ' "$MANIFEST" || true) single-level)"

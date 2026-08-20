@@ -40,9 +40,20 @@ DOC = os.path.join(ROOT, "docs", "diagnostics.md")
 # Where switches are READ. Anything else is a mention, not a definition.
 CODE_DIRS = ["sms-recomp", "sms-boot", "decomp/sms/src", "decomp/sms/include", "extern/aurora/lib"]
 # Where switches are TALKED ABOUT. A name here with no reader is a phantom.
-DOC_PATHS = ["CLAUDE.md", "docs", "debug_journal", "run.sh", "run-recomp.sh"]
+DOC_PATHS = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs",
+    "debug_journal",
+    "run.sh",
+    "run-decomp.sh",
+    "run-recomp.sh",
+    "run-safe.sh",
+    "play.sh",
+]
 
 GETENV = re.compile(r'getenv\s*\(\s*"((?:SB|SBR|AURORA)_[A-Z0-9_]+)"')
+ENV_HELPER = re.compile(r'\benv_enabled\s*\(\s*"((?:SB|SBR|AURORA)_[A-Z0-9_]+)"')
 # Consumed by the lucent logger through its PREFIX mechanism (lucent::config::set_prefix), so they
 # never appear as a literal getenv in this tree. Real switches; not phantoms.
 LIBRARY_READ = {"SB_LUCENT_DEBUG", "SB_LUCENT_LOG_FILE",
@@ -104,7 +115,7 @@ def scan_code():
             continue
         lines = text.splitlines()
         for i, line in enumerate(lines, 1):
-            for m in GETENV.finditer(line):
+            for m in (*GETENV.finditer(line), *ENV_HELPER.finditer(line)):
                 name = m.group(1)
                 # A gated PRINT is the debt: the switch guards a raw fprintf/printf rather than a
                 # call into the project's logger. Look at the switch's own line and the few after

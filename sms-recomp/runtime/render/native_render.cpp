@@ -17,6 +17,8 @@
 
 #include "native_render.h"
 
+#include "app/settings.h"
+
 #include <lucent/log.h>
 
 #include <SDL3/SDL.h>
@@ -441,12 +443,7 @@ void ensure_vbuf(size_t bytes) {
 }
 
 bool enabled() {
-    static int v = -1;
-    if (v < 0) {
-        const char* e = std::getenv("SBR_SDLGPU");
-        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
-    }
-    return v == 1;
+    return sb::app::settings().effective().renderer == sb::app::Renderer::Native;
 }
 
 SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
@@ -771,7 +768,10 @@ bool sbr_render_init(int w, int h) {
     // This path renders OFFSCREEN and is scored against aurora; it puts nothing on screen. Its
     // entire value is a measurement, and no measurement is worth another GPU reset on someone
     // else's machine.
-    if (const char* ok = std::getenv("SBR_RENDER_APPROVED"); ok == nullptr || ok[0] != '1') {
+    const char* environmentApproval = std::getenv("SBR_RENDER_APPROVED");
+    const bool approvedByEnvironment =
+        environmentApproval != nullptr && environmentApproval[0] == '1';
+    if (!approvedByEnvironment && !sb::app::settings().native_renderer_approved()) {
         g_tried = true;
         g_ok = false;
         lucent::warn("nrender",

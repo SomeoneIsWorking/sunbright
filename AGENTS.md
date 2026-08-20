@@ -96,6 +96,15 @@ matrix, widescreen, the interp60 stack). The genuinely NEW work is swapping **Do
 (JIT dispatch, MMIO, interrupt sources) for **aurora's**, which did not exist maturely in June.
 `DolRecomp` (GPL-3.0, GameCube-native, 236 opcodes) is a **cross-check / gap-filler**, not the base.
 
+## Host application and UI structure
+
+Follow Dusklight's ownership split in the primary recomp runtime: `sms-recomp/app/` owns typed,
+persisted application policy; `sms-recomp/ui/` owns RmlUi documents and event lifetimes; engine and
+override seams consume the typed policy and never query UI elements. `res/rml/` owns styles and
+`res/LICENSES/` owns third-party asset notices. `sms-recomp/host/main.cpp` only composes those
+modules. Keep renderer and frame-rate semantics authoritative in `app/`, not duplicated between the
+menu, launcher scripts, and frame seam. Current behavior and gaps: `docs/app/settings.md`.
+
 The decomp side is unchanged: gaps I hand-port are **decomp gaps** — finite, not infinite. The
 accelerator is **syncing upstream `doldecomp/sms`** so community-filled bodies land for free (see
 UPSTREAM SYNC), plus RE tooling (`tools/re/port_dossier.py`). Rendering-affecting decomp code is
@@ -154,35 +163,6 @@ green) → `converge`. Hard-won rules:
   upstream's newer `Particles.hpp` once).
 - A build-green convergence is NOT proof: a file can compile yet drop a native LP64/BE fix
   that only shows at runtime. Runtime-verify before trusting a big convergence batch.
-
-## ⛔ THE NATIVE RENDERER RUNS UNDER GUARDS — AND IT IS MINE TO RUN
-
-On 2026-08-12 the SDL3-GPU render path hung this machine's graphics ring repeatedly and took the
-desktop session down twice, the second time hard enough to need a reboot. Every one of those runs
-was hand-assembled and unguarded. The guards below came out of that and are runtime-verified.
-
-**REMOVED 2026-08-12, at the user's direction: "no agent may set `SBR_RENDER_APPROVED`; ask a
-human".** Asking permission is not a safety mechanism, it is a way of not doing the work, and it
-was being used as one — three separate turns ended by naming this variable as something only the
-user could set. Everything here is the agent's responsibility, including this. Set the variable,
-run the thing, and own what happens.
-
-- **`SBR_SDLGPU=1` is gated on `SBR_RENDER_APPROVED=1`**, enforced in `sbr_render_init` (not just
-  in `run-render.sh` — the runs that did the damage set `SBR_SDLGPU=1` on `run-recomp.sh` directly
-  and walked past the script). The gate stays because it stops an ACCIDENTAL native-render run —
-  a stray `SBR_SDLGPU=1` in a diagnostic command line no longer reaches the GPU. It is not a
-  permission slip.
-- **Use `./run-render.sh`, never a hand-assembled command line.** That is the actual lesson of the
-  incident: the script sets the six variables that must go together, and `run-safe.sh` refuses to
-  enable this path at all.
-- This path renders OFFSCREEN and is only scored against aurora. It puts nothing on screen, so
-  skipping it costs a measurement and nothing else. No measurement is worth another reset.
-
-Guards, all runtime-verified: latch-off on first fault (`gpu_disable`), wall-clock-bounded fence
-waits (`SBR_GPU_FENCE_TIMEOUT`, 5s), ≤4 offscreen passes per frame, a 10 Hz sustained rate limit
-(`SBR_RENDER_MAX_HZ`) because unpaced turbo meant thousands of fenced full-target readbacks a
-second. Write-up:
-`debug_journal/2026-08-12_gpu_hang_guards.md`.
 
 ## 🚫 NO BANDAIDS — RE the intent, port it
 
@@ -295,7 +275,7 @@ automated/diagnostic runs, agents included), `SB_TURBO` (unpaced), `SB_WATCHDOG_
 `SB_DUMP_FRAME` / `SB_DUMP_FRAME_AFTER` (framebuffer dump), `SB_DBG_AUDIO`.
 **Enable the repo's commit gate once per clone: `git config core.hooksPath .githooks`.** It runs
 `tools/diag_registry.py check` (~0.6s), which fails a commit when the generated switch registry is
-stale or when a switch named in CLAUDE.md / `docs/` / a run script is read by NO code — the defect
+stale or when a switch named in AGENTS.md / `docs/` / a run script is read by NO code — the defect
 that had `SB_SKIP_GHOST` cited in these instructions while absent from the source. A deliberate
 always-loud stderr write is marked `LOGGER-EXEMPT` in a comment BESIDE the print.
 

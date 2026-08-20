@@ -79,17 +79,11 @@ unsigned long g_dispatched = 0;
 unsigned long g_syncedTicks = 0;
 
 Mode resolve_mode() {
-    // One switch, and it is the one that already exists and that play.sh sets. A NEW name for the
-    // same thing would be a fourth way to turn this on, which is the problem this file exists to
-    // end. When the mode gains a third value that the mechanism can actually honour, this is where
-    // it gets parsed.
     if (!sbr_lerp_enabled()) return Mode::Off;
     static bool said = false;
     if (!said) {
         said = true;
-        lucent::info("interp", "frame interpolation: CAPPED (two presents per simulation tick). "
-                               "Unlimited is not implemented — the mechanism produces exactly one "
-                               "in-between frame per tick — so asking for it would get this.");
+        lucent::info("interp", "frame interpolation: CAPPED (two presents per simulation tick)");
     }
     return Mode::Capped;
 }

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# play.sh — PLAY Super Mario Sunshine on this port. This is the entry point; the other three
-# scripts in the repo root are development harnesses, not ways to play:
+# play.sh — PLAY Super Mario Sunshine on this port. ./run.sh delegates here so the default path
+# and this explicit product launcher cannot drift:
 #
-#   ./play.sh          the game                     <-- you want this one
+#   ./run.sh           the game + prelaunch settings screen  <-- default
+#   ./play.sh          the same product with command-line convenience flags
 #   ./run-recomp.sh    the same runtime, raw: no defaults, no argument parsing, no controls printed
-#   ./run.sh           the DECOMP runtime — a second, hand-ported runtime that reaches the title,
-#                      file-select and Delfino Plaza only. It is the verification oracle, not the
-#                      playable build.
+#   ./run-decomp.sh    the decomp verification oracle
 #   ./run-render.sh    the in-progress native SDL3-GPU renderer, behind six env vars
 #
 # WHAT RUNS: the game's real PowerPC code, statically recompiled, on native device models plus
@@ -27,6 +26,10 @@
 #   ./play.sh --size 1920x1080       window size (default 1280x960)
 #   ./play.sh --rom /path/game.rvz   ROM path, if not in .env / $SUNBRIGHT_ROM / ./rom.rvz
 #   ./play.sh --help
+#
+# With no headless/skip switch, RmlUi opens before the game and persists Renderer + Framerate in
+# the platform user-data directory. Command-line options and environment variables override the
+# persisted value for that session.
 #
 # Anything after `--` is passed through as environment, e.g.
 #   ./play.sh --fastboot -- SBR_LUCENT_DEBUG=card
