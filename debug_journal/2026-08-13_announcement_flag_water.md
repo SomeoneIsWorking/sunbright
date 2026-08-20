@@ -26,6 +26,19 @@ pillars to the right edge of both outer and content rects. Their effective centr
 insets therefore stay fixed. `hud_window_layout_test` exercises the shipping transform and failed
 against the old symmetric-rect mutation before passing with the centered transform. A windowless
 1280x960 capture at present 1200 shows one continuous translucent band, matching the 4:3 control's
-structure; the run exited normally and the kernel reported no GPU timeout, reset, or fault. The
-caller rects and pane transform are restored after the draw, and the original child clip still
-contains `tet1`/`tet2`.
+structure.
+
+The remaining early text cutoff was not `J2DWindow::clip`. The DOL's
+`TGCConsole2::perform` (`0x8014083c`) draws the HUD screen first, constructs a scissor from
+`unk544` (guest offset `0x548`), calls `GXSetScissor`, and then invokes `J2DTextBox::draw`
+directly for `tet1`/`tet2`. Widening the parent child clip produced a pixel-identical UI crop,
+which falsified that hypothesis. Symmetrically adding the 107-unit HUD pillar to `unk544` then
+made the text exceed the box, revealing the second coordinate mismatch: `te_w` passes through the
+0.75-wide 2D projection, while GX scissor coordinates do not.
+
+The shipping path now projects the widened frame's actual concatenated matrix span into EFB
+coordinates and feeds that interval to the console's scroll update and scissor draw. The helper
+test failed first with an empty projection result and now requires the exact projected endpoints.
+The windowless 1280x960 present-1200 capture shows the full word `several` inside the continuous
+frame. The run exited normally and the kernel reported no GPU timeout, reset, or fault. Caller
+rectangles, pane transforms, and the retail scissor are restored after each draw.

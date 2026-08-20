@@ -163,8 +163,13 @@ actually ran this session, and how often. Measure before believing this table.
    origins, producing detached translucent end boxes even though the text stayed covered. Fixed
    2026-08-21 in `hud.cpp` + `hud_window_layout.cpp`: shift the pane matrix left one pillar and add
    two pillars to both right edges, preserving the effective centre and authored insets. The
-   original child clip is restored for `tet1`/`tet2`. A red/green geometry test and same-size
-   windowless 4:3/widescreen captures verify the continuous band; the GPU-health gate was clean.
+   text cutoff is not the window's child clip: retail `TGCConsole2::perform` installs `unk544` as a
+   raw GX scissor and then calls `J2DTextBox::draw` directly for `tet1`/`tet2`. That scissor now
+   comes from the transformed `te_w` frame edges after the 2D projection. Reusing the unsqueezed
+   pillar would over-expand it because the frame is projection-squeezed but GX scissor coordinates
+   are not. Red/green geometry tests cover both coordinate contracts; same-size windowless
+   4:3/widescreen captures show one continuous band and the full word `several` inside it. The
+   GPU-health gate was clean.
 
 ## Diagnostics (all live, all on the probe)
 

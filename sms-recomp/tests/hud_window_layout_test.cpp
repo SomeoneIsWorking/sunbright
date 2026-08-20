@@ -35,5 +35,17 @@ int main() {
     ok &= expect_equal("effective content centre x2",
                        2 * result.matrix_shift_x + result.content.left + result.content.right,
                        8 + 435);
+
+    // TGCConsole2 draws tet1/tet2 under a raw EFB scissor, while te_w goes through the 0.75-wide
+    // 2D projection. Project the frame's actual matrix span into EFB coordinates; reusing the
+    // unsqueezed pillar here would make the text run beyond the box.
+    const auto scissor = sunbright::hud::project_frame_to_scissor(
+        result.outer, 1.0f, static_cast<float>(result.matrix_shift_x), 0.75f, 320.0f);
+    ok &= expect_equal("scissor left", scissor.left, 0);
+    ok &= expect_equal("scissor right", scissor.right, 511);
+    const auto control = sunbright::hud::project_frame_to_scissor({.left = 40, .right = 507}, 1.0f,
+                                                                  40.0f, 1.0f, 320.0f);
+    ok &= expect_equal("4:3 scissor left", control.left, 40);
+    ok &= expect_equal("4:3 scissor right", control.right, 507);
     return ok ? 0 : 1;
 }

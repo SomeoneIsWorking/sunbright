@@ -52,10 +52,12 @@
 
 extern "C" void func_802cd2ec(CPUState&); // the 2D quad emitter
 extern "C" void func_80362e0c(CPUState&); // GXLoadPosMtxImm
+extern "C" void func_8014083c(CPUState&); // TGCConsole2::perform
 extern "C" void func_802d18ec(CPUState&); // J2DWindow::draw_private
 extern "C" void func_802d1f88(CPUState&); // J2DWindow::drawContents
 
 int sbr_ws_pillar(); // widescreen.cpp — half the width the 2D squeeze frees at each side
+float sbr_ws_scale();
 void sbr_diag_2d_note_window(u32 self, u32 rect);
 
 namespace {
@@ -67,6 +69,15 @@ constexpr u32 GX_LOAD_POS_MTX_IMM = 0x80362e0cu;
 constexpr u32 PANE_MTX = 0x84;
 constexpr u32 MTX_M00 = 0x00;
 constexpr u32 MTX_M03 = 0x0C;
+
+// TGCConsole2::perform @ 0x8014083c reads this JUTRect directly before GXSetScissor. The decomp
+// class comments are four bytes behind the retail object because they omit its leading vptr:
+// decomp unk544 therefore lives at guest offset 0x548.
+constexpr u32 CONSOLE_TELOP_SCISSOR = 0x548;
+
+u32 g_active_console = 0;
+u32 g_cached_scissor_console = 0;
+sunbright::hud::HorizontalBounds g_cached_scissor{};
 
 enum HudAnchor : std::uint8_t { A_NONE, A_LEFT, A_CENTER, A_RIGHT };
 
@@ -261,6 +272,28 @@ void write_rect_x(u32 rect, sunbright::hud::HorizontalBounds bounds) {
     sb_w32(rect + 0x08, std::bit_cast<u32>(bounds.right));
 }
 
+// The scrolling text does not traverse below J2DWindow te_w. TGCConsole2::perform installs its
+// own unk544 GX scissor, then calls J2DTextBox::draw directly for tet1/tet2. The matching scissor
+// is measured from te_w's transformed frame later in this same call. Feed the prior measurement
+// into the update phase, refresh it when the frame draws, and restore the persistent retail rect.
+void ov_console_perform(CPUState& cpu) {
+    const u32 self = cpu.gpr[3];
+    const int pillar = sbr_ws_pillar();
+    const bool widen = pillar != 0 && guest_obj(self);
+    sunbright::hud::HorizontalBounds original_scissor{};
+    if (widen) {
+        original_scissor = read_rect_x(self + CONSOLE_TELOP_SCISSOR);
+        if (g_cached_scissor_console == self)
+            write_rect_x(self + CONSOLE_TELOP_SCISSOR, g_cached_scissor);
+    }
+    const u32 previous_active_console = g_active_console;
+    g_active_console = widen ? self : 0;
+    func_8014083c(cpu);
+    g_active_console = previous_active_console;
+    if (widen)
+        write_rect_x(self + CONSOLE_TELOP_SCISSOR, original_scissor);
+}
+
 void ov_window_private(CPUState& cpu) {
     const u32 self = cpu.gpr[3], outer = cpu.gpr[4], content = cpu.gpr[5];
     const int pillar = sbr_ws_pillar();
@@ -275,10 +308,32 @@ void ov_window_private(CPUState& cpu) {
         const auto extension = sunbright::hud::extend_window_centered(
             original_outer, original_content, static_cast<std::int32_t>(pillar));
         original_matrix_x = guest_f32(self + PANE_MTX + MTX_M03);
-        guest_set_f32(self + PANE_MTX + MTX_M03,
-                      original_matrix_x + static_cast<f32>(extension.matrix_shift_x));
+        const f32 matrix_x = original_matrix_x + static_cast<f32>(extension.matrix_shift_x);
+        guest_set_f32(self + PANE_MTX + MTX_M03, matrix_x);
         write_rect_x(outer, extension.outer);
         write_rect_x(content, extension.content);
+
+        // draw_private concatenates r6 before the pane matrix. Carry that affine X transform into
+        // the projection rather than assuming r6 is identity; this keeps the scissor tied to the
+        // pixels the frame actually emits if a parent transform is introduced.
+        const u32 parent_matrix = cpu.gpr[6];
+        f32 combined_scale_x = guest_f32(self + PANE_MTX + MTX_M00);
+        f32 combined_translate_x = matrix_x;
+        if (guest_obj(parent_matrix)) {
+            combined_scale_x = guest_f32(parent_matrix + 0x00) * guest_f32(self + PANE_MTX + 0x00) +
+                               guest_f32(parent_matrix + 0x04) * guest_f32(self + PANE_MTX + 0x10) +
+                               guest_f32(parent_matrix + 0x08) * guest_f32(self + PANE_MTX + 0x20);
+            combined_translate_x =
+                guest_f32(parent_matrix + 0x00) * matrix_x +
+                guest_f32(parent_matrix + 0x04) * guest_f32(self + PANE_MTX + 0x1C) +
+                guest_f32(parent_matrix + 0x08) * guest_f32(self + PANE_MTX + 0x2C) +
+                guest_f32(parent_matrix + 0x0C);
+        }
+        g_cached_scissor = sunbright::hud::project_frame_to_scissor(
+            extension.outer, combined_scale_x, combined_translate_x, sbr_ws_scale(), 320.0f);
+        g_cached_scissor_console = g_active_console;
+        if (g_active_console != 0)
+            write_rect_x(g_active_console + CONSOLE_TELOP_SCISSOR, g_cached_scissor);
     }
     func_802d18ec(cpu);
     if (widen) {
@@ -371,6 +426,8 @@ void ov_load_pos_mtx_imm(CPUState& cpu) {
 
 SB_OVERRIDE(QUAD_EMITTER, ov_quad, "J2D 2D quad emitter",
             "widescreen HUD: anchor each element to its real 16:9 edge by .blo name")
+SB_OVERRIDE(0x8014083cu, ov_console_perform, "TGCConsole2::perform",
+            "widescreen announcement: widen the direct tet1/tet2 scroll and GX scissor interval")
 SB_OVERRIDE(GX_LOAD_POS_MTX_IMM, ov_load_pos_mtx_imm, "GXLoadPosMtxImm",
             "widescreen HUD: anchor the gauge draws that bypass the quad emitter, keyed by call "
             "site, and stretch the fade curtain to the full screen")

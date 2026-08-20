@@ -24,7 +24,8 @@
 //     back out to the real edges per element in hud.cpp.
 //
 //   SBR_WIDESCREEN=0   off (4:3, the console picture)
-//   SBR_WS_SCALE=<f>   override the factor (default 0.75 = the 2D squeeze; 3D widens by its inverse)
+//   SBR_WS_SCALE=<f>   override the factor (default 0.75 = the 2D squeeze; 3D widens by its
+//   inverse)
 
 #include "overrides.h"
 
@@ -37,15 +38,15 @@
 #include <cmath>
 #include <cstdlib>
 
-extern "C" void func_80362c34(CPUState&);   // GXSetProjection
-extern "C" void func_802260cc(CPUState&);   // SetViewFrustumClipCheckPerspective
-extern "C" void func_8034a404(CPUState&);   // C_MTXPerspective
+extern "C" void func_80362c34(CPUState&); // GXSetProjection
+extern "C" void func_802260cc(CPUState&); // SetViewFrustumClipCheckPerspective
+extern "C" void func_8034a404(CPUState&); // C_MTXPerspective
 
 namespace {
 
 constexpr u32 GX_SET_PROJECTION = 0x80362c34u;
-constexpr u32 SET_VIEW_FRUSTUM  = 0x802260ccu;
-constexpr u32 GX_PERSPECTIVE    = 0u;
+constexpr u32 SET_VIEW_FRUSTUM = 0x802260ccu;
+constexpr u32 GX_PERSPECTIVE = 0u;
 
 // 16:9 over 4:3 — the one number the whole feature is derived from.
 constexpr float kWideOverNarrow = (16.0f / 9.0f) / (4.0f / 3.0f);
@@ -97,7 +98,7 @@ void guest_set_f32(u32 ea, f32 v) {
 // scope saves and restores the previous value.
 bool g_ws_2d_suspend = false;
 bool g_ws_persp_suspend = false;
-u32  g_ws_last_ortho = 0;
+u32 g_ws_last_ortho = 0;
 // Which projection kind the game last set. A 2D effect wrapper that re-issues an ortho while a
 // PERSPECTIVE is current leaves the wrong projection behind for whatever draws next, so a wrapper
 // needs to be able to ask.
@@ -111,29 +112,33 @@ namespace {
 bool g_seen3d = false;
 
 void ov_gx_set_projection(CPUState& cpu) {
-    const u32 mtx  = cpu.gpr[3];
+    const u32 mtx = cpu.gpr[3];
     const u32 type = cpu.gpr[4];
     const bool is2d = (type != GX_PERSPECTIVE);
-    if (!is2d) g_seen3d = true;
+    if (!is2d)
+        g_seen3d = true;
     g_ws_last_proj_is2d = is2d;
 
     // Remember the live 2D ortho so a suspend scope can re-issue it unsqueezed. Orthos issued
     // INSIDE a scope are effect-internal (draw_mist's ortho lives on the guest stack), and
     // recording one would leave the reload pointer dangling once the frame returns.
-    if (is2d && !g_ws_2d_suspend && sb_ram_fast(mtx) != nullptr) g_ws_last_ortho = mtx;
+    if (is2d && !g_ws_2d_suspend && sb_ram_fast(mtx) != nullptr)
+        g_ws_last_ortho = mtx;
 
     // Hand the perspective to the native renderer. This is the one place the game's own projection
     // is available as a matrix, and it is already WIDENED (the widening happens at the
     // C_MTXPerspective input), so the native path inherits 16:9 for free rather than rebuilding it.
     if (sb_ram_fast(mtx) != nullptr) {
         float p[16];
-        for (int i = 0; i < 16; ++i) p[i] = guest_f32(mtx + (u32)i * 4);
-        // EVERY projection, 2D included. The native renderer draws whatever J3DShape::draw hands it,
-        // and that includes 2D elements (HUD, message box) which the game draws under an ORTHO
+        for (int i = 0; i < 16; ++i)
+            p[i] = guest_f32(mtx + (u32)i * 4);
+        // EVERY projection, 2D included. The native renderer draws whatever J3DShape::draw hands
+        // it, and that includes 2D elements (HUD, message box) which the game draws under an ORTHO
         // projection. Feeding those through the 3D perspective blew them up to cover the frame —
         // opaque, depth-test disabled, drawn last, hiding the entire plaza behind them.
         sbr_gx_set_projection(p, is2d);
-        if (!is2d) sbr_scene_set_projection(p);
+        if (!is2d)
+            sbr_scene_set_projection(p);
     }
 
     // 3D (perspective) is NOT squeezed here anymore. It is widened at its SOURCE — the aspect
@@ -144,8 +149,8 @@ void ov_gx_set_projection(CPUState& cpu) {
     //
     // 2D (ortho) does NOT go through C_MTXPerspective — it is built by C_MTXOrtho with no aspect —
     // so it is still squeezed here to keep menus/HUD correct-aspect and centred in the 16:9 frame.
-    const bool patch = is2d && widescreen_on() && !g_ws_2d_suspend && g_seen3d &&
-                       sb_ram_fast(mtx) != nullptr;
+    const bool patch =
+        is2d && widescreen_on() && !g_ws_2d_suspend && g_seen3d && sb_ram_fast(mtx) != nullptr;
     f32 m00 = 0.0f, m03 = 0.0f;
     if (patch) {
         const float scale = ws_scale();
@@ -155,7 +160,7 @@ void ov_gx_set_projection(CPUState& cpu) {
         guest_set_f32(mtx + 0x0C, m03 * scale);
     }
 
-    func_80362c34(cpu);   // the real GXSetProjection packs the (2D-squeezed) matrix
+    func_80362c34(cpu); // the real GXSetProjection packs the (2D-squeezed) matrix
 
     if (patch) {
         guest_set_f32(mtx + 0x00, m00);
@@ -176,7 +181,7 @@ void ov_gx_set_projection(CPUState& cpu) {
 // lookup matrices.
 void ov_c_mtx_perspective(CPUState& cpu) {
     if (widescreen_on() && !g_ws_persp_suspend)
-        cpu.fpr[2].ps0 *= (double)kWideOverNarrow;   // 4:3 aspect -> 16:9
+        cpu.fpr[2].ps0 *= (double)kWideOverNarrow; // 4:3 aspect -> 16:9
     func_8034a404(cpu);
 }
 
@@ -187,7 +192,8 @@ void ov_c_mtx_perspective(CPUState& cpu) {
 //
 //   SetViewFrustumClipCheckPerspective(f32 fovy/f1, f32 aspect/f2, f32 near/f3, f32 far/f4)
 void ov_set_view_frustum(CPUState& cpu) {
-    if (widescreen_on()) cpu.fpr[2].ps0 *= kWideOverNarrow;
+    if (widescreen_on())
+        cpu.fpr[2].ps0 *= kWideOverNarrow;
     func_802260cc(cpu);
 }
 
@@ -196,7 +202,8 @@ void ov_set_view_frustum(CPUState& cpu) {
 struct AspectAnnounce {
     void operator()() {
         static bool done = false;
-        if (done) return;
+        if (done)
+            return;
         done = true;
         if (widescreen_on()) {
             aurora_set_present_aspect(16, 9);
@@ -218,34 +225,41 @@ void ov_gx_set_projection_entry(CPUState& cpu) {
 // restored according to the current flag. A scratch CPUState is enough: GXSetProjection preserves
 // the callee-saved registers the caller cares about.
 static void ws_reload_ortho(CPUState& cpu) {
-    if (!g_ws_last_ortho) return;
+    if (!g_ws_last_ortho)
+        return;
     CPUState scratch = cpu;
     scratch.gpr[3] = g_ws_last_ortho;
-    scratch.gpr[4] = 1;   // GX_ORTHOGRAPHIC
+    scratch.gpr[4] = 1; // GX_ORTHOGRAPHIC
     ov_gx_set_projection(scratch);
 }
 
 void ws_2d_suspend_begin(CPUState& cpu) {
     g_ws_2d_suspend = true;
-    ws_reload_ortho(cpu);   // unsqueezed: 0..640 now spans the whole 16:9 present
+    ws_reload_ortho(cpu); // unsqueezed: 0..640 now spans the whole 16:9 present
 }
 
 void ws_2d_suspend_end(CPUState& cpu) {
     g_ws_2d_suspend = false;
-    ws_reload_ortho(cpu);   // re-apply the squeeze for whatever draws next
+    ws_reload_ortho(cpu); // re-apply the squeeze for whatever draws next
 }
 
 // The pillar: half the width the 2D squeeze leaves empty on each side, in the game's own 640-wide
-// 2D space. hud.cpp anchors corner elements back out by exactly this much. 0 when widescreen is off,
-// which is what makes every HUD shift below collapse to a no-op.
+// 2D space. hud.cpp anchors corner elements back out by exactly this much. 0 when widescreen is
+// off, which is what makes every HUD shift below collapse to a no-op.
 int sbr_ws_pillar() {
     static int p = -1;
     if (p < 0) {
         const float s = ws_scale();
-        p = (!widescreen_on() || s <= 0.0f || s >= 1.0f) ? 0 : (int)lroundf(320.0f * (1.0f - s) / s);
-        if (const char* o = std::getenv("SBR_HUD_OFF")) p = std::atoi(o);
+        p = (!widescreen_on() || s <= 0.0f || s >= 1.0f) ? 0
+                                                         : (int)lroundf(320.0f * (1.0f - s) / s);
+        if (const char* o = std::getenv("SBR_HUD_OFF"))
+            p = std::atoi(o);
     }
     return p;
+}
+
+float sbr_ws_scale() {
+    return widescreen_on() ? ws_scale() : 1.0f;
 }
 
 SB_OVERRIDE(0x8034a404u, ov_c_mtx_perspective, "C_MTXPerspective",
