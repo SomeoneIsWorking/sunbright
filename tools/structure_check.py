@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Ratchet source-file size at the host application boundary.
+"""Ratchet first-party source-file size at the host application boundary.
 
-The Dusklight-shaped app/, ui/, and BSE enhancement modules must remain cohesive modules, not become
-replacement god files. The host entry point is included because its only job is composition.
+The default limit is 1,200 lines. Existing files above that limit are explicit legacy ratchets:
+they may shrink but never grow, and files at 2,000+ lines remain critical extraction territory.
 
   tools/structure_check.py             check the real tree
   tools/structure_check.py --selftest  prove over-limit and boundary cases disagree
@@ -16,12 +16,20 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT_LIMITS = {
-    "sms-recomp/app": 800,
-    "sms-recomp/bse": 800,
-    "sms-recomp/host": 800,
-    "sms-recomp/ui": 800,
+    "sms-boot": 1200,
+    "sms-recomp": 1200,
+    "tools/recompiler": 1200,
 }
-FILE_LIMITS = {}
+EXCLUDED_ROOTS = {
+    "sms-recomp/generated",
+    "sms-recomp/runtime/shaders",
+}
+FILE_LIMITS = {
+    "sms-recomp/frame_interp/subframe_legacy.cpp": 2951,
+    "sms-recomp/runtime/devices/dev_gxfifo.cpp": 1968,
+    "sms-recomp/runtime/render/native_render.cpp": 1708,
+    "sms-recomp/runtime/render/scene.cpp": 1210,
+}
 
 
 def source_files() -> dict[str, int]:
@@ -31,9 +39,15 @@ def source_files() -> dict[str, int]:
         if not root.is_dir():
             measured[relative + "/<MISSING>"] = limit + 1
             continue
-        for path in sorted(root.iterdir()):
+        for path in sorted(root.rglob("*")):
+            relative_path = str(path.relative_to(REPO))
+            if any(
+                relative_path == excluded or relative_path.startswith(excluded + "/")
+                for excluded in EXCLUDED_ROOTS
+            ):
+                continue
             if path.suffix in {".c", ".cc", ".cpp", ".h", ".hpp"}:
-                measured[str(path.relative_to(REPO))] = len(path.read_text(errors="replace").splitlines())
+                measured[relative_path] = len(path.read_text(errors="replace").splitlines())
     for relative in FILE_LIMITS:
         path = REPO / relative
         measured[relative] = len(path.read_text(errors="replace").splitlines()) if path.is_file() else -1
@@ -70,12 +84,16 @@ def check() -> int:
 
 def selftest() -> int:
     sample = {
-        "sms-recomp/ui/boundary.cpp": 800,
-        "sms-recomp/app/too_large.cpp": 801,
-        "sms-recomp/host/main.cpp": 800,
+        "sms-recomp/ui/boundary.cpp": 1200,
+        "sms-recomp/app/too_large.cpp": 1201,
+        "sms-recomp/frame_interp/subframe_legacy.cpp": 2951,
+        "sms-recomp/runtime/devices/dev_gxfifo.cpp": 1969,
     }
     got = violations(sample)
-    expected = [("sms-recomp/app/too_large.cpp", 801, 800)]
+    expected = [
+        ("sms-recomp/app/too_large.cpp", 1201, 1200),
+        ("sms-recomp/runtime/devices/dev_gxfifo.cpp", 1969, 1968),
+    ]
     if got != expected:
         print(f"FAIL: got {got}, expected {expected}")
         return 1

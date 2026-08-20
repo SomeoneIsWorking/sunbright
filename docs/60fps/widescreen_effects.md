@@ -157,13 +157,14 @@ actually ran this session, and how often. Measure before believing this table.
    system, not `TMovieSubTitle`'s `me_a`/`me_b`. It is also NOT `fill_rect` (`/fills` shows only
    fades) and NOT the quad emitter (`/2d` does not list it). RESOLVED 2026-08-13: the band is
    `J2DWindow` pane `te_w`, identified by adding the actual `drawContents` path to `/2dclass`. Its
-   content rect measured 427 units wide while the text used the 16:9 side space. `hud.cpp` now
-   widens both `draw_private` rectangles by the shared widescreen pillar; widening only
-   `drawContents` was rejected because the unchanged outer clip cut the added area back off. The
-   original `unkEC` clip is deliberately restored before `J2DWindow::drawSelf` clips and draws its
-   child text panes, so widening the frame cannot let `tet1`/`tet2` escape it. In the 1280x960
-   tick-1202 capture, the box is x=61..1085, text pixels x=149..999 (88/86 px padding), and the
-   nearest FLUDD UI begins at x=1120: 34 clear pixels between box and HUD.
+   content rect measured 427 units wide while the text used the 16:9 side space. The 2026-08-13
+   implementation widened both rects symmetrically, but `draw_private` ignores outer `x1` for
+   placement and emits its frame at local x=0. The frame and fill therefore grew from different
+   origins, producing detached translucent end boxes even though the text stayed covered. Fixed
+   2026-08-21 in `hud.cpp` + `hud_window_layout.cpp`: shift the pane matrix left one pillar and add
+   two pillars to both right edges, preserving the effective centre and authored insets. The
+   original child clip is restored for `tet1`/`tet2`. A red/green geometry test and same-size
+   windowless 4:3/widescreen captures verify the continuous band; the GPU-health gate was clean.
 
 ## Diagnostics (all live, all on the probe)
 

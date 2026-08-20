@@ -13,12 +13,19 @@ values. Runtime evidence (`scratch/logs/recomp_announcement_fixed2.log`, local/u
 11,169/11,178 with 1,300,568 extra values; sea 1,241/1,242 with 6,711,328 extra values; GPU clean.
 
 For the scrolling announcement, `/2dclass` identified text panes `tet1`/`tet2` and `J2DWindow`
-pane `te_w`; its content rect was 427 units wide. The fix widens both outer and content rectangles
-at `J2DWindow::draw_private` by the shared widescreen pillar, then restores them. A content-only
-attempt was rejected because the unchanged outer clip cut the extension off. The final code restores
-`unkEC` before `J2DWindow::drawSelf` applies it to child panes, which keeps `tet1`/`tet2` structurally
-clipped inside the box through every scroll phase. Pixel bounds in the tick-1202 1280x960 capture:
-box x=61..1085, near-white text x=149..999 (88 px left and 86 px right padding), nearest FLUDD HUD
-pixel x=1120 (34 px clear gap). The measurement scanned all 58 announcement rows and 194 columns to
-the right; it matched 7,486 text pixels and 137 HUD-bearing columns rather than silently reporting
-an empty result.
+pane `te_w`; its content rect was 427 units wide. `J2DWindow::draw_private` does not position its
+frame at the outer rect's `x1`: it emits at local x=0 and uses only `x2-x1` for the width. The first
+fix subtracted the pillar from both rects' `x1` while leaving the pane transform unchanged. That
+made the frame grow rightward from its old origin while the content grew around another origin,
+which is the pair of detached translucent side boxes reported on 2026-08-21. The old pixel scan
+proved text coverage and clipping only; it never tested that the nine-slice and fill shared a
+coordinate system, so its conclusion was too broad.
+
+The corrected transform moves the pane's global X translation left by one pillar and adds two
+pillars to the right edge of both outer and content rects. Their effective centres and authored
+insets therefore stay fixed. `hud_window_layout_test` exercises the shipping transform and failed
+against the old symmetric-rect mutation before passing with the centered transform. A windowless
+1280x960 capture at present 1200 shows one continuous translucent band, matching the 4:3 control's
+structure; the run exited normally and the kernel reported no GPU timeout, reset, or fault. The
+caller rects and pane transform are restored after the draw, and the original child clip still
+contains `tet1`/`tet2`.

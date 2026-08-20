@@ -2,8 +2,8 @@
 //
 // Ported from the retired Dolphin-era runtime/overrides/hud.cpp (git 9283f44^), where the RE below
 // was established. Nothing about the game side changed; what changed is that in this runtime EVERY
-// call goes through call_ppc, so the overrides are reached without the JIT-block-linking caveats the
-// original had to work around.
+// call goes through call_ppc, so the overrides are reached without the JIT-block-linking caveats
+// the original had to work around.
 //
 // WHY THIS FILE EXISTS. widescreen.cpp squeezes all 2D toward the screen centre so it survives the
 // wide present at the correct aspect. That is right for menus, which are composed as a picture, but
@@ -35,6 +35,7 @@
 //
 //   SBR_HUD_OFF=<px>   override the anchor distance (0 disables the anchoring entirely)
 
+#include "hud_window_layout.h"
 #include "overrides.h"
 
 #include "../runtime/probe_server.h"
@@ -42,31 +43,32 @@
 #include <intrinsics.h>
 #include <lucent/log.h>
 
+#include <bit>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <string>
 
-extern "C" void func_802cd2ec(CPUState&);   // the 2D quad emitter
-extern "C" void func_80362e0c(CPUState&);   // GXLoadPosMtxImm
-extern "C" void func_802d18ec(CPUState&);   // J2DWindow::draw_private
-extern "C" void func_802d1f88(CPUState&);   // J2DWindow::drawContents
+extern "C" void func_802cd2ec(CPUState&); // the 2D quad emitter
+extern "C" void func_80362e0c(CPUState&); // GXLoadPosMtxImm
+extern "C" void func_802d18ec(CPUState&); // J2DWindow::draw_private
+extern "C" void func_802d1f88(CPUState&); // J2DWindow::drawContents
 
-int sbr_ws_pillar();   // widescreen.cpp — half the width the 2D squeeze frees at each side
+int sbr_ws_pillar(); // widescreen.cpp — half the width the 2D squeeze frees at each side
 void sbr_diag_2d_note_window(u32 self, u32 rect);
 
 namespace {
 
-constexpr u32 QUAD_EMITTER         = 0x802cd2ecu;
-constexpr u32 GX_LOAD_POS_MTX_IMM  = 0x80362e0cu;
+constexpr u32 QUAD_EMITTER = 0x802cd2ecu;
+constexpr u32 GX_LOAD_POS_MTX_IMM = 0x80362e0cu;
 
 // J2DPane transform used by the quad emitter: this+0x84, X translation at +0x0C.
-constexpr u32 PANE_MTX   = 0x84;
-constexpr u32 MTX_M00    = 0x00;
-constexpr u32 MTX_M03    = 0x0C;
+constexpr u32 PANE_MTX = 0x84;
+constexpr u32 MTX_M00 = 0x00;
+constexpr u32 MTX_M03 = 0x0C;
 
-enum HudAnchor { A_NONE, A_LEFT, A_CENTER, A_RIGHT };
+enum HudAnchor : std::uint8_t { A_NONE, A_LEFT, A_CENTER, A_RIGHT };
 
 f32 guest_f32(u32 ea) {
     const u32 bits = sb_r32(ea);
@@ -81,12 +83,15 @@ void guest_set_f32(u32 ea, f32 v) {
     sb_w32(ea, bits);
 }
 
-bool guest_obj(u32 p) { return p >= 0x80000000u && p < 0x81800000u; }
+bool guest_obj(u32 p) {
+    return p >= 0x80000000u && p < 0x81800000u;
+}
 
 // The pane's .blo name: a fourcc at this+0x10.
 void read_fourcc(u32 self, char out[5]) {
     const u32 t = guest_obj(self) ? sb_r32(self + 0x10) : 0;
-    for (int i = 0; i < 4; i++) out[i] = (char)((t >> (24 - i * 8)) & 0xff);
+    for (int i = 0; i < 4; i++)
+        out[i] = (char)((t >> (24 - i * 8)) & 0xff);
     out[4] = '\0';
 }
 
@@ -98,27 +103,44 @@ void read_fourcc(u32 self, char out[5]) {
 HudAnchor hud_anchor(const char n[5]) {
     auto digit = [](char c) { return std::isdigit((unsigned char)c) != 0; };
 
-    if (n[0] == 'g' && n[1] == 'o' && digit(n[2]) && digit(n[3])) return A_CENTER;   // health sun
-    if (n[0] == 'n' && n[1] == 'z' && digit(n[2]) && digit(n[3])) return A_RIGHT;    // nozzle icon
-    if (n[0] == 'x' && n[1] == 'b' && digit(n[2]) && digit(n[3])) return A_RIGHT;    // button prompt
+    if (n[0] == 'g' && n[1] == 'o' && digit(n[2]) && digit(n[3]))
+        return A_CENTER; // health sun
+    if (n[0] == 'n' && n[1] == 'z' && digit(n[2]) && digit(n[3]))
+        return A_RIGHT; // nozzle icon
+    if (n[0] == 'x' && n[1] == 'b' && digit(n[2]) && digit(n[3]))
+        return A_RIGHT; // button prompt
 
     char cluster, r0, r1;
-    if (n[1] == '_')      { cluster = n[0]; r0 = n[2]; r1 = n[3]; }
-    else if (n[2] == '_') { cluster = n[1]; r0 = n[3]; r1 = '\0'; }
-    else                  return A_NONE;
+    if (n[1] == '_') {
+        cluster = n[0];
+        r0 = n[2];
+        r1 = n[3];
+    } else if (n[2] == '_') {
+        cluster = n[1];
+        r0 = n[3];
+        r1 = '\0';
+    } else
+        return A_NONE;
 
     // The role suffix. This is the gate that keeps the file-select menu's own J2DPictures out:
     // their _0<x> roles match none of these.
     const bool hud_role = (r0 == 'b' && r1 == 'a') || (r0 == 'i' && r1 == 'c') ||
                           (r0 == 't' && r1 == 'x') || (r0 == 'x') ||
                           ((r0 == 'n' || r0 == 't') && digit(r1));
-    if (!hud_role) return A_NONE;
+    if (!hud_role)
+        return A_NONE;
 
     switch (cluster) {
-    case 's': case 'd': case 'c': return A_LEFT;
-    case 'm':                     return A_CENTER;
-    case 'w':                     return A_RIGHT;
-    default:                      return A_NONE;
+    case 's':
+    case 'd':
+    case 'c':
+        return A_LEFT;
+    case 'm':
+        return A_CENTER;
+    case 'w':
+        return A_RIGHT;
+    default:
+        return A_NONE;
     }
 }
 
@@ -130,7 +152,9 @@ bool hud_stretch_band(const char n[5]) {
 }
 
 // 1/scale — how much to widen something that must span the full screen.
-f32 inv_scale() { return 1.0f + (f32)sbr_ws_pillar() / 320.0f; }
+f32 inv_scale() {
+    return 1.0f + (f32)sbr_ws_pillar() / 320.0f;
+}
 
 // ── Live pane inventory (probe /2d) ──────────────────────────────────────────────────────
 // Which 2D panes are on screen right now, and where each one thinks it is. Identifying an
@@ -145,7 +169,8 @@ struct PaneSeen {
 std::map<std::string, PaneSeen> g_panes;
 
 void note_pane(const char nm[5], u32 mtxBase, HudAnchor a) {
-    if (nm[0] == '\0') return;
+    if (nm[0] == '\0')
+        return;
     auto& e = g_panes[nm];
     e.m00 = guest_f32(mtxBase + MTX_M00);
     e.m03 = guest_f32(mtxBase + MTX_M03);
@@ -154,18 +179,20 @@ void note_pane(const char nm[5], u32 mtxBase, HudAnchor a) {
 }
 
 const bool g_pane_probe = [] {
-    sb_probe_register("/2d", "2D panes drawn recently: name, transform, anchor", [](const ProbeArgs&) {
-        std::string out;
-        char buf[160];
-        for (const auto& [name, e] : g_panes) {
-            static const char* kA[] = {"-", "left", "centre", "right"};
-            std::snprintf(buf, sizeof buf, "%-6s m00=%8.3f m03=%8.2f anchor=%-6s hits=%lu\n",
-                          name.c_str(), (double)e.m00, (double)e.m03, kA[e.anchor], e.hits);
-            out += buf;
-        }
-        if (out.empty()) out = "no 2D panes recorded yet\n";
-        return out;
-    });
+    sb_probe_register(
+        "/2d", "2D panes drawn recently: name, transform, anchor", [](const ProbeArgs&) {
+            std::string out;
+            char buf[160];
+            for (const auto& [name, e] : g_panes) {
+                static const char* kA[] = {"-", "left", "centre", "right"};
+                std::snprintf(buf, sizeof buf, "%-6s m00=%8.3f m03=%8.2f anchor=%-6s hits=%lu\n",
+                              name.c_str(), (double)e.m00, (double)e.m03, kA[e.anchor], e.hits);
+                out += buf;
+            }
+            if (out.empty())
+                out = "no 2D panes recorded yet\n";
+            return out;
+        });
     return true;
 }();
 
@@ -195,7 +222,8 @@ void ov_quad(CPUState& cpu) {
     // Shifting m03 moves the element to its 16:9 edge. This is a TRANSFORM, not a clip rect, so
     // nothing is cropped by moving it.
     const HudAnchor a = hud_anchor(nm);
-    if (guest_obj(self)) note_pane(nm, self + PANE_MTX, a);
+    if (guest_obj(self))
+        note_pane(nm, self + PANE_MTX, a);
     f32 m03 = 0.0f;
     bool moved = false;
     if (pillar != 0 && (a == A_LEFT || a == A_RIGHT) && guest_obj(self)) {
@@ -206,47 +234,57 @@ void ov_quad(CPUState& cpu) {
 
     func_802cd2ec(cpu);
 
-    if (moved) guest_set_f32(self + PANE_MTX + MTX_M03, m03);
+    if (moved)
+        guest_set_f32(self + PANE_MTX + MTX_M03, m03);
 }
 
 // The scrolling announcement uses J2DWindow pane `te_w` for its translucent backdrop and
 // J2DTextBox panes `tet1`/`tet2` for the text. The text renderer naturally uses the extra 16:9
 // width, but the window remains authored for 4:3, leaving the letters outside the black band.
 // Extend BOTH rectangles at draw_private: r4 is the outer/frame rect and r5 is the content/clip
-// rect. Extending only drawContents looked plausible but the original outer clip cut the added
-// area back off. Both caller-owned rectangles are restored immediately after the draw.
+// rect. J2DWindow emits the frame at local x=0 using only r4's width, so changing r4.x1 cannot
+// move it. The pane matrix must move left while the complete extra width is added on the right of
+// both rects. All caller- and pane-owned state is restored immediately after the draw.
 bool is_announcement_window(u32 self) {
     char nm[5];
     read_fourcc(self, nm);
     return nm[0] == 't' && nm[1] == 'e' && nm[2] == '_' && nm[3] == 'w';
 }
 
-void widen_rect_x(u32 rect, int pillar, u32& x1, u32& x2) {
-    x1 = sb_r32(rect + 0x00);
-    x2 = sb_r32(rect + 0x08);
-    sb_w32(rect + 0x00, x1 - static_cast<u32>(pillar));
-    sb_w32(rect + 0x08, x2 + static_cast<u32>(pillar));
+sunbright::hud::HorizontalBounds read_rect_x(u32 rect) {
+    return {std::bit_cast<std::int32_t>(sb_r32(rect + 0x00)),
+            std::bit_cast<std::int32_t>(sb_r32(rect + 0x08))};
 }
 
-void restore_rect_x(u32 rect, u32 x1, u32 x2) {
-    sb_w32(rect + 0x00, x1);
-    sb_w32(rect + 0x08, x2);
+void write_rect_x(u32 rect, sunbright::hud::HorizontalBounds bounds) {
+    sb_w32(rect + 0x00, std::bit_cast<u32>(bounds.left));
+    sb_w32(rect + 0x08, std::bit_cast<u32>(bounds.right));
 }
 
 void ov_window_private(CPUState& cpu) {
-    const u32 outer = cpu.gpr[4], content = cpu.gpr[5];
+    const u32 self = cpu.gpr[3], outer = cpu.gpr[4], content = cpu.gpr[5];
     const int pillar = sbr_ws_pillar();
-    const bool widen = pillar != 0 && is_announcement_window(cpu.gpr[3]) &&
-                       guest_obj(outer) && guest_obj(content);
-    u32 ox1 = 0, ox2 = 0, cx1 = 0, cx2 = 0;
+    const bool widen =
+        pillar != 0 && is_announcement_window(self) && guest_obj(outer) && guest_obj(content);
+    sunbright::hud::HorizontalBounds original_outer{};
+    sunbright::hud::HorizontalBounds original_content{};
+    f32 original_matrix_x = 0.0f;
     if (widen) {
-        widen_rect_x(outer, pillar, ox1, ox2);
-        widen_rect_x(content, pillar, cx1, cx2);
+        original_outer = read_rect_x(outer);
+        original_content = read_rect_x(content);
+        const auto extension = sunbright::hud::extend_window_centered(
+            original_outer, original_content, static_cast<std::int32_t>(pillar));
+        original_matrix_x = guest_f32(self + PANE_MTX + MTX_M03);
+        guest_set_f32(self + PANE_MTX + MTX_M03,
+                      original_matrix_x + static_cast<f32>(extension.matrix_shift_x));
+        write_rect_x(outer, extension.outer);
+        write_rect_x(content, extension.content);
     }
     func_802d18ec(cpu);
     if (widen) {
-        restore_rect_x(content, cx1, cx2);
-        restore_rect_x(outer, ox1, ox2);
+        write_rect_x(content, original_content);
+        write_rect_x(outer, original_outer);
+        guest_set_f32(self + PANE_MTX + MTX_M03, original_matrix_x);
     }
 }
 
@@ -278,7 +316,11 @@ constexpr u32 TSUNGLASS_POSMTX_LR = 0x8017d3ecu;
 
 void ov_load_pos_mtx_imm(CPUState& cpu) {
     const int pillar = sbr_ws_pillar();
-    if (pillar == 0) { func_80362e0c(cpu); return; }   // widescreen off: stay out of a hot path
+    // Widescreen off: stay out of this hot path.
+    if (pillar == 0) {
+        func_80362e0c(cpu);
+        return;
+    }
 
     const u32 lr = cpu.lr, mtx = cpu.gpr[3];
 
@@ -295,15 +337,20 @@ void ov_load_pos_mtx_imm(CPUState& cpu) {
 
     int shift = 0;
     for (u32 site : kGaugePosMtxLR)
-        if (lr == site) { shift = pillar; break; }
+        if (lr == site) {
+            shift = pillar;
+            break;
+        }
 
     if (shift == 0 && lr == J2DPIC_DRAW_POSMTX_LR && mtx >= 0x80000054u && mtx < 0x81800000u) {
         char nm[5];
         read_fourcc(mtx - 0x54, nm);
         const HudAnchor a = hud_anchor(nm);
-        note_pane(nm, mtx, a);   // this path draws the panes the quad emitter never sees
-        if (a == A_LEFT)  shift = -pillar;
-        if (a == A_RIGHT) shift =  pillar;
+        note_pane(nm, mtx, a); // this path draws the panes the quad emitter never sees
+        if (a == A_LEFT)
+            shift = -pillar;
+        if (a == A_RIGHT)
+            shift = pillar;
     }
 
     f32 m03 = 0.0f;
@@ -316,7 +363,8 @@ void ov_load_pos_mtx_imm(CPUState& cpu) {
 
     func_80362e0c(cpu);
 
-    if (moved) guest_set_f32(mtx + MTX_M03, m03);
+    if (moved)
+        guest_set_f32(mtx + MTX_M03, m03);
 }
 
 } // namespace

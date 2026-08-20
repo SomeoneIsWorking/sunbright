@@ -77,6 +77,12 @@ def main():
     if failures:
         print("failed: " + ", ".join(failures))
         return 1
+
+    quality = subprocess.run([sys.executable, os.path.join(HERE, 'cpp_quality.py')], cwd=REPO)
+    if quality.returncode:
+        print("FAIL  changed first-party C++ format/lint gate")
+        return quality.returncode
+    print("PASS  changed first-party C++ format/lint gate")
     return 0
 
 

@@ -2,8 +2,13 @@
 # Builds the generated PPC C++ against rt_core.cpp. No Dolphin, no decomp interop.
 cmake_minimum_required(VERSION 3.20)
 project(sms_recomp CXX)
+
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  message(FATAL_ERROR "sms-recomp requires clang++; configure with -DCMAKE_CXX_COMPILER=clang++")
+endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # lucent is THE C++20 logger for this project (global directive) — never hand-roll another.
 include(FetchContent)
@@ -170,6 +175,12 @@ add_executable(bse_frame_rate_test tests/bse_frame_rate_test.cpp
 target_include_directories(bse_frame_rate_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME bse_frame_rate COMMAND bse_frame_rate_test)
+
+add_executable(hud_window_layout_test tests/hud_window_layout_test.cpp
+                                      overrides/hud_window_layout.cpp)
+target_include_directories(hud_window_layout_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME hud_window_layout COMMAND hud_window_layout_test)
 
 # The interpolation pairing self-test, reached through the main binary with SBR_INTERP_SELFTEST=1.
 # It is pure CPU work — local buffers and aurora's own pairing tables — but until now it only ran

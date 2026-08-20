@@ -82,7 +82,7 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | DSP voice mixer | ✅ | `sms-recomp/runtime/devices/dsp_mixer.cpp` | native voice renderer reading GUEST VPBs (AFC + PCM8/16, linear resample, L/R bus mix). The DSP's frame AND sub-frame interrupts are supplied by `dev_aid.cpp` — gSubFrames=7 per frame, and supplying only the frame one gives 1/7 tempo. Music + SFX audible, verified 2026-08-07; v1 is centre-panned, no aux/filters/Dolby. `docs/audio/recomp_plan.md` |
 | fastboot | ✅ | `sms-recomp/overrides/fastboot_native.cpp` | `SBR_FASTBOOT`/`SBR_STAGE`/`SBR_SCENARIO`; ported from git 9283f44^ |
 | widescreen (16:9) | ✅ | `sms-recomp/overrides/widescreen.cpp` | aspect widened at `C_MTXPerspective` (input, not output); `SBR_WIDESCREEN` |
-| widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp` | per-`.blo`-name edge anchoring; announcement `te_w` frame widened while its original child clip contains `tet1`/`tet2`; measured 34 px clear of FLUDD HUD at 1280x960; `/2d` |
+| widescreen HUD | ✅ | `sms-recomp/overrides/hud.cpp`, `hud_window_layout.{h,cpp}` | per-`.blo`-name edge anchoring; announcement `te_w` uses one centered frame/content transform while its original child clip contains `tet1`/`tet2`. The pure layout seam has a red/green test; 1280x960 4:3/widescreen captures verify one continuous band; `/2d` |
 | widescreen effects | ✅ | `sms-recomp/overrides/widescreen_effects.cpp` | 2D full-screen widen + EFB-tex/mirror suspend; `/wsfx /fills` |
 | **frame cadence / interpolation** | ✅ | **`sms-recomp/app/frame_rate.{h,cpp}`** owns user policy; **`sms-recomp/frame_interp/`** owns interpolation; Aurora **`extern/aurora/lib/gfx/common.cpp`** owns retained replay samples. Map: **`docs/60fps/README.md`**, UI contract: **`docs/app/settings.md`** | All five modes apply at the next tick. Native modes apply BSE's retrace, SMS animation-rate, and ModelGate timing contract before the retail `JDrama::TVideo::waitForRetrace` body; Native 60 uses 60 Hz and Native Match Refresh continuously scales the same formulas to SDL's active display mode. Interpolated 60 emits midpoint+exact; Interpolated Match Refresh keeps 30000/1001 Hz SMS logic and carries fractional presentation credit to the display rate. Aurora commits pairing history once per SMS tick and resamples a retained read-only plan at every alpha; `.25/.75` selftest verifies distinct output with unchanged history. `SBR_DISPLAY_HZ` is the windowless rate input |
 | BetterSunshineEngine FPS compatibility | 🟡 | `sms-recomp/bse/frame_rate_fixes.cpp`, `frame_rate_logic.{h,cpp}`; source contract pinned in `debug_journal/2026-08-21_bse_native_frame_rate.md` | Base timing plus boid, AnimalBird/Boss Eel, TJointCoin/Sand Bird, textbox, and HX motion behavior are runtime overrides with retail super-calls. CPU tests exercise the shipping HX formula. Remaining: BSE's discrete mid-function HX timer/frame-rate initializers need a proper static-recompiler patchpoint mechanism or full owning-function ports; no value-based timer hack is used |
@@ -137,12 +137,15 @@ water refraction, dash blur, TScreenTexture) are FULLY implemented — see `docs
 | `tools/info/stale_triage.py` | splits the rot check's STALE list into "code EDITED" (needs a run) vs "file MOVED" (bookkeeping) |
 | `tools/docs/doc_paths.py` | no live document may name a source path the tree does not have |
 | `diag_registry.py` | no switch named in CLAUDE.md/docs/scripts may go unread by code |
+| `cpp_quality.py` | changed first-party C/C++ must pass the tracked clang-format style and clang-tidy checks using the real Clang compile database |
 
-The last four are the repo's own **gates**: `diag_registry.py` and `doc_paths.py` run in
-`.githooks/pre-commit` (with `selftest_all.py`, which runs every tool's `--selftest`). Between them
-a name and a path in the documentation are both machine-checked — the two halves of the same
-defect. Five separate document-vs-tree reconciliations on 2026-08-12 each turned up a LIVE bug
-rather than confirming the document, which is why they are gates and not a habit.
+These are the repo's own **gates**: `diag_registry.py` and `doc_paths.py` run in
+`.githooks/pre-commit` (with `selftest_all.py`, which runs every tool's `--selftest` and the changed
+C++ format/lint gate). Between them a name and a path in the documentation are both
+machine-checked — the two halves of the same defect. Five separate document-vs-tree reconciliations
+on 2026-08-12 each turned up a LIVE bug rather than confirming the document, which is why they are
+gates and not a habit. `structure_check.py` recursively applies the 1,200-line default to
+first-party C/C++ and freezes the few larger legacy files at their current size.
 
 ## The rest of the tree
 
@@ -198,7 +201,7 @@ sms-recomp/  —  the recomp runtime
 ├─ runtime/                    11 files   dispatch (rt_core), guest scheduler, boot env, probe
 │  ├─ devices/                 19 files   the GC hardware model — one file per device
 │  └─ render/                  18 files   the native SDL3-GPU renderer + its oracle harnesses
-├─ overrides/      4.9k lines  25 files   native HW/OS seams + widescreen/HUD/j3d capture
+├─ overrides/      6.6k lines  27 files   native HW/OS seams + widescreen/HUD/j3d capture
 ├─ frame_interp/   4.3k lines  13 files   ALL interpolated-60fps code — one API (docs/60fps/)
 │                                        + graphics_db.* — the graphics registry (docs/graphics/)
 └─ host/          main.cpp
@@ -207,8 +210,8 @@ sms-boot/         the decomp+Aurora runtime (the oracle)
 decomp/sms/       the reference decompilation (submodule)
 reference/        the US/JP symbol + function-address lists every RE note cites
 tools/            every tool lives under a subject directory; launch/ owns shared launcher policy;
-                  only diag_registry.py,
-                  scratch_clean.py, selftest_all.py and structure_check.py are repo-wide and sit at the root
+                  only cpp_quality.py, diag_registry.py, scratch_clean.py, selftest_all.py and
+                  structure_check.py are repo-wide and sit at the root
 ├─ recompiler/  render/  oracle/  interp/  re/  audio/  perf/  ghidra_scripts/  gfx/
 └─ info/  docs/            the registries' own gates — see below
 docs/             docs/README.md is the index; codemap.md is the map
