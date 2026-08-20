@@ -106,6 +106,25 @@ static void test_circle_wipe_completes() {
 	CHECK(Hx_UpdateWipe(1.0f) == 2, "type-1 is RUNNING (2) after frame 1, not instant-DONE");
 }
 
+// Hx_Test5 0x8017df74 backs wipe types 5 and 6. Retail phase 0 stores timer=20,
+// advances to phase 1 and falls through to one countdown. The twentieth update
+// advances phase 1->2 and writes the global wipe state to DONE.
+static void test_test5_wipe_completes() {
+	const int types[] = {5, 6};
+	for (int type : types) {
+		Hx_ResetWipe(640, 480);
+		Hx_StartWipe(type, 0);
+		int frames = 0;
+		u32 state = 0;
+		for (frames = 1; frames <= 30; ++frames) {
+			state = Hx_UpdateWipe(1.0f);
+			if (state == 3) break;
+		}
+		CHECK(state == 3, "type-5/6 Hx_Test5 reaches state DONE (3)");
+		CHECK(frames == 20, "type-5/6 Hx_Test5 completes in EXACTLY 20 frames (li 0x14)");
+	}
+}
+
 // A second wipe must work after a reset (state machine is re-entrant).
 static void test_restart() {
 	Hx_ResetWipe(640, 480);
@@ -119,9 +138,17 @@ static void test_restart() {
 }
 
 int main() {
+	Hx_ResetWipe(640, 480);
+	Hx_StartWipe(10, 60);
+	int type10_frames = 0;
+	while (Hx_UpdateWipe(0.0f) != 3 && type10_frames < 100)
+		++type10_frames;
+	CHECK(type10_frames == 44, "type 10 completes after its four retail timers");
+
 	test_get_wipe_type();
 	test_mmark_wipe_completes();
 	test_circle_wipe_completes();
+	test_test5_wipe_completes();
 	test_restart();
 	if (g_fail) { std::fprintf(stderr, "hx_wipe_test: FAILURES\n"); return 1; }
 	std::fprintf(stderr, "hx_wipe_test: all passed\n");

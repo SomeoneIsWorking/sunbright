@@ -28,6 +28,56 @@ JUTPoint TGCConsole2::cUpTopPoint;
 // TGuide — inherits JDrama::TViewObj; non-virtual methods only in bucket.
 TGuide::TGuide(const char* name)
     : JDrama::TViewObj(name)
+	, unk10(8)
+	, unk14{}
+	, unk7C{}
+	, unkBC(nullptr)
+	, unkC0(nullptr)
+	, unkC4(0)
+	, unkC5(0)
+	, unkC6{}
+	, unkC8{}
+	, unkF0{}
+	, unkF4(nullptr)
+	, unkF8{}
+	, unk100(nullptr)
+	, unk104{}
+	, unk10C{}
+	, unk118(nullptr)
+	, unk11C{}
+	, unk124(nullptr)
+	, unk128{}
+	, unk130(nullptr)
+	, unk134{}
+	, unk15C{}
+	, unk164(0)
+	, unk165{}
+	, unk168{}
+	, unk1A0(nullptr)
+	, unk1A4{}
+	, unk1C0{}
+	, unk1F4(nullptr)
+	, unk1F8{}
+	, unk218{}
+	, unk2E8{}
+	, unk2F8{}
+	, unk378{}
+	, unk3AC(nullptr)
+	, unk3B0{}
+	, unk3D0{}
+	, unk3F8{}
+	, unk424(nullptr)
+	, unk428(nullptr)
+	, unk42C(0)
+	, unk42E{}
+	, unk430(nullptr)
+	, unk434{}
+	, unk444(nullptr)
+	, unk448(nullptr)
+	, unk44c{}
+	, unk474(nullptr)
+	, unk478(nullptr)
+	, unk47C(0)
 {
 }
 // TGuide::setup and TGuide::startMoveCursor are now PORTED, from the US disassembly, in

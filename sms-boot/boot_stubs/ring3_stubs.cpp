@@ -209,8 +209,8 @@ void TWireBell::control() { SB_STUB_HIT("TWireBell::control"); }
 // TMBindShadowManager::load lives natively in decomp/sms/src/MarioUtil/ShadowUtil.cpp
 // TPauseMenu2::load now provided natively in decomp/sms/src/GC2D/PauseMenu2.cpp.
 
-// ring-4: last vtable-slot virtuals for the 3 misc classes (perform/loadAfter).
-void TGuide::perform(unsigned int, JDrama::TGraphics*) { SB_STUB_HIT("TGuide::perform"); }
+// ring-4: last vtable-slot virtuals for the remaining misc classes (perform/loadAfter).
+// TGuide::perform now lives natively in decomp/sms/src/GC2D/Guide.cpp.
 // TMBindShadowManager::perform lives natively in decomp/sms/src/MarioUtil/ShadowUtil.cpp
 // [dedup] void TPauseMenu2::loadAfter() {}
-// [dedup] void TPauseMenu2::perform(unsigned int, JDrama::TGraphics*) {} 
+// [dedup] void TPauseMenu2::perform(unsigned int, JDrama::TGraphics*) {}

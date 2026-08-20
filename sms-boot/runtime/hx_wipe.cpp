@@ -306,11 +306,57 @@ void circle_callback() {
 	}
 }
 
+// Hx_Test5 0x8017df74 — table1 callback for types 5 and 6. The substantial
+// body tessellates the captured framebuffer into a sinusoidal grid; those GX
+// writes are render-only. Its control flow is exact and independent of pixel
+// feedback: phase 0 arms a 20-frame timer and falls into phase 1, phase 1
+// counts down once per update, and expiry advances to phase 2 and marks DONE.
+void test5_callback() {
+	if (G.phase != 1) {
+		if (G.phase != 0) {
+			G.state = 3;
+			return;
+		}
+		G.timer = 0x14;
+		G.phase += 1;
+	}
+	// Retail performs the wave-grid GX draw here before decrementing the timer.
+	if (hx_timer_countdown() == 0) {
+		G.phase += 1;
+		G.state = 3;
+	}
+}
+
+// Hx_Test2 0x8017ef1c — type-10 Delfino/miss curtain. Its draw helpers consume
+// motion values but never feed them back into control. Retail advances through
+// four literal countdowns (11, 11, 10, 12) and then marks the wipe complete.
+void test2_callback() {
+	switch (G.phase) {
+	case 0: G.phase = 1; G.timer = 0x0b; return;
+	case 1:
+		if (hx_timer_countdown() != 0) return;
+		G.phase = 2; G.timer = 0x0b; return;
+	case 2:
+		if (hx_timer_countdown() != 0) return;
+		G.phase = 3; G.timer = 0x0a; return;
+	case 3:
+		if (hx_timer_countdown() != 0) return;
+		G.phase = 4; G.timer = 0x0c; return;
+	case 4:
+		if (hx_timer_countdown() != 0) return;
+		G.phase = 5; G.state = 3; return;
+	default: G.state = 3; return;
+	}
+}
+
 // per-type wipe callback dispatch (original: table1[type] fn-ptr stored at G[0x20]).
 void run_callback() {
 	switch (G.type) {
 	case 1:
 	case 2:  circle_callback(); break;
+	case 5:
+	case 6:  test5_callback(); break;
+	case 10: test2_callback(); break;
 	case 12: mmark_callback(); break;
 	default:
 		// Only type 12 (the opening-movie m-mark wipe) and type 1/2 (the Delfino scene-entry

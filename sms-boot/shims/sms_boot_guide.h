@@ -42,6 +42,47 @@ inline int gate_hit(int hit, bool pass_two_pane_visible)
 	return hit;
 }
 
+enum WipeCommand { kWipeNone, kWipeIn5, kWipeOut6 };
+
+struct Transition {
+	int next_state;
+	WipeCommand wipe;
+	bool clear_selection;
+	bool return_to_gameplay;
+};
+
+// One invocation models exactly one pass through retail perform's switch at US 0x80179330.
+// State changes never fall through to the newly-selected case until the next frame.
+inline Transition step_transition(int state, bool loaded, bool fully_faded_out,
+                                  bool fully_faded_in, bool close_requested)
+{
+	Transition result { state, kWipeNone, false, false };
+	switch (state) {
+	case 9:
+		if (loaded && fully_faded_out)
+			result = { 10, kWipeIn5, false, false };
+		break;
+	case 10:
+		if (fully_faded_in)
+			result = { 0, kWipeNone, true, false };
+		break;
+	case 0:
+		if (close_requested)
+			result.next_state = 7;
+		break;
+	case 7:
+		result = { 11, kWipeOut6, false, false };
+		break;
+	case 11:
+		if (fully_faded_out)
+			result = { 8, kWipeIn5, false, true };
+		break;
+	default:
+		break;
+	}
+	return result;
+}
+
 } // namespace guide
 } // namespace sb
 
