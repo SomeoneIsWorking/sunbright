@@ -1,0 +1,11 @@
+BetterSunshineEngine FPS implementation
+========================================
+
+Sunbright's sms-recomp/bse/ subsystem adapts the frame-rate behavior from
+BetterSunshineEngine's src/patches/fps.cpp at commit
+69baa4f15bfb2980670cbde638fc22f97a394385:
+
+https://github.com/JoshuaMKW/BetterSunshineEngine/tree/69baa4f15bfb2980670cbde638fc22f97a394385
+
+BetterSunshineEngine is licensed under the GNU General Public License,
+version 3. A copy is provided in BetterSunshineEngine-GPL-3.0.txt.

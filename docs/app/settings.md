@@ -62,12 +62,20 @@ history is never displayed. Environment overrides remain authoritative for diagn
 | Vanilla | Game-requested retrace interval, normally 30 Hz | One present per tick | Wired |
 | Interpolated 60 FPS | Original 30 Hz logic | One midpoint plus exact frame | Wired |
 | Interpolated Match Refresh | Original 30000/1001 Hz logic | Interpolation samples matching the active display rate | Wired |
-| Native 60 FPS | Game retrace interval overridden from two fields to one | One present per 60 Hz game tick | Wired |
-| Native Match Refresh | Game-native one-field override, paced at the active display rate | One present per game tick | Wired |
+| Native 60 FPS | 60 Hz game logic with BetterSunshineEngine-derived timing fixes | One present per 60 Hz game tick | Wired; BSE HX timer-initializer gap below |
+| Native Match Refresh | Game logic at the active display rate with the same continuous BSE timing formulas | One present per game tick | Wired; BSE HX timer-initializer gap below |
 
 The native override is at the real semantic boundary: immediately before calling the recompiled
-`JDrama::TVideo::waitForRetrace`, its requested `r4` field count becomes one. The original game
-body therefore observes the override; this is not an independent host-side 60 Hz simulation.
+`JDrama::TVideo::waitForRetrace`, the runtime applies BetterSunshineEngine's three-part base timing
+contract: the requested retrace interval, SMS's animation-rate constant, and ModelGate's per-tick
+step. The original game body therefore observes the override. Changing only the first value was the
+root cause of the former double-speed Native 60 mode.
+
+`sms-recomp/bse/` owns BSE's targeted compatibility behavior, separately from host cadence and
+render interpolation. It currently keeps boid travel speed stable, preserves the fixed-delta
+AnimalBird and Boss Eel animations, fixes TJointCoin/Sand Bird animation rate, scales the textbox
+entry timer, and ports `HX_MotionUpdate`. The retail recompiled bodies remain linked and are
+super-called outside BSE's exact call-site scope.
 
 Match Refresh means the monitor's current nominal refresh rate, not an unpaced loop. Native Match
 Refresh runs the SMS simulation itself at that rate through the same `TVideo::waitForRetrace`
@@ -77,6 +85,14 @@ alternates four and five without long-term drift. Aurora commits object, vertex,
 camera history once, retains that tick's replay snapshot, and resamples the immutable pair for each
 alpha; the last emission is exact and consumes the snapshot. Its CPU self-test proves `.25` and
 `.75` produce distinct poses without advancing the tick or pairing counters.
+
+BSE's remaining FPS-source gap is the family of discrete HX wipe timer/frame-rate initializers
+installed as mid-function PPC call-site patches. Sunbright cannot faithfully express those with a
+function-entry override. The proper owner is an instruction-level static-recompiler patchpoint
+mechanism (or full verified replacements for every owning function); detecting magic timer values
+at runtime would be a bandaid and is deliberately not used. Sunbright's existing native projection,
+HUD, EFB-copy, and screen-effect widescreen implementation remains authoritative; importing BSE's
+guest widescreen patches would create a second, less complete owner for the same policy.
 
 ## Windowless verification
 

@@ -73,6 +73,14 @@ constexpr u32 GPAPPLICATION = 0x803E9700;
 // Mario into a floating file block, and a stick script driving blind cannot tell whether he moved.
 constexpr u32 GPMARIO_PTR = 0x8040E10C;
 
+// BetterSunshineEngine updateFPS (NTSC-U): these are the two game-owned timing
+// inputs that must change together with TDisplay::mRetraceCount. Changing only
+// the retrace interval runs the simulation more often while leaving the game's
+// per-tick animation and ModelGate math at their 30 Hz values, which is the
+// double-speed defect in the former Native 60 mode.
+constexpr u32 SMS_ANIMATION_RATE = 0x804167B8;
+constexpr u32 MODEL_GATE_STEP = 0x80414904;
+
 float guest_f32(u32 addr) {
     const u32 bits = sb_r32(addr);
     float f;
@@ -860,10 +868,13 @@ void video_wait_for_retrace(CPUState& cpu) {
     // early. Return immediately and let the copy be the only thing that happens.
     if (sbr_interp60_in_subframe()) return;
 
-    // Let the game do its own frame bookkeeping first. Native frame-rate modes override the
-    // game's own TDisplay retrace interval (r4), the same value retail passes from TDisplay::unk4C;
-    // this advances simulation, animation and timers at 60 Hz instead of merely presenting the
-    // same 30 Hz state twice.
+    // Apply BetterSunshineEngine's complete base timing contract before the
+    // game's frame bookkeeping: retrace interval, SMS animation-rate constant,
+    // and ModelGate step. Native Match Refresh generalizes BSE's 30/60/120
+    // presets with the same formulas at the active display rate.
+    sb_wf32(SMS_ANIMATION_RATE,
+             sb::app::frame_rate::animation_rate_constant());
+    sb_wf32(MODEL_GATE_STEP, sb::app::frame_rate::model_gate_step());
     cpu.gpr[4] = sb::app::frame_rate::game_retrace_count(cpu.gpr[4]);
     func_802fc9a4(cpu);
 

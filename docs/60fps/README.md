@@ -1,4 +1,4 @@
-# 60fps — the map, and the unification plan
+# 60fps — native simulation and interpolation map
 
 The project grew **three independent interpolated-60fps implementations**, none of which knows the
 others exist. They share no code, no switch, no vocabulary, and each one covers a different part of
@@ -9,6 +9,14 @@ This file is the map. It exists because "make sure all 60fps hooks are clearly i
 thing a reader can currently get from the source: the hooks are spread over eight files under three
 different names (`lerp60`, `interp60`, `interp60_replace`), and 49 environment switches select
 between them.
+
+There is also a deliberately separate **native simulation-rate path**. `Native 60 FPS` runs the
+game at 60 Hz; `Native Match Refresh` runs it at the active display rate. They do not interpolate a
+30 Hz tick. `sms-recomp/app/frame_rate.{h,cpp}` owns their formulas,
+`sms-recomp/overrides/native_frame.cpp` applies BetterSunshineEngine's retrace/animation/ModelGate
+base contract at the real frame seam, and `sms-recomp/bse/` owns BSE's targeted game fixes. This
+separation is semantic: presentation interpolation and changing the game's own update rate solve
+the same user-facing cadence problem in different ways and must not share state transitions.
 
 **Target: ONE path, shaped like dusklight's `src/dusk/frame_interpolation.{h,cpp}`.** See
 "Unification" at the bottom for what survives and what goes.
@@ -247,7 +255,26 @@ verdicts in this arc stood on exactly that.
 
 ---
 
-## The three paths
+## Native simulation-rate path
+
+This is not a fourth interpolation implementation. It advances SMS logic once per presented frame.
+The former implementation changed only `TVideo::waitForRetrace`'s field count, so the game executed
+twice as many ticks while retaining its 30 Hz timing inputs—the direct cause of double-speed logic.
+The current implementation ports BSE's coupled base values and the callable compatibility seams:
+
+| Owner | Behavior |
+|---|---|
+| `sms-recomp/app/frame_rate.cpp` | One authoritative game-rate multiplier and continuous 30/60/display-rate formulas |
+| `sms-recomp/overrides/native_frame.cpp` | Applies retrace interval, `0x804167B8` animation rate, and `0x80414904` ModelGate step before the retail frame body |
+| `sms-recomp/bse/frame_rate_fixes.cpp` | Boids, AnimalBird/Boss Eel, TJointCoin/Sand Bird, textbox entry, and HX motion |
+| `sms-recomp/bse/frame_rate_logic.cpp` | Pure shipping HX integrator used directly by its CPU test |
+
+The remaining BSE FPS gap is its discrete HX timer/frame-rate setup patches at mid-function PPC
+instruction sites. A function-entry runtime override cannot represent them without guessing from
+mutable timer values. They require a static-recompiler patchpoint facility or full verified ports of
+the owning functions. That gap is reported, not hidden behind a value-based workaround.
+
+## The three interpolation paths
 
 | | A — stream interpolation | B — substitute & re-issue | C — record & replace |
 |---|---|---|---|

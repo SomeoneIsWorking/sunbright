@@ -58,6 +58,44 @@ void set_display_refresh_hz(double refreshHz) noexcept {
 
 double display_refresh_hz() noexcept { return g_displayRefreshHz; }
 
+double game_hz() noexcept {
+  switch (mode()) {
+  case FrameRateMode::Native60:
+    return 60.0;
+  case FrameRateMode::NativeMatchRefresh:
+    return g_displayRefreshHz;
+  default:
+    return 30.0;
+  }
+}
+
+double game_rate_multiplier() noexcept { return game_hz() / 30.0; }
+
+float animation_rate_constant() noexcept {
+  // BetterSunshineEngine's updateFPS writes 0.5, 1.0, or 2.0 for
+  // 30/60/120 Hz. The continuous form preserves the same contract when
+  // Native Match Refresh targets a display rate that is not one of those
+  // three presets.
+  return static_cast<float>(game_hz() / 60.0);
+}
+
+float model_gate_step() noexcept {
+  // BetterSunshineEngine uses 0.01, 0.02, or 0.04 at 30/60/120 Hz.
+  return static_cast<float>(0.01 * game_rate_multiplier());
+}
+
+float boid_speed_scale() noexcept {
+  return static_cast<float>(1.0 / game_rate_multiplier());
+}
+
+float fixed_delta_animation_rate() noexcept { return 2.0f; }
+
+float joint_coin_animation_rate() noexcept { return 0.5f; }
+
+unsigned textbox_entry_frames() noexcept {
+  return static_cast<unsigned>(std::lround(20.0 * game_rate_multiplier()));
+}
+
 unsigned presentation_count_for_tick() noexcept {
   const FrameRateMode currentMode = mode();
   if (currentMode != g_cadenceMode) {
@@ -85,7 +123,7 @@ unsigned presentation_count_for_tick() noexcept {
 void reset_presentation_cadence() noexcept { g_presentationCredit = 0.0; }
 
 int64_t native_frame_period_ns() noexcept {
-  return static_cast<int64_t>(std::llround(1'000'000'000.0 / g_displayRefreshHz));
+  return static_cast<int64_t>(std::llround(1'000'000'000.0 / game_hz()));
 }
 
 } // namespace sb::app::frame_rate

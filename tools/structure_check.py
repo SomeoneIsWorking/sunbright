@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Ratchet source-file size at the host application boundary.
 
-The new Dusklight-shaped app/ and ui/ modules must remain cohesive modules, not become replacement
-god files. The host entry point is included because its only job is composition.
+The Dusklight-shaped app/, ui/, and BSE enhancement modules must remain cohesive modules, not become
+replacement god files. The host entry point is included because its only job is composition.
 
   tools/structure_check.py             check the real tree
   tools/structure_check.py --selftest  prove over-limit and boundary cases disagree
@@ -17,6 +17,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 ROOT_LIMITS = {
     "sms-recomp/app": 800,
+    "sms-recomp/bse": 800,
     "sms-recomp/host": 800,
     "sms-recomp/ui": 800,
 }

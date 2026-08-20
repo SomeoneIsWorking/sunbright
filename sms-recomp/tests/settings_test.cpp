@@ -18,10 +18,25 @@ int main() {
   assert(sb::app::settings().effective().renderer == sb::app::Renderer::Native);
   assert(sb::app::frame_rate::runs_native_game_rate());
   assert(sb::app::frame_rate::game_retrace_count(2) == 1);
+  assert(sb::app::frame_rate::game_hz() == 60.0);
+  assert(sb::app::frame_rate::game_rate_multiplier() == 2.0);
+  assert(sb::app::frame_rate::animation_rate_constant() == 1.0f);
+  assert(sb::app::frame_rate::model_gate_step() == 0.02f);
+  assert(sb::app::frame_rate::boid_speed_scale() == 0.5f);
+  assert(sb::app::frame_rate::fixed_delta_animation_rate() == 2.0f);
+  assert(sb::app::frame_rate::joint_coin_animation_rate() == 0.5f);
+  assert(sb::app::frame_rate::textbox_entry_frames() == 40);
+  assert(sb::app::frame_rate::native_frame_period_ns() == 16666667);
 
   sb::app::settings().set_frame_rate(sb::app::FrameRateMode::Vanilla);
   assert(sb::app::frame_rate::game_retrace_count(0) == 0);
   assert(sb::app::frame_rate::game_retrace_count(2) == 2);
+  assert(sb::app::frame_rate::game_hz() == 30.0);
+  assert(sb::app::frame_rate::game_rate_multiplier() == 1.0);
+  assert(sb::app::frame_rate::animation_rate_constant() == 0.5f);
+  assert(sb::app::frame_rate::model_gate_step() == 0.01f);
+  assert(sb::app::frame_rate::boid_speed_scale() == 1.0f);
+  assert(sb::app::frame_rate::textbox_entry_frames() == 20);
 
   sb::app::settings().set_renderer(sb::app::Renderer::Aurora);
   sb::app::settings().set_frame_rate(
@@ -46,7 +61,21 @@ int main() {
 
   sb::app::settings().set_frame_rate(sb::app::FrameRateMode::NativeMatchRefresh);
   sb::app::frame_rate::set_display_refresh_hz(120.0);
+  assert(sb::app::frame_rate::game_hz() == 120.0);
+  assert(sb::app::frame_rate::game_rate_multiplier() == 4.0);
+  assert(sb::app::frame_rate::animation_rate_constant() == 2.0f);
+  assert(sb::app::frame_rate::model_gate_step() == 0.04f);
+  assert(sb::app::frame_rate::boid_speed_scale() == 0.25f);
+  assert(sb::app::frame_rate::textbox_entry_frames() == 80);
   assert(sb::app::frame_rate::native_frame_period_ns() == 8333333);
+
+  sb::app::frame_rate::set_display_refresh_hz(144.0);
+  assert(sb::app::frame_rate::game_hz() == 144.0);
+  assert(sb::app::frame_rate::game_rate_multiplier() == 4.8);
+  assert(sb::app::frame_rate::animation_rate_constant() == 2.4f);
+  assert(sb::app::frame_rate::model_gate_step() == 0.048f);
+  assert(sb::app::frame_rate::textbox_entry_frames() == 96);
+  assert(sb::app::frame_rate::native_frame_period_ns() == 6944444);
 
   sb::app::SettingsStore reloaded;
   assert(reloaded.load(path));

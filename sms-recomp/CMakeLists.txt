@@ -92,6 +92,16 @@ target_link_libraries(sms-recomp-ui PUBLIC sms-recomp-app aurora::core lucent::l
 target_link_libraries(sms-recomp-overrides PUBLIC sms-recomp-app sms-recomp-ui)
 target_link_libraries(sms-recomp-frame-interp PUBLIC sms-recomp-app)
 
+# BetterSunshineEngine-derived gameplay timing fixes are an enhancement
+# subsystem, separate from HW/OS overrides and from render interpolation. The
+# recompiled retail bodies remain linked; these runtime overrides can super-call
+# them and are independent of recompiler regeneration.
+add_library(sms-recomp-bse OBJECT bse/frame_rate_fixes.cpp bse/frame_rate_logic.cpp)
+target_include_directories(sms-recomp-bse PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${GEN}")
+target_link_libraries(sms-recomp-bse PUBLIC sms-recomp-app lucent::lucent)
+
 add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/devices/mmio.cpp
                                  runtime/devices/dev_aram.cpp
                                  runtime/devices/dev_aid.cpp
@@ -127,7 +137,8 @@ add_executable(sms-recomp host/main.cpp host/dol_loader.cpp runtime/sb_log.cpp r
 # is the guest call stack — but only if the names resolve.
 target_link_options(sms-recomp PRIVATE -rdynamic)
 target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
-                      sms-recomp-overrides sms-recomp-frame-interp sms-recomp-app sms-recomp-ui
+                      sms-recomp-overrides sms-recomp-frame-interp sms-recomp-bse
+                      sms-recomp-app sms-recomp-ui
                       lucent::lucent
                       # aurora_core and aurora_gx reference each other, so both must be on
                       # the link line together for the static archives to resolve.
@@ -153,6 +164,12 @@ add_test(NAME gx_light COMMAND gx_light_test)
 add_executable(settings_test tests/settings_test.cpp)
 target_link_libraries(settings_test PRIVATE sms-recomp-app)
 add_test(NAME settings COMMAND settings_test)
+
+add_executable(bse_frame_rate_test tests/bse_frame_rate_test.cpp
+                                   bse/frame_rate_logic.cpp)
+target_include_directories(bse_frame_rate_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME bse_frame_rate COMMAND bse_frame_rate_test)
 
 # The interpolation pairing self-test, reached through the main binary with SBR_INTERP_SELFTEST=1.
 # It is pure CPU work — local buffers and aurora's own pairing tables — but until now it only ran
