@@ -25,6 +25,11 @@ void Document::show() {
   }
 }
 
+void Document::hide() {
+  if (m_document != nullptr)
+    m_document->Hide();
+}
+
 void Document::listen(Rml::Element *element, Rml::EventId event,
                       ScopedEventListener::Callback callback, bool capture) {
   if (element == nullptr || !callback)

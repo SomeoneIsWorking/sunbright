@@ -7,9 +7,9 @@ namespace sb::ui {
 // without creating a document.
 bool run_prelaunch();
 
-// Renders a bounded settings-screen control without entering the game. Used by
-// the verification harness so RmlUi resource loading and layout can be checked
-// headlessly without a ROM.
-bool render_settings_control(unsigned frames);
+// Pushes Escape through SDL, verifies that the shipping event route opens the
+// settings window, renders it for a bounded number of frames, then pushes
+// Escape again and verifies that it closes.
+bool run_escape_control(unsigned frames);
 
 } // namespace sb::ui

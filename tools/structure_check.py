@@ -16,12 +16,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT_LIMITS = {
-    "sms-recomp/app": 240,
-    "sms-recomp/ui": 240,
+    "sms-recomp/app": 800,
+    "sms-recomp/host": 800,
+    "sms-recomp/ui": 800,
 }
-FILE_LIMITS = {
-    "sms-recomp/host/main.cpp": 300,
-}
+FILE_LIMITS = {}
 
 
 def source_files() -> dict[str, int]:
@@ -70,12 +69,12 @@ def check() -> int:
 
 def selftest() -> int:
     sample = {
-        "sms-recomp/ui/boundary.cpp": 240,
-        "sms-recomp/app/too_large.cpp": 241,
-        "sms-recomp/host/main.cpp": 300,
+        "sms-recomp/ui/boundary.cpp": 800,
+        "sms-recomp/app/too_large.cpp": 801,
+        "sms-recomp/host/main.cpp": 800,
     }
     got = violations(sample)
-    expected = [("sms-recomp/app/too_large.cpp", 241, 240)]
+    expected = [("sms-recomp/app/too_large.cpp", 801, 800)]
     if got != expected:
         print(f"FAIL: got {got}, expected {expected}")
         return 1

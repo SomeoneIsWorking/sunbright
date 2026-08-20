@@ -84,11 +84,12 @@ add_library(sms-recomp-app STATIC app/settings.cpp app/frame_rate.cpp)
 target_include_directories(sms-recomp-app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(sms-recomp-app PUBLIC lucent::lucent)
 
-add_library(sms-recomp-ui STATIC ui/event.cpp ui/document.cpp ui/settings_menu.cpp ui/ui.cpp)
+add_library(sms-recomp-ui STATIC ui/event.cpp ui/document.cpp ui/window.cpp
+                                 ui/settings_menu.cpp ui/runtime.cpp ui/ui.cpp)
 target_include_directories(sms-recomp-ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(sms-recomp-ui PUBLIC sms-recomp-app aurora::core lucent::lucent)
 
-target_link_libraries(sms-recomp-overrides PUBLIC sms-recomp-app)
+target_link_libraries(sms-recomp-overrides PUBLIC sms-recomp-app sms-recomp-ui)
 target_link_libraries(sms-recomp-frame-interp PUBLIC sms-recomp-app)
 
 add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/devices/mmio.cpp
@@ -118,7 +119,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # member out of a static archive — nothing strongly references sb_log.o, so from a library it is
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
-add_executable(sms-recomp host/main.cpp runtime/sb_log.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
+add_executable(sms-recomp host/main.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
                            runtime/render/native_render.cpp runtime/render/scene.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
                            runtime/render/render_compare.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can

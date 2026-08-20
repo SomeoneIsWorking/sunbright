@@ -1,0 +1,58 @@
+tab-bar {
+    display: flex;
+    position: relative;
+    min-width: 0;
+    overflow: auto hidden;
+    clip: always;
+    text-transform: uppercase;
+}
+
+tab-bar tab {
+    flex: 0 0 auto;
+    padding: 0 24dp;
+    line-height: 64dp;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+tab-bar tab:selected {
+    opacity: 1;
+    border-bottom: 4dp #C2A42D;
+    font-effect: glow(0dp 4dp 0dp 4dp black);
+}
+
+tab-bar[closable] tab-end-spacer {
+    display: block;
+    flex: 0 0 64dp;
+    width: 64dp;
+    pointer-events: none;
+}
+
+tab-bar[closable] close {
+    display: block;
+    position: fixed;
+    top: 8dp;
+    right: 8dp;
+    z-index: 1;
+    width: 48dp;
+    height: 48dp;
+    line-height: 44dp;
+    text-align: center;
+    font-family: "Fira Sans";
+    font-size: 34dp;
+    color: rgba(224, 219, 200, 70%);
+    backdrop-filter: blur(2dp);
+    border-radius: 6dp;
+    cursor: pointer;
+}
+
+tab-bar[closable] close:hover,
+tab-bar[closable] close:focus-visible {
+    color: #fff;
+    background-color: rgba(194, 164, 45, 24%);
+}
+
+tab-bar[closable] close:active {
+    color: #fff;
+    background-color: rgba(194, 164, 45, 40%);
+}

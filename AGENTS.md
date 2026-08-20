@@ -102,8 +102,10 @@ Follow Dusklight's ownership split in the primary recomp runtime: `sms-recomp/ap
 persisted application policy; `sms-recomp/ui/` owns RmlUi documents and event lifetimes; engine and
 override seams consume the typed policy and never query UI elements. `res/rml/` owns styles and
 `res/LICENSES/` owns third-party asset notices. `sms-recomp/host/main.cpp` only composes those
-modules. Keep renderer and frame-rate semantics authoritative in `app/`, not duplicated between the
-menu, launcher scripts, and frame seam. Current behavior and gaps: `docs/app/settings.md`.
+modules. The in-game settings window follows Dusklight's `Document → Window → SettingsMenu` split;
+Escape is routed once from Aurora's SDL event array, and `ui::Runtime` owns the modal pause loop.
+Keep renderer and frame-rate semantics authoritative in `app/`, not duplicated between the menu,
+launcher scripts, and frame seam. Current behavior and gaps: `docs/app/settings.md`.
 
 The decomp side is unchanged: gaps I hand-port are **decomp gaps** — finite, not infinite. The
 accelerator is **syncing upstream `doldecomp/sms`** so community-filled bodies land for free (see

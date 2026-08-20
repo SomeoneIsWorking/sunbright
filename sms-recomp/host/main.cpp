@@ -12,6 +12,8 @@
 #include "../frame_interp/stream_interp.h"
 #include "app/frame_rate.h"
 #include "app/settings.h"
+#include "dol_loader.h"
+#include "ui/runtime.h"
 #include "ui/ui.h"
 
 #include <aurora/aurora.h>
@@ -35,48 +37,6 @@ CPUState* g_cpu = nullptr;
 void call_ppc(CPUState& cpu, u32 address);
 
 namespace {
-
-// DOL: 7 text + 11 data sections. Header is big-endian: offsets[18], addrs[18],
-// sizes[18], bss addr/size, then the entry point at 0xE0.
-struct Dol {
-    u32 entry = 0;
-    struct Sec { u32 off, addr, size; };
-    std::vector<Sec> sections;
-    u32 bss_addr = 0, bss_size = 0;
-};
-
-u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
-
-bool load_dol(const std::string& path, Dol& out, std::vector<u8>& bytes) {
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) { lucent::error("dol", "cannot open {}", path); return false; }
-    std::fseek(f, 0, SEEK_END);
-    long n = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    bytes.resize((size_t)n);
-    size_t got = std::fread(bytes.data(), 1, (size_t)n, f);
-    std::fclose(f);
-    if (got != (size_t)n || n < 0x100) { lucent::error("dol", "short read on {}", path); return false; }
-
-    const u8* h = bytes.data();
-    for (int i = 0; i < 18; i++) {
-        u32 off = be32(h + 0x00 + i * 4);
-        u32 addr = be32(h + 0x48 + i * 4);
-        u32 size = be32(h + 0x90 + i * 4);
-        if (off && size) out.sections.push_back({off, addr, size});
-    }
-    out.bss_addr = be32(h + 0xD8);
-    out.bss_size = be32(h + 0xDC);
-    out.entry    = be32(h + 0xE0);
-    return true;
-}
-
-// Copy a guest range in. Writes go through the raw host pointer (not sb_w*) because
-// the DOL image is already big-endian — byteswapping here would corrupt it.
-void guest_write(u32 addr, const u8* src, u32 size) {
-    for (u32 i = 0; i < size; i++)
-        if (u8* p = sb_ram_fast(addr + i)) *p = src[i];
-}
 
 std::string user_path() {
     char* raw = SDL_GetPrefPath(nullptr, "sunbright-recomp");
@@ -178,11 +138,13 @@ int main(int argc, char** argv) {
         const unsigned frames = end != value && *end == '\0' && parsed > 0
                                     ? static_cast<unsigned>(parsed)
                                     : 2u;
-        const bool ok = sb::ui::render_settings_control(frames);
+        const bool ok = sb::ui::run_escape_control(frames);
+        sb::ui::runtime().shutdown();
         aurora_shutdown();
         return ok ? 0 : 1;
     }
     if (!sb::ui::run_prelaunch()) {
+        sb::ui::runtime().shutdown();
         aurora_shutdown();
         return 0;
     }
@@ -191,6 +153,7 @@ int main(int argc, char** argv) {
                       sb::app::display_name(sb::app::settings().effective().frameRate),
                       sb::app::frame_rate::unsupported_reason(
                           sb::app::settings().effective().frameRate));
+        sb::ui::runtime().shutdown();
         aurora_shutdown();
         return 1;
     }
@@ -219,9 +182,8 @@ int main(int argc, char** argv) {
     extern void rt_install_crash_handler();
     rt_install_crash_handler();
 
-    Dol dol;
-    std::vector<u8> bytes;
-    if (!load_dol(dol_path, dol, bytes)) return 1;
+    sb::host::DolImage dol;
+    if (!sb::host::load_dol(dol_path, dol)) return 1;
 
     lucent::info("dol", "{}: {} sections, entry 0x{:08x}", dol_path, dol.sections.size(), dol.entry);
 
@@ -230,15 +192,7 @@ int main(int argc, char** argv) {
     // (0x8040c1c0 +0xd40, the small-data area). Clearing BSS afterwards would erase real
     // initialised data — it erased __GXData, whose slot at 0x8040cec8 ships the pointer
     // 0x804036a0, leaving GX to dereference NULL far away in the boot. Loaded data must win.
-    if (dol.bss_size) {
-        for (u32 i = 0; i < dol.bss_size; i++)
-            if (u8* p = sb_ram_fast(dol.bss_addr + i)) *p = 0;
-        lucent::debug("dol", "bss cleared 0x{:08x} +0x{:x}", dol.bss_addr, dol.bss_size);
-    }
-    for (const auto& s : dol.sections) {
-        guest_write(s.addr, bytes.data() + s.off, s.size);
-        lucent::debug("dol", "section -> 0x{:08x} +0x{:x}", s.addr, s.size);
-    }
+    sb::host::install_dol(dol);
 
     // Devices that must deliver an interrupt into guest code (DI completion) need the CPU
     // state; there is exactly one, so expose it rather than threading it through the MMIO
@@ -252,10 +206,7 @@ int main(int argc, char** argv) {
 
     // After the DOL is in memory: the apploader's low-memory state must not be clobbered
     // by section loading, and the FST lives above the DOL's sections.
-    u32 arena_lo = dol.bss_addr + dol.bss_size;
-    for (const auto& s : dol.sections)
-        if (s.addr + s.size > arena_lo) arena_lo = s.addr + s.size;
-    if (!boot_env_setup(arena_lo)) return 1;
+    if (!boot_env_setup(dol.arena_low())) return 1;
 
     // Adopt this host thread as guest thread 0 before any guest code runs, so the
     // scheduler owns threading from the first instruction.

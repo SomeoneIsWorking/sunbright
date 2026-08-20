@@ -23,28 +23,39 @@ extern long g_untaggedPerspIndexedCount;
 
 namespace aurora::gfx {
 void force_interpolation(float alpha);
+void snap_next_interpolation();
 }
 
 bool sbr_lerp_enabled() {
-    static int v = -1;
-    if (v < 0) {
-        // The settings model is the authority. It folds the legacy SBR_60FPS/SBR_LERP60
-        // environment inputs in once at startup, so scripts remain compatible without making the
-        // interpolation subsystem parse a second copy of the policy.
-        v = sb::app::frame_rate::interpolates() ? 1 : 0;
-        if (v == 1) {
-            // Turn the WHOLE feature on from here rather than making the user set aurora's two env
-            // vars to agree with this one. Three switches that must agree is three ways to run a
-            // half-configured build that still looks like it works — the doubled present without
-            // interpolation is exactly the "same frame twice" control, which is indistinguishable
-            // from working 60fps in a screenshot and quite distinguishable in motion.
-            aurora::gfx::force_interpolation(0.5f);
-            lucent::info("lerp60", "interpolated 60fps ON — aurora is no longer bit-identical to "
-                                   "the oracle path; A/B numbers taken with this on are not "
-                                   "comparable to numbers taken with it off");
+    const bool enabled = sb::app::frame_rate::interpolates();
+    static bool initialized = false;
+    static bool previous = false;
+    if (!initialized || enabled != previous) {
+        aurora::gfx::force_interpolation(enabled ? 0.5f : -1.0f);
+        if (enabled) {
+            // A menu change happens between simulation ticks. Snap the first newly-enabled tick so
+            // no draw population interpolates against history from a much earlier enabled interval.
+            aurora::gfx::snap_next_interpolation();
+            if (initialized) {
+                lucent::info("lerp60", "interpolated 60fps enabled from settings");
+            } else {
+                // Turn the WHOLE feature on from here rather than making the user set aurora's two
+                // env vars to agree with this one. Three switches that must agree is three ways to
+                // run a half-configured build that still looks like it works — the doubled present
+                // without interpolation is exactly the "same frame twice" control, which is
+                // indistinguishable from working 60fps in a screenshot and quite distinguishable
+                // in motion.
+                lucent::info("lerp60", "interpolated 60fps ON — aurora is no longer bit-identical "
+                                       "to the oracle path; A/B numbers taken with this on are not "
+                                       "comparable to numbers taken with it off");
+            }
+        } else if (initialized) {
+            lucent::info("lerp60", "interpolated 60fps disabled from settings");
         }
+        previous = enabled;
+        initialized = true;
     }
-    return v == 1;
+    return enabled;
 }
 
 void sbr_lerp_report_tag_coverage() {

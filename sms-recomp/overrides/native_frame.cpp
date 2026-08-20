@@ -18,6 +18,7 @@
 #include "../frame_interp/frame_interp.h"
 #include "../frame_interp/graphics_db.h"
 #include "app/frame_rate.h"
+#include "ui/runtime.h"
 
 // Declared rather than included: aurora's gfx headers are internal to the library, and the recomp
 // links it statically so the symbol resolves directly. Same approach lerp60.cpp uses for aurora's
@@ -236,9 +237,8 @@ extern "C" void aurora_replay_midpoint() {
     // Kept behind SBR_MIDPOINT_SLACK so the two policies remain comparable — the in-run A/B that
     // measured the sleep is still the right instrument if the present mode ever changes back.
     // Callbacks are dispatched ABOVE this line and are unaffected: they must fire every tick.
-    static const bool s_queuedPresent = sb::app::frame_rate::interpolates();
     static const bool s_slackForced = std::getenv("SBR_MIDPOINT_SLACK") != nullptr;
-    if (s_queuedPresent && !s_slackForced) return;
+    if (sb::app::frame_rate::interpolates() && !s_slackForced) return;
     if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0) return;
     const int64_t midpoint = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs / 2;
     const int64_t now = now_ns();
@@ -466,6 +466,9 @@ void throttle_gpu_submission() {
     nextNs = (nextNs == 0 || now > nextNs + 4 * gap) ? now + gap : nextNs + gap;
 }
 
+bool ui_quit_requested() { return g_quit_requested != 0; }
+void pace_ui_present() { throttle_gpu_submission(); }
+
 void present_and_reopen(bool& frameActive) {
     ++g_present_count;   // PRESENTS, not game ticks — the two coincide today (one present per tick)
     throttle_gpu_submission();
@@ -554,10 +557,14 @@ void present_and_reopen(bool& frameActive) {
     }
 
     const AuroraEvent* event = aurora_update();
-    bool exit_requested = g_quit_requested != 0;
-    while (event != nullptr && event->type != AURORA_NONE) {
-        if (event->type == AURORA_EXIT) exit_requested = true;
-        ++event;
+    bool exit_requested = g_quit_requested != 0 || sb::ui::runtime().handle_events(event);
+    if (!exit_requested) {
+        const bool wasActive = frameActive;
+        frameActive = aurora_begin_frame();
+        if (frameActive != wasActive) lucent::warn("frame", "aurora_begin_frame -> {}", frameActive);
+        if (sb::ui::runtime().visible() &&
+            !sb::ui::runtime().pause_while_open(frameActive, ui_quit_requested, pace_ui_present))
+            exit_requested = true;
     }
     if (exit_requested) {
         // NAME THE ACTUAL CAUSE. g_quit_requested is set by the SIGINT/SIGTERM handler AND by the
@@ -576,13 +583,10 @@ void present_and_reopen(bool& frameActive) {
         // the first frame, while the same run had in fact lerped thousands of rope and grass
         // vertices. A cadence-only instrument reports whatever last happened to line up.
         final_reports();
+        sb::ui::runtime().shutdown();
         aurora_shutdown();
         std::_Exit(0);
     }
-
-    const bool wasActive = frameActive;
-    frameActive = aurora_begin_frame();
-    if (frameActive != wasActive) lucent::warn("frame", "aurora_begin_frame -> {}", frameActive);
 }
 
 // WATCH the six known zero-decoding texture buffers, every present from boot. The question this

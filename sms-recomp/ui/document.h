@@ -20,6 +20,7 @@ public:
 
   bool valid() const noexcept { return m_document != nullptr; }
   void show();
+  void hide();
 
 protected:
   void listen(Rml::Element *element, Rml::EventId event,

@@ -4,16 +4,20 @@ Sunbright's primary runtime follows Dusklight's application ownership split:
 
 - `sms-recomp/app/settings.{h,cpp}` is the typed persistence authority.
 - `sms-recomp/app/frame_rate.{h,cpp}` owns frame-cadence semantics.
-- `sms-recomp/ui/` owns RmlUi documents, scoped event listeners, and the prelaunch loop.
-- `res/rml/settings.rcss` owns presentation; `res/LICENSES/` records copied asset licensing.
+- `sms-recomp/ui/` follows Dusklight's `Document → Window → SettingsMenu` split. `ui::Runtime` owns
+  the persistent in-game document, Escape routing, and the modal pause loop.
+- `res/rml/{window,tabbing,settings}.rcss` owns the copied/adapted Dusklight presentation;
+  `res/LICENSES/` records its CC0 source and the copied Fira Sans font licensing.
 - Runtime seams include `app/` policy directly. They never read Rml elements or duplicate string
   parsing.
 
 `./run.sh` is the product entry point and delegates to `play.sh`; `run-decomp.sh` is the explicit
-decomp/Aurora oracle. Headless runs skip the prelaunch screen. The shared launcher policy selects
-SDL's offscreen video driver for `SB_HEADLESS`, and Aurora requests a surfaceless WebGPU adapter, so
+decomp/Aurora oracle. Escape opens the renderer/framerate window during play; Escape or its close
+button closes it. The frame seam stays inside the UI modal loop while visible, so guest simulation
+is paused. Headless runs skip the prelaunch screen. The shared launcher policy selects SDL's
+offscreen video driver for `SB_HEADLESS`, and Aurora requests a surfaceless WebGPU adapter, so
 windowless runs do not require X11, Wayland, or another display server. `SBR_SKIP_PRELAUNCH=1`
-skips the menu without changing window policy.
+skips only the prelaunch presentation; the in-game Escape route remains available.
 
 ## Persistence and overrides
 
@@ -38,11 +42,16 @@ the file.
 | Choice | Current behavior |
 |---|---|
 | Aurora | Displayed GX command-stream renderer and parity authority. |
-| Native | Enables the existing SDL3-GPU offscreen parity preview for the session. Aurora remains the displayed picture. The menu says this explicitly; native display ownership waits for renderer parity and a real presentation seam. |
+| Native | Enables the existing SDL3-GPU offscreen parity preview for the session. Selecting it is the per-session human approval required by the renderer's GPU-safety gate. Aurora remains the displayed picture. |
 
 The native choice is intentionally not presented as complete renderer switching. CPU readback or
 compositing the preview through Aurora would conceal the missing native presentation boundary and
 is not an acceptable substitute.
+
+Renderer and supported framerate selections apply at the next simulation-tick boundary and save
+immediately. Interpolation is not a one-way startup latch: switching it off disables Aurora replay;
+switching it on forces the first new tick exact before later ticks interpolate, so stale pairing
+history is never displayed. Environment overrides remain authoritative for diagnostic sessions.
 
 ## Framerate choices
 
@@ -67,9 +76,11 @@ silently running capped 60.
 
 ## Windowless verification
 
-`SBR_UI_SELFTEST=N` renders exactly `N` settings frames and exits before guest memory, disc, or DOL
-loading. It checks the computed panel, Play button, and all seven choices after RmlUi layout; any
-required zero-area control fails. Run it through `run-safe.sh`, which keeps the window hidden and
-checks the kernel's GPU-reset log. Aurora's `SB_DUMP_FRAME` captures the game `present_source`
-before the Rml overlay is composited, so a black dump is expected for a UI-only frame and is not a
-UI pixel oracle.
+`SBR_UI_SELFTEST=N` exits before guest memory, disc, or DOL loading. It pushes Escape through SDL,
+requires the shipping Aurora event route to open the in-game window, renders exactly `N` settings
+frames, checks the 1088x768 window and all seven choices have nonzero computed area inside the
+viewport, then pushes Escape again and requires the production modal loop to close. Run it through
+`run-safe.sh`, which keeps the window hidden and checks the kernel's GPU-reset log. The control must
+name a Vulkan adapter; Aurora's sandbox-only Null fallback cannot allocate its staging buffers and
+is not a valid layout result. `SB_DUMP_FRAME` captures the game `present_source` before Rml overlay
+composition, so a black UI-only dump is expected and is not a UI pixel oracle.
