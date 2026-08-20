@@ -1,13 +1,12 @@
 #pragma once
-// lerp60 — interpolated 60fps: two presents per 30 Hz game tick, the first with model matrices
-// lerped halfway toward the previous tick's.
+// stream interpolation — one 30 Hz SMS tick presented at a fixed two samples or resampled to the
+// active display rate. Every sample reads one committed previous/current history pair.
 //
 // See debug_journal/2026-07-30_aurora_60fps_lerp_design.md for the design and for the two premises
 // that decided it (the uniform block IS patchable in place; a recorded frame is NOT re-executable).
 //
-// The short version: a tick contributes MATRICES, not geometry — model-space vertices do not change
-// between ticks, animation moves the transforms. So a 60 Hz render of a 30 Hz simulation is the
-// same geometry drawn twice with different transforms, not two scene submissions.
+// The short version: a tick contributes a recorded stream and transform history, not another
+// simulation step. Presentation replays that stream at one or more alphas without re-running SMS.
 //
 // GATED OFF BY DEFAULT (SBR_LERP60=1). With the flag off aurora records and presents exactly as it
 // did before, which matters because aurora is also the parity oracle the native SDL3-GPU renderer
@@ -22,6 +21,7 @@
 // True if SBR_LERP60 is set. Checked at every seam that changes behaviour, so the off path is the
 // untouched path.
 bool sbr_lerp_enabled();
+void sbr_prepare_interpolation_presentations();
 
 // True if the GAME warped the camera during the tick just ended, clearing the flag as it reads.
 // A warp (CPolarSubCamera::warpPosAndAt) sets position and target outright and zeroes the game's own

@@ -11,6 +11,7 @@
 
 #include "stream_interp.h"
 #include "populations.h"
+#include "app/frame_rate.h"
 
 #include <lucent/log.h>
 
@@ -69,6 +70,7 @@ struct Registration {
 std::vector<Registration> g_callbacks;
 uint64_t g_tickSeq = 0;
 bool g_syncRequested = false;
+float g_presentationAlpha = 0.5f;
 
 // Every one of these is a DENOMINATOR. A report that says "0 callbacks fired" is worthless without
 // "out of 0 registered over 12,000 ticks", because those two zeros have opposite causes.
@@ -80,12 +82,16 @@ unsigned long g_syncedTicks = 0;
 
 Mode resolve_mode() {
     if (!sbr_lerp_enabled()) return Mode::Off;
-    static bool said = false;
-    if (!said) {
-        said = true;
-        lucent::info("interp", "frame interpolation: CAPPED (two presents per simulation tick)");
+    const Mode resolved = sb::app::frame_rate::interpolation_matches_refresh()
+                              ? Mode::Unlimited
+                              : Mode::Capped;
+    static Mode previous = Mode::Off;
+    if (resolved != previous) {
+        lucent::info("interp", "frame interpolation: {}",
+                     resolved == Mode::Unlimited ? "MATCH REFRESH" : "CAPPED (60 FPS)");
+        previous = resolved;
     }
-    return Mode::Capped;
+    return resolved;
 }
 
 } // namespace
@@ -98,7 +104,7 @@ float interpolation_step() {
     // A synced tick must present EXACTLY, which is step 1.0 — not 0.5 with the replacement
     // suppressed, because those differ for anything the replacement does not cover.
     if (presentation_sync_active()) return 1.0f;
-    return 0.5f;
+    return g_presentationAlpha;
 }
 
 void request_presentation_sync() {
@@ -121,6 +127,7 @@ void add_interpolation_callback(Callback cb, void* user) {
 
 void begin_sim_tick() {
     ++g_ticks;
+    ++g_tickSeq;
     // Cleared every tick, which is what makes the registry self-maintaining: a system that stops
     // registering stops being called, and nothing in this file has to know the list of effects.
     g_callbacks.clear();
@@ -129,10 +136,10 @@ void begin_sim_tick() {
 
 uint64_t sim_tick_seq() { return g_tickSeq; }
 
-void present_interpolated_frame() {
+void present_interpolated_frame(float alpha) {
     if (!is_enabled()) return;
+    g_presentationAlpha = alpha;
     ++g_presentedFrames;
-    ++g_tickSeq;
     for (const Registration& r : g_callbacks) {
         r.cb(/*is_sim_frame=*/false, r.user);
         ++g_dispatched;

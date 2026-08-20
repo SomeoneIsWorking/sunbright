@@ -1,6 +1,7 @@
 #include "frame_rate.h"
 
 #include <cstdlib>
+#include <cmath>
 
 namespace sb::app::frame_rate {
 namespace {
@@ -10,26 +11,34 @@ bool env_enabled(const char *name) noexcept {
   return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+constexpr double kDefaultRefreshHz = 60.0;
+constexpr double kSmsTickHz = 30000.0 / 1001.0;
+constexpr unsigned kMaxPresentationsPerTick = 64;
+
+double g_displayRefreshHz = kDefaultRefreshHz;
+double g_presentationCredit = 0.0;
+FrameRateMode g_cadenceMode = FrameRateMode::Vanilla;
+
 } // namespace
 
 FrameRateMode mode() noexcept { return settings().effective().frameRate; }
 
 bool interpolates() noexcept {
   return mode() == FrameRateMode::Interpolated60 ||
-         mode() == FrameRateMode::InterpolatedUnlocked;
+         mode() == FrameRateMode::InterpolatedMatchRefresh;
 }
 
-bool interpolation_unlocked() noexcept {
-  return mode() == FrameRateMode::InterpolatedUnlocked;
+bool interpolation_matches_refresh() noexcept {
+  return mode() == FrameRateMode::InterpolatedMatchRefresh;
 }
 
 bool runs_native_game_rate() noexcept {
   return mode() == FrameRateMode::Native60 ||
-         mode() == FrameRateMode::NativeUnlocked;
+         mode() == FrameRateMode::NativeMatchRefresh;
 }
 
 bool host_pacing_enabled() noexcept {
-  return mode() != FrameRateMode::NativeUnlocked && !env_enabled("SB_TURBO");
+  return !env_enabled("SB_TURBO");
 }
 
 uint32_t game_retrace_count(uint32_t requested) noexcept {
@@ -38,20 +47,45 @@ uint32_t game_retrace_count(uint32_t requested) noexcept {
   return requested;
 }
 
-bool is_supported(FrameRateMode candidate) noexcept {
-  return candidate != FrameRateMode::InterpolatedUnlocked;
+void set_display_refresh_hz(double refreshHz) noexcept {
+  if (!std::isfinite(refreshHz) || refreshHz < kSmsTickHz || refreshHz > 1000.0)
+    refreshHz = kDefaultRefreshHz;
+  if (std::fabs(g_displayRefreshHz - refreshHz) > 0.001) {
+    g_displayRefreshHz = refreshHz;
+    g_presentationCredit = 0.0;
+  }
 }
 
-const char *unsupported_reason(FrameRateMode candidate) noexcept {
-  if (candidate == FrameRateMode::InterpolatedUnlocked) {
-    return "Aurora's replay engine currently owns exactly one midpoint "
-           "emission per simulation "
-           "tick. Unlocked interpolation needs a reusable, read-only "
-           "interpolation plan so it "
-           "can emit several display-timed alphas without advancing object "
-           "history each time.";
+double display_refresh_hz() noexcept { return g_displayRefreshHz; }
+
+unsigned presentation_count_for_tick() noexcept {
+  const FrameRateMode currentMode = mode();
+  if (currentMode != g_cadenceMode) {
+    g_cadenceMode = currentMode;
+    g_presentationCredit = 0.0;
   }
-  return nullptr;
+  if (currentMode == FrameRateMode::Interpolated60)
+    return 2;
+  if (currentMode != FrameRateMode::InterpolatedMatchRefresh)
+    return 1;
+
+  // SMS advances once every two NTSC fields (30000/1001 Hz). Carry the
+  // fractional display-frame credit between ticks so non-integral ratios such
+  // as 144/29.97 alternate between four and five emissions without drift.
+  g_presentationCredit += g_displayRefreshHz / kSmsTickHz;
+  unsigned count = static_cast<unsigned>(g_presentationCredit);
+  g_presentationCredit -= count;
+  if (count == 0)
+    count = 1;
+  if (count > kMaxPresentationsPerTick)
+    count = kMaxPresentationsPerTick;
+  return count;
+}
+
+void reset_presentation_cadence() noexcept { g_presentationCredit = 0.0; }
+
+int64_t native_frame_period_ns() noexcept {
+  return static_cast<int64_t>(std::llround(1'000'000'000.0 / g_displayRefreshHz));
 }
 
 } // namespace sb::app::frame_rate

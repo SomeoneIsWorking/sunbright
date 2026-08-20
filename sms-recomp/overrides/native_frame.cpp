@@ -37,6 +37,7 @@ long tick_index();
 #include <lucent/log.h>
 
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -183,6 +184,7 @@ u32 g_dumpGuestTick = 0;
 bool g_presentPending = false;
 CPUState* g_pendingCpu = nullptr;
 bool s_frameActive = true;   // main() opened the first frame
+void throttle_gpu_submission();
 
 bool present_after_copy() {
     static const bool v = std::getenv("SBR_PRESENT_AFTER_COPY") != nullptr;
@@ -205,6 +207,53 @@ void pace_fields(unsigned fields) {
     }
 }
 
+void update_display_refresh_rate() {
+    double refreshHz = aurora_display_refresh_rate();
+    static bool overrideChecked = false;
+    static double overrideHz = 0.0;
+    if (!overrideChecked) {
+        overrideChecked = true;
+        if (const char* overrideValue = std::getenv("SBR_DISPLAY_HZ");
+            overrideValue != nullptr && overrideValue[0] != '\0') {
+            char* end = nullptr;
+            const double parsed = std::strtod(overrideValue, &end);
+            if (end != overrideValue && *end == '\0' && parsed >= 30000.0 / 1001.0 &&
+                parsed <= 1000.0) {
+                overrideHz = parsed;
+            } else {
+                lucent::error("frame", "SBR_DISPLAY_HZ='{}' is invalid; expected a rate from "
+                                          "{:.3f} through 1000 Hz", overrideValue,
+                              30000.0 / 1001.0);
+            }
+        }
+    }
+    if (overrideHz > 0.0) refreshHz = overrideHz;
+    const double before = sb::app::frame_rate::display_refresh_hz();
+    sb::app::frame_rate::set_display_refresh_hz(refreshHz);
+    const double after = sb::app::frame_rate::display_refresh_hz();
+    static bool logged = false;
+    if (!logged || std::fabs(after - before) > 0.001) {
+        lucent::info("frame", "active display refresh rate: {:.3f} Hz", after);
+        logged = true;
+    }
+}
+
+void pace_native_refresh() {
+    if (!sb::app::frame_rate::host_pacing_enabled()) return;
+    if (g_nextDeadlineNs == 0) g_nextDeadlineNs = now_ns();
+    const int64_t period = sb::app::frame_rate::native_frame_period_ns();
+    g_nextDeadlineNs += period;
+    const int64_t now = now_ns();
+    if (now < g_nextDeadlineNs) {
+        const int64_t delay = g_nextDeadlineNs - now;
+        timespec ts{static_cast<time_t>(delay / 1000000000LL),
+                    static_cast<long>(delay % 1000000000LL)};
+        nanosleep(&ts, nullptr);
+    } else if (now - g_nextDeadlineNs > 4 * period) {
+        g_nextDeadlineNs = now;
+    }
+}
+
 } // namespace
 
 // Called by aurora BETWEEN the two presents of an interpolated tick.
@@ -224,7 +273,7 @@ extern "C" void aurora_replay_midpoint() {
     // which makes it the only place in the frame loop that is genuinely mid-tick — so it is where
     // interpolation callbacks are dispatched (frame_interp.h). It runs before the sleep, so a
     // callback's work lands in the in-between image rather than after it has been shown.
-    sb::frame_interp::present_interpolated_frame();
+    sb::frame_interp::present_interpolated_frame(0.5f);
     // THE SLEEP BELOW IS OBSOLETE WHEN THE PRESENT QUEUE DOES THE SPACING.
     //
     // Its entire purpose was to put the two presents of a tick a half-tick apart, because in
@@ -360,6 +409,12 @@ extern "C" void aurora_replay_midpoint() {
     const int64_t d = target - now;
     timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
     nanosleep(&ts, nullptr);
+}
+
+extern "C" void aurora_replay_sample(float alpha, unsigned, unsigned) {
+    ++g_present_count;
+    throttle_gpu_submission();
+    sb::frame_interp::present_interpolated_frame(alpha);
 }
 
 void sbr_tag_shadow_begin_tick();
@@ -890,6 +945,7 @@ void video_wait_for_retrace(CPUState& cpu) {
 // is set: the present itself, the interpolated sub-frame, and the frame-time bookkeeping that
 // brackets them. Factored out rather than duplicated so the two placements cannot drift apart.
 void present_tail(CPUState& cpu) {
+    update_display_refresh_rate();
     // Close and send THIS tick's stream. Deliberately here and not in the seam: when the present is
     // deferred past the game's EFB->XFB copy, the copy command is emitted after the seam returns, so
     // a stream closed in the seam would not contain it.
@@ -925,6 +981,7 @@ void present_tail(CPUState& cpu) {
     char tag[32];
     std::snprintf(tag, sizeof tag, "main-t%u", gtick);
     aurora_set_dump_tag(tag);
+    sbr_prepare_interpolation_presentations();
     present_and_reopen(s_frameActive);
 
     // GAME-NATIVE 60fps: the interpolated sub-frame.
@@ -1014,7 +1071,10 @@ void present_tail(CPUState& cpu) {
         }
         // Remembered for the NEXT tick's midpoint pacing (see aurora_replay_midpoint).
         g_tickFields = retraces;
-        pace_fields(retraces);
+        if (sb::app::frame_rate::mode() == sb::app::FrameRateMode::NativeMatchRefresh)
+            pace_native_refresh();
+        else
+            pace_fields(retraces);
     }
 }
 

@@ -14,9 +14,9 @@ enum class Renderer {
 enum class FrameRateMode {
   Vanilla,
   Interpolated60,
-  InterpolatedUnlocked,
+  InterpolatedMatchRefresh,
   Native60,
-  NativeUnlocked,
+  NativeMatchRefresh,
 };
 
 struct Settings {

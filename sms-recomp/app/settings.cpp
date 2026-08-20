@@ -28,11 +28,11 @@ constexpr std::array kFrameRates{
     NamedValue{FrameRateMode::Vanilla, "vanilla", "Vanilla"},
     NamedValue{FrameRateMode::Interpolated60, "interpolated-60",
                "Interpolated 60 FPS"},
-    NamedValue{FrameRateMode::InterpolatedUnlocked, "interpolated-unlocked",
-               "Interpolated Unlocked"},
+    NamedValue{FrameRateMode::InterpolatedMatchRefresh, "interpolated-unlocked",
+               "Interpolated Match Refresh"},
     NamedValue{FrameRateMode::Native60, "native-60", "Native 60 FPS"},
-    NamedValue{FrameRateMode::NativeUnlocked, "native-unlocked",
-               "Native Unlocked"},
+    NamedValue{FrameRateMode::NativeMatchRefresh, "native-unlocked",
+               "Native Match Refresh"},
 };
 
 template <typename T, std::size_t N>

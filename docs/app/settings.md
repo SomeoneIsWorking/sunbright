@@ -35,7 +35,9 @@ save immediately. `SBR_FRAME_RATE` accepts `vanilla`, `interpolated-60`,
 `interpolated-unlocked`, `native-60`, or `native-unlocked`; the legacy `SBR_60FPS` and
 `SBR_LERP60` inputs select `interpolated-60`. `SBR_SDLGPU=1` selects the native preview for a
 diagnostic session. Environment input overrides the persisted effective value without rewriting
-the file.
+the file. The persisted `*-unlocked` spellings remain for config compatibility; the UI calls those
+modes **Match Refresh**. `SBR_DISPLAY_HZ=<rate>` supplies the active display rate to windowless
+tests; normal runs query the current SDL display mode and refresh it when the window moves.
 
 ## Renderer choices
 
@@ -59,20 +61,22 @@ history is never displayed. Environment overrides remain authoritative for diagn
 |---|---|---|---|
 | Vanilla | Game-requested retrace interval, normally 30 Hz | One present per tick | Wired |
 | Interpolated 60 FPS | Original 30 Hz logic | One midpoint plus exact frame | Wired |
-| Interpolated Unlocked | Original 30 Hz logic | Display-timed arbitrary subframes | **Unavailable** |
+| Interpolated Match Refresh | Original 30000/1001 Hz logic | Interpolation samples matching the active display rate | Wired |
 | Native 60 FPS | Game retrace interval overridden from two fields to one | One present per 60 Hz game tick | Wired |
-| Native Unlocked | Same game-native one-field override | Host pacing removed | Wired |
+| Native Match Refresh | Game-native one-field override, paced at the active display rate | One present per game tick | Wired |
 
 The native override is at the real semantic boundary: immediately before calling the recompiled
 `JDrama::TVideo::waitForRetrace`, its requested `r4` field count becomes one. The original game
 body therefore observes the override; this is not an independent host-side 60 Hz simulation.
 
-Interpolated Unlocked is unavailable because Aurora's replay engine captures one snapshot,
-mutates object/camera pairing history while generating one alpha, emits one exact replay, and
-consumes the snapshot. Reusing that path several times would pair later subframes against data
-already advanced by the first. The required implementation is a reusable, read-only per-tick
-interpolation plan plus display-timed multi-emission replay. The menu refuses this mode rather than
-silently running capped 60.
+Match Refresh means the monitor's current nominal refresh rate, not an unpaced loop. Native Match
+Refresh runs the SMS simulation itself at that rate through the same `TVideo::waitForRetrace`
+override used by Native 60. Interpolated Match Refresh keeps SMS logic at 30000/1001 Hz and carries
+fractional presentation credit between ticks: 120 Hz normally emits four samples, while 144 Hz
+alternates four and five without long-term drift. Aurora commits object, vertex, billboard, and
+camera history once, retains that tick's replay snapshot, and resamples the immutable pair for each
+alpha; the last emission is exact and consumes the snapshot. Its CPU self-test proves `.25` and
+`.75` produce distinct poses without advancing the tick or pairing counters.
 
 ## Windowless verification
 

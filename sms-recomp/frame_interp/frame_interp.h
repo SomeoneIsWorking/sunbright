@@ -29,10 +29,8 @@ namespace sb::frame_interp {
 //
 //   Off        one present per simulation tick. The game as the console ran it.
 //   Capped     a fixed number of presents per tick — for us, two.
-//   Unlimited  as many presentation frames as the display can take. NOT IMPLEMENTED HERE: the
-//              current mechanism produces exactly one in-between frame per tick, so requesting
-//              Unlimited gets Capped and says so once, rather than silently behaving as something
-//              the caller did not ask for.
+//   Unlimited  presentation samples track the active display refresh rate while SMS simulation
+//              remains at its original 30000/1001 Hz.
 enum class Mode : uint8_t { Off = 0, Capped = 1, Unlimited = 2 };
 
 Mode mode();
@@ -60,7 +58,7 @@ bool presentation_sync_active();
 
 // ── INTERPOLATION CALLBACKS — dusklight's add_interpolation_callback ─────────────────────────────
 //
-// Registered DURING a simulation tick, called once when that tick's in-between frame is presented.
+// Registered DURING a simulation tick, called for each in-between presentation sample.
 // The registration is cleared at the start of every tick, so a system that stops registering stops
 // being called, and there is no list of effects in this file to go stale.
 //
@@ -69,9 +67,9 @@ bool presentation_sync_active();
 //
 // ⚠ WHAT A CALLBACK CAN AND CANNOT DO, because getting this wrong produces a silent no-op.
 //
-// The dispatch is `aurora_replay_midpoint()`, which aurora calls from `end_frame()` BEFORE
-// `begin_frame()` and `install_replay_snapshot()` (extern/aurora/lib/aurora.cpp:876) — so a
-// callback genuinely runs ahead of the in-between present. It does NOT follow that a callback can
+// The dispatch is `aurora_replay_sample()`, which aurora calls from `end_frame()` BEFORE
+// `begin_frame()` and `install_replay_snapshot()` — so a callback genuinely runs ahead of each
+// in-between present. It does NOT follow that a callback can
 // draw into that frame: the in-between image is a SNAPSHOT of the tick's recorded passes, and
 // install_replay_snapshot() throws away the pass begin_frame() just created and substitutes the
 // snapshot's. GX emitted from a callback lands in the NEXT tick's stream, where it will be drawn
@@ -95,10 +93,9 @@ void add_interpolation_callback(Callback cb, void* user);
 void begin_sim_tick();
 uint64_t sim_tick_seq();
 
-// The in-between frame is about to be presented — dispatch the callbacks. Called from
-// aurora_replay_midpoint(), which is the one place in the frame loop that is genuinely BETWEEN the
-// tick's two presents.
-void present_interpolated_frame();
+// An in-between sample is about to be presented — dispatch the callbacks with its alpha. Called
+// from aurora_replay_sample() before each retained-snapshot replay.
+void present_interpolated_frame(float alpha);
 
 // Per-run summary, with denominators. Prints even when nothing registered, because "no effect asked
 // to be interpolated" and "the dispatch never ran" are the same silence otherwise — and of those

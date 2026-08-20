@@ -23,6 +23,7 @@ extern long g_untaggedPerspIndexedCount;
 
 namespace aurora::gfx {
 void force_interpolation(float alpha);
+void set_replay_presentation_count(unsigned count);
 void snap_next_interpolation();
 }
 
@@ -31,6 +32,7 @@ bool sbr_lerp_enabled() {
     static bool initialized = false;
     static bool previous = false;
     if (!initialized || enabled != previous) {
+        sb::app::frame_rate::reset_presentation_cadence();
         aurora::gfx::force_interpolation(enabled ? 0.5f : -1.0f);
         if (enabled) {
             // A menu change happens between simulation ticks. Snap the first newly-enabled tick so
@@ -56,6 +58,13 @@ bool sbr_lerp_enabled() {
         initialized = true;
     }
     return enabled;
+}
+
+void sbr_prepare_interpolation_presentations() {
+    if (!sbr_lerp_enabled()) return;
+    const unsigned count = sb::app::frame_rate::presentation_count_for_tick();
+    aurora::gfx::set_replay_presentation_count(count);
+    aurora::gfx::force_interpolation(1.0f / static_cast<float>(count));
 }
 
 void sbr_lerp_report_tag_coverage() {

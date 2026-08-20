@@ -253,7 +253,7 @@ verdicts in this arc stood on exactly that.
 |---|---|---|---|
 | switch | `SBR_60FPS` (alias `SBR_LERP60`) | `SBR_INTERP60` + `_ALPHA` | `SBR_INTERP60_REPLACE` |
 | where | `runtime/lerp60.{h,cpp}` → `aurora::gfx::interp` (`extern/aurora/lib/gfx/common.cpp`) | `overrides/interp60_snapshot.cpp` (2951 lines) — DELETED, see below | `overrides/interp60_replace.{h,cpp}` — DELETED, see below |
-| mechanism | record the tick's GX stream, rewrite the **recorded frame's matrices** in uniform staging toward the previous tick, present the packet twice | write an interpolated pose into the game's own objects, **re-run** the tick's draw lists from it, restore | record each `J3DModel`'s final draw matrices, **overwrite** the live buffer with `lerp(prev,cur)` for the duration of the sub-frame's draw, restore byte-exactly |
+| mechanism | record the tick's GX stream, commit one previous/current pairing plan, and replay it at two samples (60 FPS) or enough samples to match display refresh | write an interpolated pose into the game's own objects, **re-run** the tick's draw lists from it, restore | record each `J3DModel`'s final draw matrices, **overwrite** the live buffer with `lerp(prev,cur)` for the duration of the sub-frame's draw, restore byte-exactly |
 | runs game code in the sub-frame | **no** | yes — the whole draw-list set | yes — the whole draw-list set |
 | identity/pairing | per-draw TAG emitted at `J3DShape::draw` | actor object address | `(J3DModel, matrix index)` |
 | **effects handled** | **yes** — EFB cross/intra-frame copies, camera cuts, screen-sampling effects, afterimage feedback | no | no |
@@ -265,7 +265,7 @@ verdicts in this arc stood on exactly that.
 ### ⚠ PRESENT MODE IS PART OF THE MECHANISM
 
 An interpolated run MUST use a queued present mode. aurora's `vsync = false` selects **Mailbox**,
-whose defining behaviour is that a newer present REPLACES the pending image — so a tick emitting two
+whose defining behaviour is that a newer present REPLACES the pending image — so a tick emitting several
 images inside one display refresh has its in-between frame **discarded by the swapchain**, while
 every counter still reads 60 fps. Interpolated runs therefore select `vsync = true` → strict
 **`Fifo`**, where each presented image is queued and shown for at least one refresh.
@@ -276,7 +276,7 @@ the pair went out back to back exactly as under Mailbox. `AURORA_PRESENT_RELAXED
 for comparison.
 `debug_journal/2026-08-06_interp60_mailbox_discards_the_inbetween.md`.
 
-The corollary is that the frame-loop sleep which used to space the two presents is obsolete: the
+The corollary is that the frame-loop sleep which used to space those presents is obsolete: the
 display's refresh does the spacing. It is kept behind `SBR_MIDPOINT_SLACK` for comparison.
 
 ### Measured, on the axis that matches the complaint
@@ -413,7 +413,7 @@ Wired seams, all three real and all three verified firing:
 | seam | called from | evidence |
 |---|---|---|
 | `begin_sim_tick()` | `present_tail` in `native_frame.cpp` | 6000 ticks counted over a plaza run |
-| `present_interpolated_frame()` | `aurora_replay_midpoint()` — the one point genuinely BETWEEN a tick's two presents | 6000 in-between frames, 1:1 with ticks |
+| `present_interpolated_frame(alpha)` | `aurora_replay_sample()` before each retained-snapshot replay | one dispatch per in-between presentation sample; capped 60 remains 1:1 with ticks |
 | `request_presentation_sync()` | `camera.cpp` via `present_tail` | 0 requests, and the report SAYS 0 rather than staying silent |
 
 The callback registry is live and **nothing registers yet** — the report says so in those words,

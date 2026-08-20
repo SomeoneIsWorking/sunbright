@@ -29,9 +29,9 @@ const Rml::String kDocument = R"RML(
         <div class="section-heading">Framerate</div>
         <select-button id="fps-vanilla"><key>Vanilla</key><value/></select-button>
         <select-button id="fps-interpolated-60"><key>Interpolated 60 FPS</key><value/></select-button>
-        <select-button id="fps-interpolated-unlocked"><key>Interpolated Unlocked</key><value/></select-button>
+        <select-button id="fps-interpolated-match-refresh"><key>Interpolated Match Refresh</key><value/></select-button>
         <select-button id="fps-native-60"><key>Native 60 FPS</key><value/></select-button>
-        <select-button id="fps-native-unlocked"><key>Native Unlocked</key><value/></select-button>
+        <select-button id="fps-native-match-refresh"><key>Native Match Refresh</key><value/></select-button>
         <spacer/>
       </pane>
       <pane id="details-pane">
@@ -57,15 +57,15 @@ constexpr std::array kRendererValues{app::Renderer::Aurora,
 constexpr std::array kFrameRateValues{
     app::FrameRateMode::Vanilla,
     app::FrameRateMode::Interpolated60,
-    app::FrameRateMode::InterpolatedUnlocked,
+    app::FrameRateMode::InterpolatedMatchRefresh,
     app::FrameRateMode::Native60,
-    app::FrameRateMode::NativeUnlocked,
+    app::FrameRateMode::NativeMatchRefresh,
 };
 constexpr std::array<const char *, 2> kRendererIds{"renderer-aurora",
                                                    "renderer-native"};
 constexpr std::array<const char *, 5> kFrameRateIds{
-    "fps-vanilla", "fps-interpolated-60", "fps-interpolated-unlocked",
-    "fps-native-60", "fps-native-unlocked"};
+    "fps-vanilla", "fps-interpolated-60", "fps-interpolated-match-refresh",
+    "fps-native-60", "fps-native-match-refresh"};
 
 const char *renderer_detail(app::Renderer renderer) noexcept {
   if (renderer == app::Renderer::Aurora)
@@ -84,15 +84,15 @@ const char *frame_rate_detail(app::FrameRateMode mode) noexcept {
   case app::FrameRateMode::Interpolated60:
     return "Game logic stays at 30 FPS; a renderer-generated midpoint produces "
            "60 FPS presentation.";
-  case app::FrameRateMode::InterpolatedUnlocked:
-    return "Unavailable: reusable display-timed interpolation is not "
-           "implemented yet.";
+  case app::FrameRateMode::InterpolatedMatchRefresh:
+    return "Game logic stays at its original 30 FPS; Aurora presents reusable "
+           "interpolation samples at the active display refresh rate.";
   case app::FrameRateMode::Native60:
     return "Overrides the game's own TDisplay retrace interval from two fields "
            "to one (native 60 FPS).";
-  case app::FrameRateMode::NativeUnlocked:
-    return "Uses the same game-native one-field override with host pacing "
-           "removed.";
+  case app::FrameRateMode::NativeMatchRefresh:
+    return "Overrides the game's own TDisplay retrace interval to one field "
+           "and paces SMS game logic to the active display refresh rate.";
   }
   return "";
 }
@@ -124,12 +124,6 @@ SettingsMenu::SettingsMenu(bool prelaunch)
     m_playButton->SetClass("hidden", !m_prelaunch);
     listen(m_playButton, Rml::EventId::Click, [this](Rml::Event &) {
       const auto &selected = app::settings().effective();
-      if (!app::frame_rate::is_supported(selected.frameRate)) {
-        lucent::warn("ui", "{} is unavailable: {}",
-                     app::display_name(selected.frameRate),
-                     app::frame_rate::unsupported_reason(selected.frameRate));
-        return;
-      }
       if (selected.renderer == app::Renderer::Native)
         app::settings().approve_native_renderer_session();
       m_launchRequested = true;
@@ -175,11 +169,6 @@ void SettingsMenu::choose_renderer(app::Renderer renderer) {
 }
 
 void SettingsMenu::choose_frame_rate(app::FrameRateMode mode) {
-  if (!app::frame_rate::is_supported(mode)) {
-    lucent::warn("ui", "{} is unavailable: {}", app::display_name(mode),
-                 app::frame_rate::unsupported_reason(mode));
-    return;
-  }
   app::settings().set_frame_rate(mode);
   persist();
   refresh();
@@ -207,10 +196,7 @@ void SettingsMenu::refresh() {
     const bool active = kFrameRateValues[i] == selected.frameRate;
     if (choice != nullptr) {
       choice->SetPseudoClass("selected", active);
-      if (app::frame_rate::is_supported(kFrameRateValues[i]))
-        choice->RemoveAttribute("disabled");
-      else
-        choice->SetAttribute("disabled", "");
+      choice->RemoveAttribute("disabled");
       if (auto *value = choice->QuerySelector("value"))
         value->SetInnerRML(active ? "Selected" : "");
     }
@@ -220,10 +206,7 @@ void SettingsMenu::refresh() {
   if (m_frameRateDetail != nullptr)
     m_frameRateDetail->SetInnerRML(frame_rate_detail(selected.frameRate));
   if (m_playButton != nullptr) {
-    if (app::frame_rate::is_supported(selected.frameRate))
-      m_playButton->RemoveAttribute("disabled");
-    else
-      m_playButton->SetAttribute("disabled", "");
+    m_playButton->RemoveAttribute("disabled");
   }
 }
 

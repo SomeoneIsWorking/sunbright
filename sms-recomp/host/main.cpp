@@ -148,15 +148,6 @@ int main(int argc, char** argv) {
         aurora_shutdown();
         return 0;
     }
-    if (!sb::app::frame_rate::is_supported(sb::app::settings().effective().frameRate)) {
-        lucent::error("settings", "cannot launch with {}: {}",
-                      sb::app::display_name(sb::app::settings().effective().frameRate),
-                      sb::app::frame_rate::unsupported_reason(
-                          sb::app::settings().effective().frameRate));
-        sb::ui::runtime().shutdown();
-        aurora_shutdown();
-        return 1;
-    }
     lucent::info("settings", "renderer={} framerate={}",
                  sb::app::display_name(sb::app::settings().effective().renderer),
                  sb::app::display_name(sb::app::settings().effective().frameRate));
