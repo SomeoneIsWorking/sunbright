@@ -8,7 +8,7 @@
 #   SB_W=1920 SB_H=1080 ./run-decomp.sh
 #
 # This is a development oracle, not the default product. ./run.sh launches the standalone recomp
-# runtime, which runs the whole game and owns the RmlUi prelaunch settings screen.
+# runtime, which runs the whole game and owns the in-game Escape settings screen.
 set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }

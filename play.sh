@@ -2,7 +2,7 @@
 # play.sh — PLAY Super Mario Sunshine on this port. ./run.sh delegates here so the default path
 # and this explicit product launcher cannot drift:
 #
-#   ./run.sh           the game + prelaunch settings screen  <-- default
+#   ./run.sh           boot the game immediately             <-- default
 #   ./play.sh          the same product with command-line convenience flags
 #   ./run-recomp.sh    the same runtime, raw: no defaults, no argument parsing, no controls printed
 #   ./run-decomp.sh    the decomp verification oracle
@@ -27,8 +27,8 @@
 #   ./play.sh --rom /path/game.rvz   ROM path, if not in .env / $SUNBRIGHT_ROM / ./rom.rvz
 #   ./play.sh --help
 #
-# With no headless/skip switch, RmlUi opens before the game and persists Renderer + Framerate in
-# the platform user-data directory. Command-line options and environment variables override the
+# RmlUi opens only when Escape is pressed during play and persists Renderer + Framerate in the
+# platform user-data directory. Command-line options and environment variables override the
 # persisted value for that session.
 #
 # Anything after `--` is passed through as environment, e.g.

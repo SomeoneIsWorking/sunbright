@@ -42,7 +42,6 @@ const Rml::String kDocument = R"RML(
         <div id="framerate-detail" class="detail"/>
         <div class="grow"/>
         <div class="saved">Changes are saved automatically.</div>
-        <button id="play" class="play">Play</button>
         <div class="escape-hint">ESC closes settings</div>
         <spacer/>
       </pane>
@@ -52,8 +51,7 @@ const Rml::String kDocument = R"RML(
 </rml>
 )RML";
 
-constexpr std::array kRendererValues{app::Renderer::Aurora,
-                                     app::Renderer::Native};
+constexpr std::array kRendererValues{app::Renderer::Aurora, app::Renderer::Native};
 constexpr std::array kFrameRateValues{
     app::FrameRateMode::Vanilla,
     app::FrameRateMode::Interpolated60,
@@ -61,153 +59,132 @@ constexpr std::array kFrameRateValues{
     app::FrameRateMode::Native60,
     app::FrameRateMode::NativeMatchRefresh,
 };
-constexpr std::array<const char *, 2> kRendererIds{"renderer-aurora",
-                                                   "renderer-native"};
-constexpr std::array<const char *, 5> kFrameRateIds{
-    "fps-vanilla", "fps-interpolated-60", "fps-interpolated-match-refresh",
-    "fps-native-60", "fps-native-match-refresh"};
+constexpr std::array<const char*, 2> kRendererIds{"renderer-aurora", "renderer-native"};
+constexpr std::array<const char*, 5> kFrameRateIds{"fps-vanilla", "fps-interpolated-60",
+                                                   "fps-interpolated-match-refresh",
+                                                   "fps-native-60", "fps-native-match-refresh"};
 
-const char *renderer_detail(app::Renderer renderer) noexcept {
-  if (renderer == app::Renderer::Aurora)
-    return "Aurora translates the game's GX command stream through WebGPU. "
-           "It is the displayed renderer and the native path's parity oracle.";
-  return "Native enables the SDL3 GPU parity preview. It currently renders "
-         "offscreen beside Aurora; selecting it approves that preview for this "
-         "session.";
+const char* renderer_detail(app::Renderer renderer) noexcept {
+    if (renderer == app::Renderer::Aurora)
+        return "Aurora translates the game's GX command stream through WebGPU. "
+               "It is the displayed renderer and the native path's parity oracle.";
+    return "Native enables the SDL3 GPU parity preview. It currently renders "
+           "offscreen beside Aurora; selecting it approves that preview for this "
+           "session.";
 }
 
-const char *frame_rate_detail(app::FrameRateMode mode) noexcept {
-  switch (mode) {
-  case app::FrameRateMode::Vanilla:
-    return "Original cadence: one simulation frame every two NTSC retraces (30 "
-           "FPS).";
-  case app::FrameRateMode::Interpolated60:
-    return "Game logic stays at 30 FPS; a renderer-generated midpoint produces "
-           "60 FPS presentation.";
-  case app::FrameRateMode::InterpolatedMatchRefresh:
-    return "Game logic stays at its original 30 FPS; Aurora presents reusable "
-           "interpolation samples at the active display refresh rate.";
-  case app::FrameRateMode::Native60:
-    return "Overrides the game's own TDisplay retrace interval from two fields "
-           "to one (native 60 FPS).";
-  case app::FrameRateMode::NativeMatchRefresh:
-    return "Overrides the game's own TDisplay retrace interval to one field "
-           "and paces SMS game logic to the active display refresh rate.";
-  }
-  return "";
+const char* frame_rate_detail(app::FrameRateMode mode) noexcept {
+    switch (mode) {
+    case app::FrameRateMode::Vanilla:
+        return "Original cadence: one simulation frame every two NTSC retraces (30 "
+               "FPS).";
+    case app::FrameRateMode::Interpolated60:
+        return "Game logic stays at 30 FPS; a renderer-generated midpoint produces "
+               "60 FPS presentation.";
+    case app::FrameRateMode::InterpolatedMatchRefresh:
+        return "Game logic stays at its original 30 FPS; Aurora presents reusable "
+               "interpolation samples at the active display refresh rate.";
+    case app::FrameRateMode::Native60:
+        return "Overrides the game's own TDisplay retrace interval from two fields "
+               "to one (native 60 FPS).";
+    case app::FrameRateMode::NativeMatchRefresh:
+        return "Overrides the game's own TDisplay retrace interval to one field "
+               "and paces SMS game logic to the active display refresh rate.";
+    }
+    return "";
 }
 
 } // namespace
 
-SettingsMenu::SettingsMenu(bool prelaunch)
-    : Window(kDocument), m_prelaunch(prelaunch) {
-  if (!valid())
-    return;
-  if (auto *close = element("close"); close != nullptr)
-    close->SetClass("hidden", m_prelaunch);
-  m_optionsPane = element("options-pane");
-  m_detailsPane = element("details-pane");
-  for (std::size_t i = 0; i < m_rendererButtons.size(); ++i) {
-    m_rendererButtons[i] = element(kRendererIds[i]);
-    listen(m_rendererButtons[i], Rml::EventId::Click,
-           [this, i](Rml::Event &) { choose_renderer(kRendererValues[i]); });
-  }
-  for (std::size_t i = 0; i < m_frameRateButtons.size(); ++i) {
-    m_frameRateButtons[i] = element(kFrameRateIds[i]);
-    listen(m_frameRateButtons[i], Rml::EventId::Click,
-           [this, i](Rml::Event &) { choose_frame_rate(kFrameRateValues[i]); });
-  }
-  m_rendererDetail = element("renderer-detail");
-  m_frameRateDetail = element("framerate-detail");
-  m_playButton = element("play");
-  if (m_playButton != nullptr) {
-    m_playButton->SetClass("hidden", !m_prelaunch);
-    listen(m_playButton, Rml::EventId::Click, [this](Rml::Event &) {
-      const auto &selected = app::settings().effective();
-      if (selected.renderer == app::Renderer::Native)
-        app::settings().approve_native_renderer_session();
-      m_launchRequested = true;
-    });
-  }
-  refresh();
+SettingsMenu::SettingsMenu() : Window(kDocument) {
+    if (!valid())
+        return;
+    m_optionsPane = element("options-pane");
+    m_detailsPane = element("details-pane");
+    for (std::size_t i = 0; i < m_rendererButtons.size(); ++i) {
+        m_rendererButtons[i] = element(kRendererIds[i]);
+        listen(m_rendererButtons[i], Rml::EventId::Click,
+               [this, i](Rml::Event&) { choose_renderer(kRendererValues[i]); });
+    }
+    for (std::size_t i = 0; i < m_frameRateButtons.size(); ++i) {
+        m_frameRateButtons[i] = element(kFrameRateIds[i]);
+        listen(m_frameRateButtons[i], Rml::EventId::Click,
+               [this, i](Rml::Event&) { choose_frame_rate(kFrameRateValues[i]); });
+    }
+    m_rendererDetail = element("renderer-detail");
+    m_frameRateDetail = element("framerate-detail");
+    refresh();
 }
 
 bool SettingsMenu::layout_valid() const {
-  if (m_root == nullptr || m_optionsPane == nullptr || m_detailsPane == nullptr)
-    return false;
-  std::size_t visibleChoices = 0;
-  for (Rml::Element *choice : m_rendererButtons)
-    visibleChoices += choice != nullptr && choice->GetOffsetWidth() > 0 &&
-                      choice->GetOffsetHeight() > 0;
-  for (Rml::Element *choice : m_frameRateButtons)
-    visibleChoices += choice != nullptr && choice->GetOffsetWidth() > 0 &&
-                      choice->GetOffsetHeight() > 0;
-  const Rml::Vector2f offset = m_root->GetAbsoluteOffset(Rml::BoxArea::Border);
-  const Rml::Vector2i viewport = m_document->GetContext()->GetDimensions();
-  const float width = m_root->GetOffsetWidth();
-  const float height = m_root->GetOffsetHeight();
-  const bool inside = offset.x >= 0 && offset.y >= 0 &&
-                      offset.x + width <= viewport.x &&
-                      offset.y + height <= viewport.y;
-  const bool valid =
-      width > 0 && height > 0 && inside &&
-      visibleChoices == kRendererValues.size() + kFrameRateValues.size();
-  lucent::info("ui",
-               "settings window: ({}, {}) {}x{} in {}x{}, choices={}/{}{}",
-               offset.x, offset.y, width, height, viewport.x, viewport.y,
-               visibleChoices, kRendererValues.size() + kFrameRateValues.size(),
-               valid ? "" : " — INVALID");
-  return valid;
+    if (m_root == nullptr || m_optionsPane == nullptr || m_detailsPane == nullptr)
+        return false;
+    std::size_t visibleChoices = 0;
+    for (Rml::Element* choice : m_rendererButtons)
+        visibleChoices +=
+            choice != nullptr && choice->GetOffsetWidth() > 0 && choice->GetOffsetHeight() > 0;
+    for (Rml::Element* choice : m_frameRateButtons)
+        visibleChoices +=
+            choice != nullptr && choice->GetOffsetWidth() > 0 && choice->GetOffsetHeight() > 0;
+    const Rml::Vector2f offset = m_root->GetAbsoluteOffset(Rml::BoxArea::Border);
+    const Rml::Vector2i viewport = m_document->GetContext()->GetDimensions();
+    const float width = m_root->GetOffsetWidth();
+    const float height = m_root->GetOffsetHeight();
+    const bool inside = offset.x >= 0 && offset.y >= 0 && offset.x + width <= viewport.x &&
+                        offset.y + height <= viewport.y;
+    const bool valid = width > 0 && height > 0 && inside &&
+                       visibleChoices == kRendererValues.size() + kFrameRateValues.size();
+    lucent::info("ui", "settings window: ({}, {}) {}x{} in {}x{}, choices={}/{}{}", offset.x,
+                 offset.y, width, height, viewport.x, viewport.y, visibleChoices,
+                 kRendererValues.size() + kFrameRateValues.size(), valid ? "" : " — INVALID");
+    return valid;
 }
 
 void SettingsMenu::choose_renderer(app::Renderer renderer) {
-  app::settings().set_renderer(renderer);
-  if (renderer == app::Renderer::Native)
-    app::settings().approve_native_renderer_session();
-  persist();
-  refresh();
+    app::settings().set_renderer(renderer);
+    if (renderer == app::Renderer::Native)
+        app::settings().approve_native_renderer_session();
+    persist();
+    refresh();
 }
 
 void SettingsMenu::choose_frame_rate(app::FrameRateMode mode) {
-  app::settings().set_frame_rate(mode);
-  persist();
-  refresh();
+    app::settings().set_frame_rate(mode);
+    persist();
+    refresh();
 }
 
 void SettingsMenu::persist() {
-  if (!app::settings().save())
-    lucent::error("ui", "settings changed but could not be saved to {}",
-                  app::settings().path().string());
+    if (!app::settings().save())
+        lucent::error("ui", "settings changed but could not be saved to {}",
+                      app::settings().path().string());
 }
 
 void SettingsMenu::refresh() {
-  const auto &selected = app::settings().effective();
-  for (std::size_t i = 0; i < m_rendererButtons.size(); ++i) {
-    auto *choice = m_rendererButtons[i];
-    const bool active = kRendererValues[i] == selected.renderer;
-    if (choice != nullptr) {
-      choice->SetPseudoClass("selected", active);
-      if (auto *value = choice->QuerySelector("value"))
-        value->SetInnerRML(active ? "Selected" : "");
+    const auto& selected = app::settings().effective();
+    for (std::size_t i = 0; i < m_rendererButtons.size(); ++i) {
+        auto* choice = m_rendererButtons[i];
+        const bool active = kRendererValues[i] == selected.renderer;
+        if (choice != nullptr) {
+            choice->SetPseudoClass("selected", active);
+            if (auto* value = choice->QuerySelector("value"))
+                value->SetInnerRML(active ? "Selected" : "");
+        }
     }
-  }
-  for (std::size_t i = 0; i < m_frameRateButtons.size(); ++i) {
-    auto *choice = m_frameRateButtons[i];
-    const bool active = kFrameRateValues[i] == selected.frameRate;
-    if (choice != nullptr) {
-      choice->SetPseudoClass("selected", active);
-      choice->RemoveAttribute("disabled");
-      if (auto *value = choice->QuerySelector("value"))
-        value->SetInnerRML(active ? "Selected" : "");
+    for (std::size_t i = 0; i < m_frameRateButtons.size(); ++i) {
+        auto* choice = m_frameRateButtons[i];
+        const bool active = kFrameRateValues[i] == selected.frameRate;
+        if (choice != nullptr) {
+            choice->SetPseudoClass("selected", active);
+            choice->RemoveAttribute("disabled");
+            if (auto* value = choice->QuerySelector("value"))
+                value->SetInnerRML(active ? "Selected" : "");
+        }
     }
-  }
-  if (m_rendererDetail != nullptr)
-    m_rendererDetail->SetInnerRML(renderer_detail(selected.renderer));
-  if (m_frameRateDetail != nullptr)
-    m_frameRateDetail->SetInnerRML(frame_rate_detail(selected.frameRate));
-  if (m_playButton != nullptr) {
-    m_playButton->RemoveAttribute("disabled");
-  }
+    if (m_rendererDetail != nullptr)
+        m_rendererDetail->SetInnerRML(renderer_detail(selected.renderer));
+    if (m_frameRateDetail != nullptr)
+        m_frameRateDetail->SetInnerRML(frame_rate_detail(selected.frameRate));
 }
 
 } // namespace sb::ui

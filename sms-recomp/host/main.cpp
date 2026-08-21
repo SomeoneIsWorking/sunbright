@@ -5,14 +5,14 @@
 // hardware routing yet, so it will run until it touches a device. Where it stops is
 // the information we are after — it tells us which HW seam to route to aurora next.
 
-#include "cpu_state.h"
-#include "boot_env.h"
-#include "guest_sched.h"
-#include "intrinsics.h"
 #include "../frame_interp/stream_interp.h"
 #include "app/frame_rate.h"
 #include "app/settings.h"
+#include "boot_env.h"
+#include "cpu_state.h"
 #include "dol_loader.h"
+#include "guest_sched.h"
+#include "intrinsics.h"
 #include "ui/runtime.h"
 #include "ui/ui.h"
 
@@ -57,10 +57,12 @@ std::string resource_path(const char* argv0) {
         if (std::filesystem::is_directory(besideExecutable / "res"))
             return besideExecutable.string() + '/';
         const auto sourceRoot = besideExecutable.parent_path();
-        if (std::filesystem::is_directory(sourceRoot / "res")) return sourceRoot.string() + '/';
+        if (std::filesystem::is_directory(sourceRoot / "res"))
+            return sourceRoot.string() + '/';
     }
     const auto working = std::filesystem::current_path(error);
-    if (!error && std::filesystem::is_directory(working / "res")) return working.string() + '/';
+    if (!error && std::filesystem::is_directory(working / "res"))
+        return working.string() + '/';
     lucent::error("ui", "cannot locate the res/ directory from executable '{}' or cwd", argv0);
     return {};
 }
@@ -72,10 +74,12 @@ std::string resource_path(const char* argv0) {
 // game frame with 60fps on. That put a CPU-only proof of the pairing maths behind a GPU run, which
 // is the wrong dependency in both directions: it cannot be checked when the GPU is unavailable, and
 // nothing in the test suite covers it. This entry point reaches it directly.
-namespace aurora::gfx::interp { bool selftest(); }
+namespace aurora::gfx::interp {
+bool selftest();
+}
 
 int main(int argc, char** argv) {
-    lucent::config::set_prefix("SBR_");   // SBR_LUCENT_DEBUG=mmio,rt,poll
+    lucent::config::set_prefix("SBR_"); // SBR_LUCENT_DEBUG=mmio,rt,poll
 
     // SBR_INTERP_SELFTEST=1: run the interpolation pairing self-test and exit. No aurora, no
     // window, no GPU, no ROM — so it is runnable in a session where GPU work is not permitted, and
@@ -98,11 +102,11 @@ int main(int argc, char** argv) {
     // guest memory (rt_mem_init), and aurora is handed real host pointers for anything it
     // needs to read out of it.
     AuroraConfig acfg = {};
-    acfg.appName        = "sunbright-recomp";
-    acfg.userPath       = userPath.c_str();
-    acfg.resourcesPath  = resourcesPath.c_str();
+    acfg.appName = "sunbright-recomp";
+    acfg.userPath = userPath.c_str();
+    acfg.resourcesPath = resourcesPath.c_str();
     acfg.desiredBackend = BACKEND_VULKAN;
-    acfg.msaa           = 1;
+    acfg.msaa = 1;
     // PRESENT MODE, and why interpolated 60fps REQUIRES vsync on.
     //
     // aurora maps vsync=false to Mailbox (or Immediate). Mailbox's defining behaviour is that the
@@ -121,32 +125,35 @@ int main(int argc, char** argv) {
     //
     // Off (Mailbox) when interpolation is off, because then there IS only one image per tick and
     // the latency trade goes the other way.
-    // The prelaunch menu can change frame mode after the device is initialized. Strict FIFO works
-    // for every mode and is REQUIRED for interpolation, so initialize once with the invariant
-    // policy instead of making the menu and swapchain disagree until a restart.
-    acfg.vsync          = true;
-    acfg.windowWidth    = std::getenv("SB_W") ? (u32)std::strtoul(std::getenv("SB_W"), nullptr, 0) : 1280u;
-    acfg.windowHeight   = std::getenv("SB_H") ? (u32)std::strtoul(std::getenv("SB_H"), nullptr, 0) : 960u;
-    acfg.mem1Size       = 0;
-    acfg.mem2Size       = 0;
+    // Strict FIFO works for every mode and is REQUIRED for interpolation, so initialize once with
+    // the invariant policy. Settings remain live through the in-game Escape menu.
+    acfg.vsync = true;
+    const char* windowWidth = std::getenv("SB_W");
+    const char* windowHeight = std::getenv("SB_H");
+    acfg.windowWidth = windowWidth != nullptr ? (u32)std::strtoul(windowWidth, nullptr, 0) : 1280u;
+    acfg.windowHeight =
+        windowHeight != nullptr ? (u32)std::strtoul(windowHeight, nullptr, 0) : 960u;
+    acfg.mem1Size = 0;
+    acfg.mem2Size = 0;
     AuroraInfo ainfo = aurora_initialize(argc, argv, &acfg);
     lucent::info("rt", "aurora up: backend={} fb={}x{}", (int)ainfo.backend,
                  ainfo.windowSize.fb_width, ainfo.windowSize.fb_height);
     if (const char* value = std::getenv("SBR_UI_SELFTEST"); value != nullptr && value[0] != '0') {
         char* end = nullptr;
         const unsigned long parsed = std::strtoul(value, &end, 10);
-        const unsigned frames = end != value && *end == '\0' && parsed > 0
-                                    ? static_cast<unsigned>(parsed)
-                                    : 2u;
+        const unsigned frames =
+            end != value && *end == '\0' && parsed > 0 ? static_cast<unsigned>(parsed) : 2u;
         const bool ok = sb::ui::run_escape_control(frames);
         sb::ui::runtime().shutdown();
         aurora_shutdown();
         return ok ? 0 : 1;
     }
-    if (!sb::ui::run_prelaunch()) {
+    // The game is the product's startup surface. RmlUi is initialized here so Escape can open the
+    // persistent settings document later, but no document is shown before guest execution begins.
+    if (!sb::ui::runtime().initialize()) {
         sb::ui::runtime().shutdown();
         aurora_shutdown();
-        return 0;
+        return 1;
     }
     lucent::info("settings", "renderer={} framerate={}",
                  sb::app::display_name(sb::app::settings().effective().renderer),
@@ -157,13 +164,15 @@ int main(int argc, char** argv) {
     sbr_lerp_enabled();
     aurora_begin_frame();
 
-    if (!rt_mem_init()) return 1;
+    if (!rt_mem_init())
+        return 1;
 
     // Mount the disc the DI device serves. Same convention as the decomp runtime:
     // $SUNBRIGHT_ROM, else a rom.rvz drop-in beside the binary. Without it the game gets
     // no filesystem, so this is fatal rather than a warning.
     const char* rom = std::getenv("SUNBRIGHT_ROM");
-    if (!rom || !*rom) rom = "rom.rvz";
+    if (!rom || !*rom)
+        rom = "rom.rvz";
     if (!disc_open(rom)) {
         lucent::error("main", "no disc mounted — set SUNBRIGHT_ROM or drop rom.rvz");
         return 1;
@@ -174,9 +183,11 @@ int main(int argc, char** argv) {
     rt_install_crash_handler();
 
     sb::host::DolImage dol;
-    if (!sb::host::load_dol(dol_path, dol)) return 1;
+    if (!sb::host::load_dol(dol_path, dol))
+        return 1;
 
-    lucent::info("dol", "{}: {} sections, entry 0x{:08x}", dol_path, dol.sections.size(), dol.entry);
+    lucent::info("dol", "{}: {} sections, entry 0x{:08x}", dol_path, dol.sections.size(),
+                 dol.entry);
 
     // BSS IS CLEARED FIRST, THEN SECTIONS ARE LOADED OVER IT. The order matters: this DOL's
     // declared BSS range (0x803e9700 +0x25498) physically CONTAINS a loaded data section
@@ -193,11 +204,12 @@ int main(int argc, char** argv) {
     // The GC boots with a stack near the top of MEM1; __start sets up its own, but a
     // sane initial r1 keeps any early prologue from writing through address 0.
     cpu.gpr[1] = 0x816FFFF0u;
-    cpu.pc     = dol.entry;
+    cpu.pc = dol.entry;
 
     // After the DOL is in memory: the apploader's low-memory state must not be clobbered
     // by section loading, and the FST lives above the DOL's sections.
-    if (!boot_env_setup(dol.arena_low())) return 1;
+    if (!boot_env_setup(dol.arena_low()))
+        return 1;
 
     // Adopt this host thread as guest thread 0 before any guest code runs, so the
     // scheduler owns threading from the first instruction.

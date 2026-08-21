@@ -23,14 +23,3 @@
     font-size: 15dp;
     color: rgba(224, 219, 200, 55%);
 }
-
-.play {
-    width: 100%;
-    font-family: "Fira Sans Condensed";
-    font-weight: bold;
-    text-transform: uppercase;
-    color: #171610;
-    background-color: #C2A42D;
-}
-
-.hidden { display: none; }

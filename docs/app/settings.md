@@ -12,12 +12,12 @@ Sunbright's primary runtime follows Dusklight's application ownership split:
   parsing.
 
 `./run.sh` is the product entry point and delegates to `play.sh`; `run-decomp.sh` is the explicit
-decomp/Aurora oracle. Escape opens the renderer/framerate window during play; Escape or its close
-button closes it. The frame seam stays inside the UI modal loop while visible, so guest simulation
-is paused. Headless runs skip the prelaunch screen. The shared launcher policy selects SDL's
-offscreen video driver for `SB_HEADLESS`, and Aurora requests a surfaceless WebGPU adapter, so
-windowless runs do not require X11, Wayland, or another display server. `SBR_SKIP_PRELAUNCH=1`
-skips only the prelaunch presentation; the in-game Escape route remains available.
+decomp/Aurora oracle. The game begins immediately after host initialization; RmlUi is initialized
+hidden and is never a startup gate. Escape opens the renderer/framerate window during play; Escape
+or its close button closes it. The frame seam stays inside the UI modal loop while visible, so guest
+simulation is paused. The shared launcher policy selects SDL's offscreen video driver for
+`SB_HEADLESS`, and Aurora requests a surfaceless WebGPU adapter, so windowless runs do not require
+X11, Wayland, or another display server.
 
 ## Persistence and overrides
 

@@ -82,8 +82,8 @@ logger — that is debt to convert, not a feature.
 | `SB_FRUIT_DBG` | 1 | `decomp/sms/src/MoveBG/MapObjBall.cpp` | gated print |
 | `SB_GENOBJ_SKIP_ALL` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp` |  |
 | `SB_GXBEGIN_TRACE` | 1 | `extern/aurora/lib/dolphin/gx/GXVert.cpp` |  |
-| `SB_H` | 3 | `sms-recomp/host/main.cpp` |  |
-| `SB_HEADLESS` | 3 | `sms-recomp/ui/ui.cpp` |  |
+| `SB_H` | 2 | `sms-recomp/host/main.cpp` |  |
+| `SB_HEADLESS` | 2 | `sms-boot/runtime/jas_kernel_native.cpp` |  |
 | `SB_HEAP_DBG` | 2 | `decomp/sms/src/JSystem/JKernel/JKRExpHeap.cpp` | gated print |
 | `SB_HEAP_GUARD` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
 | `SB_HOST_ALLOC_CAP_MB` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
@@ -229,7 +229,7 @@ logger — that is debt to convert, not a feature.
 | `SB_UV_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_VIEWCALC_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphAnimator/J3DModel.cpp` |  |
 | `SB_VIZ_TAG` | 1 | `extern/aurora/lib/gfx/common.cpp` |  |
-| `SB_W` | 3 | `sms-recomp/host/main.cpp` |  |
+| `SB_W` | 2 | `sms-recomp/host/main.cpp` |  |
 | `SB_WATCHDOG_SECS` | 1 | `sms-boot/runtime/watchdog.cpp` |  |
 | `SB_WATER_DBG` | 1 | `decomp/sms/src/Player/ModelWaterManager.cpp` |  |
 | `SB_WAVE_ALPHA_RASA` | 1 | `decomp/sms/src/MoveBG/MapObjWave.cpp` |  |
@@ -352,7 +352,6 @@ logger — that is debt to convert, not a feature.
 | `SBR_SCENARIO` | 1 | `sms-recomp/overrides/fastboot_native.cpp` |  |
 | `SBR_SDLGPU` | 1 | `sms-recomp/app/settings.cpp` |  |
 | `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp` |  |
-| `SBR_SKIP_PRELAUNCH` | 1 | `sms-recomp/ui/ui.cpp` |  |
 | `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
 | `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
 | `SBR_SMOOTH_SELFTEST` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
@@ -382,4 +381,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**361 switches; 68 still gate a raw print.**
+**360 switches; 68 still gate a raw print.**
