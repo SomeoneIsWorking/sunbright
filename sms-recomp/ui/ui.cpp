@@ -9,9 +9,7 @@
 #include <lucent/log.h>
 
 namespace sb::ui {
-namespace {
-
-bool push_escape() {
+bool inject_escape() {
     SDL_Event event{};
     event.type = SDL_EVENT_KEY_DOWN;
     event.key.type = SDL_EVENT_KEY_DOWN;
@@ -24,6 +22,8 @@ bool push_escape() {
     return false;
 }
 
+namespace {
+
 bool never_quit() {
     return false;
 }
@@ -31,7 +31,7 @@ bool never_quit() {
 } // namespace
 
 bool run_escape_control(unsigned frames) {
-    if (frames == 0 || !runtime().initialize() || !push_escape())
+    if (frames == 0 || !runtime().initialize() || !inject_escape())
         return false;
     if (runtime().handle_events(aurora_update()) || !runtime().visible()) {
         lucent::error("ui", "Escape did not open the settings window");
@@ -48,7 +48,7 @@ bool run_escape_control(unsigned frames) {
         if (runtime().handle_events(aurora_update()))
             return false;
     }
-    if (!push_escape())
+    if (!inject_escape())
         return false;
     bool frameActive = aurora_begin_frame();
     if (!runtime().pause_while_open(frameActive, never_quit, nullptr) || runtime().visible()) {
