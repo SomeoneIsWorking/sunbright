@@ -6,7 +6,7 @@ created: 2026-08-22
 tags: interpolation,tdl
 depends: sms-recomp/frame_interp/tag_indexed_quad.cpp, extern/aurora/lib/gfx/indexed_interp.cpp
 reconfirmed: 2026-08-22
-verified_at: 2026-08-22 18:40:22
+verified_at: 2026-08-22 18:42:27
 ---
 
 ## Claim
@@ -24,3 +24,7 @@ Any live TDL run reports an unkeyed array, a layout mismatch, or a continuously 
 ## Re-confirmed 2026-08-22
 
 2026-08-22 final stage-1 FLUDD control: 472 paired TDL arrays, 4 births, 1 correct reappearance, 0 camera-only; 50 keyed arrays/706 groups at tick 400, 0 unkeyed and 0 layout mismatches; A,B->B,C selftest passed.
+
+## Re-confirmed 2026-08-22
+
+2026-08-22 post-commit final stage-1 FLUDD control: 472 paired TDL arrays, 4 births, 1 correct reappearance, 0 camera-only; 50 keyed arrays/706 groups, 0 unkeyed and 0 layout mismatches.
