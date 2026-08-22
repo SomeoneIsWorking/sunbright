@@ -39,6 +39,7 @@ DOC = os.path.join(ROOT, "docs", "diagnostics.md")
 
 # Where switches are READ. Anything else is a mention, not a definition.
 CODE_DIRS = ["sms-recomp", "sms-boot", "decomp/sms/src", "decomp/sms/include", "extern/aurora/lib"]
+CODE_SCRIPTS = ["run.sh", "run-decomp.sh", "run-recomp.sh", "run-safe.sh", "play.sh"]
 # Where switches are TALKED ABOUT. A name here with no reader is a phantom.
 DOC_PATHS = [
     "AGENTS.md",
@@ -54,6 +55,7 @@ DOC_PATHS = [
 
 GETENV = re.compile(r'getenv\s*\(\s*"((?:SB|SBR|AURORA)_[A-Z0-9_]+)"')
 ENV_HELPER = re.compile(r'\benv_enabled\s*\(\s*"((?:SB|SBR|AURORA)_[A-Z0-9_]+)"')
+SHELL_ENV = re.compile(r'\$\{?((?:SB|SBR|AURORA)_[A-Z0-9_]+)\b')
 # Consumed by the lucent logger through its PREFIX mechanism (lucent::config::set_prefix), so they
 # never appear as a literal getenv in this tree. Real switches; not phantoms.
 LIBRARY_READ = {"SB_LUCENT_DEBUG", "SB_LUCENT_LOG_FILE",
@@ -142,6 +144,16 @@ def scan_code():
                 del exempt
                 found.setdefault(name, []).append(
                     (os.path.relpath(path, ROOT), i, gated))
+    # Launch scripts own real runtime policy switches too. The original scanner ignored shell
+    # readers entirely, so SB_RUNNER was reported as a phantom while run-safe.sh visibly consumed
+    # `${SB_RUNNER:-run-recomp.sh}`. Shell sites are behavior selection, not gated-print debt.
+    for path in tracked_files(CODE_SCRIPTS):
+        if not path.endswith(".sh"):
+            continue
+        for i, line in enumerate(read_text(path).splitlines(), 1):
+            for match in SHELL_ENV.finditer(line):
+                found.setdefault(match.group(1), []).append(
+                    (os.path.relpath(path, ROOT), i, False))
     return found
 
 

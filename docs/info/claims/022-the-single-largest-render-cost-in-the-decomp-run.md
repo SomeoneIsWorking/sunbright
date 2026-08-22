@@ -5,16 +5,33 @@ status: holds
 created: 2026-08-05
 tags: perf
 depends: extern/aurora/lib/gx/gx.cpp#array_upload_lookup
+reconfirmed: 2026-08-22
+verified_at: 2026-08-22 17:00:55
 ---
 
 ## Claim
 
-The single largest render cost in the decomp runtime is indexed-array storage upload: SB_PROFILE_GFX arrayUpload was ~2.85ms of a ~10.2ms drain (63% of the per-draw build). It was uploading 37.09 MB/frame for 20.44 MB of distinct data (1.8x redundancy) because AttrArray::cachedRange is a per-SLOT cache that GXSetArray drops on re-registration, while the game re-points a slot at A then B then A. Now keyed on data identity: 20.44 MB/frame, redundancy 1.0x, ~30% less upload time.
+Before the data-identity cache, indexed-array storage processed 37.09 MB in a measured frame for
+20.44 MB of distinct data (1.8x redundant work). `AttrArray::cachedRange` was a per-slot cache that
+`GXSetArray` discarded on re-registration while the game repointed a slot A, then B, then A. Keying
+the cache on data identity reduced that frame's processed bytes to the 20.44 MB distinct set. This
+claim is about exact bytes and cache ownership, not elapsed cost or optimization priority.
 
 ## Evidence
 
-SB_PROFILE_DRAWPRIM arrays: line (uploads/bytes/distinct/redundancy); SB_PROFILE_GFX per-draw-build breakdown, stable across 3 consecutive 60-frame reports. Precondition measured not assumed: in-frame content changes under unchanged (ptr,size) == 0 on every frame, counter retained in-build. debug_journal/2026-08-05_drawprim_phase_attribution.md
+The retired profiler's deterministic array counters (uploads, bytes, distinct bytes, redundancy)
+in `debug_journal/2026-08-05_drawprim_phase_attribution.md`. The retained in-frame content-change
+control reported zero changes under an unchanged `(ptr,size)` identity. The retired instrument's
+elapsed fields are explicitly excluded from this evidence.
 
 ## What would falsify it
 
-the in-frame content-change counter reports non-zero (an array rewritten in place mid-frame would make the data-keyed cache serve stale geometry)
+The in-frame content-change counter reports non-zero (an array rewritten in place mid-frame would
+make the data-keyed cache serve stale geometry), or the exact byte counters no longer reproduce
+the stated distinct/redundant populations on the pinned scene
+
+## Re-confirmed 2026-08-22
+
+Rewritten to preserve only the exact byte populations and the data-identity cache rule. The old
+“single largest cost,” milliseconds, percentage, and speedup statements were elapsed claims from
+I011 and are not part of this confirmation.

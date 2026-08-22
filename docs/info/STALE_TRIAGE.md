@@ -1,5 +1,9 @@
 # The stale claims, triaged (2026-08-12)
 
+> **2026-08-22 update:** This is a dated snapshot, not the current claim queue. The elapsed-time
+> audit falsified C016, C021, and C024; C019/C020/C022/C023 were rewritten around no-loss sampling
+> or deterministic work counters and re-confirmed. Run `info.py claim check` for the live backlog.
+
 `info.py claim check` reports a claim as STALE when the code its evidence rests on has changed
 since it was verified. That is the right default — it cannot know whether the change mattered — but
 23 unexplained "stale" lines is a backlog nobody can act on. This splits them by asking a question

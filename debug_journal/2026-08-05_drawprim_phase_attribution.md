@@ -1,5 +1,11 @@
 # draw_prim, measured from the inside: the render cost is ~55% per-primitive and ~43% per-DRAW
 
+> **Measurement supersession (2026-08-22):** I011's TSC partition controls prove accounting
+> coverage, but they cannot make elapsed attribution invariant to host contention. The 55/43 split,
+> nanoseconds, latency percentiles, and relative timing ratios below are retired and must not choose
+> an optimization. Exact call/byte/cache populations remain usable only as deterministic counters;
+> claims C022 and C023 were rewritten to state only those surviving facts.
+
 The previous entry (`b8c48bb`) settled the render lever as *"per-primitive cost, not batching"*, on the
 strength of the primitive-size distribution: 46k primitives for 1314 merged draws, 53% of them
 4-vertex quads. That reasoning was sound about *primitive shape* and wrong about *where the time

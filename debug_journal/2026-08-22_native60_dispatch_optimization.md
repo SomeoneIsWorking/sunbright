@@ -1,5 +1,11 @@
 # Native-60 dispatcher optimization and rejected geometry-hash cache
 
+> **Measurement correction:** CPU samples below remain useful for locating recurring internal code,
+> and exact dispatch/store/cache counters remain valid. The millisecond totals, FPS-budget verdict,
+> and elapsed enabled/disabled comparisons are not optimization evidence. Contention produced an
+> apparent renderer regression with unchanged code, so current work is selected from deterministic
+> subsystem counts and bounded no-loss samples only.
+
 ## Symptom and baseline
 
 Native 60 fps still slows down on a Ryzen 7 5700X / RX 6700 XT, while interpolated 60 fps has

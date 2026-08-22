@@ -1,5 +1,10 @@
 # 60fps is game-native interpolation, and SMS already has the seam for it
 
+> **Measurement supersession (2026-08-22):** The architecture and behavioral RE in this entry are
+> unaffected. Its uses of C019's ~15.8 ms drain and any other elapsed budget as a feasibility or
+> priority argument are retired; C019 now records bounded no-loss hotspot sampling without claiming
+> an elapsed budget or maximum FPS.
+
 **Directive (user, 2026-08-05):** *"I don't care about a badly done 60fps, pick the correct path, it
 never meant making the game fast enough, if you pick the good path and implement it then it'll
 already be fast."* And: *"Interpolation should still be an option because it preserves the game's

@@ -4,17 +4,36 @@ kind: claim
 status: holds
 created: 2026-08-05
 tags: perf,60fps
-depends: extern/aurora/lib/gfx/common.cpp
+depends: sms-recomp/runtime/devices/dev_gxfifo.cpp, extern/aurora/lib/gx/command_processor.cpp
+reconfirmed: 2026-08-22
+verified_at: 2026-08-22 17:18:02
 ---
 
 ## Claim
 
-The decomp's ~15.8 ms/frame drain is dominated by aurora::gx::fifo::draw_prim (45% of 60 stack samples) plus per-draw buffer preparation, i.e. genuine per-vertex work — not by FIFO framing or decode dispatch. Optimising the render path therefore means making draw_prim's attribute processing cheaper, which would benefit BOTH runtimes; a decomp-only FIFO bypass would not remove this cost.
+A bounded, no-loss sample of settled stage-1 recomp execution places recurring CPU work in the GX
+command path: root FIFO parsing/copying, Aurora parsing and draw creation, exact indexed-array
+scanning, and per-draw hashing. Sampling ranks those implementation regions as candidates; it does
+not assign them elapsed-time budgets or establish a maximum FPS.
 
 ## Evidence
 
-debug_journal/2026-08-05_runtime_cost_comparison_for_60fps.md; eu-stack sampling, 60 samples: draw_prim 27, render_worker 7, process 4, push_storage 4, prepare_idx_buffer 3
+Instrument I030; `debug_journal/2026-08-22_internal_work_profiling_and_decomp_rebase.md`. A bounded
+499 Hz capture recorded 10,398 samples with zero losses. Independent `SB_DRAW_STATS`/`gxwork`
+counters established that the sampled path was processing non-empty command, vertex, index, and
+draw populations.
 
 ## What would falsify it
 
-60 samples is a small sample taken from one scene; a proper profiler (perf is not installed here) or a different scene could shift the attribution
+A matched bounded capture with zero losses no longer samples the GX command path as a recurring
+hot region, or either the sampler's loss check or the independent non-empty-work control fails
+
+## Re-confirmed 2026-08-22
+
+Rewritten after the elapsed attribution was retired. A 499 Hz bounded stage-1 capture recorded
+10,398 samples with zero losses and repeatedly sampled the root/Aurora GX command path; independent
+work counters reported non-empty command, indexed-field, vertex, and finalized-draw populations.
+
+## Re-confirmed 2026-08-22
+
+Bounded 499 Hz capture retained 10,398 samples with zero losses; ec65909 removed elapsed probes while preserving the sampled GX parse, array-scan, draw-build, and hashing paths.

@@ -8,16 +8,16 @@
 // where presenting would be wrong; it stays a pure counter plus a scheduler drain
 // (overrides/native_vi.cpp). This split is the same one the decomp runtime uses.
 
-#include "overrides.h"
-#include "../runtime/probe_server.h"
 #include "../frame_interp/effects.h"
-#include "../runtime/render/native_render.h"
-#include "../runtime/render/state_oracle.h"
-#include "../runtime/render/scene.h"
-#include "../frame_interp/stream_interp.h"
 #include "../frame_interp/frame_interp.h"
 #include "../frame_interp/graphics_db.h"
+#include "../frame_interp/stream_interp.h"
+#include "../runtime/probe_server.h"
+#include "../runtime/render/native_render.h"
+#include "../runtime/render/scene.h"
+#include "../runtime/render/state_oracle.h"
 #include "app/frame_rate.h"
+#include "overrides.h"
 #include "ui/runtime.h"
 
 // Declared rather than included: aurora's gfx headers are internal to the library, and the recomp
@@ -45,7 +45,7 @@ long tick_index();
 #include <ctime>
 #include <vector>
 
-extern "C" void func_802fc9a4(CPUState&);   // JDrama::TVideo::waitForRetrace
+extern "C" void func_802fc9a4(CPUState&); // JDrama::TVideo::waitForRetrace
 void sbr_mtx_report_index();
 // Weak: resolves to a no-op until the audio subsystem provides it (see docs/audio/recomp_plan.md).
 extern "C" __attribute__((weak)) void sbr_audio_frame();
@@ -56,7 +56,7 @@ extern void gxfifo_send_last();
 extern void gxfifo_send(const std::vector<u8>&);
 extern const std::vector<u8>& gxfifo_last_frame();
 
-void sbr_arena_guard_report();   // overrides/guard_arena.cpp
+void sbr_arena_guard_report(); // overrides/guard_arena.cpp
 
 namespace {
 
@@ -90,10 +90,13 @@ float guest_f32(u32 addr) {
 
 void report_mario_pos() {
     static long n = 0;
-    if (++n % 30 != 0) return;
-    if (!sb_ram_fast(GPMARIO_PTR)) return;
+    if (++n % 30 != 0)
+        return;
+    if (!sb_ram_fast(GPMARIO_PTR))
+        return;
     const u32 mario = sb_r32(GPMARIO_PTR);
-    if (!sb_ram_fast(mario)) return;   // null before the player object exists
+    if (!sb_ram_fast(mario))
+        return; // null before the player object exists
     lucent::debug("mario", "pos ({:.1f}, {:.1f}, {:.1f})", guest_f32(mario), guest_f32(mario + 4),
                   guest_f32(mario + 8));
 }
@@ -105,20 +108,23 @@ void report_app_state() {
     // The area pair changes WITHOUT an mAppState change whenever the game asks to move to a new
     // stage: setNextStage writes mNextArea while the app stays in GAMEPLAY. Reporting only on
     // mAppState made a whole stage transition — request, load, and bounce back — invisible.
-    const u32 area = (u32)sb_r8(GPAPPLICATION + 0x0E) << 24 | (u32)sb_r8(GPAPPLICATION + 0x0F) << 16 |
+    const u32 area = (u32)sb_r8(GPAPPLICATION + 0x0E) << 24 |
+                     (u32)sb_r8(GPAPPLICATION + 0x0F) << 16 |
                      (u32)sb_r8(GPAPPLICATION + 0x12) << 8 | (u32)sb_r8(GPAPPLICATION + 0x13);
-    if (st == last && area == lastArea) return;
+    if (st == last && area == lastArea)
+        return;
     last = st;
     lastArea = area;
-    static const char* kNames[] = {"WAIT", "DEFAULT", "BOOT", "NLOGO", "DONE",
-                                   "GAMEPLAY", "MOVIE", "QUIT", "TITLE", "MENU"};
+    static const char* kNames[] = {"WAIT",     "DEFAULT", "BOOT", "NLOGO", "DONE",
+                                   "GAMEPLAY", "MOVIE",   "QUIT", "TITLE", "MENU"};
     // TGameSequence is {u8 stage, u8 scenario, u16 flags}: mCurrArea +0x0E, mNextArea +0x12.
     lucent::info("app", "mAppState -> {} ({})  curr={{{},{}}} next={{{},{}}}", st,
                  st < (sizeof(kNames) / sizeof(*kNames)) ? kNames[st] : "?",
                  sb_r8(GPAPPLICATION + 0x0E), sb_r8(GPAPPLICATION + 0x0F),
                  sb_r8(GPAPPLICATION + 0x12), sb_r8(GPAPPLICATION + 0x13));
     // mMovie (+0x18) identifies which movie a MOVIE state is trying to play.
-    if (st == 6) lucent::info("app", "  mMovie = {}", sb_r32(GPAPPLICATION + 0x18));
+    if (st == 6)
+        lucent::info("app", "  mMovie = {}", sb_r32(GPAPPLICATION + 0x18));
 }
 
 // Aurora gates several of its diagnostics on a frame ordinal it obtains by calling a WEAK
@@ -131,8 +137,12 @@ void report_app_state() {
 // Providing it here makes aurora's whole existing diagnostic toolkit work for the recomp on
 // the same terms as the decomp runtime, rather than being decomp-only by accident.
 extern "C" unsigned VIGetRetraceCount(void);
-namespace { unsigned g_present_count = 0; }
-extern "C" unsigned VIGetRetraceCount(void) { return g_present_count; }
+namespace {
+unsigned g_present_count = 0;
+}
+extern "C" unsigned VIGetRetraceCount(void) {
+    return g_present_count;
+}
 
 // One NTSC field. The game asks for N retraces per frame (30fps scenes ask for 2), so pacing to
 // the count IT requested is what keeps its own timing math and the wall clock agreeing.
@@ -150,12 +160,6 @@ bool turbo() {
 
 int64_t g_nextDeadlineNs = 0;
 
-// Frame-time split, reported under the `frame` channel. See the use site in video_wait_for_retrace.
-int64_t g_seamEnterNs = 0;
-int64_t g_lastPresentEndNs = 0;
-double g_accGuestMs = 0, g_accOursMs = 0;
-long g_frameSplitN = 0;
-
 // Set from a signal handler, so it must be async-signal-safe: a volatile sig_atomic_t flag and
 // nothing else. The frame loop acts on it at the frame boundary, where shutting aurora down is
 // safe — a handler cannot do that itself.
@@ -166,7 +170,9 @@ volatile std::sig_atomic_t g_quit_requested = 0;
 // number chosen to look unlikely.
 constexpr int kQuitAfterReached = 1 << 20;
 
-extern "C" void sb_quit_signal(int sig) { g_quit_requested = sig; }
+extern "C" void sb_quit_signal(int sig) {
+    g_quit_requested = sig;
+}
 
 // SIGINT (Ctrl-C) and SIGTERM (kill, and what a session manager sends at logout) must both bring
 // the process down cleanly. Without handlers the default action kills it outright, leaving the
@@ -191,7 +197,7 @@ u32 g_dumpGuestTick = 0;
 // the seam has already returned by the time the copy is emitted, so it is carried across.
 bool g_presentPending = false;
 CPUState* g_pendingCpu = nullptr;
-bool s_frameActive = true;   // main() opened the first frame
+bool s_frameActive = true; // main() opened the first frame
 void throttle_gpu_submission();
 
 bool present_after_copy() {
@@ -202,8 +208,10 @@ bool present_after_copy() {
 // Sleep until `fields` more NTSC fields have elapsed. Deadline-accumulating rather than
 // sleep-per-call, so a frame that overruns is absorbed by the next instead of compounding drift.
 void pace_fields(unsigned fields) {
-    if (turbo() || fields == 0) return;
-    if (g_nextDeadlineNs == 0) g_nextDeadlineNs = now_ns();
+    if (turbo() || fields == 0)
+        return;
+    if (g_nextDeadlineNs == 0)
+        g_nextDeadlineNs = now_ns();
     g_nextDeadlineNs += (int64_t)fields * kFieldNs;
     const int64_t now = now_ns();
     if (now < g_nextDeadlineNs) {
@@ -211,7 +219,7 @@ void pace_fields(unsigned fields) {
         timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
         nanosleep(&ts, nullptr);
     } else if (now - g_nextDeadlineNs > 4 * kFieldNs) {
-        g_nextDeadlineNs = now;   // fell far behind (load hitch): resync, don't sprint to catch up
+        g_nextDeadlineNs = now; // fell far behind (load hitch): resync, don't sprint to catch up
     }
 }
 
@@ -229,13 +237,15 @@ void update_display_refresh_rate() {
                 parsed <= 1000.0) {
                 overrideHz = parsed;
             } else {
-                lucent::error("frame", "SBR_DISPLAY_HZ='{}' is invalid; expected a rate from "
-                                          "{:.3f} through 1000 Hz", overrideValue,
-                              30000.0 / 1001.0);
+                lucent::error("frame",
+                              "SBR_DISPLAY_HZ='{}' is invalid; expected a rate from "
+                              "{:.3f} through 1000 Hz",
+                              overrideValue, 30000.0 / 1001.0);
             }
         }
     }
-    if (overrideHz > 0.0) refreshHz = overrideHz;
+    if (overrideHz > 0.0)
+        refreshHz = overrideHz;
     const double before = sb::app::frame_rate::display_refresh_hz();
     sb::app::frame_rate::set_display_refresh_hz(refreshHz);
     const double after = sb::app::frame_rate::display_refresh_hz();
@@ -247,8 +257,10 @@ void update_display_refresh_rate() {
 }
 
 void pace_native_refresh() {
-    if (!sb::app::frame_rate::host_pacing_enabled()) return;
-    if (g_nextDeadlineNs == 0) g_nextDeadlineNs = now_ns();
+    if (!sb::app::frame_rate::host_pacing_enabled())
+        return;
+    if (g_nextDeadlineNs == 0)
+        g_nextDeadlineNs = now_ns();
     const int64_t period = sb::app::frame_rate::native_frame_period_ns();
     g_nextDeadlineNs += period;
     const int64_t now = now_ns();
@@ -295,8 +307,10 @@ extern "C" void aurora_replay_midpoint() {
     // measured the sleep is still the right instrument if the present mode ever changes back.
     // Callbacks are dispatched ABOVE this line and are unaffected: they must fire every tick.
     static const bool s_slackForced = std::getenv("SBR_MIDPOINT_SLACK") != nullptr;
-    if (sb::app::frame_rate::interpolates() && !s_slackForced) return;
-    if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0) return;
+    if (sb::app::frame_rate::interpolates() && !s_slackForced)
+        return;
+    if (turbo() || g_nextDeadlineNs == 0 || g_tickFields == 0)
+        return;
     const int64_t midpoint = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs / 2;
     const int64_t now = now_ns();
 
@@ -337,18 +351,19 @@ extern "C" void aurora_replay_midpoint() {
     // HOLDING THE IN-BETWEEN FRAME WHEN THE TICK IS LATE — and how the two policies are compared.
     //
     // The standing directive (docs/60fps/effects.md) is that every gameplay tick shows a real
-    // present AND an in-between present, in every condition. Returning here satisfies the letter and
-    // not the substance: both frames ARE presented, so every counter reads 60, but issued
-    // microseconds apart with vsync off the display scans out only the second. That is the "it drops
-    // the interpolated frames" the user reported, and it is invisible to every counter we have.
+    // present AND an in-between present, in every condition. Returning here satisfies the letter
+    // and not the substance: both frames ARE presented, so every counter reads 60, but issued
+    // microseconds apart with vsync off the display scans out only the second. That is the "it
+    // drops the interpolated frames" the user reported, and it is invisible to every counter we
+    // have.
     //
     // The candidate fix: the tick is due to start at g_nextDeadlineNs and to end one field-count
     // later, so a tick that arrives past the midpoint still has slack before its own end deadline.
     // Spend it here holding the in-between on screen; pace_fields then finds less to sleep at the
     // top of the next tick, so in principle no tick rate is lost.
     //
-    // WHY THIS IS AN IN-RUN A/B AND NOT TWO RUNS. It was first compared as two separate runs and the
-    // result — "the fix is 14% slower" — was an artefact: this machine was carrying five other
+    // WHY THIS IS AN IN-RUN A/B AND NOT TWO RUNS. It was first compared as two separate runs and
+    // the result — "the fix is 14% slower" — was an artefact: this machine was carrying five other
     // agents' workloads at load average 40, and the two arms ran under completely different
     // contention. A pacing policy cannot be measured against wall-clock on a machine whose load is
     // not controlled, and taking the two arms minutes apart is exactly the mistake. Alternating the
@@ -371,8 +386,10 @@ extern "C" void aurora_replay_midpoint() {
     //   SBR_MIDPOINT_SLACK=ab   alternate every 300 ticks and report both arms
     static const int s_slackMode = [] {
         const char* e = std::getenv("SBR_MIDPOINT_SLACK");
-        if (e == nullptr || *e == '\0') return 1;   // hold by default
-        if (std::strcmp(e, "ab") == 0) return 2;
+        if (e == nullptr || *e == '\0')
+            return 1; // hold by default
+        if (std::strcmp(e, "ab") == 0)
+            return 2;
         return (e[0] != '0') ? 1 : 0;
     }();
     const bool holdArm = s_slackMode == 1 || (s_slackMode == 2 && ((s_calls / 300) % 2) == 1);
@@ -385,8 +402,8 @@ extern "C" void aurora_replay_midpoint() {
     static double s_armGapMs[2] = {0, 0};
 
     const int64_t tickEnd = g_nextDeadlineNs + (int64_t)g_tickFields * kFieldNs;
-    constexpr int64_t kPresentMarginNs = 2000000;   // 2 ms, so the tick's own image is not issued
-                                                    // at the very edge of its own tick
+    constexpr int64_t kPresentMarginNs = 2000000; // 2 ms, so the tick's own image is not issued
+                                                  // at the very edge of its own tick
     int64_t target = midpoint;
     if (late) {
         const int arm = holdArm ? 1 : 0;
@@ -402,17 +419,18 @@ extern "C" void aurora_replay_midpoint() {
         }
         if ((s_calls % 600) == 0 && s_slackMode == 2) {
             auto pct = [](long a, long b) { return b ? 100.0 * (double)a / (double)b : 0.0; };
-            lucent::debug("frame",
-                          "midpoint slack A/B (alternating in-run, so both arms see the same load): "
-                          "HOLD arm {} late tick(s), in-between given visible time on {} ({:.1f}%, "
-                          "mean {:.2f} ms) | NO-HOLD arm {} late tick(s), 0 shown by construction. "
-                          "Compare the TICK COUNTS too: if the hold arm has far fewer, it is paying "
-                          "for those frames in simulation rate.",
-                          s_armTicks[1], s_armShown[1], pct(s_armShown[1], s_armTicks[1]),
-                          s_armShown[1] ? s_armGapMs[1] / (double)s_armShown[1] : 0.0,
-                          s_armTicks[0]);
+            lucent::debug(
+                "frame",
+                "midpoint slack A/B (alternating in-run, so both arms see the same load): "
+                "HOLD arm {} late tick(s), in-between given visible time on {} ({:.1f}%, "
+                "mean {:.2f} ms) | NO-HOLD arm {} late tick(s), 0 shown by construction. "
+                "Compare the TICK COUNTS too: if the hold arm has far fewer, it is paying "
+                "for those frames in simulation rate.",
+                s_armTicks[1], s_armShown[1], pct(s_armShown[1], s_armTicks[1]),
+                s_armShown[1] ? s_armGapMs[1] / (double)s_armShown[1] : 0.0, s_armTicks[0]);
         }
-        if (target == midpoint) return;
+        if (target == midpoint)
+            return;
     }
     const int64_t d = target - now;
     timespec ts{(time_t)(d / 1000000000LL), (long)(d % 1000000000LL)};
@@ -436,11 +454,13 @@ void sbr_shadow_cube_report();
 void sbr_motion_truth_tick();
 void sbr_motion_truth_report();
 
-namespace aurora::gfx::interp { void report(); }
+namespace aurora::gfx::interp {
+void report();
+}
 
-extern "C" void sbr_interp60_restore();   // overrides/interp60_snapshot.cpp
+extern "C" void sbr_interp60_restore(); // overrides/interp60_snapshot.cpp
 extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void));
-extern "C" int  sbr_interp60_in_subframe();
+extern "C" int sbr_interp60_in_subframe();
 
 namespace {
 
@@ -510,7 +530,8 @@ int64_t present_min_gap_ns() {
 // change in timing only. Costs nothing when the ceiling is not being hit.
 void throttle_gpu_submission() {
     const int64_t gap = present_min_gap_ns();
-    if (gap == 0) return;
+    if (gap == 0)
+        return;
     static int64_t nextNs = 0;
     static long throttled = 0;
     const int64_t now = now_ns();
@@ -522,35 +543,48 @@ void throttle_gpu_submission() {
         // Report on a slow cadence so a run that is being held back says so. Silence here would
         // mean "the ceiling is not binding" and "the ceiling is not wired" look identical.
         if ((throttled % 2000) == 0)
-            lucent::debug("frame", "GPU submission ceiling held back {} present(s) so far "
-                                   "({:.0f} Hz cap, SB_MAX_PRESENT_HZ=0 disables)",
+            lucent::debug("frame",
+                          "GPU submission ceiling held back {} present(s) so far "
+                          "({:.0f} Hz cap, SB_MAX_PRESENT_HZ=0 disables)",
                           throttled, 1e9 / (double)gap);
     }
     nextNs = (nextNs == 0 || now > nextNs + 4 * gap) ? now + gap : nextNs + gap;
 }
 
-bool ui_quit_requested() { return g_quit_requested != 0; }
-void pace_ui_present() { throttle_gpu_submission(); }
+bool ui_quit_requested() {
+    return g_quit_requested != 0;
+}
+void pace_ui_present() {
+    throttle_gpu_submission();
+}
 
 void present_and_reopen(bool& frameActive) {
-    ++g_present_count;   // PRESENTS, not game ticks — the two coincide today (one present per tick)
+    ++g_present_count; // PRESENTS, not game ticks — the two coincide today (one present per tick)
     throttle_gpu_submission();
 
     // SBR_PRESENT_TIMING=1: wall-clock gap between consecutive presents. A present COUNT of 60/s
     // says nothing about what reaches the display — if the two presents of a tick land back-to-back
-    // and are then followed by a long gap, the eye sees 30fps however high the count reads. Only the
-    // spacing distinguishes those, so measure it rather than infer it from the rate.
+    // and are then followed by a long gap, the eye sees 30fps however high the count reads. Only
+    // the spacing distinguishes those, so measure it rather than infer it from the rate.
     if (std::getenv("SBR_PRESENT_TIMING")) {
         static int64_t prev = 0;
         static long n = 0;
         const int64_t now = now_ns();
         if (prev != 0) {
             const double ms = (double)(now - prev) / 1e6;
-            static double acc_even = 0, acc_odd = 0; static long n_even = 0, n_odd = 0;
-            if (n & 1) { acc_odd += ms; ++n_odd; } else { acc_even += ms; ++n_even; }
+            static double acc_even = 0, acc_odd = 0;
+            static long n_even = 0, n_odd = 0;
+            if (n & 1) {
+                acc_odd += ms;
+                ++n_odd;
+            } else {
+                acc_even += ms;
+                ++n_even;
+            }
             if (++n % 120 == 0)
-                lucent::info("ptime", "present gaps: alternating means {:.2f} ms / {:.2f} ms "
-                                      "(even spacing = both ~16.7)",
+                lucent::info("ptime",
+                             "present gaps: alternating means {:.2f} ms / {:.2f} ms "
+                             "(even spacing = both ~16.7)",
                              n_even ? acc_even / n_even : 0.0, n_odd ? acc_odd / n_odd : 0.0);
 
             // COMPARABLE WINDOW. The running means above are NOT an A/B instrument: they cover
@@ -563,22 +597,37 @@ void present_and_reopen(bool& frameActive) {
             // This reports one mean over a FIXED present range, so two runs are compared at the
             // same N and the same point in the scene. Window ends are inclusive of neither edge
             // and both are overridable, because the right window depends on the scene.
-            static const long lo = [] { const char* e = std::getenv("SBR_PTIME_LO"); return e ? std::atol(e) : 600; }();
-            static const long hi = [] { const char* e = std::getenv("SBR_PTIME_HI"); return e ? std::atol(e) : 1200; }();
-            static double wacc = 0; static long wn = 0; static bool wdone = false;
-            if (!wdone && n >= lo && n < hi) { wacc += ms; ++wn; }
+            static const long lo = [] {
+                const char* e = std::getenv("SBR_PTIME_LO");
+                return e ? std::atol(e) : 600;
+            }();
+            static const long hi = [] {
+                const char* e = std::getenv("SBR_PTIME_HI");
+                return e ? std::atol(e) : 1200;
+            }();
+            static double wacc = 0;
+            static long wn = 0;
+            static bool wdone = false;
+            if (!wdone && n >= lo && n < hi) {
+                wacc += ms;
+                ++wn;
+            }
             if (!wdone && n >= hi) {
                 wdone = true;
                 if (wn == 0)
-                    lucent::info("ptime", "COMPARABLE @ presents {}..{}: NO SAMPLES — the run never "
-                                          "reached this window; this is not a fast frame time",
+                    lucent::info("ptime",
+                                 "COMPARABLE @ presents {}..{}: NO SAMPLES — the run never "
+                                 "reached this window; this is not a fast frame time",
                                  lo, hi);
                 else
-                    lucent::info("ptime", "COMPARABLE @ presents {}..{} (N={}): {:.2f} ms/present "
-                                          "— compare ONLY this line across runs",
+                    lucent::info("ptime",
+                                 "COMPARABLE @ presents {}..{} (N={}): {:.2f} ms/present "
+                                 "— compare ONLY this line across runs",
                                  lo, hi, wn, wacc / (double)wn);
             }
-        } else { ++n; }
+        } else {
+            ++n;
+        }
         prev = now;
     }
     if (frameActive) {
@@ -624,7 +673,8 @@ void present_and_reopen(bool& frameActive) {
     if (!exit_requested) {
         const bool wasActive = frameActive;
         frameActive = aurora_begin_frame();
-        if (frameActive != wasActive) lucent::warn("frame", "aurora_begin_frame -> {}", frameActive);
+        if (frameActive != wasActive)
+            lucent::warn("frame", "aurora_begin_frame -> {}", frameActive);
         if (sb::ui::runtime().visible() &&
             !sb::ui::runtime().pause_while_open(frameActive, ui_quit_requested, pace_ui_present))
             exit_requested = true;
@@ -661,15 +711,16 @@ static void texwatch_frame() {
     // Each buffer's REAL size, not a fixed 512-byte prefix. Sampling the first 512 bytes of an
     // 8192-byte I4 texture and concluding "zero" is the degenerate-sample trap: a texture whose
     // top rows are legitimately black would read as never-written for the whole run.
-    static const u32 kWatch[] = {0x80a9bd20, 0x80abcc40, 0x80cf0ac0, 0x80cfafa0,
-                                 0x80da3860, 0x80fea480};
-    static const u32 kSize[]  = {1024,       1024,       8192,       2048,
-                                 2048,       143360};
-    static u8 was[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};   // 0xFF = not yet sampled
+    static const u32 kWatch[] = {0x80a9bd20, 0x80abcc40, 0x80cf0ac0,
+                                 0x80cfafa0, 0x80da3860, 0x80fea480};
+    static const u32 kSize[] = {1024, 1024, 8192, 2048, 2048, 143360};
+    static u8 was[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // 0xFF = not yet sampled
     for (int t = 0; t < 6; ++t) {
-        if (!sb_ram_fast(kWatch[t])) continue;
+        if (!sb_ram_fast(kWatch[t]))
+            continue;
         u32 sum = 0;
-        for (u32 o = 0; o < kSize[t]; o += 4) sum |= sb_r32(kWatch[t] + o);
+        for (u32 o = 0; o < kSize[t]; o += 4)
+            sum |= sb_r32(kWatch[t] + o);
         const u8 now = sum != 0 ? 1 : 0;
         if (now != was[t]) {
             lucent::info("texwatch", "0x{:08x} {} at present {}", kWatch[t],
@@ -685,7 +736,8 @@ void video_wait_for_retrace(CPUState& cpu) {
     texwatch_frame();
     // Ground truth for the pairing audit's motion threshold — one sample per tick, from the guest's
     // own position global. See motion_truth.cpp.
-    if (sbr_lerp_enabled()) sbr_motion_truth_tick();
+    if (sbr_lerp_enabled())
+        sbr_motion_truth_tick();
     report_app_state();
     report_mario_pos();
     // The probe's handlers run HERE, on the game thread at the frame boundary, which is the only
@@ -696,7 +748,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     // Audio: one service call per presented frame. Weak so the runtime links before the audio
     // subsystem exists — the seam is here so audio work never has to edit this file.
     sbr_audio_frame();
-    sb_screen_effects_frame_end();   // roll the per-frame screen-effect set over
+    sb_screen_effects_frame_end(); // roll the per-frame screen-effect set over
 
     // Frame sink consumers (A/B score, present smoothness). Armed HERE and not inside the native
     // renderer's block: smoothness measures AURORA's presented image and must work with the native
@@ -726,7 +778,10 @@ void video_wait_for_retrace(CPUState& cpu) {
     if (sbr_render_enabled() && sbr_render_init(640, 448)) {
         // Once per run, and only when asked for: proves the GPU safety guards can fire.
         static bool guardTested = false;
-        if (!guardTested) { guardTested = true; sbr_render_guard_selftest(); }
+        if (!guardTested) {
+            guardTested = true;
+            sbr_render_guard_selftest();
+        }
         sbr_render_begin(0.10f, 0.40f, 0.80f, 1.0f);
         const float alpha = sbr_scene_render(sbr_scene_now(), sbr_scene_projection());
         sbr_render_end();
@@ -757,8 +812,10 @@ void video_wait_for_retrace(CPUState& cpu) {
                 };
                 const unsigned long long base = sum(ab);
                 auto dump = [](const char* path, const std::vector<uint8_t>& p) {
-                    if (FILE* f = std::fopen(path, "wb")) { std::fwrite(p.data(), 1, p.size(), f);
-                                                            std::fclose(f); }
+                    if (FILE* f = std::fopen(path, "wb")) {
+                        std::fwrite(p.data(), 1, p.size(), f);
+                        std::fclose(f);
+                    }
                 };
                 // The checksum of each variant against the baseline's, ONE PER FRAME like the
                 // scoring itself. The control renders the real pipeline, so its checksum MUST
@@ -782,19 +839,22 @@ void video_wait_for_retrace(CPUState& cpu) {
                 const int only = sbr_compare_ablation_to_render();
                 const bool tell = haveGeom && told < (long)nAbl * 2;
 
-                if (tell && told == 0) dump("scratch/bin/sweep_baseline.rgba", ab);
+                if (tell && told == 0)
+                    dump("scratch/bin/sweep_baseline.rgba", ab);
                 for (int a = 1; a < nAbl; ++a) {
-                    if (a != only) continue;
+                    if (a != only)
+                        continue;
                     if (sbr_render_ablation_render(a) && sbr_render_readback(ab.data(), 640, 448)) {
-                        if (tell && a == 9) dump("scratch/bin/sweep_pinunit1.rgba", ab);
+                        if (tell && a == 9)
+                            dump("scratch/bin/sweep_pinunit1.rgba", ab);
                         if (tell) {
                             ++told;
                             lucent::info("ab", "   sweep checksum: baseline {:016x}  {} {:016x}{}",
                                          base, sbr_render_ablation_name(a), sum(ab),
                                          (sum(ab) == base) ? "  (identical)" : "");
                         }
-                        sbr_compare_submit_variant(a, sbr_render_ablation_name(a), ab.data(),
-                                                   640, 448);
+                        sbr_compare_submit_variant(a, sbr_render_ablation_name(a), ab.data(), 640,
+                                                   448);
                     }
                 }
             }
@@ -806,20 +866,22 @@ void video_wait_for_retrace(CPUState& cpu) {
             long lit = 0;
             if (sbr_render_readback(px.data(), 640, 448))
                 for (size_t i = 0; i < px.size(); i += 4)
-                    if (px[i] != 26 || px[i + 1] != 102 || px[i + 2] != 204) ++lit;
+                    if (px[i] != 26 || px[i + 1] != 102 || px[i + 2] != 204)
+                        ++lit;
             // Coverage is the honest bring-up signal: vertices submitted proves the frontend ran,
             // but only pixels differing from the clear prove the transform chain actually put
             // geometry on screen.
             float lo[3], hi[3], med = 0.0f;
             sbr_scene_translation_bounds(lo, hi, &med);
-            lucent::info("nrender", "verts={} coverage={:.1f}% alpha={:.2f} drawables={} "
-                                    "skinned-geom={} batches={} proj={} xyz=[{:.0f}..{:.0f} {:.0f}..{:.0f} "
-                                    "{:.0f}..{:.0f}] medDist={:.0f}",
+            lucent::info("nrender",
+                         "verts={} coverage={:.1f}% alpha={:.2f} drawables={} "
+                         "skinned-geom={} batches={} proj={} xyz=[{:.0f}..{:.0f} {:.0f}..{:.0f} "
+                         "{:.0f}..{:.0f}] medDist={:.0f}",
                          sbr_render_last_vertex_count(), 100.0 * (double)lit / (640.0 * 448.0),
                          alpha, sbr_scene_last_count(), sbr_scene_multislot_count(),
                          sbr_render_last_batch_count(),
-                         sbr_scene_has_projection() ? "yes" : "MISSING",
-                         lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], med);
+                         sbr_scene_has_projection() ? "yes" : "MISSING", lo[0], hi[0], lo[1], hi[1],
+                         lo[2], hi[2], med);
             sbr_scene_report_largest(5);
             sbr_scene_report_zmodes();
             sbr_scene_report_2d();
@@ -830,10 +892,12 @@ void video_wait_for_retrace(CPUState& cpu) {
             sbr_gxfifo_report_bp_writes();
             sbr_compare_report_attribution();
             // Attribute the black background to an actual batch, at a pixel well inside it.
-            if (std::getenv("SBR_BLACK_OWNER") != nullptr) sbr_render_report_black_owner(320, 60);
+            if (std::getenv("SBR_BLACK_OWNER") != nullptr)
+                sbr_render_report_black_owner(320, 60);
             if (const char* d = std::getenv("SBR_DUMP_COPY"))
                 sbr_render_dump_copy(0x80fea480u, d);
-            if (const char* d = std::getenv("SBR_RENDER_DUMP")) sbr_render_dump(d);
+            if (const char* d = std::getenv("SBR_RENDER_DUMP"))
+                sbr_render_dump(d);
         }
     }
 
@@ -847,33 +911,23 @@ void video_wait_for_retrace(CPUState& cpu) {
             const u32 now = sb_r32(addr);
             static long n = 0;
             if (++n <= 8 || n % 200 == 0)
-                lucent::debug("frame", "guest retrace counter {} (+{} since last present)",
-                              now, now - prev);
+                lucent::debug("frame", "guest retrace counter {} (+{} since last present)", now,
+                              now - prev);
             prev = now;
         }
     }
-    // WHERE THE FRAME TIME GOES. "It runs at N fps" does not say whether the cost is the game's own
-    // recompiled code or our rendering, and those have nothing to do with each other: no amount of
-    // render optimisation helps if the tick is spent in guest logic, and interpolated 60fps is only
-    // worth having BECAUSE it does not re-run that logic. Split at the seam — everything since the
-    // last present is the guest's tick, everything from here to the next present is ours.
-    if (g_lastPresentEndNs != 0) {
-        g_accGuestMs += (double)(now_ns() - g_lastPresentEndNs) / 1e6;
-    }
-    g_seamEnterNs = now_ns();
-
     // RE-ENTRY FROM A SUB-FRAME. The sub-frame calls the game's endRendering purely to emit the
-    // EFB->XFB copy, and endRendering's first act is to wait for a retrace — which lands here. Doing
-    // the seam's own work now would end the frame the sub-frame is still assembling and present it
-    // early. Return immediately and let the copy be the only thing that happens.
-    if (sbr_interp60_in_subframe()) return;
+    // EFB->XFB copy, and endRendering's first act is to wait for a retrace — which lands here.
+    // Doing the seam's own work now would end the frame the sub-frame is still assembling and
+    // present it early. Return immediately and let the copy be the only thing that happens.
+    if (sbr_interp60_in_subframe())
+        return;
 
     // Apply BetterSunshineEngine's complete base timing contract before the
     // game's frame bookkeeping: retrace interval, SMS animation-rate constant,
     // and ModelGate step. Native Match Refresh generalizes BSE's 30/60/120
     // presets with the same formulas at the active display rate.
-    sb_wf32(SMS_ANIMATION_RATE,
-             sb::app::frame_rate::animation_rate_constant());
+    sb_wf32(SMS_ANIMATION_RATE, sb::app::frame_rate::animation_rate_constant());
     sb_wf32(MODEL_GATE_STEP, sb::app::frame_rate::model_gate_step());
     cpu.gpr[4] = sb::app::frame_rate::game_retrace_count(cpu.gpr[4]);
     func_802fc9a4(cpu);
@@ -946,7 +1000,7 @@ void video_wait_for_retrace(CPUState& cpu) {
     if (present_after_copy()) {
         g_presentPending = true;
         g_pendingCpu = &cpu;
-        return;                 // the rest of the seam runs from sbr_frame_present_now()
+        return; // the rest of the seam runs from sbr_frame_present_now()
     }
 
     present_tail(cpu);
@@ -958,21 +1012,24 @@ void video_wait_for_retrace(CPUState& cpu) {
 void present_tail(CPUState& cpu) {
     update_display_refresh_rate();
     // Close and send THIS tick's stream. Deliberately here and not in the seam: when the present is
-    // deferred past the game's EFB->XFB copy, the copy command is emitted after the seam returns, so
-    // a stream closed in the seam would not contain it.
+    // deferred past the game's EFB->XFB copy, the copy command is emitted after the seam returns,
+    // so a stream closed in the seam would not contain it.
     gxfifo_build();
     // ONE SIMULATION TICK ENDS HERE. begin_sim_tick() clears the interpolation-callback registry,
     // so it must run once per tick and before anything registers for the NEXT in-between frame.
     sb::frame_interp::begin_sim_tick();
     sbr_tag_shadow_begin_tick();
     sbr_shape_identity_tick();
-    if (sbr_lerp_enabled()) sbr_afterimage_tick();
-    if (sbr_lerp_enabled()) sbr_gxfifo_view_matrix();
+    if (sbr_lerp_enabled())
+        sbr_afterimage_tick();
+    if (sbr_lerp_enabled())
+        sbr_gxfifo_view_matrix();
     // The camera cut goes through the unified API rather than straight to aurora's snap: a cut is
     // "present this tick exactly", which is a statement about the whole frame and not only about
     // the renderer's matrix rewrite. Routing it here is what lets anything else that must be exact
     // on a cut — an effect, a UI element — see the same signal instead of re-deriving it.
-    if (sbr_lerp_enabled() && sbr_camera_cut_take()) sb::frame_interp::request_presentation_sync();
+    if (sbr_lerp_enabled() && sbr_camera_cut_take())
+        sb::frame_interp::request_presentation_sync();
     gxfifo_send_last();
 
     // Label this present for the dump series. The sub-frame below issues a SECOND present per
@@ -1006,8 +1063,9 @@ void present_tail(CPUState& cpu) {
     // The callback closes the sub-frame's GX stream exactly the way the tick's own is closed. It
     // must not be a partial imitation: a sub-frame assembled by a different path would diverge from
     // the real frame for reasons that have nothing to do with interpolation.
-    // SBR_INTERP60_CENSUS also reaches here: the motion census lives at the top of that function and
-    // must be obtainable from a run that interpolates nothing, because that run is the baseline.
+    // SBR_INTERP60_CENSUS also reaches here: the motion census lives at the top of that function
+    // and must be obtainable from a run that interpolates nothing, because that run is the
+    // baseline.
     if (std::getenv("SBR_INTERP60") || std::getenv("SBR_INTERP60_CENSUS")) {
         static bool* s_active = &s_frameActive;
         s_active = &s_frameActive;
@@ -1024,11 +1082,13 @@ void present_tail(CPUState& cpu) {
             const uint32_t after = sbr_gxfifo_stream_pos();
             static long n = 0;
             if (++n <= 6 || (n % 600) == 0)
-                lucent::info("i60sub", "sub-frame present #{}: g_out {} KB before build, {} KB "
-                                       "after; g_last now {} KB {}",
+                lucent::info("i60sub",
+                             "sub-frame present #{}: g_out {} KB before build, {} KB "
+                             "after; g_last now {} KB {}",
                              n, before >> 10, after >> 10, gxfifo_last_frame().size() >> 10,
                              before == 0 ? "<-- EMPTY: the re-issue emitted NOTHING, so the main "
-                                           "frame's stream is what gets re-sent" : "");
+                                           "frame's stream is what gets re-sent"
+                                         : "");
             gxfifo_send_last();
             // Same guest tick as the main present above: the sub-frame is an EXTRA present inside
             // one tick, not a tick of its own, and stamping it with a tick of its own would make
@@ -1047,17 +1107,8 @@ void present_tail(CPUState& cpu) {
     // from the present count. The two instruments must be joined on a number they genuinely share:
     // presents run at two per tick under replay, so a derived index would drift silently and any
     // correlation drawn from it would be worthless — the failure this project has hit repeatedly.
-    if (sbr_lerp_enabled()) sbr_camera_mode_tick(aurora::gfx::interp::tick_index());
-
-    // Close the frame-time split opened at the top of this function.
-    g_lastPresentEndNs = now_ns();
-    if (g_seamEnterNs != 0) {
-        g_accOursMs += (double)(g_lastPresentEndNs - g_seamEnterNs) / 1e6;
-        if (++g_frameSplitN % 60 == 0)
-            lucent::debug("frame", "per tick: guest logic {:.1f} ms, present+render {:.1f} ms "
-                                   "(pacing sleep excluded from both)",
-                          g_accGuestMs / (double)g_frameSplitN, g_accOursMs / (double)g_frameSplitN);
-    }
+    if (sbr_lerp_enabled())
+        sbr_camera_mode_tick(aurora::gfx::interp::tick_index());
 
     // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
     // the oracle's 30) — every animation, timer and physics step driven off the retrace count
@@ -1078,7 +1129,8 @@ void present_tail(CPUState& cpu) {
             s_prevRetrace = now;
             // A load hitch can advance the counter arbitrarily; clamp so one hitch cannot
             // translate into a multi-second sleep.
-            if (delta >= 1 && delta <= 8) retraces = delta;
+            if (delta >= 1 && delta <= 8)
+                retraces = delta;
         }
         // Remembered for the NEXT tick's midpoint pacing (see aurora_replay_midpoint).
         g_tickFields = retraces;
@@ -1094,7 +1146,8 @@ void present_tail(CPUState& cpu) {
 // Called from the TDisplay::endRendering override once the game's own EFB->XFB copy has been
 // issued. Only does anything when SBR_PRESENT_AFTER_COPY deferred the present.
 extern "C" void sbr_frame_present_now() {
-    if (!g_presentPending || g_pendingCpu == nullptr) return;
+    if (!g_presentPending || g_pendingCpu == nullptr)
+        return;
     g_presentPending = false;
     present_tail(*g_pendingCpu);
 }

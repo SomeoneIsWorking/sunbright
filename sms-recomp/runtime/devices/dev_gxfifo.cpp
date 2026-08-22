@@ -20,11 +20,14 @@
 //   0x48                    invalidate vertex cache (no payload)
 //   0x20/0x28/0x30/0x38     indexed XF load (one u32)
 
-#include <unordered_map>
+#include "gx_fifo_2d.hpp"
+#include "gx_fifo_input.hpp"
+#include "gx_fifo_vertex_layout.hpp"
 #include "mmio.h"
 #include "native_render.h"
 #include "scene.h"
 #include "state_oracle.h"
+#include <unordered_map>
 
 // The texture state the material display lists have written, per texmap. See the BP handler.
 static SbrTexture g_fifoTex[8];
@@ -50,20 +53,17 @@ namespace {
 
 constexpr u32 FIFO_BASE = 0xCC008000;
 
-// The stream arrives in pieces of 1/2/4/8 bytes; commands straddle those writes, so it has
-// to be reassembled before it can be framed.
-std::vector<u8> g_buf;
+// Commands straddle the stream's 1/2/4-byte stores, so they must be reassembled before framing.
+GxFifoInput g_buf;
 
 // The stream handed to aurora. Identical to the guest's, except that CP array-base writes
 // are rewritten (see below) — aurora cannot use the guest's 32-bit address directly.
 std::vector<u8> g_out;
-unsigned long g_xfbCopies = 0;   // copy-to-XFB triggers seen in the stream (BP 0x52 bit 14)
-std::vector<u8> g_last;   // the stream of the frame just presented (see gxfifo_last_frame)
-
-
+unsigned long g_xfbCopies = 0; // copy-to-XFB triggers seen in the stream (BP 0x52 bit 14)
+std::vector<u8> g_last;        // the stream of the frame just presented (see gxfifo_last_frame)
 
 // Per-VAT vertex descriptors, enough to compute a vertex's byte size.
-struct Vat { u32 vcd_lo = 0, vcd_hi = 0, fmt0 = 0, fmt1 = 0, fmt2 = 0; };
+using Vat = GxFifoVat;
 Vat g_vat[8];
 u32 g_vcd_lo = 0, g_vcd_hi = 0;
 
@@ -137,67 +137,16 @@ SbrDepthState g_fifoZ{1, 3, 1, 0, 4, 5, 1, 1, 0, {0, 0, 640, 448}};
 float g_posmtx[256] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
 bool g_posmtxSet[64] = {true, true, true};
 
-// The projection AS THE STREAM SETS IT (XF 0x1020: 6 params then the type word). This must come from
-// the FIFO, not from the SDK-captured projection: the SDK copy is not synchronised with the stream
-// position being parsed, so gating 2D capture on it classified 3D draws — indexed attributes, s8
-// positions — as orthographic and flooded the scene with hundreds of thousands of bogus drawables,
-// blanking the frame. That is the THIRD instance of the SDK-vs-FIFO trap in this renderer, after the
-// raster state (wrong on 43% of draws) and the texObj slot (133 phantom mismatches).
+// The projection AS THE STREAM SETS IT (XF 0x1020: 6 params then the type word). This must come
+// from the FIFO, not from the SDK-captured projection: the SDK copy is not synchronised with the
+// stream position being parsed, so gating 2D capture on it classified 3D draws — indexed
+// attributes, s8 positions — as orthographic and flooded the scene with hundreds of thousands of
+// bogus drawables, blanking the frame. That is the THIRD instance of the SDK-vs-FIFO trap in this
+// renderer, after the raster state (wrong on 43% of draws) and the texObj slot (133 phantom
+// mismatches).
 float g_fifoProj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-bool  g_fifoProjOrtho = false;
-
-// SBR_FIFO_2D=1 — capture 2D geometry from the FIFO's own direct-mode draws (Fable-reviewed
-// design, 2026-07-30). The J2D/HUD reaches GX through at least five paths (tree-walked pictures,
-// the 7-arg J2DPicture::draw, raw-GX gauge draws, per-glyph text, screen fills); synthesising
-// quads from pane objects can never cover the raw-GX and per-glyph paths, while every one of them
-// serialises its geometry HERE exactly. Gated on the projection being orthographic at the draw.
-// Gate telemetry: how many draws the 2D gate examined, how many were under an ortho projection,
-// and how many decoded. If ortho stays 0 while the HUD draws exist, the PROJECTION SIGNAL is what
-// is broken — the SDK-captured projection may not be current at FIFO parse time.
-unsigned long g_2dSeen = 0, g_2dOrtho = 0, g_2dEmitted = 0;
-// WHY each declined draw was declined, COUNTED — not just warned about once. The first version
-// printed one warning per reason and nothing else, which says a shape exists but not whether it is
-// 1% of the loss or 90% of it. Sizing the work needs the distribution, so the distribution is what
-// it collects. Indexed by reason; the primitive case additionally records which opcodes appeared,
-// because "some primitive" is not a work item and "GX_LINES" is.
-unsigned long g_2dDeclPrim = 0, g_2dDeclAttr = 0, g_2dDeclMtxIdx = 0, g_2dDeclPosFmt = 0,
-              g_2dDeclClr = 0, g_2dDeclCount = 0, g_2dDeclEmpty = 0;
-unsigned long g_2dDeclPrimOp[32] = {};     // by (prim >> 3), so 0x80..0xF8 fit
-unsigned long g_2dDeclPosFmtSeen[8] = {};
-unsigned long g_2dDeclAttrPos[4] = {}, g_2dDeclAttrT0[4] = {};
-unsigned long g_2dIdxNearCapture = 0, g_2dIdxFarFromCapture = 0;
-unsigned long g_2dDeclArrayMiss = 0;
-unsigned long g_2dDeclMtxUnset = 0;
-
-// Where the DECODED vertices actually land, in clip space, split by whether the draw used a
-// per-vertex position-matrix index. This is the control on the decode itself. Accepting a draw is
-// not evidence of decoding it correctly, and after the matrix and format gates came out the decoder
-// accepts 99.96% of orthographic draws — a gate that accepts everything and a gate that was deleted
-// produce the same number. So the two classes are scored against each other: draws WITHOUT an index
-// went through the path that was already working and give the baseline in-volume rate, and the
-// newly-enabled indexed class has to be comparable to it. If the position matrices were being
-// resolved wrongly, indexed draws would land somewhere else entirely and this says so.
-//  [0] = no per-vertex matrix index, [1] = indexed.
-unsigned long g_2dInVol[2] = {}, g_2dPartVol[2] = {}, g_2dOutVol[2] = {};
-
-// The residency check ALONE cannot catch the failure it most needs to. A position matrix resolved
-// from the wrong bytes — or from zeros — collapses every vertex of a draw onto one point, and for
-// an orthographic projection that point lands at NDC (P[3], P[7]), i.e. a screen corner, which is
-// INSIDE the volume. So a total decode failure would score 100% resident, which is exactly what the
-// indexed class scores. This counts draws with no extent, which is the shape that failure has.
-unsigned long g_2dCollapsed[2] = {};
-unsigned long g_2dTexMtxIdxDraws = 0;   // indexed, but the array was unregistered or out of range
-
-bool fifo2d_on() {
-    static int v = -1;
-    if (v < 0) {
-        const char* e = std::getenv("SBR_FIFO_2D");
-        v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
-    }
-    return v == 1;
-}
+bool g_fifoProjOrtho = false;
 uint32_t g_fifoTexPrevAddr[8] = {};
-
 
 // BP register shadow + the one-shot write mask (register 0xFE). See the BP handler.
 u32 g_bpCache[256] = {};
@@ -206,418 +155,28 @@ u32 g_bpMask = 0x00FFFFFFu;
 // Monotonic bind counter — see SbrTexture::bindSeq.
 u32 g_bindSeq = 0;
 
-// Attribute presence is 2 bits per attribute: 0 none, 1 direct, 2 index8, 3 index16.
-u32 attr_size(u32 mode, u32 direct_size) {
-    switch (mode) {
-    case 0: return 0;
-    case 1: return direct_size;
-    case 2: return 1;
-    case 3: return 2;
-    default: return 0;
-    }
-}
-
-u32 component_bytes(u32 fmt) {
-    switch (fmt) {   // 0 u8, 1 s8, 2 u16, 3 s16, 4 f32
-    case 0: case 1: return 1;
-    case 2: case 3: return 2;
-    case 4: return 4;
-    default: return 0;
-    }
-}
-
-// Direct colour size by CP component format, not by assumption:
-//   0 RGB565 (2)  1 RGB8 (3)  2 RGBX8 (4)  3 RGBA4 (2)  4 RGBA6 (3)  5 RGBA8 (4)
-u32 colour_bytes(u32 comp) {
-    switch (comp) {
-    case 0: return 2;
-    case 1: return 3;
-    case 2: return 4;
-    case 3: return 2;
-    case 4: return 3;
-    case 5: return 4;
-    default: return 0;
-    }
-}
-
-// VAT_A packs texcoord 0; VAT_B packs 1-4 and VAT_C packs 5-7, 9 bits each
-// (1 bit element count, 3 bits format, 5 bits fractional shift).
-u32 texcoord_bytes(const Vat& v, int i) {
-    u32 elem, fmt;
-    if (i == 0) { elem = (v.fmt0 >> 21) & 1; fmt = (v.fmt0 >> 22) & 7; }
-    else if (i <= 4) {
-        const u32 sh = (u32)(i - 1) * 9;
-        elem = (v.fmt1 >> sh) & 1; fmt = (v.fmt1 >> (sh + 1)) & 7;
-    } else {
-        // VAT_C starts with TEX4's 5-bit frac, so TEX5 begins at bit 5 — not bit 0.
-        // Getting this wrong made texcoord-heavy vertices the wrong size and desynced the
-        // stream handed to aurora (its "unsupported primitive type 136", intermittently).
-        const u32 sh = 5 + (u32)(i - 5) * 9;
-        elem = (v.fmt2 >> sh) & 1; fmt = (v.fmt2 >> (sh + 1)) & 7;
-    }
-    return (elem ? 2u : 1u) * component_bytes(fmt);
-}
-
-// Size of one vertex under the current VCD/VAT. Indexed attributes are 1 or 2 bytes
-// regardless of format; only direct attributes need the format decoded.
-// Decode one direct-mode 2D draw into scene vertices and hand it to the renderer. Supports the
-// attribute formats the 2D paths actually use (setup2D: POS s16 xyz shift 0 / CLR0 RGBA8 / TEX0
-// u16 shift 15; text and gauges add f32 and u8 variants) and FAILS LOUD on anything else — a
-// silently mis-decoded vertex places geometry plausibly-but-wrongly, which is this project's
-// most-repeated failure mode. Indexed attributes are declined loudly too: J2D never uses them,
-// so their appearance means the gate caught a draw it was never meant to capture.
-// The CP array registers, kept for OUR OWN decoding as well as forwarded to aurora. 0xA0-0xAF is
-// the base of each attribute array, 0xB0-0xBF its stride. The parser used to forward the base and
-// discard both, which is why every indexed 2D draw had to be declined: the index in the vertex
-// payload had nothing to dereference.
+// CP array registers retained for the FIFO 2D decoder as well as forwarded to Aurora.
 u32 g_arrBase[16] = {}, g_arrStride[16] = {};
 
-bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v);
-
 u32 vertex_size(u32 vat_idx) {
-    const Vat& v = g_vat[vat_idx & 7];
-    u32 n = 0;
-
-    // VCD lo: bit0 PosNrmMatIdx, bits1-8 TexMtxIdx0-7 (1 byte each when set),
-    // bits9-10 Position, 11-12 Normal, 13-14 Color0, 15-16 Color1.
-    if (v.vcd_lo & 1) n += 1;
-    for (int i = 0; i < 8; i++) if (v.vcd_lo & (1u << (1 + i))) n += 1;
-
-    const u32 pos_mode = (v.vcd_lo >> 9) & 3;
-    const u32 nrm_mode = (v.vcd_lo >> 11) & 3;
-    const u32 c0_mode  = (v.vcd_lo >> 13) & 3;
-    const u32 c1_mode  = (v.vcd_lo >> 15) & 3;
-
-    // VAT_A: pos elements bit0 / format bits1-3.
-    const u32 pos_cnt = ((v.fmt0 >> 0) & 1) ? 3 : 2;
-    n += attr_size(pos_mode, pos_cnt * component_bytes((v.fmt0 >> 1) & 7));
-
-    // Normals carry a GC quirk that must match aurora's calculate_last_vtx_size exactly:
-    // bit 9 selects NBT (normal+binormal+tangent, 9 components instead of 3) and bit 31
-    // selects NBT3, where an INDEXED normal costs THREE indices rather than one. Ignoring
-    // this made every J3D lit model's vertices the wrong length, so the bytes copied for a
-    // draw were wrong and the stream handed to aurora desynced — surfacing as aurora's
-    // "unsupported primitive type 136" (0x88 is not a primitive at all; its own comments
-    // note that a desync shows up exactly this way).
-    const bool nbt3 = ((v.fmt0 >> 31) & 1) != 0;
-    const bool nbt  = nbt3 || ((v.fmt0 >> 9) & 1) != 0;
-    const u32 nrm_comps = nbt ? 9u : 3u;
-    if (nrm_mode == 1)      n += nrm_comps * component_bytes((v.fmt0 >> 10) & 7);
-    else if (nrm_mode == 2) n += nbt3 ? 3u : 1u;
-    else if (nrm_mode == 3) n += nbt3 ? 6u : 2u;
-
-    // VAT_A: col0 elements bit13 / comp bits14-16, col1 elements bit17 / comp bits18-20.
-    n += attr_size(c0_mode, colour_bytes((v.fmt0 >> 14) & 7));
-    n += attr_size(c1_mode, colour_bytes((v.fmt0 >> 18) & 7));
-
-    // VCD hi: bits0-15 are TexCoord0-7 modes, 2 bits each.
-    for (int i = 0; i < 8; i++)
-        n += attr_size((v.vcd_hi >> (i * 2)) & 3, texcoord_bytes(v, i));
-    return n;
+    return gxFifoVertexSize(g_vat[vat_idx & 7]);
 }
 
-bool decode_2d_draw(u32 op, const u8* vp, u32 verts, const Vat& v) {
-    const u32 prim = op & 0xF8;
-    // The 2D paths draw QUADS (J2DPicture, glyphs, gauge) and the occasional strip/fan for fills.
-    if (prim != 0x80 && prim != 0x90 && prim != 0x98 && prim != 0xA0 && prim != 0xA8) {
-        ++g_2dDeclPrim;
-        ++g_2dDeclPrimOp[(prim >> 3) & 31];
-        // WHAT are they? A count of 22,776 declined line draws is a number, not a work item — it
-        // says nothing about whether they are the HUD, a debug overlay, or something invisible.
-        // Sample the first few with the state that identifies them: vertex count, and the texture
-        // bound to unit 0 (0 = untextured, which a wireframe would be).
-        if (g_2dDeclPrim <= 6)
-            lucent::info("fifo2d", "declined prim 0x{:02x}: {} vert(s), unit0 image3 0x{:08x}, "
-                                   "vsize {} — sample {} of the first 6",
-                         prim, verts, g_tex[0].image3, vertex_size(0xFF & (op & 7)), g_2dDeclPrim);
-        return false;
-    }
-    const u32 pos_mode = (v.vcd_lo >> 9) & 3;
-    const u32 c0_mode  = (v.vcd_lo >> 13) & 3;
-    const u32 t0_mode  = v.vcd_hi & 3;
-    // INDEXED attributes are now resolved, not declined. Measured before implementing: of 5,510
-    // indexed ortho draws in a 300-present plaza run, ZERO were within four draw commands of a
-    // J3DShape::draw capture — so none of them is geometry the J3D seam already holds, and
-    // decoding them adds to the scene rather than double-counting into it. The comment that used
-    // to sit here asserted the opposite ("J2D never uses them, so their appearance means the gate
-    // caught a draw it was never meant to capture"); the distance-to-capture measurement falsifies
-    // it, and this is what replaces it.
-    const bool pos_indexed = (pos_mode == 2 || pos_mode == 3);
-    const bool t0_indexed  = (t0_mode == 2 || t0_mode == 3);
-    if ((pos_mode != 1 && !pos_indexed) || (c0_mode != 0 && c0_mode != 1) ||
-        (t0_mode != 0 && t0_mode != 1 && !t0_indexed)) {
-        ++g_2dDeclAttr;
-        ++g_2dDeclAttrPos[pos_mode & 3];
-        ++g_2dDeclAttrT0[t0_mode & 3];
-        // The comment above this function asserts J2D never uses indexed attributes, so a draw
-        // arriving here is one the gate caught that it was never meant to. That is a CLAIM, and
-        // whether these 7,410 are HUD the capture is missing or 3D geometry the ortho gate is
-        // wrongly admitting decides whether decoding them is work worth doing. Vertex count and
-        // primitive separate the two: J2D quads are 4-6 vertices, world geometry is not.
-        // WHOSE draw is it? g_drawsSinceCapture counts draw commands since the last
-        // J3DShape::draw capture. A draw that the J3D seam already captured sits within a few
-        // commands of one; a draw nothing captured sits far from any. That decides the question
-        // decoding cannot: whether these are HUD the capture is MISSING, or geometry it already
-        // has — in which case decoding them here would double-count it into the scene.
-        if (g_drawsSinceCapture <= 4) ++g_2dIdxNearCapture; else ++g_2dIdxFarFromCapture;
-        if (g_2dDeclAttr <= 6)
-            lucent::info("fifo2d", "declined indexed: prim 0x{:02x}, {} vert(s), unit0 image3 "
-                                   "0x{:08x}, {} draw(s) since the last J3D capture — sample {} "
-                                   "of the first 6",
-                         prim, verts, g_tex[0].image3, g_drawsSinceCapture, g_2dDeclAttr);
-        return false;
-    }
-    // PosNrmMatIdx and TexMtxIdx0-7 are per-vertex INDEX BYTES that precede the position in each
-    // vertex. They used to decline the draw, under a comment asserting J2D never emits them; the
-    // stream says otherwise (see g_posmtx). They are handled in the vertex loop below.
-    const bool has_pnidx = (v.vcd_lo & 1) != 0;
-    u32 idx_prefix = has_pnidx ? 1u : 0u;
-    for (int ti = 0; ti < 8; ++ti) if (v.vcd_lo & (1u << (1 + ti))) ++idx_prefix;
-    const bool has_texmtxidx = idx_prefix > (has_pnidx ? 1u : 0u);
-    const u32 pos_cnt = ((v.fmt0 >> 0) & 1) ? 3 : 2;
-    const u32 pos_fmt = (v.fmt0 >> 1) & 7;
-    const u32 pos_shift = (v.fmt0 >> 4) & 0x1F;
-    const u32 c0_comp = (v.fmt0 >> 14) & 7;
-    const u32 t0_elem = (v.fmt0 >> 21) & 1;
-    const u32 t0_fmt  = (v.fmt0 >> 22) & 7;
-    const u32 t0_shift = (v.fmt0 >> 25) & 0x1F;
-    // s16 / u16 / f32. u16 was excluded on the same "2D only emits these" reasoning as the gates
-    // above, and is 870 draws a run. It differs from s16 only in the sign of the decode.
-    if (pos_fmt != 2 && pos_fmt != 3 && pos_fmt != 4) {
-        ++g_2dDeclPosFmt;
-        ++g_2dDeclPosFmtSeen[pos_fmt & 7];
-        return false;
-    }
-    if (c0_mode == 1 && c0_comp != 5) {   // RGBA8 only (setup2D's declared format)
-        ++g_2dDeclClr;
-        return false;
-    }
-    if (verts < 3 || verts > 512) { ++g_2dDeclCount; return false; }
-
-    const u32 vsize = vertex_size(0xFF & (op & 7));
-    const float posDiv = (pos_fmt == 2 || pos_fmt == 3) ? (float)(1u << pos_shift) : 1.0f;
-    const float texDiv = (t0_fmt == 2 || t0_fmt == 3) ? (float)(1u << t0_shift) : 1.0f;
-
-    // STATIC, not stack. These are ~117KB and ~39KB; as locals they put ~160KB on the stack of a
-    // FIFO-parse callback, which is a stack overflow waiting to happen and did in fact coincide with
-    // the whole frame collapsing to the clear colour. The parser is single-threaded by construction
-    // (the one-runtime doctrine), so static is safe here and the sizes stay off the stack.
-    static SbrGeomVert out[512 * 3];
-    static SbrGeomVert vtx[512];
-    u32 nOut = 0;
-    for (u32 k = 0; k < verts; ++k) {
-        const u8* q = vp + (size_t)k * vsize;
-        SbrGeomVert g{};
-
-        // The per-vertex index bytes come first, PNMTXIDX before the texture-matrix indices.
-        // Texture-matrix indices are consumed but not yet applied: this decoder does not implement
-        // texgen matrices, so the UVs it produces for such a vertex are the raw ones. That is a
-        // KNOWN gap, reported by the gate summary, not a silent approximation.
-        const float* M = g_posmtx;
-        if (has_pnidx) {
-            const u32 mi = q[0];
-            if (mi >= 61 || !g_posmtxSet[mi]) { ++g_2dDeclMtxUnset; return false; }
-            M = &g_posmtx[(size_t)mi * 4];
-        }
-        q += idx_prefix;
-
-        // Resolve an indexed attribute to a pointer into its array. GX array ids: 0 POS, 1 NRM,
-        // 2 CLR0, 3 CLR1, 4..11 TEX0..TEX7, 12..15 XF_A..XF_D (the matrix arrays). Returns nullptr when the array was never registered or
-        // the element would run past MEM1 — the caller then declines the whole draw rather than
-        // decoding whatever bytes happen to be there, because a plausible-but-wrong vertex is this
-        // project's most-repeated failure and is far worse than a missing one.
-        const auto array_elem = [&](u32 arr, u32 idx) -> const u8* {
-            const u32 base = g_arrBase[arr & 15], stride = g_arrStride[arr & 15];
-            if (base == 0 || stride == 0) return nullptr;
-            const u32 off = (base & 0x01FFFFFFu) + idx * stride;
-            if (off + stride > 0x01800000u) return nullptr;
-            return g_ram_base + off;
-        };
-        const auto read_index = [&](u32 mode, const u8*& cur) -> u32 {
-            if (mode == 2) { const u32 v2 = cur[0]; cur += 1; return v2; }
-            const u32 v2 = ((u32)cur[0] << 8) | cur[1]; cur += 2; return v2;
-        };
-
-        // POS
-        float px, py, pz = 0.0f;
-        const u8* pq = q;                  // where the position bytes actually live
-        if (pos_indexed) {
-            const u32 idx = read_index(pos_mode, q);
-            pq = array_elem(0, idx);
-            if (pq == nullptr) { ++g_2dDeclArrayMiss; return false; }
-        }
-        {
-        const u8* q = pq;                  // shadow, so the decoders below read from the array
-        if (pos_fmt == 3) {
-            px = (float)(s16)((q[0] << 8) | q[1]) / posDiv;
-            py = (float)(s16)((q[2] << 8) | q[3]) / posDiv;
-            if (pos_cnt == 3) pz = (float)(s16)((q[4] << 8) | q[5]) / posDiv;
-            q += pos_cnt * 2;
-        } else if (pos_fmt == 2) {
-            px = (float)(u16)((q[0] << 8) | q[1]) / posDiv;
-            py = (float)(u16)((q[2] << 8) | q[3]) / posDiv;
-            if (pos_cnt == 3) pz = (float)(u16)((q[4] << 8) | q[5]) / posDiv;
-            q += pos_cnt * 2;
-        } else {
-            union { u32 u; float f; } c;
-            c.u = ((u32)q[0] << 24) | ((u32)q[1] << 16) | ((u32)q[2] << 8) | q[3]; px = c.f;
-            c.u = ((u32)q[4] << 24) | ((u32)q[5] << 16) | ((u32)q[6] << 8) | q[7]; py = c.f;
-            if (pos_cnt == 3) {
-                c.u = ((u32)q[8] << 24) | ((u32)q[9] << 16) | ((u32)q[10] << 8) | q[11];
-                pz = c.f;
-            }
-            q += pos_cnt * 4;
-        }
-        }
-        // The vertex's own position matrix (PNMTX0 when the stream carries no index).
-        g.x = M[0] * px + M[1] * py + M[2] * pz + M[3];
-        g.y = M[4] * px + M[5] * py + M[6] * pz + M[7];
-        g.z = M[8] * px + M[9] * py + M[10] * pz + M[11];
-        g.nz = 1.0f;
-        // CLR0
-        if (c0_mode == 1) {
-            g.rgba = ((u32)q[0] << 24) | ((u32)q[1] << 16) | ((u32)q[2] << 8) | q[3];
-            q += 4;
-        } else {
-            g.rgba = 0xFFFFFFFFu;
-        }
-        // TEX0 — direct or indexed, resolved the same way POS is.
-        if (t0_mode == 1 || t0_indexed) {
-            const u8* tq = q;
-            if (t0_indexed) {
-                const u32 idx = read_index(t0_mode, q);
-                tq = array_elem(4, idx);      // GX array id 4 == TEX0
-                if (tq == nullptr) { ++g_2dDeclArrayMiss; return false; }
-            }
-            const u8* q = tq;                 // shadow, as for POS
-            const u32 comps = t0_elem ? 2 : 1;
-            float st[2] = {0, 0};
-            for (u32 ccc = 0; ccc < comps; ++ccc) {
-                if (t0_fmt == 2 || t0_fmt == 3) {   // u16/s16
-                    st[ccc] = (float)(u16)((q[0] << 8) | q[1]) / texDiv;
-                    q += 2;
-                } else if (t0_fmt == 4) {           // f32
-                    union { u32 u; float f; } c;
-                    c.u = ((u32)q[0] << 24) | ((u32)q[1] << 16) | ((u32)q[2] << 8) | q[3];
-                    st[ccc] = c.f;
-                    q += 4;
-                } else {                            // u8/s8
-                    st[ccc] = (float)q[0] / texDiv;
-                    q += 1;
-                }
-            }
-            for (int t = 0; t < 4; ++t) { g.uv[t][0] = st[0]; g.uv[t][1] = st[1]; }
-        }
-        vtx[k] = g;
-    }
-    // Triangulate: quads -> 2 tris each; strips/fans -> tri lists.
-    if (prim == 0x80) {                             // QUADS
-        for (u32 k = 0; k + 3 < verts; k += 4) {
-            out[nOut++] = vtx[k]; out[nOut++] = vtx[k + 1]; out[nOut++] = vtx[k + 2];
-            out[nOut++] = vtx[k]; out[nOut++] = vtx[k + 2]; out[nOut++] = vtx[k + 3];
-        }
-    } else if (prim == 0x90) {                      // TRIANGLES
-        for (u32 k = 0; k + 2 < verts; k += 3) {
-            out[nOut++] = vtx[k]; out[nOut++] = vtx[k + 1]; out[nOut++] = vtx[k + 2];
-        }
-    } else if (prim == 0x98) {                      // TRIANGLESTRIP
-        for (u32 k = 2; k < verts; ++k) {
-            out[nOut++] = vtx[k - 2]; out[nOut++] = vtx[(k & 1) ? k : k - 1];
-            out[nOut++] = vtx[(k & 1) ? k - 1 : k];
-        }
-    } else if (prim == 0xA8) {                      // LINES
-        // A GX line has no area, and this frontend only knows how to hand triangles downstream, so
-        // each segment becomes a quad one unit wide about its own axis. That is the right width in
-        // THIS space rather than an arbitrary choice: these vertices arrive with PNMTX0 already
-        // applied and an orthographic projection in force, so a unit here is a screen pixel, which
-        // is exactly the width the hardware rasterises an unwidened line at.
-        //
-        // Measured before it was written: 22,776 of 31,356 declined ortho draws in a 300-present
-        // plaza run were 0xA8, every sample 4 vertices with a real texture bound on unit 0 — two
-        // textured segments, ~76 per frame. That is scene geometry, not a debug overlay, and it was
-        // the single largest reason the 2D capture saw only 26% of what the game draws in 2D.
-        for (u32 k = 0; k + 1 < verts; k += 2) {
-            const SbrGeomVert& a = vtx[k];
-            const SbrGeomVert& b = vtx[k + 1];
-            float dx = b.x - a.x, dy = b.y - a.y;
-            const float len = std::sqrt(dx * dx + dy * dy);
-            // A degenerate segment has no direction to offset along. Skipping it is correct — the
-            // hardware draws nothing for a zero-length line either — and it must not become a
-            // triangle, which would be a visible dot the game never drew.
-            if (!(len > 1e-6f)) continue;
-            const float nx = -dy / len * 0.5f, ny = dx / len * 0.5f;
-            SbrGeomVert a0 = a, a1 = a, b0 = b, b1 = b;
-            a0.x -= nx; a0.y -= ny;
-            a1.x += nx; a1.y += ny;
-            b0.x -= nx; b0.y -= ny;
-            b1.x += nx; b1.y += ny;
-            out[nOut++] = a0; out[nOut++] = b0; out[nOut++] = b1;
-            out[nOut++] = a0; out[nOut++] = b1; out[nOut++] = a1;
-        }
-    } else {                                        // TRIANGLEFAN
-        for (u32 k = 2; k < verts; ++k) {
-            out[nOut++] = vtx[0]; out[nOut++] = vtx[k - 1]; out[nOut++] = vtx[k];
-        }
-    }
-    // Triangulated to nothing. Reached when every segment of a LINES draw is degenerate, or a
-    // strip/fan carries fewer vertices than one triangle needs. Counted, because the residual line
-    // below caught exactly this: 14 declined draws that no reason accounted for. An uncounted
-    // early return is how a breakdown quietly stops adding up.
-    if (nOut == 0) { ++g_2dDeclEmpty; return false; }
-
-    // STABLE identity, not a content hash: texture + vertex count + quantised screen position from
-    // PNMTX0's translation. A counter digit keeps this key while its glyph changes, so the geometry
-    // entry is UPDATED rather than a new one minted every frame. Content-keying minted 387k entries
-    // in one run, and since g_geom is a vector whose elements are referenced by const&, that growth
-    // reallocated and dangled live references — which is what collapsed the frame.
-    u64 h = 1469598103934665603ULL;
-    const auto mix = [&h](u64 v) { h = (h ^ v) * 1099511628211ULL; };
-    mix(g_fifoTex[0].addr);
-    mix(nOut);
-    mix((u64)(s32)(g_posmtx[3] * 4.0f));
-    mix((u64)(s32)(g_posmtx[7] * 4.0f));
-    mix((u64)(s32)(out[0].x * 64.0f));
-    mix((u64)(s32)(out[0].y * 64.0f));
-
-    SbrDrawable dr{};
-    dr.streamPos = (u32)g_out.size();
-    dr.key = h;
-    dr.geom = sbr_scene_update_geometry(h, out, (int)nOut);
-    if (dr.geom == 0) return false;
-    dr.depth = g_fifoZ;
-    for (unsigned m = 0; m < 8; ++m) dr.tex[m] = g_fifoTex[m];
-    dr.tev = g_tev;
-    dr.xf  = g_xf;
-    for (int j = 0; j < 16; ++j) dr.proj[j] = g_fifoProj[j];
-    dr.is2d = 1;
-    dr.mtx[0] = dr.mtx[5] = dr.mtx[10] = 1.0f;   // PNMTX0 already applied per vertex
-    sbr_scene_add(dr);
-    if (has_texmtxidx) ++g_2dTexMtxIdxDraws;   // counted only on a draw that WAS captured
-    {   // Clip-space residency of what we just decoded, per the note on g_2dInVol.
-        unsigned inside = 0;
-        for (u32 k = 0; k < verts; ++k) {
-            const float nx2 = g_fifoProj[0] * vtx[k].x + g_fifoProj[3];
-            const float ny2 = g_fifoProj[5] * vtx[k].y + g_fifoProj[7];
-            if (nx2 >= -1.05f && nx2 <= 1.05f && ny2 >= -1.05f && ny2 <= 1.05f) ++inside;
-        }
-        const int cls = has_pnidx ? 1 : 0;
-        float lox = vtx[0].x, hix = lox, loy = vtx[0].y, hiy = loy;
-        for (u32 k = 1; k < verts; ++k) {
-            lox = std::min(lox, vtx[k].x); hix = std::max(hix, vtx[k].x);
-            loy = std::min(loy, vtx[k].y); hiy = std::max(hiy, vtx[k].y);
-        }
-        if ((hix - lox) < 1e-3f && (hiy - loy) < 1e-3f) ++g_2dCollapsed[cls];
-        if (inside == verts)   ++g_2dInVol[cls];
-        else if (inside != 0)  ++g_2dPartVol[cls];
-        else                   ++g_2dOutVol[cls];
-    }
-    return true;
+void put_u8(std::vector<u8>& v, u8 x) {
+    v.push_back(x);
 }
-
-void put_u8 (std::vector<u8>& v, u8 x)  { v.push_back(x); }
-void put_u16(std::vector<u8>& v, u16 x) { v.push_back((u8)(x >> 8)); v.push_back((u8)x); }
-void put_u32(std::vector<u8>& v, u32 x) { for (int i = 3; i >= 0; i--) v.push_back((u8)(x >> (i * 8))); }
-void put_u64(std::vector<u8>& v, u64 x) { for (int i = 7; i >= 0; i--) v.push_back((u8)(x >> (i * 8))); }
+void put_u16(std::vector<u8>& v, u16 x) {
+    v.push_back((u8)(x >> 8));
+    v.push_back((u8)x);
+}
+void put_u32(std::vector<u8>& v, u32 x) {
+    for (int i = 3; i >= 0; i--)
+        v.push_back((u8)(x >> (i * 8)));
+}
+void put_u64(std::vector<u8>& v, u64 x) {
+    for (int i = 7; i >= 0; i--)
+        v.push_back((u8)(x >> (i * 8)));
+}
 
 // GX_AURORA (0x50) + subcommand, then a 64-bit host pointer, 32-bit size, 1-byte LE flag.
 void emit_arraybase(u32 attr, u32 guest_addr) {
@@ -626,7 +185,7 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
         lucent::debug("gxfifo", "array base 0x{:08x} is outside MEM1 — dropped", guest_addr);
         return;
     }
-    put_u8 (g_out, 0x50);
+    put_u8(g_out, 0x50);
     put_u16(g_out, (u16)(GX_AURORA_LOAD_ARRAYBASE + attr));
     put_u64(g_out, (u64)(uintptr_t)(g_ram_base + off));
     // Size 0 is aurora's "trust" registration: it uploads the AUTO-DERIVED extent, i.e. up
@@ -636,7 +195,7 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
     // true and catastrophic: every indexed array pushed megabytes into the 48 MB storage
     // buffer, which is what overflowed it.
     put_u32(g_out, 0);
-    put_u8 (g_out, 0);                   // big-endian, as the guest wrote it
+    put_u8(g_out, 0); // big-endian, as the guest wrote it
 }
 
 // Aurora's CP handles the copy-to-XFB trigger (BP 0x52 bit 14), but only after the copy
@@ -651,7 +210,8 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
 // resolving texture copies against the previous display copy's extent and format, and into
 // whatever destination pointer it last held, since GX_AURORA_LOAD_COPY_DEST was never sent.
 void emit_copy_state(u32 cmd, bool to_xfb) {
-    if (g_copy_w == 0 || g_copy_h == 0) return;
+    if (g_copy_w == 0 || g_copy_h == 0)
+        return;
     // Every distinct TEXTURE copy destination, once. A render-to-texture target that this port
     // never writes back into guest memory decodes as ZEROS, which is indistinguishable from a
     // legitimately black texture at the sampler — so the set of copy destinations is the list of
@@ -667,7 +227,7 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
 
     // The copy scales the EFB region down into the destination: bit 9 halves horizontally,
     // and BP 0x4E scales vertically as 1.8 fixed point.
-    const bool half_scale   = (cmd >> 9) & 1;
+    const bool half_scale = (cmd >> 9) & 1;
     const bool scale_invert = (cmd >> 10) & 1;
     u32 dst_w = half_scale ? g_copy_w / 2 : g_copy_w;
     u32 dst_h;
@@ -684,8 +244,10 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
         // in the scene matches.
         dst_h = half_scale ? g_copy_h / 2 : g_copy_h;
     }
-    if (dst_w == 0) dst_w = 1;
-    if (dst_h == 0) dst_h = 1;
+    if (dst_w == 0)
+        dst_w = 1;
+    if (dst_h == 0)
+        dst_h = 1;
     // Hand a TEXTURE copy to the renderer so it can resolve the EFB region into a real GPU texture
     // registered under the destination address. A display (XFB) copy is the presented frame and has
     // no texture consumer, so it is not forwarded.
@@ -708,60 +270,67 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
     // the copy is YUV-converted and aurora wants the XFB as RGBA8. Decoding it as a texture
     // format yields GX_TF_I4, 4-bit intensity, which renders the whole frame greyscale.
     if (to_xfb) {
-        fmt = 6;    // GX_TF_RGBA8
+        fmt = 6; // GX_TF_RGBA8
     } else if (fmt == 8) {
         // Copy format R8 (Dolphin EFBCopyFormat 8): a single 8-bit channel written in the same
         // 8x4 tiled 8-bpp layout as a GX I8 texture, and the game binds it AS I8. Translating it to
         // RGBA8 both quadrupled the byte size (so the sampler walked the wrong stride) and dropped
         // the intensity into the red channel only — the heat-haze distortion source samples this,
         // so it showed a stale/garbled capture (the "haze ghosting"). I8 is the faithful mapping.
-        fmt = 1;   // GX_TF_I8
+        fmt = 1; // GX_TF_I8
     } else if (fmt > 6 && fmt != 14) {
         // The other single/dual-channel copy formats (A8, G8, B8, RG8, GB8) have no GXTexFmt
         // equivalent and nothing observed uses them; say so rather than resolve to a wrong format.
-        lucent::warn("gxfifo", "EFB copy format {} (field {}, BP 0x52 = 0x{:06x}) has no "
-                               "GXTexFmt equivalent — this single/dual-channel copy format is not "
-                               "translated yet", fmt, field, cmd);
+        lucent::warn("gxfifo",
+                     "EFB copy format {} (field {}, BP 0x52 = 0x{:06x}) has no "
+                     "GXTexFmt equivalent — this single/dual-channel copy format is not "
+                     "translated yet",
+                     fmt, field, cmd);
         fmt = 6;
     }
 
-    {   // One line per distinct copy shape, so the copy set of a scene is visible at a glance.
-        static u32 last_w = 0, last_h = 0, last_fmt = 0xFF; static bool last_xfb = false;
+    { // One line per distinct copy shape, so the copy set of a scene is visible at a glance.
+        static u32 last_w = 0, last_h = 0, last_fmt = 0xFF;
+        static bool last_xfb = false;
         if (dst_w != last_w || dst_h != last_h || fmt != last_fmt || to_xfb != last_xfb) {
-            last_w = dst_w; last_h = dst_h; last_fmt = fmt; last_xfb = to_xfb;
+            last_w = dst_w;
+            last_h = dst_h;
+            last_fmt = fmt;
+            last_xfb = to_xfb;
             lucent::debug("gxfifo", "EFB copy -> {} : src {}x{} at ({},{}) -> dst {}x{} fmt {}",
-                          to_xfb ? "XFB" : "texture", g_copy_w, g_copy_h, g_copy_left,
-                          g_copy_top, dst_w, dst_h, fmt);
+                          to_xfb ? "XFB" : "texture", g_copy_w, g_copy_h, g_copy_left, g_copy_top,
+                          dst_w, dst_h, fmt);
             lucent::debug("gxfifo", "  copy scale: yscale=0x{:x} half={} -> dst {}x{}",
                           g_copy_yscale, half_scale ? 1 : 0, dst_w, dst_h);
         }
     }
 
-    put_u8 (g_out, 0x50);
+    put_u8(g_out, 0x50);
     put_u16(g_out, GX_AURORA_LOAD_COPY_SRC);
     put_u32(g_out, g_copy_left);
     put_u32(g_out, g_copy_top);
     put_u32(g_out, g_copy_w);
     put_u32(g_out, g_copy_h);
 
-    put_u8 (g_out, 0x50);
+    put_u8(g_out, 0x50);
     put_u16(g_out, GX_AURORA_LOAD_COPY_DST);
     put_u32(g_out, dst_w);
     put_u32(g_out, dst_h);
     put_u32(g_out, fmt);
-    put_u8 (g_out, 0);      // not a wide (double-strided) copy
+    put_u8(g_out, 0); // not a wide (double-strided) copy
 
     // The display copy is keyed on aurora's own kDisplayCopyDest and needs no destination.
     // A texture copy does: without it aurora resolves into a stale pointer.
     if (!to_xfb) {
         const u32 phys = g_copy_dest << 5;
         if (phys == 0 || phys >= 0x01800000u) {
-            lucent::error("gxfifo", "EFB texture copy destination 0x{:08x} (BP 0x4B = "
-                                    "0x{:06x}) is not in MEM1 — the copy has nowhere to land",
+            lucent::error("gxfifo",
+                          "EFB texture copy destination 0x{:08x} (BP 0x4B = "
+                          "0x{:06x}) is not in MEM1 — the copy has nowhere to land",
                           phys, g_copy_dest);
             std::abort();
         }
-        {   // Aurora resolves a sampled texture to an EFB-copy result by looking the texobj's
+        { // Aurora resolves a sampled texture to an EFB-copy result by looking the texobj's
             // texel POINTER up in its copy-texture map, which is keyed by this destination.
             // If the two disagree the copy still happens and the bind still happens, but the
             // draw samples raw MEM1 instead of the copy — silently, and looking exactly like
@@ -769,11 +338,11 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
             static u32 last = 0;
             if (phys != last) {
                 last = phys;
-                lucent::debug("gxfifo", "EFB copy destination phys 0x{:08x} ({}x{})", phys,
-                              dst_w, dst_h);
+                lucent::debug("gxfifo", "EFB copy destination phys 0x{:08x} ({}x{})", phys, dst_w,
+                              dst_h);
             }
         }
-        put_u8 (g_out, 0x50);
+        put_u8(g_out, 0x50);
         put_u16(g_out, GX_AURORA_LOAD_COPY_DEST);
         put_u64(g_out, (u64)(uintptr_t)(g_ram_base + phys));
     }
@@ -785,24 +354,27 @@ void emit_texobj(u32 map) {
     // SBR_NO_TEXOBJ=1 (diagnostic): stop describing textures to aurora, to bisect whether a
     // staging overflow comes from texture uploads or from geometry.
     static const bool disabled = std::getenv("SBR_NO_TEXOBJ") != nullptr;
-    if (disabled) return;
+    if (disabled)
+        return;
 
     TexSlot& t = g_tex[map & 7];
-    if (!t.have0 || !t.have3) return;
-    if (t.image0 == t.sent0 && t.image3 == t.sent3) return;   // unchanged bind
-    t.sent0 = t.image0; t.sent3 = t.image3;
+    if (!t.have0 || !t.have3)
+        return;
+    if (t.image0 == t.sent0 && t.image3 == t.sent3)
+        return; // unchanged bind
+    t.sent0 = t.image0;
+    t.sent3 = t.image3;
 
-    const u32 w   = (t.image0 & 0x3FF) + 1;
-    const u32 h   = ((t.image0 >> 10) & 0x3FF) + 1;
+    const u32 w = (t.image0 & 0x3FF) + 1;
+    const u32 h = ((t.image0 >> 10) & 0x3FF) + 1;
     const u32 fmt = (t.image0 >> 20) & 0xF;
-    const u32 phys = (t.image3 & 0x00FFFFFFu) << 5;   // image3 is in 32-byte units
+    const u32 phys = (t.image3 & 0x00FFFFFFu) << 5; // image3 is in 32-byte units
     if (phys >= 0x01800000u) {
         lucent::debug("gxfifo", "texture {} address 0x{:08x} is outside MEM1", map, phys);
         return;
     }
 
-
-    {   // Counterpart of the copy-destination log above: the pointer a bind presents to
+    { // Counterpart of the copy-destination log above: the pointer a bind presents to
         // aurora must equal the destination a copy registered, or the copy is never sampled.
         if (w == 320 && h == 224) {
             static u32 last = 0;
@@ -823,23 +395,24 @@ void emit_texobj(u32 map) {
         std::vector<uint8_t> rgba((size_t)w * h * 4);
         if (gx_decode_texture(gaddr, w, h, fmt, 0, rgba.data())) {
             uint64_t sum = 0;
-            for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i+1] + rgba[i+2];
+            for (size_t i = 0; i < rgba.size(); i += 4)
+                sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
             static std::unordered_map<u32, bool> seen;
             if (!seen[gaddr]) {
                 seen[gaddr] = true;
-                lucent::info("gxfifo", "AT BIND 0x{:08x} {}x{} fmt{} decodes to mean {:.1f}",
-                             gaddr, w, h, fmt, (double)sum / (double)(rgba.size() / 4 * 3));
+                lucent::info("gxfifo", "AT BIND 0x{:08x} {}x{} fmt{} decodes to mean {:.1f}", gaddr,
+                             w, h, fmt, (double)sum / (double)(rgba.size() / 4 * 3));
             }
         }
     }
-    put_u8 (g_out, 0x50);
+    put_u8(g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_LOAD_TEXOBJ);
-    put_u8 (g_out, (u8)(map & 7));
+    put_u8(g_out, (u8)(map & 7));
     put_u64(g_out, (u64)(uintptr_t)(g_ram_base + phys));
     put_u32(g_out, w);
     put_u32(g_out, h);
     put_u32(g_out, fmt);
-    {   // Which texture formats are we describing? A scene rendering entirely in greys
+    { // Which texture formats are we describing? A scene rendering entirely in greys
         // would be explained by everything decoding as an intensity format.
         static u32 seen = 0;
         if (!(seen & (1u << fmt))) {
@@ -847,17 +420,21 @@ void emit_texobj(u32 map) {
             lucent::debug("gxfifo", "texture format {} first seen ({}x{})", fmt, w, h);
         }
     }
-    put_u32(g_out, 0);           // TLUT index; palettised formats need LOAD_TLUT too
-    put_u8 (g_out, 0);           // mips are gated by the real TexMode1 register, not here
+    put_u32(g_out, 0); // TLUT index; palettised formats need LOAD_TLUT too
+    put_u8(g_out, 0);  // mips are gated by the real TexMode1 register, not here
     // texObjId is aurora's texture cache key — a zero id makes every bind a cache miss and
     // re-upload (the known 33x perf cliff). The texel address is stable and unique per
     // texture, so it serves as the identity.
     put_u32(g_out, phys ? phys : 1u);
-    put_u32(g_out, 0);           // data version: bumped only when texel bytes change
+    put_u32(g_out, 0); // data version: bumped only when texel bytes change
 }
 
-u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
-u32 be16(const u8* p) { return (u32)p[0] << 8 | p[1]; }
+u32 be32(const u8* p) {
+    return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3];
+}
+u32 be16(const u8* p) {
+    return (u32)p[0] << 8 | p[1];
+}
 
 // Frame as much of the buffer as is complete. Returns bytes consumed.
 size_t parse(const u8* p, size_t n, int depth = 0);
@@ -883,13 +460,13 @@ void inline_display_list(u32 guest_addr, u32 size, int depth) {
     }
     const u32 off = guest_addr & 0x01FFFFFFu;
     if (off + size > 0x01800000u || size == 0) {
-        lucent::debug("gxfifo", "display list 0x{:08x} +0x{:x} is outside MEM1", guest_addr,
-                      size);
+        lucent::debug("gxfifo", "display list 0x{:08x} +0x{:x} is outside MEM1", guest_addr, size);
         return;
     }
     // g_need describes the OUTER stream's incomplete command; a nested list parses a
     // complete buffer and must not disturb it.
-    g_dl_calls++; g_dl_bytes += size;
+    g_dl_calls++;
+    g_dl_bytes += size;
     const size_t saved_need = g_need;
     parse(g_ram_base + off, size, depth + 1);
     g_need = saved_need;
@@ -900,21 +477,39 @@ size_t parse(const u8* p, size_t n, int depth) {
     while (i < n) {
         const u8 op = p[i];
 
-        if (op == 0x00) { g_out.insert(g_out.end(), p + i, p + i + 1);
-            g_stats.nops++; i += 1; continue; }
+        if (op == 0x00) {
+            g_out.insert(g_out.end(), p + i, p + i + 1);
+            g_stats.nops++;
+            i += 1;
+            continue;
+        }
 
-        if (op == 0x08) {                       // CP register write
-            if (n - i < 6) { g_need = 6; break; }
-            const u8  reg = p[i + 1];
+        if (op == 0x08) { // CP register write
+            if (n - i < 6) {
+                g_need = 6;
+                break;
+            }
+            const u8 reg = p[i + 1];
             const u32 val = be32(p + i + 2);
-            if (reg == 0x50) { g_vcd_lo = val; for (auto& v : g_vat) v.vcd_lo = val; }
-            else if (reg == 0x60) { g_vcd_hi = val; for (auto& v : g_vat) v.vcd_hi = val; }
-            else if (reg >= 0x70 && reg <= 0x77) g_vat[reg - 0x70].fmt0 = val;
-            else if (reg >= 0x80 && reg <= 0x87) g_vat[reg - 0x80].fmt1 = val;
-            else if (reg >= 0x90 && reg <= 0x97) g_vat[reg - 0x90].fmt2 = val;
+            if (reg == 0x50) {
+                g_vcd_lo = val;
+                for (auto& v : g_vat)
+                    v.vcd_lo = val;
+            } else if (reg == 0x60) {
+                g_vcd_hi = val;
+                for (auto& v : g_vat)
+                    v.vcd_hi = val;
+            } else if (reg >= 0x70 && reg <= 0x77)
+                g_vat[reg - 0x70].fmt0 = val;
+            else if (reg >= 0x80 && reg <= 0x87)
+                g_vat[reg - 0x80].fmt1 = val;
+            else if (reg >= 0x90 && reg <= 0x97)
+                g_vat[reg - 0x90].fmt2 = val;
 
-            if (reg >= 0xA0 && reg <= 0xAF) g_arrBase[reg - 0xA0] = val;
-            if (reg >= 0xB0 && reg <= 0xBF) g_arrStride[reg - 0xB0] = val & 0xFF;
+            if (reg >= 0xA0 && reg <= 0xAF)
+                g_arrBase[reg - 0xA0] = val;
+            if (reg >= 0xB0 && reg <= 0xBF)
+                g_arrStride[reg - 0xB0] = val & 0xFF;
 
             if (reg >= 0xA0 && reg <= 0xAF) {
                 // Vertex array base. Aurora IGNORES the raw CP write, because in the decomp
@@ -925,17 +520,25 @@ size_t parse(const u8* p, size_t n, int depth) {
             } else {
                 g_out.insert(g_out.end(), p + i, p + i + 6);
             }
-            g_stats.cp++; i += 6; continue;
+            g_stats.cp++;
+            i += 6;
+            continue;
         }
 
-        if (op == 0x10) {                       // XF write
-            if (n - i < 5) { g_need = 5; break; }
+        if (op == 0x10) { // XF write
+            if (n - i < 5) {
+                g_need = 5;
+                break;
+            }
             const u32 count = ((be16(p + i + 1)) & 0xFFFF) + 1;
             // TexGen config lives at XF 0x1040-0x104F; log what the guest actually writes so
             // an "unconfigured tcg" in aurora can be attributed to the game or to us.
             const size_t len = 1 + 4 + count * 4;
-            if (n - i < len) { g_need = len; break; }
-            {   // XF 0x1020 is the projection (6 params + type). Aurora only latches it when
+            if (n - i < len) {
+                g_need = len;
+                break;
+            }
+            { // XF 0x1020 is the projection (6 params + type). Aurora only latches it when
                 // it arrives as a single write of >= 7 words starting exactly at 0x1020, so
                 // record what the guest actually emits — the count and address here decide
                 // whether the projection is ever applied at all.
@@ -945,7 +548,10 @@ size_t parse(const u8* p, size_t n, int depth) {
                 if (addr < 0x0100) {
                     const u32 cnt = ((be32(p + i + 1) >> 16) & 0xF) + 1;
                     for (u32 w = 0; w < cnt && (addr + w) < 256; ++w) {
-                        union { u32 u; float f; } cv;
+                        union {
+                            u32 u;
+                            float f;
+                        } cv;
                         cv.u = be32(p + i + 5 + w * 4);
                         g_posmtx[addr + w] = cv.f;
                         g_posmtxSet[(addr + w) >> 2] = true;
@@ -957,30 +563,40 @@ size_t parse(const u8* p, size_t n, int depth) {
                     if (cnt >= 7) {
                         float pr[6];
                         for (int w = 0; w < 6; ++w) {
-                            union { u32 u; float f; } cv;
+                            union {
+                                u32 u;
+                                float f;
+                            } cv;
                             cv.u = be32(p + i + 5 + w * 4);
                             pr[w] = cv.f;
                         }
                         const u32 type = be32(p + i + 5 + 6 * 4);
                         g_fifoProjOrtho = (type == 1);
-                        for (int j = 0; j < 16; ++j) g_fifoProj[j] = 0.0f;
+                        for (int j = 0; j < 16; ++j)
+                            g_fifoProj[j] = 0.0f;
                         if (g_fifoProjOrtho) {
-                            g_fifoProj[0] = pr[0]; g_fifoProj[3]  = pr[1];
-                            g_fifoProj[5] = pr[2]; g_fifoProj[7]  = pr[3];
-                            g_fifoProj[10] = pr[4]; g_fifoProj[11] = pr[5];
+                            g_fifoProj[0] = pr[0];
+                            g_fifoProj[3] = pr[1];
+                            g_fifoProj[5] = pr[2];
+                            g_fifoProj[7] = pr[3];
+                            g_fifoProj[10] = pr[4];
+                            g_fifoProj[11] = pr[5];
                             g_fifoProj[15] = 1.0f;
                         } else {
-                            g_fifoProj[0] = pr[0]; g_fifoProj[2]  = pr[1];
-                            g_fifoProj[5] = pr[2]; g_fifoProj[6]  = pr[3];
-                            g_fifoProj[10] = pr[4]; g_fifoProj[11] = pr[5];
+                            g_fifoProj[0] = pr[0];
+                            g_fifoProj[2] = pr[1];
+                            g_fifoProj[5] = pr[2];
+                            g_fifoProj[6] = pr[3];
+                            g_fifoProj[10] = pr[4];
+                            g_fifoProj[11] = pr[5];
                             g_fifoProj[14] = -1.0f;
                         }
                     }
                     static u32 seen = 0;
                     if (seen < 4) {
                         ++seen;
-                        lucent::debug("gxfifo", "XF projection write: addr 0x{:04x} count {}",
-                                      addr, count);
+                        lucent::debug("gxfifo", "XF projection write: addr 0x{:04x} count {}", addr,
+                                      count);
                     }
                 }
             }
@@ -998,31 +614,60 @@ size_t parse(const u8* p, size_t n, int depth) {
                         const unsigned li = (a - 0x0600) >> 4;
                         const unsigned wi = (a - 0x0600) & 15;
                         SbrLight& L = g_xf.light[li];
-                        auto f = [&](u32 bits) { float o; __builtin_memcpy(&o, &bits, 4); return o; };
+                        auto f = [&](u32 bits) {
+                            float o;
+                            __builtin_memcpy(&o, &bits, 4);
+                            return o;
+                        };
                         switch (wi) {
-                        case 3:  // RGBA8 colour
+                        case 3: // RGBA8 colour
                             L.color[0] = (float)((v >> 24) & 0xFF) / 255.0f;
                             L.color[1] = (float)((v >> 16) & 0xFF) / 255.0f;
                             L.color[2] = (float)((v >> 8) & 0xFF) / 255.0f;
                             L.color[3] = (float)(v & 0xFF) / 255.0f;
                             break;
-                        case 4: L.cosAtt[0] = f(v); break;
-                        case 5: L.cosAtt[1] = f(v); break;
-                        case 6: L.cosAtt[2] = f(v); break;
-                        case 7: L.distAtt[0] = f(v); break;
-                        case 8: L.distAtt[1] = f(v); break;
-                        case 9: L.distAtt[2] = f(v); break;
-                        case 10: L.pos[0] = f(v); break;
-                        case 11: L.pos[1] = f(v); break;
-                        case 12: L.pos[2] = f(v); break;
-                        case 13: L.dir[0] = f(v); break;
-                        case 14: L.dir[1] = f(v); break;
-                        case 15: L.dir[2] = f(v); break;
-                        default: break;
+                        case 4:
+                            L.cosAtt[0] = f(v);
+                            break;
+                        case 5:
+                            L.cosAtt[1] = f(v);
+                            break;
+                        case 6:
+                            L.cosAtt[2] = f(v);
+                            break;
+                        case 7:
+                            L.distAtt[0] = f(v);
+                            break;
+                        case 8:
+                            L.distAtt[1] = f(v);
+                            break;
+                        case 9:
+                            L.distAtt[2] = f(v);
+                            break;
+                        case 10:
+                            L.pos[0] = f(v);
+                            break;
+                        case 11:
+                            L.pos[1] = f(v);
+                            break;
+                        case 12:
+                            L.pos[2] = f(v);
+                            break;
+                        case 13:
+                            L.dir[0] = f(v);
+                            break;
+                        case 14:
+                            L.dir[1] = f(v);
+                            break;
+                        case 15:
+                            L.dir[2] = f(v);
+                            break;
+                        default:
+                            break;
                         }
                     } else if (a >= 0x100A && a <= 0x100D) {
-                        float* c = (a <= 0x100B) ? g_xf.ambient[a - 0x100A]
-                                                 : g_xf.material[a - 0x100C];
+                        float* c =
+                            (a <= 0x100B) ? g_xf.ambient[a - 0x100A] : g_xf.material[a - 0x100C];
                         c[0] = (float)((v >> 24) & 0xFF) / 255.0f;
                         c[1] = (float)((v >> 16) & 0xFF) / 255.0f;
                         c[2] = (float)((v >> 8) & 0xFF) / 255.0f;
@@ -1030,12 +675,12 @@ size_t parse(const u8* p, size_t n, int depth) {
                     } else if (a >= 0x100E && a <= 0x1011) {
                         SbrChanCtrl& c = g_xf.chan[a - 0x100E];
                         c.matSrcVertex = v & 1;
-                        c.enableLight  = (v >> 1) & 1;
-                        c.lightMask    = ((v >> 2) & 0xF) | (((v >> 11) & 0xF) << 4);
+                        c.enableLight = (v >> 1) & 1;
+                        c.lightMask = ((v >> 2) & 0xF) | (((v >> 11) & 0xF) << 4);
                         c.ambSrcVertex = (v >> 6) & 1;
-                        c.diffuseFn    = (v >> 7) & 3;
-                        c.attnEnable   = (v >> 9) & 1;
-                        c.attnSpot     = (v >> 10) & 1;
+                        c.diffuseFn = (v >> 7) & 3;
+                        c.attnEnable = (v >> 9) & 1;
+                        c.attnSpot = (v >> 10) & 1;
                     } else if (a == 0x1009) {
                         g_xf.numChans = v & 3;
                     } else if (a >= 0x0078 && a < 0x00F0) {
@@ -1044,8 +689,9 @@ size_t parse(const u8* p, size_t n, int depth) {
                         // writes them here directly, which is how J3D's animated texture SRTs and
                         // its environment-map matrices reach the hardware.
                         const unsigned slot = (a - 0x0078) / 12;
-                        const unsigned off  = (a - 0x0078) % 12;
-                        float f; __builtin_memcpy(&f, &v, 4);
+                        const unsigned off = (a - 0x0078) % 12;
+                        float f;
+                        __builtin_memcpy(&f, &v, 4);
                         if (slot < 10) {
                             g_xf.texMtx[slot][off] = f;
                             g_xf.texMtxWritten |= 1u << slot;
@@ -1054,30 +700,35 @@ size_t parse(const u8* p, size_t n, int depth) {
                         // MatrixIndexA/B: which matrix each texgen uses, six bits each, in GX
                         // matrix-id units (30..57 are the ten texture matrices, 60 is identity).
                         const unsigned base = (a == 0x1018) ? 0u : 4u;
-                        const unsigned n    = (a == 0x1018) ? 4u : 4u;
+                        const unsigned n = (a == 0x1018) ? 4u : 4u;
                         for (unsigned t = 0; t < n; ++t) {
                             const unsigned bit = (a == 0x1018) ? (6 + t * 6) : (t * 6);
-                            const unsigned id  = (v >> bit) & 0x3F;
+                            const unsigned id = (v >> bit) & 0x3F;
                             g_xf.texGen[base + t].mtxSlot =
                                 (id >= 30 && id <= 57) ? (uint8_t)((id - 30) / 3) : (uint8_t)0xFF;
                         }
                     } else if (a >= 0x1040 && a <= 0x1047) {
                         SbrTexGen& tg = g_xf.texGen[a - 0x1040];
                         tg.projection = (v >> 1) & 1;
-                        tg.inputForm  = (v >> 2) & 3;
-                        tg.type       = (v >> 4) & 7;
-                        tg.sourceRow  = (v >> 7) & 0x1F;
+                        tg.inputForm = (v >> 2) & 3;
+                        tg.type = (v >> 4) & 7;
+                        tg.sourceRow = (v >> 7) & 0x1F;
                     }
                 }
             }
 
             g_out.insert(g_out.end(), p + i, p + i + len);
-            g_stats.xf++; i += len; continue;
+            g_stats.xf++;
+            i += len;
+            continue;
         }
 
-        if (op == 0x61) {                       // BP register write
-            if (n - i < 5) { g_need = 5; break; }
-            const u8  reg = p[i + 1];
+        if (op == 0x61) { // BP register write
+            if (n - i < 5) {
+                g_need = 5;
+                break;
+            }
+            const u8 reg = p[i + 1];
             const u32 raw = ((u32)p[i + 2] << 16) | ((u32)p[i + 3] << 8) | p[i + 4];
 
             // BP WRITE MASK (register 0xFE). GX's BP is not write-only: a write to 0xFE arms a
@@ -1098,7 +749,9 @@ size_t parse(const u8* p, size_t n, int depth) {
                 g_bpMask = raw & 0x00FFFFFFu;
                 g_out.insert(g_out.end(), p + i, p + i + 5);
                 ++g_bpWrites[reg];
-                g_stats.bp++; i += 5; continue;
+                g_stats.bp++;
+                i += 5;
+                continue;
             }
             const u32 val = (g_bpCache[reg] & ~g_bpMask) | (raw & g_bpMask);
             g_bpMask = 0x00FFFFFFu;
@@ -1110,18 +763,19 @@ size_t parse(const u8* p, size_t n, int depth) {
             //
             //  0x00 GENMODE            : numTevStages-1 in bits 10..13, numTexGens in bits 0..3
             //  0x28..0x2F RAS1_TREF    : two stages each — texmap, texcoord, colour channel
-            //  0xC0+2i TEV_COLOR_ENV   : stage i colour combiner (a,b,c,d,bias,sub,clamp,scale,dest)
-            //  0xC1+2i TEV_ALPHA_ENV   : stage i alpha combiner, plus the ras/tex swap selectors
-            //  0xE0..0xE7 TEV_REGISTER : the four colour registers (prev, c0, c1, c2)
-            //  0xF6..0xFD TEV_KSEL     : konst colour/alpha selectors, two stages each
+            //  0xC0+2i TEV_COLOR_ENV   : stage i colour combiner
+            //  (a,b,c,d,bias,sub,clamp,scale,dest) 0xC1+2i TEV_ALPHA_ENV   : stage i alpha
+            //  combiner, plus the ras/tex swap selectors 0xE0..0xE7 TEV_REGISTER : the four colour
+            //  registers (prev, c0, c1, c2) 0xF6..0xFD TEV_KSEL     : konst colour/alpha selectors,
+            //  two stages each
             if (reg == 0x00) {
-                g_tev.numTexGens  = val & 0xF;
-                g_tev.numStages   = ((val >> 10) & 0xF) + 1;
+                g_tev.numTexGens = val & 0xF;
+                g_tev.numStages = ((val >> 10) & 0xF) + 1;
                 // numChans ALSO lives in GENMODE (bits 4..6). GDSetGenMode2 writes both this and
                 // XF 0x1009, but GDSetCullMode's masked GENMODE writes and any path that touches
                 // GENMODE alone update only here — aurora reads it from GENMODE, so this parser
                 // does too and the XF write is the redundant twin.
-                g_xf.numChans     = (val >> 4) & 7;
+                g_xf.numChans = (val >> 4) & 7;
                 // GENMODE bits 14-15 carry the cull mode, and GX's FRONT/BACK are swapped relative
                 // to the rasteriser's (aurora does the same swap, command_processor.cpp:881-893).
                 // Ported rather than guessed: getting the sense backwards culls exactly the faces
@@ -1133,29 +787,37 @@ size_t parse(const u8* p, size_t n, int depth) {
             } else if (reg >= 0x28 && reg <= 0x2F) {
                 g_tev.trefSeq[reg - 0x28] = g_bindSeq;
                 const unsigned s0 = (unsigned)(reg - 0x28) * 2;
-                g_tev.stage[s0].texmap     = val & 7;
-                g_tev.stage[s0].texcoord   = (val >> 3) & 7;
-                g_tev.stage[s0].texEnable  = (val >> 6) & 1;
+                g_tev.stage[s0].texmap = val & 7;
+                g_tev.stage[s0].texcoord = (val >> 3) & 7;
+                g_tev.stage[s0].texEnable = (val >> 6) & 1;
                 g_tev.stage[s0].rasChannel = (val >> 7) & 7;
-                g_tev.stage[s0 + 1].texmap     = (val >> 12) & 7;
-                g_tev.stage[s0 + 1].texcoord   = (val >> 15) & 7;
-                g_tev.stage[s0 + 1].texEnable  = (val >> 18) & 1;
+                g_tev.stage[s0 + 1].texmap = (val >> 12) & 7;
+                g_tev.stage[s0 + 1].texcoord = (val >> 15) & 7;
+                g_tev.stage[s0 + 1].texEnable = (val >> 18) & 1;
                 g_tev.stage[s0 + 1].rasChannel = (val >> 19) & 7;
             } else if (reg >= 0xC0 && reg <= 0xDF) {
                 const unsigned i = (unsigned)(reg - 0xC0) >> 1;
                 if ((reg & 1) == 0) {
                     SbrTevStage& t = g_tev.stage[i];
-                    t.cD = val & 0xF;       t.cC = (val >> 4) & 0xF;
-                    t.cB = (val >> 8) & 0xF; t.cA = (val >> 12) & 0xF;
-                    t.cBias = (val >> 16) & 3; t.cSub = (val >> 18) & 1;
-                    t.cClamp = (val >> 19) & 1; t.cScale = (val >> 20) & 3;
+                    t.cD = val & 0xF;
+                    t.cC = (val >> 4) & 0xF;
+                    t.cB = (val >> 8) & 0xF;
+                    t.cA = (val >> 12) & 0xF;
+                    t.cBias = (val >> 16) & 3;
+                    t.cSub = (val >> 18) & 1;
+                    t.cClamp = (val >> 19) & 1;
+                    t.cScale = (val >> 20) & 3;
                     t.cDest = (val >> 22) & 3;
                 } else {
                     SbrTevStage& t = g_tev.stage[i];
-                    t.aD = (val >> 4) & 7;  t.aC = (val >> 7) & 7;
-                    t.aB = (val >> 10) & 7; t.aA = (val >> 13) & 7;
-                    t.aBias = (val >> 16) & 3; t.aSub = (val >> 18) & 1;
-                    t.aClamp = (val >> 19) & 1; t.aScale = (val >> 20) & 3;
+                    t.aD = (val >> 4) & 7;
+                    t.aC = (val >> 7) & 7;
+                    t.aB = (val >> 10) & 7;
+                    t.aA = (val >> 13) & 7;
+                    t.aBias = (val >> 16) & 3;
+                    t.aSub = (val >> 18) & 1;
+                    t.aClamp = (val >> 19) & 1;
+                    t.aScale = (val >> 20) & 3;
                     t.aDest = (val >> 22) & 3;
                     // Swap-mode selectors ride the alpha combiner word (GXSetTevSwapMode).
                     t.swapRas = val & 3;
@@ -1179,25 +841,25 @@ size_t parse(const u8* p, size_t n, int depth) {
                     // (decomp/sms GXTev.c) pack r at bit 0 and a at bit 12, and aurora reads the
                     // same way. This parser had the two SWAPPED, so every TEV register and every
                     // KONST carried its alpha in the red component and vice versa.
-                    dst[idx][0] = s10(val & 0x7FF);          // R
-                    dst[idx][3] = s10((val >> 12) & 0x7FF);  // A
+                    dst[idx][0] = s10(val & 0x7FF);         // R
+                    dst[idx][3] = s10((val >> 12) & 0x7FF); // A
                 } else {
-                    dst[idx][2] = s10(val & 0x7FF);          // B
-                    dst[idx][1] = s10((val >> 12) & 0x7FF);  // G
+                    dst[idx][2] = s10(val & 0x7FF);         // B
+                    dst[idx][1] = s10((val >> 12) & 0x7FF); // G
                 }
             } else if (reg == 0xF3) {
                 // TEV_ALPHAFUNC: ref0 bits 0..7, ref1 bits 8..15, comp0 bits 16..18,
                 // comp1 bits 19..21, logic bits 22..23. The two comparisons are combined by the
                 // logic op, which is how GX expresses a band as well as a simple cutout.
-                g_tev.alphaRef0  = (uint8_t)(val & 0xFF);
-                g_tev.alphaRef1  = (uint8_t)((val >> 8) & 0xFF);
-                g_tev.alphaOp0   = (uint8_t)((val >> 16) & 7);
-                g_tev.alphaOp1   = (uint8_t)((val >> 19) & 7);
+                g_tev.alphaRef0 = (uint8_t)(val & 0xFF);
+                g_tev.alphaRef1 = (uint8_t)((val >> 8) & 0xFF);
+                g_tev.alphaOp0 = (uint8_t)((val >> 16) & 7);
+                g_tev.alphaOp1 = (uint8_t)((val >> 19) & 7);
                 g_tev.alphaLogic = (uint8_t)((val >> 22) & 3);
             } else if (reg >= 0xF6 && reg <= 0xFD) {
                 const unsigned s0 = (unsigned)(reg - 0xF6) * 2;
-                g_tev.stage[s0].kC     = (val >> 4) & 0x1F;
-                g_tev.stage[s0].kA     = (val >> 9) & 0x1F;
+                g_tev.stage[s0].kC = (val >> 4) & 0x1F;
+                g_tev.stage[s0].kA = (val >> 9) & 0x1F;
                 g_tev.stage[s0 + 1].kC = (val >> 14) & 0x1F;
                 g_tev.stage[s0 + 1].kA = (val >> 19) & 0x1F;
                 // Bits 0..3 of the same registers carry the swap TABLE, two components per write
@@ -1227,19 +889,19 @@ size_t parse(const u8* p, size_t n, int depth) {
             // whether it is LINEAR matters here, since this path uploads a single level.
             if ((reg >= 0x80 && reg <= 0x83) || (reg >= 0xA0 && reg <= 0xA3)) {
                 SbrTexture& t = g_fifoTex[(reg >= 0xA0) ? (4 + reg - 0xA0) : (reg - 0x80)];
-                t.wrapS     = (uint8_t)(val & 3);
-                t.wrapT     = (uint8_t)((val >> 2) & 3);
+                t.wrapS = (uint8_t)(val & 3);
+                t.wrapT = (uint8_t)((val >> 2) & 3);
                 t.magLinear = (uint8_t)((val >> 4) & 1);
                 t.minLinear = (uint8_t)(((val >> 5) & 7) != 0);
             }
             if (reg >= 0x88 && reg <= 0x8B) {
                 SbrTexture& t = g_fifoTex[reg - 0x88];
-                t.width  = (val & 0x3FF) + 1;
+                t.width = (val & 0x3FF) + 1;
                 t.height = ((val >> 10) & 0x3FF) + 1;
                 t.format = (val >> 20) & 0xF;
             } else if (reg >= 0xA8 && reg <= 0xAB) {
                 SbrTexture& t = g_fifoTex[4 + (reg - 0xA8)];
-                t.width  = (val & 0x3FF) + 1;
+                t.width = (val & 0x3FF) + 1;
                 t.height = ((val >> 10) & 0x3FF) + 1;
                 t.format = (val >> 20) & 0xF;
             } else if (reg >= 0x94 && reg <= 0x97) {
@@ -1272,18 +934,18 @@ size_t parse(const u8* p, size_t n, int depth) {
             //         bit4 alphaUpdate | bits5-7 dstFactor | bits8-10 srcFactor | bit11 subtract |
             //         bits12-15 logicOp.  Mode precedence is subtract > blend > logic > none.
             if (reg == 0x40) {
-                g_fifoZ.test  = (uint8_t)(val & 1);
-                g_fifoZ.func  = (uint8_t)((val >> 1) & 7);
+                g_fifoZ.test = (uint8_t)(val & 1);
+                g_fifoZ.func = (uint8_t)((val >> 1) & 7);
                 g_fifoZ.write = (uint8_t)((val >> 4) & 1);
             } else if (reg == 0x41) {
-                const bool blendEn  = (val & 1) != 0;
-                const bool logicEn  = ((val >> 1) & 1) != 0;
+                const bool blendEn = (val & 1) != 0;
+                const bool logicEn = ((val >> 1) & 1) != 0;
                 const bool subtract = ((val >> 11) & 1) != 0;
                 g_fifoZ.colorUpdate = (uint8_t)((val >> 3) & 1);
                 g_fifoZ.alphaUpdate = (uint8_t)((val >> 4) & 1);
                 g_fifoZ.dstFac = (uint8_t)((val >> 5) & 7);
                 g_fifoZ.srcFac = (uint8_t)((val >> 8) & 7);
-                g_fifoZ.blend  = subtract ? 3 : (blendEn ? 1 : (logicEn ? 2 : 0));
+                g_fifoZ.blend = subtract ? 3 : (blendEn ? 1 : (logicEn ? 2 : 0));
             }
             // 0x20/0x21 SCISSOR. Both registers are needed to form the rect, so it is recomputed
             // whenever either arrives. The -342 bias and the inclusive right/bottom are the
@@ -1301,23 +963,35 @@ size_t parse(const u8* p, size_t n, int depth) {
                 g_fifoZ.scissor[3] = (int16_t)std::max(bm - tp + 1, 0);
             }
             // 0x49: EFB copy top-left (10 bits each). 0x4A: width-1 / height-1.
-            if (reg == 0x49) { g_copy_left = val & 0x3FF; g_copy_top = (val >> 10) & 0x3FF; }
-            else if (reg == 0x4A) { g_copy_w = (val & 0x3FF) + 1; g_copy_h = ((val >> 10) & 0x3FF) + 1; }
+            if (reg == 0x49) {
+                g_copy_left = val & 0x3FF;
+                g_copy_top = (val >> 10) & 0x3FF;
+            } else if (reg == 0x4A) {
+                g_copy_w = (val & 0x3FF) + 1;
+                g_copy_h = ((val >> 10) & 0x3FF) + 1;
+            }
             // 0x4B: copy destination address (32-byte units). 0x4E: vertical copy scale.
-            else if (reg == 0x4B) { g_copy_dest = val & 0x00FFFFFFu; }
+            else if (reg == 0x4B) {
+                g_copy_dest = val & 0x00FFFFFFu;
+            }
             // 0x4F/0x50: the EFB clear colour (AR / GB). A copy with the clear bit set leaves
             // the EFB filled with this, so anything grabbed before much is drawn returns it.
             else if (reg == 0x4F || reg == 0x50) {
                 static u32 ar = 0xFFFFFFFF, gb = 0xFFFFFFFF;
-                if (reg == 0x4F) ar = val; else gb = val;
+                if (reg == 0x4F)
+                    ar = val;
+                else
+                    gb = val;
                 static u32 last_ar = 0, last_gb = 0;
                 if (ar != last_ar || gb != last_gb) {
-                    last_ar = ar; last_gb = gb;
+                    last_ar = ar;
+                    last_gb = gb;
                     lucent::debug("gxfifo", "EFB clear colour: a={} r={} g={} b={}",
                                   (ar >> 8) & 0xFF, ar & 0xFF, (gb >> 8) & 0xFF, gb & 0xFF);
                 }
+            } else if (reg == 0x4E) {
+                g_copy_yscale = val & 0x00FFFFFFu;
             }
-            else if (reg == 0x4E) { g_copy_yscale = val & 0x00FFFFFFu; }
             // 0x52 triggers a copy. Bit 14 selects copy-to-XFB (the presented frame); with it
             // clear the copy targets a TEXTURE, which is equally real — render-to-texture
             // content like the sea's reflection is built this way. Handling only the display
@@ -1327,16 +1001,33 @@ size_t parse(const u8* p, size_t n, int depth) {
                 // PRESENTED image; a pass that renders without one is invisible however much
                 // geometry it emitted. Counting them per pass is the difference between "the
                 // sub-frame drew nothing" and "the sub-frame drew and was never copied out".
-                if (val & (1u << 14)) ++g_xfbCopies;
+                if (val & (1u << 14))
+                    ++g_xfbCopies;
                 emit_copy_state(val, (val & (1u << 14)) != 0);
             }
             // Texture image registers. Maps 0-3 use the 0x8x/0x9x ids, maps 4-7 the 0xAx/0xBx
             // ids. A texobj is emitted once both halves of a slot are known.
-            else if (reg >= 0x88 && reg <= 0x8B) { u32 m = reg - 0x88; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }
-            else if (reg >= 0xA8 && reg <= 0xAB) { u32 m = reg - 0xA8 + 4; g_tex[m].image0 = val; g_tex[m].have0 = true; emit_texobj(m); }
-            else if (reg >= 0x94 && reg <= 0x97) { u32 m = reg - 0x94; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m);
+            else if (reg >= 0x88 && reg <= 0x8B) {
+                u32 m = reg - 0x88;
+                g_tex[m].image0 = val;
+                g_tex[m].have0 = true;
+                emit_texobj(m);
+            } else if (reg >= 0xA8 && reg <= 0xAB) {
+                u32 m = reg - 0xA8 + 4;
+                g_tex[m].image0 = val;
+                g_tex[m].have0 = true;
+                emit_texobj(m);
+            } else if (reg >= 0x94 && reg <= 0x97) {
+                u32 m = reg - 0x94;
+                g_tex[m].image3 = val;
+                g_tex[m].have3 = true;
+                emit_texobj(m);
+            } else if (reg >= 0xB4 && reg <= 0xB7) {
+                u32 m = reg - 0xB4 + 4;
+                g_tex[m].image3 = val;
+                g_tex[m].have3 = true;
+                emit_texobj(m);
             }
-            else if (reg >= 0xB4 && reg <= 0xB7) { u32 m = reg - 0xB4 + 4; g_tex[m].image3 = val; g_tex[m].have3 = true; emit_texobj(m); }
 
             g_out.insert(g_out.end(), p + i, p + i + 5);
             // Per-register write counts. The texture-unit staleness question is exactly "how often
@@ -1345,7 +1036,9 @@ size_t parse(const u8* p, size_t n, int depth) {
             // rate. If they are comparable while the observed textures are not, the binds are
             // being seen and lost downstream; if they differ, the units genuinely are not rebound.
             ++g_bpWrites[reg];
-            g_stats.bp++; i += 5; continue;
+            g_stats.bp++;
+            i += 5;
+            continue;
         }
 
         // Indexed XF loads: GX_LOAD_INDX_A/B/C/D select the PosMtx / NrmMtx / TexMtx /
@@ -1355,19 +1048,23 @@ size_t parse(const u8* p, size_t n, int depth) {
         // discarding the remainder of any display list that contained one, since
         // inline_display_list ignores the return value.
         if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {
-            if (n - i < 5) { g_need = 5; break; }
+            if (n - i < 5) {
+                g_need = 5;
+                break;
+            }
             // Sanity-check the payload: index<<16 | (len-1)<<12 | xfAddr. Real destinations
             // are XF matrix memory (pos 0x000-0x077, tex 0x078-0x0EF, nrm 0x400-0x459,
             // post-tex 0x500-0x5EF). A destination outside those means this parser emitted
             // a mis-framed word, not that aurora lacks a feature — worth distinguishing,
             // because aurora reports both the same way.
-            const u32 w  = be32(p + i + 1);
+            const u32 w = be32(p + i + 1);
             const u32 da = w & 0x0FFF;
-            const bool sane = da < 0x0F0 || (da >= 0x400 && da < 0x45A) ||
-                              (da >= 0x500 && da < 0x5F0);
+            const bool sane =
+                da < 0x0F0 || (da >= 0x400 && da < 0x45A) || (da >= 0x500 && da < 0x5F0);
             if (!sane)
-                lucent::warn("gxfifo", "indexed XF load op 0x{:02x} dstAddr=0x{:03x} len={} "
-                                       "is outside XF matrix memory — likely mis-framed",
+                lucent::warn("gxfifo",
+                             "indexed XF load op 0x{:02x} dstAddr=0x{:03x} len={} "
+                             "is outside XF matrix memory — likely mis-framed",
                              op, da, ((w >> 12) & 0xF) + 1);
             // Resolve LOAD_INDX_A into our own copy of position-matrix memory. Forwarding the
             // command to aurora is not enough: the 2D decoder transforms by these matrices, and
@@ -1378,15 +1075,18 @@ size_t parse(const u8* p, size_t n, int depth) {
             // an element of it by the stride in 0xBC. As everywhere in this decoder, an
             // unregistered array or an element past MEM1 leaves the rows UNSET rather than
             // fabricating a matrix — a draw that names an unknown matrix must stay declined.
-            if (op == 0x20 && da + ((w >> 12) & 0xF) + 1 <= 256) {
-                const u32 len  = ((w >> 12) & 0xF) + 1;
+            const u32 len = ((w >> 12) & 0xF) + 1;
+            if (op == 0x20 && da < 256 && len <= 256 - da) {
                 const u32 elem = w >> 16;
                 const u32 base = g_arrBase[12], stride = g_arrStride[12];
                 if (base != 0 && stride != 0) {
                     const u32 off = (base & 0x01FFFFFFu) + elem * stride;
                     if ((u64)off + (u64)len * 4 <= 0x01800000ull) {
                         for (u32 w2 = 0; w2 < len; ++w2) {
-                            union { u32 u; float f; } cv;
+                            union {
+                                u32 u;
+                                float f;
+                            } cv;
                             cv.u = be32(g_ram_base + off + w2 * 4);
                             g_posmtx[da + w2] = cv.f;
                             g_posmtxSet[(da + w2) >> 2] = true;
@@ -1395,26 +1095,35 @@ size_t parse(const u8* p, size_t n, int depth) {
                 }
             }
             g_out.insert(g_out.end(), p + i, p + i + 5);
-            i += 5; continue;
+            i += 5;
+            continue;
         }
 
         // GX_CMD_CALL_DL is 0x40 and GX_CMD_INVL_VC is 0x48 — NOT the other way round.
         // Having these swapped consumed 9 bytes for a 1-byte command and left every real
         // display-list call unrecognised, which is what kept desyncing the stream after the
         // indexed-XF fix (mis-framed indexed loads with nonsense destinations like 0xf10).
-        if (op == 0x40) {                       // call display list: address + size
-            if (n - i < 9) { g_need = 9; break; }
+        if (op == 0x40) { // call display list: address + size
+            if (n - i < 9) {
+                g_need = 9;
+                break;
+            }
             inline_display_list(be32(p + i + 1), be32(p + i + 5), depth);
-            i += 9; continue;
+            i += 9;
+            continue;
         }
 
-        if (op == 0x48) {                       // invalidate vertex cache: no payload
+        if (op == 0x48) { // invalidate vertex cache: no payload
             g_out.insert(g_out.end(), p + i, p + i + 1);
-            i += 1; continue;
+            i += 1;
+            continue;
         }
 
-        if (op >= 0x80 && op <= 0xBF) {         // draw primitive
-            if (n - i < 3) { g_need = 3; break; }
+        if (op >= 0x80 && op <= 0xBF) { // draw primitive
+            if (n - i < 3) {
+                g_need = 3;
+                break;
+            }
             // Record THIS side's state for the per-draw comparison against aurora, which derives
             // its own from the same bytes a moment later. See state_oracle.h.
             ++g_drawIndex;
@@ -1423,37 +1132,52 @@ size_t parse(const u8* p, size_t n, int depth) {
                 g_maxDrawsAfterCapture = g_drawsSinceCapture;
             if (sbr_state_diff_enabled()) {
                 SbrDrawState st{};
-                st.pos = (uint32_t)g_out.size();   // where this draw's command byte lands
+                st.pos = (uint32_t)g_out.size(); // where this draw's command byte lands
                 sbr_draw_state_fill(st, g_tev, g_xf);
                 // Raster state as the STREAM describes it, packed to match aurora's side. This is
                 // the check that decides whether the 43% SDK/FIFO disagreement is this port's bug.
-                for (int j = 0; j < 4; ++j) st.scissor[j] = g_fifoZ.scissor[j];
+                for (int j = 0; j < 4; ++j)
+                    st.scissor[j] = g_fifoZ.scissor[j];
                 st.cull = g_fifoZ.cull;
                 st.raster = (uint16_t)((g_fifoZ.test & 1) | ((g_fifoZ.write & 1) << 1) |
                                        ((g_fifoZ.func & 7) << 2));
-                st.blend  = (uint16_t)((g_fifoZ.blend & 7) | ((g_fifoZ.srcFac & 15) << 3) |
-                                       ((g_fifoZ.dstFac & 15) << 7));
+                st.blend = (uint16_t)((g_fifoZ.blend & 7) | ((g_fifoZ.srcFac & 15) << 3) |
+                                      ((g_fifoZ.dstFac & 15) << 7));
                 for (unsigned m = 0; m < 8; ++m) {
-                    st.unitId[m]  = g_fifoTex[m].addr & 0x01FFFFFFu;
+                    st.unitId[m] = g_fifoTex[m].addr & 0x01FFFFFFu;
                     st.bindPos[m] = g_fifoTexBindPos[m];
-                    st.prevId[m]  = g_fifoTexPrevAddr[m] & 0x01FFFFFFu;
+                    st.prevId[m] = g_fifoTexPrevAddr[m] & 0x01FFFFFFu;
                 }
                 sbr_state_oracle_mine(st);
             }
             const u32 verts = be16(p + i + 1);
             const u32 vsize = vertex_size(op & 7);
             const size_t len = 3 + (size_t)verts * vsize;
-            if (vsize == 0) break;                  // VAT not seen yet
-            if (n - i < len) { g_need = len; break; }
+            if (vsize == 0)
+                break; // VAT not seen yet
+            if (n - i < len) {
+                g_need = len;
+                break;
+            }
             // 2D capture: a draw made under an ORTHOGRAPHIC projection is HUD/menu geometry the
             // J3D capture seam never sees. Decode it straight from the stream bytes.
-            if (fifo2d_on()) {
-                ++g_2dSeen;
-                if (g_fifoProjOrtho) {
-                    ++g_2dOrtho;
-                    if (decode_2d_draw(op, p + i + 3, verts, g_vat[op & 7])) ++g_2dEmitted;
-                }
-            }
+            const GxFifo2DDrawContext context{
+                .ram = g_ram_base,
+                .arrayBase = g_arrBase,
+                .arrayStride = g_arrStride,
+                .positionMatrices = g_posmtx,
+                .positionMatrixRowsSet = g_posmtxSet,
+                .projection = g_fifoProj,
+                .textures = g_fifoTex,
+                .tev = &g_tev,
+                .xf = &g_xf,
+                .depth = &g_fifoZ,
+                .streamPosition = static_cast<u32>(g_out.size()),
+                .unit0Image3 = g_tex[0].image3,
+                .drawsSinceCapture = g_drawsSinceCapture,
+                .projectionIsOrthographic = g_fifoProjOrtho,
+            };
+            gxFifo2DHandleDraw(context, op, p + i + 3, verts, g_vat[op & 7]);
             // The decomp runtime submits ~3,166 vertices across ~334 draws for this same
             // scene (SB_DRAW_STATS), i.e. roughly 10 vertices per draw. A draw claiming
             // thousands is therefore a mis-frame reading data as a command, even when the
@@ -1462,8 +1186,7 @@ size_t parse(const u8* p, size_t n, int depth) {
                 lucent::warn("gxfifo",
                              "implausible draw: op=0x{:02x} verts={} vsize={} — preceding "
                              "bytes {:02x} {:02x} {:02x} {:02x}",
-                             op, verts, vsize,
-                             i >= 4 ? p[i - 4] : 0, i >= 3 ? p[i - 3] : 0,
+                             op, verts, vsize, i >= 4 ? p[i - 4] : 0, i >= 3 ? p[i - 3] : 0,
                              i >= 2 ? p[i - 2] : 0, i >= 1 ? p[i - 1] : 0);
             }
 
@@ -1474,8 +1197,8 @@ size_t parse(const u8* p, size_t n, int depth) {
             if (i + len < n) {
                 const u8 nx = p[i + len];
                 const bool ok = nx == 0x00 || nx == 0x08 || nx == 0x10 || nx == 0x40 ||
-                                nx == 0x48 || nx == 0x50 || nx == 0x61 ||
-                                nx == 0x20 || nx == 0x28 || nx == 0x30 || nx == 0x38 ||
+                                nx == 0x48 || nx == 0x50 || nx == 0x61 || nx == 0x20 ||
+                                nx == 0x28 || nx == 0x30 || nx == 0x38 ||
                                 (nx >= 0x80 && nx <= 0xBF);
                 if (!ok) {
                     const Vat& v = g_vat[op & 7];
@@ -1483,30 +1206,31 @@ size_t parse(const u8* p, size_t n, int depth) {
                                  "vertex size {} looks wrong for vat{}: next byte 0x{:02x} "
                                  "after {} verts. vcd_lo=0x{:08x} vcd_hi=0x{:08x} "
                                  "fmt0=0x{:08x} fmt1=0x{:08x} fmt2=0x{:08x}",
-                                 vsize, op & 7, nx, verts, v.vcd_lo, v.vcd_hi,
-                                 v.fmt0, v.fmt1, v.fmt2);
+                                 vsize, op & 7, nx, verts, v.vcd_lo, v.vcd_hi, v.fmt0, v.fmt1,
+                                 v.fmt2);
                 }
             }
             g_out.insert(g_out.end(), p + i, p + i + len);
-            g_stats.draws++; g_stats.verts += verts;
-            i += len; continue;
+            g_stats.draws++;
+            g_stats.verts += verts;
+            i += len;
+            continue;
         }
 
         // Anything else means the stream framing is wrong; stop rather than resync blindly
         // on data that would look like opcodes.
         g_stats.unknown++;
         lucent::debug("gxfifo", "unrecognised opcode 0x{:02x} — framing lost", op);
-        return n;   // drop the rest of this batch
+        return n; // drop the rest of this batch
     }
-    if (i == n) g_need = 0;   // fully consumed; nothing outstanding
+    if (i == n)
+        g_need = 0; // fully consumed; nothing outstanding
     return i;
 }
 
 void fifo_write(u32 ea, unsigned width, u32 value) {
     (void)ea;
-    u8 tmp[4];
-    for (unsigned k = 0; k < width; k++) tmp[k] = (u8)(value >> (8 * (width - 1 - k)));
-    g_buf.insert(g_buf.end(), tmp, tmp + width);
+    g_buf.appendBigEndian(width, value);
     g_stats.bytes += width;
 
     // Only re-parse once the outstanding command can actually complete. Without this a
@@ -1514,8 +1238,9 @@ void fifo_write(u32 ea, unsigned width, u32 value) {
     // re-scan the whole buffer from the start — quadratic, and it dominated the frame time.
     if (g_buf.size() >= 4096 && g_buf.size() >= g_need) {
         const size_t used = parse(g_buf.data(), g_buf.size());
-        g_buf.erase(g_buf.begin(), g_buf.begin() + used);
-        if (g_buf.size() > 1u << 20) g_buf.clear();   // framing lost; do not grow unbounded
+        g_buf.consume(used);
+        if (g_buf.size() > 1u << 20)
+            g_buf.clear(); // framing lost; do not grow unbounded
     }
 }
 
@@ -1537,14 +1262,17 @@ void gxfifo_build() {
     // frame's trailing commands could sit unparsed and be emitted in the NEXT frame's stream.
     while (!g_buf.empty()) {
         const size_t used = parse(g_buf.data(), g_buf.size());
-        if (used == 0) break;
-        g_buf.erase(g_buf.begin(), g_buf.begin() + used);
+        if (used == 0)
+            break;
+        g_buf.consume(used);
     }
-    if (g_out.empty()) return;
+    if (g_out.empty())
+        return;
 
     lucent::debug("gxfifo", "frame stream {} KB ({} DL expansions, {} KB inlined)",
                   g_out.size() >> 10, g_dl_calls, g_dl_bytes >> 10);
-    g_dl_calls = 0; g_dl_bytes = 0;
+    g_dl_calls = 0;
+    g_dl_bytes = 0;
 
     // Same frame boundary the state oracle pairs on: this is where a frame's stream is closed.
     sbr_state_oracle_mine_frame_end();
@@ -1555,8 +1283,15 @@ void gxfifo_build() {
     sbr_gxfifo_pop_stream_reset();
 }
 
+extern "C" void sbr_gxfifo_work_report() {
+    const auto s = g_buf.takeStats();
+    lucent::info("gxwork", "gather appends={} bytes={} compactions={} moved={} capacity_growths={}",
+                 s.appendCalls, s.appendedBytes, s.compactions, s.compactedBytes,
+                 s.capacityGrowths);
+}
 void gxfifo_send(const std::vector<u8>& s) {
-    if (!s.empty()) aurora_fifo_replay(s.data(), (u32)s.size(), /*bigEndian=*/1);
+    if (!s.empty())
+        aurora_fifo_replay(s.data(), (u32)s.size(), /*bigEndian=*/1);
 }
 
 // The non-interpolated path: build this frame and send it. Behaviour unchanged from before the
@@ -1566,15 +1301,22 @@ void gxfifo_flush() {
     gxfifo_send(g_last);
 }
 
-void gxfifo_send_last() { gxfifo_send(g_last); }
-const std::vector<u8>& gxfifo_last_frame() { return g_last; }
+void gxfifo_send_last() {
+    gxfifo_send(g_last);
+}
+const std::vector<u8>& gxfifo_last_frame() {
+    return g_last;
+}
 
 void gxfifo_stats(u64& draws, u64& verts, u64& bytes) {
-    draws = g_stats.draws; verts = g_stats.verts; bytes = g_stats.bytes;
+    draws = g_stats.draws;
+    verts = g_stats.verts;
+    bytes = g_stats.bytes;
 }
 
 void gxfifo_device_init() {
     g_buf.reserve(1 << 16);
+    g_buf.setStatsEnabled(std::getenv("SB_DRAW_STATS") != nullptr);
     g_out.reserve(1 << 20);
     // The gather pipe is a single address the CPU stores to repeatedly; the block is
     // 0xCC008000-0xCC008020 on hardware.
@@ -1599,7 +1341,7 @@ void gxfifo_drain_pending() {
     if (!g_buf.empty() && g_buf.size() >= g_need) {
         const size_t before = g_buf.size();
         const size_t used = parse(g_buf.data(), g_buf.size());
-        g_buf.erase(g_buf.begin(), g_buf.begin() + used);
+        g_buf.consume(used);
         static const bool watch = std::getenv("SBR_FIFO_STALL") != nullptr;
         if (watch) {
             static long stuck = 0, reported = 0;
@@ -1628,7 +1370,9 @@ SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
 // Where the parser currently is in THIS frame's stream. The J3D capture seam snapshots parser
 // state from the CPU side, at a moment that is not obviously the same moment as the draw it is
 // labelling; recording the position lets that assumption be checked instead of trusted.
-uint32_t sbr_gxfifo_stream_pos() { return (uint32_t)g_out.size(); }
+uint32_t sbr_gxfifo_stream_pos() {
+    return (uint32_t)g_out.size();
+}
 
 // FNV-1a over a byte range of the emitted stream. The 60fps arc needs to bisect "the interpolated
 // state never reached the emitter" from "the emitter got it and the difference was lost later", and
@@ -1639,15 +1383,21 @@ uint32_t sbr_gxfifo_stream_pos() { return (uint32_t)g_out.size(); }
 // A range, not the whole buffer, because a sub-frame is a suffix of a much larger tick stream and a
 // whole-buffer hash would be dominated by bytes neither alpha could affect.
 unsigned long long sbr_gxfifo_stream_hash(uint32_t from, uint32_t to) {
-    if (to > g_out.size()) to = (uint32_t)g_out.size();
+    if (to > g_out.size())
+        to = (uint32_t)g_out.size();
     unsigned long long h = 1469598103934665603ULL;
-    for (uint32_t i = from; i < to; ++i) { h ^= g_out[i]; h *= 1099511628211ULL; }
+    for (uint32_t i = from; i < to; ++i) {
+        h ^= g_out[i];
+        h *= 1099511628211ULL;
+    }
     return h;
 }
 
 // Copy-to-XFB triggers parsed so far. See the BP 0x52 site: this is what turns a rendered EFB into
 // the image that reaches the display.
-unsigned long sbr_gxfifo_xfb_copies() { return g_xfbCopies; }
+unsigned long sbr_gxfifo_xfb_copies() {
+    return g_xfbCopies;
+}
 
 // Tag every draw that follows with `tag`, until the next tag — aurora's GX_AURORA_DRAW_TAG.
 //
@@ -1672,11 +1422,12 @@ unsigned long sbr_gxfifo_xfb_copies() { return g_xfbCopies; }
 // Emitted at the END of the tick's stream, deliberately: that is the camera the tick's draws were
 // actually built with. Emitting at the start would hand over the previous tick's value.
 void sbr_gxfifo_view_matrix() {
-    constexpr u32 kJ3DSys = 0x804045DC;   // mViewMtx is the first member
+    constexpr u32 kJ3DSys = 0x804045DC; // mViewMtx is the first member
     const u32 off = kJ3DSys & 0x01FFFFFFu;
-    if (g_ram_base == nullptr || off + 48 > 0x01800000u) return;
+    if (g_ram_base == nullptr || off + 48 > 0x01800000u)
+        return;
     gxfifo_drain_pending();
-    put_u8 (g_out, 0x50);
+    put_u8(g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_VIEW_MTX);
     // Copied verbatim: guest floats are big-endian and this stream is big-endian, so a swap here
     // and a swap back in the parser would only be two chances to get it wrong.
@@ -1686,7 +1437,9 @@ void sbr_gxfifo_view_matrix() {
 // The tag currently in force, mirrored on this side so a seam can ask "is what I am about to emit
 // going to be attributable at all?" without parsing the stream back.
 static uint64_t g_pendingTagState = 0;
-uint64_t sbr_gxfifo_pending_tag() { return g_pendingTagState; }
+uint64_t sbr_gxfifo_pending_tag() {
+    return g_pendingTagState;
+}
 
 // The audit label for the draws that follow (GX_AURORA_DRAW_POP). Not an identity: it says WHICH
 // SYSTEM emitted a draw, so the interpolation report can be per-population instead of one global
@@ -1704,15 +1457,20 @@ uint64_t sbr_gxfifo_pending_tag() { return g_pendingTagState; }
 // instead of trusting a mirror of a stream nobody consumed.
 static u8 g_pendingPop = 0;
 static bool g_pendingPopAuto = false;
-static int g_popEmitted = -1;   // -1 = nothing written to this frame's stream yet
+static int g_popEmitted = -1; // -1 = nothing written to this frame's stream yet
 
-u8 sbr_gxfifo_pending_pop() { return g_pendingPop; }
-bool sbr_gxfifo_pending_pop_auto() { return g_pendingPopAuto; }
+u8 sbr_gxfifo_pending_pop() {
+    return g_pendingPop;
+}
+bool sbr_gxfifo_pending_pop_auto() {
+    return g_pendingPopAuto;
+}
 
 static void emit_draw_pop(u8 pop, bool automatic) {
     g_pendingPop = pop;
     g_pendingPopAuto = automatic;
-    if ((int)pop == g_popEmitted) return;
+    if ((int)pop == g_popEmitted)
+        return;
     g_popEmitted = (int)pop;
     gxfifo_drain_pending();
     put_u8(g_out, 0x50);
@@ -1720,7 +1478,9 @@ static void emit_draw_pop(u8 pop, bool automatic) {
     put_u8(g_out, pop);
 }
 
-void sbr_gxfifo_draw_pop(u8 pop) { emit_draw_pop(pop, /*automatic=*/false); }
+void sbr_gxfifo_draw_pop(u8 pop) {
+    emit_draw_pop(pop, /*automatic=*/false);
+}
 
 void sbr_gxfifo_pop_stream_reset() {
     g_popEmitted = -1;
@@ -1736,171 +1496,44 @@ void sbr_gxfifo_pop_stream_reset() {
 // it immediately before each primitive it means, and a primitive it does not precede is unaffected.
 void sbr_gxfifo_mark_exact() {
     gxfifo_drain_pending();
-    put_u8 (g_out, 0x50);
+    put_u8(g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_DRAW_EXACT);
-    put_u8 (g_out, 1);
+    put_u8(g_out, 1);
 }
 
 // The registry's label. Distinguished from the hand-written one so that an AUTO label can be
 // replaced by the next site's auto label, while a seam's deliberate label is never stepped on:
 // a curated population that set its label around a whole subtree must keep it for that subtree.
-void sbr_gxfifo_draw_pop_auto(u8 pop) { emit_draw_pop(pop, /*automatic=*/true); }
+void sbr_gxfifo_draw_pop_auto(u8 pop) {
+    emit_draw_pop(pop, /*automatic=*/true);
+}
 
 void sbr_gxfifo_draw_tag(uint64_t tag) {
     g_pendingTagState = tag;
     gxfifo_drain_pending();
-    put_u8 (g_out, 0x50);
+    put_u8(g_out, 0x50);
     put_u16(g_out, (u16)GX_AURORA_DRAW_TAG);
     put_u64(g_out, tag);
 }
 
-const SbrTevState& sbr_gx_fifo_tev() { return g_tev; }
+const SbrTevState& sbr_gx_fifo_tev() {
+    return g_tev;
+}
 
 // The colour-channel and light state the display lists have written.
-const SbrXfState& sbr_gx_fifo_xf() { return g_xf; }
+const SbrXfState& sbr_gx_fifo_xf() {
+    return g_xf;
+}
 
 // How many times each BP register was written. Reported on demand so the texture-binding rate per
 // unit is a measurement rather than an inference.
-// The 2D gate reports SEPARATELY from the BP-write dump, and from the frame loop's own reports.
-// It used to live inside sbr_gxfifo_report_bp_writes, which the frame loop calls only from inside
-// `if (sbr_render_enabled() && sbr_render_init(...))` — so a statistic about the FIFO PARSE was
-// reachable only by turning on the SDL3-GPU renderer, which needs a human's approval and is the
-// path that once hung this machine. The two have nothing to do with each other: this counts what
-// the stream parser saw.
-//
-// It prints whenever SBR_FIFO_2D is on, including when every counter is zero, because "the gate
-// examined 0 draws" and "the gate is not wired" are the same silence otherwise — and distinguishing
-// them is the whole question when the HUD is missing from the capture.
-void sbr_gxfifo_report_2d_gate() {
-    if (!fifo2d_on()) return;
-    if (g_2dSeen == 0) {
-        lucent::warn("gxfifo",
-                     "2D gate: SBR_FIFO_2D is on but the gate examined ZERO draw primitives. That "
-                     "is not 'no HUD geometry' — it is the gate never running. Either no draw "
-                     "command reached the parser (check the gxfifo draw count) or the gate sits "
-                     "behind a branch this configuration does not take.");
-        return;
-    }
-    lucent::info("gxfifo",
-                 "2D gate: {} draw(s) examined, {} under an ORTHOGRAPHIC projection, {} decoded "
-                 "into drawables.{}",
-                 g_2dSeen, g_2dOrtho, g_2dEmitted,
-                 g_2dOrtho == 0
-                     ? "   <-- ZERO under ortho while draws WERE examined: the projection signal is "
-                       "what is broken, not the decoder. The SDK-captured projection may not be "
-                       "current at FIFO-parse time."
-                     : (g_2dEmitted == 0
-                            ? "   <-- ortho draws found but NONE decoded: the decoder declined "
-                              "every one; the breakdown below says which shape it could not handle."
-                            : ""));
-
-    const unsigned long declined = g_2dOrtho - g_2dEmitted;
-    if (declined == 0) return;
-    // The BREAKDOWN, so the next piece of work is chosen by size rather than by which warning
-    // happened to print first. Each line is a distinct decoder gap; together they must account for
-    // every declined draw, and the residual is printed so an unaccounted remainder cannot hide.
-    lucent::info("gxfifo", "  of {} ortho draw(s) DECLINED ({:.1f}% of ortho):", declined,
-                 100.0 * (double)declined / (double)g_2dOrtho);
-    const char* kPrimName[32] = {};
-    kPrimName[0x80 >> 3] = "QUADS"; kPrimName[0x88 >> 3] = "QUADS2";
-    kPrimName[0x90 >> 3] = "TRIANGLES"; kPrimName[0x98 >> 3] = "TRIANGLESTRIP";
-    kPrimName[0xA0 >> 3] = "TRIANGLEFAN"; kPrimName[0xA8 >> 3] = "LINES";
-    kPrimName[0xB0 >> 3] = "LINESTRIP"; kPrimName[0xB8 >> 3] = "POINTS";
-    if (g_2dDeclPrim != 0) {
-        lucent::Line l;
-        l.add("    {:>8} unhandled primitive —", g_2dDeclPrim);
-        for (unsigned i = 0; i < 32; ++i)
-            if (g_2dDeclPrimOp[i] != 0)
-                l.add(" 0x{:02x}{} x{}", i << 3, kPrimName[i] ? kPrimName[i] : "?",
-                      g_2dDeclPrimOp[i]);
-        l.flush(lucent::Level::Info, "gxfifo");
-    }
-    if (g_2dDeclAttr != 0) {
-        static const char* kMode[4] = {"none", "direct", "index8", "index16"};
-        lucent::Line l;
-        l.add("    {:>8} non-direct attributes — pos:", g_2dDeclAttr);
-        for (unsigned i = 0; i < 4; ++i)
-            if (g_2dDeclAttrPos[i] != 0) l.add(" {}x{}", kMode[i], g_2dDeclAttrPos[i]);
-        l.add("   tex0:");
-        for (unsigned i = 0; i < 4; ++i)
-            if (g_2dDeclAttrT0[i] != 0) l.add(" {}x{}", kMode[i], g_2dDeclAttrT0[i]);
-        l.flush(lucent::Level::Info, "gxfifo");
-    }
-    if (g_2dDeclAttr != 0)
-        lucent::info("gxfifo", "             of those, {} were within 4 draws of a J3D capture "
-                               "(the J3D seam ALREADY has them — decoding here would DOUBLE-COUNT) "
-                               "and {} were not (geometry genuinely missing from the capture)",
-                     g_2dIdxNearCapture, g_2dIdxFarFromCapture);
-    if (g_2dDeclPosFmt != 0) {
-        static const char* kFmt[8] = {"u8", "s8", "u16", "s16", "f32", "?", "?", "?"};
-        lucent::Line l;
-        l.add("    {:>8} unhandled position format —", g_2dDeclPosFmt);
-        for (unsigned i = 0; i < 8; ++i)
-            if (g_2dDeclPosFmtSeen[i] != 0) l.add(" {}x{}", kFmt[i], g_2dDeclPosFmtSeen[i]);
-        l.flush(lucent::Level::Info, "gxfifo");
-    }
-    if (g_2dDeclMtxIdx != 0)
-        lucent::info("gxfifo", "    {:>8} carried PosNrmMatIdx", g_2dDeclMtxIdx);
-    if (g_2dDeclMtxUnset != 0)
-        lucent::info("gxfifo", "    {:>8} indexed a position matrix the stream never loaded (or an "
-                               "out-of-range row) — declined rather than transformed by zeros, "
-                               "which would collapse the draw onto a point and still look decoded",
-                     g_2dDeclMtxUnset);
-    for (int cls = 0; cls < 2; ++cls) {
-        const unsigned long tot = g_2dInVol[cls] + g_2dPartVol[cls] + g_2dOutVol[cls];
-        if (tot == 0) {
-            lucent::info("gxfifo", "  clip-space residency, {}: NO DRAWS OF THIS CLASS. The "
-                                   "comparison below has only one side and proves nothing.",
-                         cls ? "per-vertex matrix index" : "no matrix index");
-            continue;
-        }
-        lucent::info("gxfifo", "  clip-space residency, {:<24}: {:>6} fully inside ({:.1f}%), "
-                               "{:>6} straddling, {:>6} entirely outside",
-                     cls ? "per-vertex matrix index" : "no matrix index",
-                     g_2dInVol[cls], 100.0 * (double)g_2dInVol[cls] / (double)tot,
-                     g_2dPartVol[cls], g_2dOutVol[cls]);
-        lucent::info("gxfifo", "        of which {} had NO EXTENT (every vertex on one point). "
-                               "That is the shape a wrong matrix makes, and for an orthographic "
-                               "projection it lands in a corner and scores as resident, so the "
-                               "percentage above cannot see it.", g_2dCollapsed[cls]);
-    }
-    lucent::info("gxfifo", "    (the two rows are each other's control: the second class is the one "
-                           "the matrix work newly enabled, and a wrong matrix would put it "
-                           "somewhere the first is not. It does NOT check that the geometry is the "
-                           "RIGHT geometry, only that it lands on screen.)");
-    // UNCONDITIONAL. This is a gap disclosure, not a decline, and printing it only when nonzero
-    // would make "checked, and there are none" indistinguishable from "never looked".
-    lucent::info("gxfifo", "    known gap, checked: {} DECODED draw(s) carried per-vertex "
-                           "TexMtxIdx. Their index bytes are consumed so the vertex stride is "
-                           "right, but no texgen matrix is applied, so any such draw's UVs are the "
-                           "raw attribute values and may be wrong.", g_2dTexMtxIdxDraws);
-    if (g_2dDeclClr != 0)
-        lucent::info("gxfifo", "    {:>8} non-RGBA8 colour0", g_2dDeclClr);
-    if (g_2dDeclCount != 0)
-        lucent::info("gxfifo", "    {:>8} vertex count outside [3,512]", g_2dDeclCount);
-    if (g_2dDeclArrayMiss != 0)
-        lucent::info("gxfifo", "    {:>8} indexed, but the attribute array was unregistered or the "
-                               "element ran past MEM1 — declined rather than decoded from whatever "
-                               "bytes were there", g_2dDeclArrayMiss);
-    if (g_2dDeclEmpty != 0)
-        lucent::info("gxfifo", "    {:>8} triangulated to nothing (all segments degenerate, or "
-                               "too few vertices for one triangle)", g_2dDeclEmpty);
-    const long acc = (long)(g_2dDeclPrim + g_2dDeclAttr + g_2dDeclMtxIdx + g_2dDeclPosFmt +
-                            g_2dDeclClr + g_2dDeclCount + g_2dDeclEmpty + g_2dDeclArrayMiss +
-                            g_2dDeclMtxUnset);
-    if ((long)declined != acc)
-        lucent::warn("gxfifo", "    the reasons above sum to {} but {} draws were declined — {} "
-                               "are UNACCOUNTED, so this breakdown is not complete and sizing work "
-                               "from it would undercount.",
-                     acc, declined, (long)declined - acc);
-}
-
 void sbr_gxfifo_report_bp_writes() {
     for (unsigned m = 0; m < 4; ++m)
-        lucent::info("gxfifo", "  unit {}: TX_SETIMAGE0 (0x{:02x}) {} writes, TX_SETIMAGE3 "
-                               "(0x{:02x}) {} writes, TX_SETMODE0 (0x{:02x}) {} writes",
-                     m, 0x88 + m, g_bpWrites[0x88 + m], 0x94 + m, g_bpWrites[0x94 + m],
-                     0x80 + m, g_bpWrites[0x80 + m]);
+        lucent::info("gxfifo",
+                     "  unit {}: TX_SETIMAGE0 (0x{:02x}) {} writes, TX_SETIMAGE3 "
+                     "(0x{:02x}) {} writes, TX_SETMODE0 (0x{:02x}) {} writes",
+                     m, 0x88 + m, g_bpWrites[0x88 + m], 0x94 + m, g_bpWrites[0x94 + m], 0x80 + m,
+                     g_bpWrites[0x80 + m]);
     lucent::info("gxfifo", "  GENMODE (0x00) {} writes, RAS1_TREF 0x28 {} / 0x29 {} / 0x2a {}",
                  g_bpWrites[0x00], g_bpWrites[0x28], g_bpWrites[0x29], g_bpWrites[0x2a]);
     // Texmaps 4-7 BIND rates. Whether any LIVE stage NAMES them is NOT answerable here: the
@@ -1909,8 +1542,9 @@ void sbr_gxfifo_report_bp_writes() {
     // reported ~24% use of maps 4-7 where the true figure is zero. The trustworthy count is the
     // state oracle's per-unit line, which counts over stages < numStages at DRAW time.
     for (unsigned m = 4; m < 8; ++m)
-        lucent::info("gxfifo", "  unit {}: TX_SETIMAGE0 (0x{:02x}) {} writes, TX_SETIMAGE3 "
-                               "(0x{:02x}) {} writes, TX_SETMODE0 (0x{:02x}) {} writes",
+        lucent::info("gxfifo",
+                     "  unit {}: TX_SETIMAGE0 (0x{:02x}) {} writes, TX_SETIMAGE3 "
+                     "(0x{:02x}) {} writes, TX_SETMODE0 (0x{:02x}) {} writes",
                      m, 0xA8 + m - 4, g_bpWrites[0xA8 + m - 4], 0xB4 + m - 4,
                      g_bpWrites[0xB4 + m - 4], 0xA0 + m - 4, g_bpWrites[0xA0 + m - 4]);
     // Whether the BP write MASK is used at all. If this is zero the mask handling is inert and any
@@ -1920,8 +1554,9 @@ void sbr_gxfifo_report_bp_writes() {
     // its z/blend state from the SDK GXSetZMode/GXSetBlendMode overrides instead. If J3D sets them
     // through display lists these counts are nonzero and that SDK state is stale — the same defect
     // shape as reading the SDK texObj slot instead of the BP image base.
-    lucent::info("gxfifo", "  ZMode (0x40) {} writes, cmode0/blend (0x41) {} writes  <- NOT parsed "
-                           "here; renderer z/blend comes from the SDK path",
+    lucent::info("gxfifo",
+                 "  ZMode (0x40) {} writes, cmode0/blend (0x41) {} writes  <- NOT parsed "
+                 "here; renderer z/blend comes from the SDK path",
                  g_bpWrites[0x40], g_bpWrites[0x41]);
     // TMEM — RESOLVED BY READING THE GAME'S OWN WRITER, not by inference. Two binders exist and
     // neither invalidates the "latest SETIMAGE0 + latest SETIMAGE3 per unit" model:
@@ -1936,18 +1571,17 @@ void sbr_gxfifo_report_bp_writes() {
     // So SETIMAGE3 stays the correct bind stamp for a unit, and TMEM is inert for a port that
     // samples main memory directly. Counted anyway so the claim stays falsifiable.
     for (unsigned m = 0; m < 4; ++m)
-        lucent::info("gxfifo", "  unit {}: TX_SETIMAGE1 (0x{:02x}) {} writes, TX_SETIMAGE2 "
-                               "(0x{:02x}) {} writes, TX_SETTLUT (0x{:02x}) {} writes",
-                     m, 0x8C + m, g_bpWrites[0x8C + m], 0x90 + m, g_bpWrites[0x90 + m],
-                     0x98 + m, g_bpWrites[0x98 + m]);
+        lucent::info("gxfifo",
+                     "  unit {}: TX_SETIMAGE1 (0x{:02x}) {} writes, TX_SETIMAGE2 "
+                     "(0x{:02x}) {} writes, TX_SETTLUT (0x{:02x}) {} writes",
+                     m, 0x8C + m, g_bpWrites[0x8C + m], 0x90 + m, g_bpWrites[0x90 + m], 0x98 + m,
+                     g_bpWrites[0x98 + m]);
 }
 
-
-
-
 // The raster state the display lists have written. See the BP 0x40/0x41 handler.
-SbrDepthState sbr_gx_fifo_zmode() { return g_fifoZ; }
-
+SbrDepthState sbr_gx_fifo_zmode() {
+    return g_fifoZ;
+}
 
 // Draw commands seen since the previous call. See g_drawsSinceQuery.
 long sbr_gxfifo_take_draw_count() {
@@ -1956,9 +1590,10 @@ long sbr_gxfifo_take_draw_count() {
     return n;
 }
 
-
 // Called by the capture seam: a J3D shape was captured here, so the run of unattributed draws ends.
-void sbr_gxfifo_note_capture() { g_drawsSinceCapture = 0; }
+void sbr_gxfifo_note_capture() {
+    g_drawsSinceCapture = 0;
+}
 
 // Draws since the last capture, and the longest such run this frame. Resets the peak.
 void sbr_gxfifo_take_uncaptured(long* trailing, long* longestRun) {

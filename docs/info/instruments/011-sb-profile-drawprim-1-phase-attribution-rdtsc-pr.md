@@ -1,13 +1,15 @@
 ---
 id: I011
 kind: instrument
-status: trusted
+status: DISTRUSTED
 created: 2026-08-05
+distrusted_on: 2026-08-22
 ---
 
 ## Instrument
 
-SB_PROFILE_DRAWPRIM=1 phase attribution — rdtsc-probed nine-way split of draw_prim, printed per drain (extern/aurora/lib/gx/fifo.cpp report, DP_PHASE probes in command_processor.cpp)
+Retired draw-primitive phase attribution — an rdtsc-probed nine-way split of `draw_prim`, formerly
+printed per drain by `extern/aurora/lib/gx/fifo.cpp` with probes in `command_processor.cpp`
 
 ## Validated by
 
@@ -16,3 +18,12 @@ Five controls, each able to fail: (1) unattributed = whole - sum(phases); the ph
 ## Known failure modes
 
 (none recorded yet)
+
+## DISTRUSTED 2026-08-22
+
+TSC elapsed-phase attribution is host-clock performance measurement. Its partition controls catch accounting mistakes but cannot make results invariant to host contention, and it is no longer admissible for choosing optimizations.
+
+The runtime switch and clock probes were removed; this entry remains only to invalidate conclusions
+that cited the old instrument.
+
+> Every result this instrument produced is suspect until it is re-validated.

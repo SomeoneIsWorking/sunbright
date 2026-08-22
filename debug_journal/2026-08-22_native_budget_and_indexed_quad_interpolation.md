@@ -1,5 +1,11 @@
 # Native 60 budget and indexed-quad interpolation — 2026-08-22
 
+> **Measurement supersession:** Lines below describing tick milliseconds, 45–52 Hz, the 16.67 ms
+> budget, and per-phase elapsed renderer costs are historical and are not admissible optimization
+> evidence. They were recorded before the real-world-clock rule was corrected. The indexed-quad RE,
+> stable tags, known-motion arithmetic control, exact present/tick counts, and explicit zero-arrival
+> coverage boundary remain valid because none depends on host elapsed performance.
+
 User report: Native 60 slows down; interpolated 60 still has jittering elements.
 
 ## Native 60: the tick misses its budget

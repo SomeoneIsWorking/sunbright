@@ -28,27 +28,25 @@ whatever is needed to unblock yourself: build the tool, find the address, RE the
 path that advances ownership, go. Never punt the decision to the user.
 
 ## Concrete tools/seams in THIS project (so the loop is fast)
-- **RE / disassembly**: `./build-freshtest/sunbright-recomp scratch/disc/sms.iso --disasm <hexaddr>
-  [n]` · `--xref <addr> --funcs reference/sms_gmse01_funcs.txt` (callers) · `--callees <addr>`.
-  Data symbols: `reference/sms_gmsj01_symbols.txt` is JP (GMSE01 = US differs; map by role/xref).
-  DOL data reader: `scratch/doldump.py`.
-- **Decomp source of truth**: `decomp/sms/` (the game's own C++; the native engine compiles it).
-- **Native value detectors / probes (the verification layer)**: `SB_CAM_DBG` ([cam-oracle],
-  [proj-diverge]), `SB_J3D_DBG` ([cov], [sky-sphere], [stage-light], [mat], [litprobe]),
-  `sb_gx_get_projection` / `sb_gx_get_cur_posmtx` / `sb_gx_get_chan_matcolor` exports, the per-shape
-  coverage/ndc probes in `sms_boot_j3d_capture.cpp`. Add a new export+log whenever you need to SEE a value.
-- **Render oracle (sms-boot vs vanilla GC)**: `tools/render/boot_vs_vanilla.sh` (vanilla = sunbright
-  `NGX_PRESENT=0` = real guest GX, no widescreen/gecko → pure-vanilla 4:3) + `ab_diff.py` (per-region
-  divergence). KNOWN GAP: cross-engine frame SYNC unsolved (different frame clocks, no shared save) —
-  when this matters, BUILD the sync (detect vanilla's first plaza render, or read+match `gpCamera`),
-  don't punt.
-- **Unit tests (pure-fn TDD)**: `ctest --test-dir build-native -E platform_test` (28+ tests); add a
-  `render_test`/`platform_*` unit for every pure unit you extract, asserting spec-computed values.
-- **Run sms-boot headless**: `cmake --build build-native --target sms-boot -j$(nproc)` then
-  `./run-render.sh` (the recipe script — it sets the env the renderer needs; see its header).
-  The hand-written invocation that used to be here named four switches that no longer exist;
-  `tools/diag_registry.py scan` lists the switches the code actually reads (scene ~VI 6121; frames → `scratch/frames/boot_*.ppm`). Always
-  `pkill -9 -x sms-boot` after. Logs have NUL → `grep -a`.
+
+- **Project knowledge first**: the installed project-info skill's `info.py brief <symptom words>`
+  searches claims, instruments, issues, journals and the codemap before a result is re-derived.
+- **RE / disassembly**: Ghidra headless is authoritative; use `tools/re/port_dossier.py` for a
+  function dossier and `reference/sms_gmse01_funcs.txt` to resolve US addresses. The matching
+  decomp source is `decomp/sms/`.
+- **Runtime/value evidence**: use the existing `SB_LOG=<channel>` registry, state oracle, graphics
+  registry, and probe endpoints. Performance candidates come from no-loss sampling and deterministic
+  internal work counts such as `SB_DRAW_STATS`, never host elapsed-time averages.
+- **Unit tests**: `ctest --test-dir build --output-on-failure` and
+  `ctest --test-dir build-recomp --output-on-failure`; every extracted pure unit gets a spec-derived
+  positive and a known-difference/negative control.
+- **Bounded runs**: `./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=<presents>`. Set
+  `SB_RUNNER=run-decomp.sh` to select the decomp oracle. This path enforces headless rendering, a
+  submission ceiling, a wall-clock safety cap, and the kernel amdgpu fault check. Do not assemble a
+  turbo command manually. If a launched process must be stopped, capture its PID and use the
+  safe-kill helper; never `pkill` a shared binary name.
+- **Native-render parity only**: `./run-render.sh` supplies the complete guarded environment. It is
+  not the default runtime path and requires the explicit renderer approval gate.
 
 ## Ownership pattern (how to port a behavior)
 1. Find the behavior's entry + data in `decomp/sms` (+ disassemble the US binary to confirm).

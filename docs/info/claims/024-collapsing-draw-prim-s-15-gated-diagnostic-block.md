@@ -1,10 +1,11 @@
 ---
 id: C024
 kind: claim
-status: holds
+status: falsified
 created: 2026-08-05
 tags: perf
 depends: extern/aurora/lib/gx/command_processor.cpp#draw_prim
+falsified_on: 2026-08-22
 ---
 
 ## Claim
@@ -18,3 +19,13 @@ Interleaved A/B (both binaries run alternately so each saw the same machine load
 ## What would falsify it
 
 a phase probe inside the diag-pre/diag-post regions attributes their cost to something a master gate WOULD remove
+
+## FALSIFIED 2026-08-22
+
+The “worth only ~1%” conclusion is an elapsed-time A/B derived from I011 and is not admissible
+optimization evidence. The gate controls prove only that the tested switches turn their diagnostic
+work on and off; they do not make the timing ratio invariant to host contention. Whether dormant
+diagnostic checks are a useful target must be answered by deterministic executed-work counts or a
+bounded no-loss sample, not this clock comparison.
+
+> Anything that cited this claim as proof must be re-checked. Grep the repo for it.

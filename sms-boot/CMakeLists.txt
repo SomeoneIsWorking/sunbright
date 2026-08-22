@@ -20,38 +20,39 @@ if(NOT DEFINED PROJECT_NAME)
 endif()
 
 set(SMS_NATIVE_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 # Game-logic sources = decomp/sms/src/**.cpp MINUS the GC SDK/CRT dirs (Aurora
 # supplies dolphin/*; PowerPC_EABI_Support/TRK_MINNOW_DOLPHIN are PPC CRT).
-file(GLOB_RECURSE SMS_NATIVE_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE SMS_DECOMP_SOURCES CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src/*.cpp"
      "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src/*.c")
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+list(FILTER SMS_DECOMP_SOURCES EXCLUDE REGEX
      "/decomp/sms/src/(dolphin|PowerPC_EABI_Support|TRK_MINNOW_DOLPHIN)/")
 # OdemuExi2 debugger driver, dspproc/dsptask/osdsp — PPC-hardware/DSP register
 # access, not portable native. Retired debugger/DSP paths.
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+list(FILTER SMS_DECOMP_SOURCES EXCLUDE REGEX
      "/decomp/sms/src/(OdemuExi2|JSystem/dspproc|JSystem/dsptask|JSystem/osdsp)")
 # hx_wiper.c / THPPlayer/*.c: HAM movie-wipe controller + Nintendo THP video
 # playback. Both drive GX directly and depend on cache/DVD hardware. Movies are
 # skipped under SMS_NATIVE_PLATFORM=1; runtime/sdk_stubs.cpp provides linkable
 # no-ops (a small state machine faking an instantly-finished movie) for the
 # exported entry points.
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+list(FILTER SMS_DECOMP_SOURCES EXCLUDE REGEX
      "/decomp/sms/src/GC2D/hx_wiper\\.c$")
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+list(FILTER SMS_DECOMP_SOURCES EXCLUDE REGEX
      "/decomp/sms/src/THPPlayer/")
 
 # JASVload wants JaiArcS.hed which isn't on the disc FST; replaced by
 # sms_boot_audio.cpp's BARC-backed loader.
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+list(FILTER SMS_DECOMP_SOURCES EXCLUDE REGEX
      "/decomp/sms/src/JSystem/JAudio/JASystem/JASVload\\.cpp$")
 
 # Pure PPC-hardware TUs — no meaningful native implementation; Aurora owns the
 # equivalent surfaces (GX register I/O, OS panics, glibc math).
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+list(FILTER SMS_DECOMP_SOURCES EXCLUDE REGEX
      "/decomp/sms/src/JSystem/JUtility/JUTException\\.cpp$")
-list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
+list(FILTER SMS_DECOMP_SOURCES EXCLUDE REGEX
      "/decomp/sms/src/JSystem/JUtility/JUTDirectPrint\\.cpp$")
 # JRenderer.cpp was previously excluded here as "pure PPC-hardware, no meaningful
 # native impl" — false: it holds the REAL J3DGD*/JRNI* BP-register writers
@@ -76,11 +77,67 @@ list(FILTER SMS_NATIVE_SOURCES EXCLUDE REGEX
 # then re-entered a "stale" field (previously used on a reset SolidHeap) with
 # mPtrList=non-null and crashed inside JSUPtrList::prepend's unlink path.
 
+set(SMS_SJIS_TOOL "${SMS_NATIVE_REPO_ROOT}/tools/build/encode_sjis_literals.py")
+set(SMS_SOURCE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_src")
+set(SMS_INCLUDE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_include")
+
+# Before this generated tree existed, staged_sms_include used top-level
+# symlinks into decomp/sms/include. Remove that retired layout with the scoped
+# project cleanup tool before any custom command can follow it into source.
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${SMS_SJIS_TOOL}"
+            --build-root "${CMAKE_BINARY_DIR}"
+            --prepare-root "${SMS_SOURCE_STAGED}"
+            --prepare-root "${SMS_INCLUDE_STAGED}"
+    RESULT_VARIABLE SMS_SJIS_PREPARE_RESULT)
+if(NOT SMS_SJIS_PREPARE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to prepare the Shift-JIS generated source tree")
+endif()
+
+# Clang does not support -fexec-charset. Generate byte-exact Shift-JIS
+# ordinary literals for the native target while keeping the authoritative
+# decomp sources UTF-8. Headers must go through the same transform because
+# inline bodies and macros can contain serialized game names too.
+set(SMS_NATIVE_SOURCES)
+foreach(_src ${SMS_DECOMP_SOURCES})
+    file(RELATIVE_PATH _rel "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src" "${_src}")
+    set(_staged "${SMS_SOURCE_STAGED}/${_rel}")
+    get_filename_component(_staged_dir "${_staged}" DIRECTORY)
+    add_custom_command(
+        OUTPUT "${_staged}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_staged_dir}"
+        COMMAND "${Python3_EXECUTABLE}" "${SMS_SJIS_TOOL}" "${_src}" "${_staged}"
+                --output-root "${SMS_SOURCE_STAGED}"
+        DEPENDS "${_src}" "${SMS_SJIS_TOOL}"
+        VERBATIM)
+    list(APPEND SMS_NATIVE_SOURCES "${_staged}")
+endforeach()
+
+file(GLOB_RECURSE SMS_DECOMP_HEADERS CONFIGURE_DEPENDS LIST_DIRECTORIES false
+     "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include/*")
+list(FILTER SMS_DECOMP_HEADERS EXCLUDE REGEX "/decomp/sms/include/dolphin/")
+list(FILTER SMS_DECOMP_HEADERS EXCLUDE REGEX "/decomp/sms/include/dolphin\\.h$")
+set(SMS_NATIVE_HEADERS)
+foreach(_header ${SMS_DECOMP_HEADERS})
+    file(RELATIVE_PATH _rel "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include" "${_header}")
+    set(_staged "${SMS_INCLUDE_STAGED}/${_rel}")
+    get_filename_component(_staged_dir "${_staged}" DIRECTORY)
+    add_custom_command(
+        OUTPUT "${_staged}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_staged_dir}"
+        COMMAND "${Python3_EXECUTABLE}" "${SMS_SJIS_TOOL}" "${_header}" "${_staged}"
+                --output-root "${SMS_INCLUDE_STAGED}"
+        DEPENDS "${_header}" "${SMS_SJIS_TOOL}"
+        VERBATIM)
+    list(APPEND SMS_NATIVE_HEADERS "${_staged}")
+endforeach()
+
+add_custom_target(sms-native-sjis DEPENDS ${SMS_NATIVE_SOURCES} ${SMS_NATIVE_HEADERS})
 list(APPEND SMS_NATIVE_SOURCES
      "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sms_boot_audio.cpp")
 
-# .c decomp TUs (THPPlayer/*.c) — compile as C++ so they see the C++ Aurora
-# headers and pick up the same -include shim.
+# .c decomp TUs compile as C++ so they see Aurora's C++ headers and pick up
+# the same forced-include shim.
 foreach(_src ${SMS_NATIVE_SOURCES})
     if(_src MATCHES "\\.c$")
         set_source_files_properties("${_src}" PROPERTIES LANGUAGE CXX)
@@ -88,30 +145,12 @@ foreach(_src ${SMS_NATIVE_SOURCES})
 endforeach()
 
 add_library(sms-native STATIC ${SMS_NATIVE_SOURCES})
+add_dependencies(sms-native sms-native-sjis)
 
 set_target_properties(sms-native PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF)
-
-# Stage decomp/sms/include without its dolphin/ subdir; Aurora supplies dolphin/.
-# SYMLINK each top-level entry (except dolphin) rather than file(COPY): file(COPY) runs
-# only at configure time, so edits to decomp/sms/include/*.hpp were silently shadowed by
-# a stale staged copy and did NOT reach `cmake --build` (0 recompiles despite header edits —
-# the 2026-07-10 unk-rename incident, and the recurring "header-path shadowing" hazard).
-# Symlinks resolve to the live source, so header EDITS propagate on the next build with no
-# reconfigure; only a NEW top-level dir under include/ still needs a reconfigure.
-set(SMS_INCLUDE_STAGED "${CMAKE_CURRENT_BINARY_DIR}/staged_sms_include")
-file(REMOVE_RECURSE "${SMS_INCLUDE_STAGED}")
-file(MAKE_DIRECTORY "${SMS_INCLUDE_STAGED}")
-file(GLOB _sms_inc_entries RELATIVE "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include"
-     "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include/*")
-foreach(_e ${_sms_inc_entries})
-    if(NOT _e STREQUAL "dolphin" AND NOT _e STREQUAL "dolphin.h")
-        file(CREATE_LINK "${SMS_NATIVE_REPO_ROOT}/decomp/sms/include/${_e}"
-             "${SMS_INCLUDE_STAGED}/${_e}" SYMBOLIC)
-    endif()
-endforeach()
 
 # Three orthogonal compile-time gates:
 #   TARGET_PC          — Aurora's fixed-width typedefs (BOOL/s32/u32/etc.).
@@ -144,9 +183,7 @@ target_compile_options(sms-native PRIVATE
     -w
     -Wno-narrowing
     -fcommon
-    $<$<CXX_COMPILER_ID:GNU>:-fno-reorder-blocks-and-partition>
-    $<$<CXX_COMPILER_ID:GNU>:-finput-charset=UTF-8>
-    $<$<CXX_COMPILER_ID:GNU>:-fexec-charset=SHIFT_JIS>)
+    $<$<CXX_COMPILER_ID:GNU>:-fno-reorder-blocks-and-partition>)
 
 find_package(Threads REQUIRED)
 
@@ -159,6 +196,7 @@ file(GLOB SMS_GD_SOURCES CONFIGURE_DEPENDS
 # with its GX pipeline, so use it.
 list(FILTER SMS_GD_SOURCES EXCLUDE REGEX "/GDLight\\.c$")
 add_library(sms-gd STATIC ${SMS_GD_SOURCES})
+add_dependencies(sms-gd sms-native-sjis)
 set_target_properties(sms-gd PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
     LINKER_LANGUAGE CXX)
@@ -181,6 +219,7 @@ add_library(sms-assets STATIC
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bas_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/timg_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/restlut_swap.cpp"
+    "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/spc_swap.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/rarc.cpp"
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/bcsv_swap.cpp")
 set_target_properties(sms-assets PROPERTIES
@@ -194,6 +233,15 @@ target_include_directories(sms-assets PUBLIC
 target_compile_options(sms-assets PRIVATE -Wall -Wextra)
 
 enable_testing()
+
+file(GLOB SMS_ASSET_TESTS CONFIGURE_DEPENDS
+     "${SMS_NATIVE_REPO_ROOT}/sms-boot/assets/tests/*_test.cpp")
+foreach(_test ${SMS_ASSET_TESTS})
+    get_filename_component(_name "${_test}" NAME_WE)
+    add_executable(asset-${_name} "${_test}")
+    target_link_libraries(asset-${_name} PRIVATE sms-assets)
+    add_test(NAME asset_${_name} COMMAND asset-${_name})
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Shim spec tests — unit tests from RE (spec-derived expected values) for the
@@ -228,6 +276,7 @@ foreach(_test ${SMS_RUNTIME_TESTS})
     get_filename_component(_name "${_test}" NAME_WE)
     add_executable(platform-${_name} "${_test}"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/hx_wipe.cpp")
+    add_dependencies(platform-${_name} sms-native-sjis)
     set_target_properties(platform-${_name} PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(platform-${_name} PRIVATE
@@ -260,6 +309,7 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pin_state.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/fifo_player.cpp")
+    add_dependencies(sms-boot sms-native-sjis)
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(sms-boot PRIVATE
@@ -281,6 +331,7 @@ if(TARGET aurora_core)
     if(SMS_BOOT_STUBS)
         enable_language(ASM)
         add_library(sms-bootstubs STATIC ${SMS_BOOT_STUBS})
+        add_dependencies(sms-bootstubs sms-native-sjis)
         set_target_properties(sms-bootstubs PROPERTIES
             CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
         target_include_directories(sms-bootstubs PRIVATE
@@ -326,7 +377,9 @@ if(TARGET aurora_core)
     # -----------------------------------------------------------------------
     add_executable(platform-jaudio_release_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/jaudio_release_test.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp")
+    add_dependencies(platform-jaudio_release_test sms-native-sjis)
     set_target_properties(platform-jaudio_release_test PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(platform-jaudio_release_test PRIVATE
@@ -364,6 +417,7 @@ if(TARGET aurora_core)
     add_executable(platform-gx_yscale_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/gx_yscale_test.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp")
+    add_dependencies(platform-gx_yscale_test sms-native-sjis)
     set_target_properties(platform-gx_yscale_test PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_include_directories(platform-gx_yscale_test PRIVATE
@@ -398,7 +452,8 @@ if(TARGET aurora_core)
     # -----------------------------------------------------------------------
     add_executable(platform-mapobjtree_initeach_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/mapobjtree_initeach_test.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/decomp/sms/src/MoveBG/MapObjTree.cpp")
+        "${SMS_SOURCE_STAGED}/MoveBG/MapObjTree.cpp")
+    add_dependencies(platform-mapobjtree_initeach_test sms-native-sjis)
     set_target_properties(platform-mapobjtree_initeach_test PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_compile_options(platform-mapobjtree_initeach_test PRIVATE

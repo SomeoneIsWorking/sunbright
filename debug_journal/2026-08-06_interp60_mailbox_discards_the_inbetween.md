@@ -1,5 +1,11 @@
 # 2026-08-06 — 60fps: the in-between frame was DISCARDED BY THE SWAPCHAIN, not dropped by the pacer
 
+> **Measurement supersession (2026-08-22):** The Mailbox/FIFO queue semantics and dead-counter
+> diagnosis remain valid. The later general lesson that alternating wall-clock A/B arms makes clock
+> cost suitable for optimization selection is superseded: alternation reduces one confounder but
+> cannot make host elapsed time an internal-work measure. Use deterministic work counts and bounded
+> no-loss sampling instead.
+
 User report, from playing: interpolated 60fps "drops the interpolated frames when it can't produce
 60fps due to performance". Correct, and the cause is not performance.
 

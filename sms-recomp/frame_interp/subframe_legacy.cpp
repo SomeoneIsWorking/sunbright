@@ -1,17 +1,17 @@
 // interp60_snapshot.cpp — game-native 60fps interpolation, step 1: capture (prev) per actor.
 //
 // THE DESIGN (debug_journal/2026-08-05_game_native_interpolation_design.md). Interpolate INSIDE the
-// game's own terms: snapshot each actor's transform before its movement runs, then render sub-frames
-// by writing lerp(prev, cur, alpha) into the live fields and re-running PreEntry + the draw lists.
-// The game recomputes matrices, skinning and dependent geometry from the interpolated transform, so
-// things with no model matrix interpolate too — which is exactly what J3DModel-matrix lerping cannot
-// do and why the trail jittered under it.
+// game's own terms: snapshot each actor's transform before its movement runs, then render
+// sub-frames by writing lerp(prev, cur, alpha) into the live fields and re-running PreEntry + the
+// draw lists. The game recomputes matrices, skinning and dependent geometry from the interpolated
+// transform, so things with no model matrix interpolate too — which is exactly what J3DModel-matrix
+// lerping cannot do and why the trail jittered under it.
 //
-// WHERE IT HOOKS. JDrama::TViewObj::testPerform (US 0x802fcc94) is the dispatch funnel: non-virtual,
-// and every container routes through it (TPerformList::forEachPerform, TViewObjPtrListT::perform,
-// TStrategy, TObjManager, TViewConnecter, TScreen, TDirector). Established by measurement on the
-// decomp side, where five attempts to reach actors by walking the object graph each stopped at a
-// container type nobody had anticipated.
+// WHERE IT HOOKS. JDrama::TViewObj::testPerform (US 0x802fcc94) is the dispatch funnel:
+// non-virtual, and every container routes through it (TPerformList::forEachPerform,
+// TViewObjPtrListT::perform, TStrategy, TObjManager, TViewConnecter, TScreen, TDirector).
+// Established by measurement on the decomp side, where five attempts to reach actors by walking the
+// object graph each stopped at a container type nobody had anticipated.
 //
 // TYPE SAFETY, AND WHY IT IS NOT OPTIONAL. testPerform's `this` is a TViewObj*, and NOT every
 // TViewObj is a TActor -- perform lists, screens, view connecters and 2D screens are not. mPosition
@@ -31,29 +31,26 @@
 
 #include "../overrides/overrides.h"
 #include "record_replace.h"
+#include "subframe_guest.hpp"
+#include "subframe_pose.hpp"
 #include "tactor_vtables.h"
 #include "tplacement_vtables.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
 
-#include <cstdlib>
+#include "../generated/calcroot_addrs.h"
 #include <cmath>
 #include <cstdio>
-#include "../generated/calcroot_addrs.h"
+#include <cstdlib>
 
-extern "C" void func_802fcc94(CPUState&);      // JDrama::TViewObj::testPerform(u32, TGraphics*)
+extern "C" void func_802fcc94(CPUState&); // JDrama::TViewObj::testPerform(u32, TGraphics*)
 extern "C" unsigned VIGetRetraceCount(void);
 // TPerformList::perform(u32 cue, TGraphics*). The interpolation sub-frame IS a re-issue of a
-// subset of these calls, so this file owns the seam; the tick-split diagnostic is invoked from it.
-extern "C" void sbr_tick_split_call(CPUState&);
-extern "C" void func_802f80d0(CPUState&);      // JDrama::TDisplay::endRendering
-extern "C" void sbr_frame_present_now();       // overrides/native_frame.cpp
-// TMario::calcAnim(u32 cue, JDrama::TGraphics*) — US 0x80244800. The player's pose-to-matrix step:
-// calcBaseMtx() builds a TR matrix from mPosition + mModelFaceAngle and MTXCopy's it into
-// mModel->unk8->getBaseTRMtx(), then mModel->perform(cue) runs the skeleton (decomp
-// src/Player/MarioDraw.cpp:1920, :1582).
-extern "C" void func_80244800(CPUState&);
+// subset of these calls, so this file owns the seam and calls the retail body directly.
+extern "C" void func_802a4e28(CPUState&);
+extern "C" void func_802f80d0(CPUState&); // JDrama::TDisplay::endRendering
+extern "C" void sbr_frame_present_now();  // overrides/native_frame.cpp
 // MActor::calc() — US 0x80239770. calcRootMatrix writes the model's BASE TR matrix; calc() is what
 // propagates it into the joint/node matrices the draw packets actually reference. TLiveActor's own
 // 0x2 branch runs the pair, and running only the first is measurably a no-op (a 3000-unit kick on
@@ -73,26 +70,41 @@ extern "C" void func_802deeb8(CPUState&);
 // view. Without it a dispatched actor has a correct world matrix and still draws through the view
 // the tick baked.
 extern "C" void func_80239734(CPUState&);
-extern "C" void func_80349f5c(CPUState&);      // C_MTXLookAt(Mtx dst, const Vec* eye, const Vec* up,
-                                               //             const Vec* target)
 // Diagnostic in diag_vptr.cpp. One guest address gets exactly ONE override, so that file no longer
 // registers; it is called from here instead (the pattern afterimage.cpp uses).
 extern "C" void sbr_vptr_note(unsigned obj);
-// Where the GX parser is in this frame's stream (runtime/native_render.h). Used to price the re-issue.
+// Where the GX parser is in this frame's stream (runtime/native_render.h). Used to price the
+// re-issue.
 uint32_t sbr_gxfifo_stream_pos();
 unsigned long sbr_gxfifo_xfb_copies();
 unsigned long long sbr_gxfifo_stream_hash(uint32_t from, uint32_t to);
 
 namespace {
 
+using sb::interp60::apply_camera;
+using sb::interp60::apply_player;
+using sb::interp60::camera_separation;
+using sb::interp60::CameraSave;
+using sb::interp60::guest_f32;
+using sb::interp60::guest_name;
+using sb::interp60::guest_w_f32;
+using sb::interp60::kCameraUpOffset;
+using sb::interp60::kPolarEyeOffset;
+using sb::interp60::kPolarPreviousEyeOffset;
+using sb::interp60::kPolarPreviousTargetOffset;
+using sb::interp60::kPolarTargetOffset;
+using sb::interp60::kPolarViewMatrixOffset;
+using sb::interp60::kPositionOffset;
+using sb::interp60::restore_camera;
+using sb::interp60::restore_player;
+
 // Guest field offsets. JDrama::TPlacement::mPosition @ 0x10, JDrama::TActor::mRotation @ 0x30
 // (decomp include/JSystem/JDrama/JDRPlacement.hpp, JDRActor.hpp). Guest floats are big-endian.
-constexpr u32 OFF_POSITION = 0x10;
 constexpr u32 OFF_ROTATION = 0x30;
 
-constexpr u32 CUE_MOVE  = 0x1;
+constexpr u32 CUE_MOVE = 0x1;
 constexpr u32 CUE_CALC_ANIM = 0x2;
-constexpr u32 CUE_DRAW      = 0x8;   // calcRootMatrix runs HERE, not in the draw phase
+constexpr u32 CUE_DRAW = 0x8; // calcRootMatrix runs HERE, not in the draw phase
 
 // SBR_INTERP60_ALPHA: write lerp(prev, cur, alpha) into the guest transform for the draw phase.
 // Unset means snapshot-only (read nothing back). alpha=1.0 MUST be pixel-identical to unset --
@@ -106,9 +118,9 @@ float alpha_setting() {
     return a;
 }
 
-// SBR_INTERP60_ALPHA_CAM / SBR_INTERP60_ALPHA_ACT: the ABLATION. Both default to SBR_INTERP60_ALPHA,
-// so setting only the global alpha behaves exactly as before and the split cannot change a result
-// nobody asked to split.
+// SBR_INTERP60_ALPHA_CAM / SBR_INTERP60_ALPHA_ACT: the ABLATION. Both default to
+// SBR_INTERP60_ALPHA, so setting only the global alpha behaves exactly as before and the split
+// cannot change a result nobody asked to split.
 //
 // WHY IT EXISTS. alpha=1.0 reproduces the following main frame to 0.075 per channel while alpha=0.0
 // lands only ~28% of the way back toward the preceding one, and CAMTRACE proves the camera itself
@@ -122,19 +134,21 @@ float alpha_of(const char* var) {
     const char* e = std::getenv(var);
     return e ? (float)std::atof(e) : alpha_setting();
 }
-float alpha_cam() { static const float a = alpha_of("SBR_INTERP60_ALPHA_CAM"); return a; }
-float alpha_act() { static const float a = alpha_of("SBR_INTERP60_ALPHA_ACT"); return a; }
+float alpha_cam() {
+    static const float a = alpha_of("SBR_INTERP60_ALPHA_CAM");
+    return a;
+}
+float alpha_act() {
+    static const float a = alpha_of("SBR_INTERP60_ALPHA_ACT");
+    return a;
+}
 
-long viewseq_at();   // defined with the view-sequence probe; the arming present is shared
-void anim_apply(CPUState& cpu, u32 mActor, float alpha);   // defined with the animation-phase seam
+long viewseq_at(); // defined with the view-sequence probe; the arming present is shared
+void anim_apply(CPUState& cpu, u32 mActor, float alpha); // defined with the animation-phase seam
 void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool requireApplied);
-void player_apply(CPUState& cpu, u32 gfx, bool saveWaist);
 extern float g_subframeCamY;
-void player_restore();
 void mtxtrace_report(u32 model, const char* when);
 extern u32 g_mtxModel;
-void player_snapshot(u32 obj);
-void player_diff(u32 obj);
 void anim_restore();
 float alpha_act();
 
@@ -143,25 +157,23 @@ bool enabled() {
     return on;
 }
 
-float guest_f32(u32 ea) {
-    const u32 bits = sb_r32(ea);
-    float f;
-    __builtin_memcpy(&f, &bits, sizeof f);
-    return f;
-}
-
 bool in_sorted(const u32* tab, int n, u32 vptr) {
-    int lo = 0, hi = n - 1;                    // emitted sorted; binary search keeps this off the profile
+    int lo = 0, hi = n - 1; // emitted sorted; binary search keeps this off the profile
     while (lo <= hi) {
         const int mid = (lo + hi) / 2;
-        if (tab[mid] == vptr) return true;
-        if (tab[mid] < vptr) lo = mid + 1; else hi = mid - 1;
+        if (tab[mid] == vptr)
+            return true;
+        if (tab[mid] < vptr)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
     }
     return false;
 }
 
 bool is_tactor(u32 vptr) {
-    return in_sorted(kTActorVtables, (int)(sizeof(kTActorVtables) / sizeof(kTActorVtables[0])), vptr);
+    return in_sorted(kTActorVtables, (int)(sizeof(kTActorVtables) / sizeof(kTActorVtables[0])),
+                     vptr);
 }
 
 // TPlacement subclasses that are NOT TActors -- cameras above all (JDrama::TCamera : public
@@ -174,7 +186,8 @@ bool is_tactor(u32 vptr) {
 // somewhere else, and it would be blamed on the interpolation rather than on the write.
 bool is_placement_only(u32 vptr) {
     return in_sorted(kTPlacementOnlyVtables,
-                     (int)(sizeof(kTPlacementOnlyVtables) / sizeof(kTPlacementOnlyVtables[0])), vptr);
+                     (int)(sizeof(kTPlacementOnlyVtables) / sizeof(kTPlacementOnlyVtables[0])),
+                     vptr);
 }
 
 // ── (prev) side table ────────────────────────────────────────────────────────
@@ -182,48 +195,54 @@ bool is_placement_only(u32 vptr) {
 // carries the tick it was written on; an entry older than one tick is treated as absent rather
 // than interpolated from, which would otherwise blend a dead object's transform into a live one.
 // Open-addressed and fixed-size: no allocation on the game thread.
-constexpr int TABLE_BITS = 13;                 // 8192 slots
+constexpr int TABLE_BITS = 13; // 8192 slots
 constexpr int TABLE_SIZE = 1 << TABLE_BITS;
 constexpr int TABLE_MASK = TABLE_SIZE - 1;
 
 struct Entry {
-    u32   obj  = 0;        // guest address, 0 = empty
-    u32   tick = 0;
-    float pos[3] = {0, 0, 0};   // (prev): transform before this tick's movement
+    u32 obj = 0; // guest address, 0 = empty
+    u32 tick = 0;
+    float pos[3] = {0, 0, 0}; // (prev): transform before this tick's movement
     float rot[3] = {0, 0, 0};
-    float cur[3] = {0, 0, 0};   // (cur): saved at apply time so restore is exact
+    float cur[3] = {0, 0, 0}; // (cur): saved at apply time so restore is exact
     float curRot[3] = {0, 0, 0};
-    bool  applied = false;      // a lerp is currently written into guest memory
-    bool  posOnly = false;      // a TPlacement that is not a TActor: position only, never rotation
-    bool  isCam   = false;      // layout-verified JDrama::TLookAtCamera: mUp/mTarget too
-    float up[3] = {0, 0, 0}, target[3] = {0, 0, 0};          // (prev) aim
-    float curUp[3] = {0, 0, 0}, curTarget[3] = {0, 0, 0};    // (cur) aim, saved at apply time
+    bool applied = false; // a lerp is currently written into guest memory
+    bool posOnly = false; // a TPlacement that is not a TActor: position only, never rotation
+    bool isCam = false;   // layout-verified JDrama::TLookAtCamera: mUp/mTarget too
+    float up[3] = {0, 0, 0}, target[3] = {0, 0, 0};       // (prev) aim
+    float curUp[3] = {0, 0, 0}, curTarget[3] = {0, 0, 0}; // (cur) aim, saved at apply time
 };
 
 Entry g_tab[TABLE_SIZE];
-long  g_evictions = 0;     // a full probe chain: capacity exceeded, and it must be visible
+long g_evictions = 0; // a full probe chain: capacity exceeded, and it must be visible
 
 Entry* slot_for(u32 obj) {
     u32 h = obj * 2654435761u;
     for (int i = 0; i < 64; ++i) {
         Entry& e = g_tab[(h + (u32)i) & TABLE_MASK];
-        if (e.obj == obj || e.obj == 0) return &e;
+        if (e.obj == obj || e.obj == 0)
+            return &e;
     }
     ++g_evictions;
     return nullptr;
 }
 
-u32  g_seenLists[32];
-int  g_seenN = 0;
-u32  g_mardir = 0;
+u32 g_seenLists[32];
+int g_seenN = 0;
+u32 g_mardir = 0;
 
 void note_seen(u32 list) {
-    for (int i = 0; i < g_seenN; ++i) if (g_seenLists[i] == list) return;
-    if (g_seenN < 32) g_seenLists[g_seenN++] = list;
+    for (int i = 0; i < g_seenN; ++i)
+        if (g_seenLists[i] == list)
+            return;
+    if (g_seenN < 32)
+        g_seenLists[g_seenN++] = list;
 }
 
 bool seen(u32 v) {
-    for (int i = 0; i < g_seenN; ++i) if (g_seenLists[i] == v) return true;
+    for (int i = 0; i < g_seenN; ++i)
+        if (g_seenLists[i] == v)
+            return true;
     return false;
 }
 
@@ -255,30 +274,31 @@ constexpr u32 SUBFRAME_CUE_DEFAULT = 0xFFFFFFFEu;
 // SNAPSHOT of the struct. Whether an interpolated camera can ever reach the scene depends on two
 // things that must be MEASURED, not assumed:
 //   1. does the camera's perform run at all inside the re-issue, and
-//   2. does it write THIS buffer (the snapshot), not the original stack TGraphics that is long gone?
+//   2. does it write THIS buffer (the snapshot), not the original stack TGraphics that is long
+//   gone?
 // If the view is byte-identical either side of the re-issue, then no camera field -- position, up
 // or target -- can affect the sub-frame, and adding mUp/mTarget to the snapshot would be another
 // substituted-correctly-changed-nothing result.
 constexpr u32 OFF_VIEWMTX = 0xB4;
 constexpr u32 OFF_PREENTRY = 0x34;
 
-bool  g_inSubframe = false;      // suppress snapshot + instrumentation during the re-issue
-u32   g_display = 0;             // TDisplay*, captured at endRendering (see the override below)
-u32   g_camObj = 0;              // the layout-verified camera, for the survive-the-re-issue probe
-u32   g_curList = 0;             // outermost perform list currently running (SBR_INTERP60_VCLIST)
-u32   g_subframeGfx = 0;         // the TGraphics the current sub-frame is passing
+bool g_inSubframe = false;       // suppress snapshot + instrumentation during the re-issue
+u32 g_display = 0;               // TDisplay*, captured at endRendering (see the override below)
+u32 g_camObj = 0;                // the layout-verified camera, for the survive-the-re-issue probe
+u32 g_curList = 0;               // outermost perform list currently running (SBR_INTERP60_VCLIST)
+u32 g_subframeGfx = 0;           // the TGraphics the current sub-frame is passing
 float g_camWrote[3] = {0, 0, 0}; // what the lerp wrote into it
 float g_camCur[3] = {0, 0, 0};   // its tick-N pose
-long  g_camDispatches = 0;       // testPerform calls on a placement-only object inside a sub-frame
-u8    g_gfxSnap[0x100];
-bool  g_gfxValid = false;
-u32   g_drawLists[8];            // the lists the game performed BEFORE its movement phase
-u32   g_drawCues[8];
-int   g_drawN = 0;
-bool  g_sawMovement = false;     // the draw block ends at the first movement-phase list
-long  g_subframes = 0, g_subframeSkips = 0;
-int   g_lastDrawN = 0;   // g_drawN is cleared after each sub-frame; the report needs the real one
-u32   g_gameTick = 0;            // one per guest tick; presents no longer count 1:1
+long g_camDispatches = 0;        // testPerform calls on a placement-only object inside a sub-frame
+u8 g_gfxSnap[0x100];
+bool g_gfxValid = false;
+u32 g_drawLists[8]; // the lists the game performed BEFORE its movement phase
+u32 g_drawCues[8];
+int g_drawN = 0;
+bool g_sawMovement = false; // the draw block ends at the first movement-phase list
+long g_subframes = 0, g_subframeSkips = 0;
+int g_lastDrawN = 0; // g_drawN is cleared after each sub-frame; the report needs the real one
+u32 g_gameTick = 0;  // one per guest tick; presents no longer count 1:1
 
 u32 subframe_cue() {
     static const u32 v = [] {
@@ -293,45 +313,28 @@ u32 subframe_cue() {
 // prev == cur when the sub-frame is built, then alpha cannot change the image no matter how
 // correct the write path is, and every pixel diff between alphas will read 0 for a reason that has
 // nothing to do with the renderer. Carries its denominator, and names the largest mover.
-long  g_applyN = 0, g_applyDiff = 0;
+long g_applyN = 0, g_applyDiff = 0;
 float g_applyMax = 0.0f;
-u32   g_applyMaxObj = 0;
+u32 g_applyMaxObj = 0;
 
 // ── motion probe ─────────────────────────────────────────────────────────────
 // Designed negative-first: "interpolation changed nothing" cannot distinguish a correct
 // implementation from a snapshot that captures nothing, so this always reports its DENOMINATOR and
 // names the largest mover. If the biggest mover is an ambient prop rather than the player, the
 // allowlist is missing the things that matter and the name says so.
-long        g_samples = 0, g_moved = 0, g_nonActors = 0, g_actors = 0, g_placements = 0;
-long        g_applied = 0, g_restored = 0;
-long        g_writeStuck = 0, g_writeLost = 0;
+long g_samples = 0, g_moved = 0, g_nonActors = 0, g_actors = 0, g_placements = 0;
+long g_applied = 0, g_restored = 0;
+long g_writeStuck = 0, g_writeLost = 0;
 // The tick value the most recent snapshot was stamped with. apply_all() keys on THIS rather than
 // on VIGetRetraceCount(): the draw-phase dispatch does not reliably share the present counter's
 // value with the movement dispatch (direct() has an entry-vs-render alternation), so requiring
 // exact equality with the present counter matched no entries and the write silently never fired.
-u32         g_lastSnapTick = 0xFFFFFFFFu;
-float       g_maxStep = 0.0f;
-u32         g_maxObj = 0;
-float       g_tickMaxStep = 0.0f;   // per-window, so one init teleport cannot mask the steady state
-u32         g_tickMaxObj = 0;
-unsigned    g_lastReport = 0;
-
-// Read a TNameRef's name (vptr @ 0x00, const char* mName @ 0x04). The largest mover must be
-// NAMED: "maxStep=2200" is equally consistent with the player walking and with one prop teleporting
-// once at init, and only the name separates them.
-void guest_name(u32 obj, char* out, size_t cap) {
-    out[0] = '\0';
-    if (!sb_ram_fast(obj)) return;
-    const u32 p = sb_r32(obj + 4);
-    if (!sb_ram_fast(p)) { std::snprintf(out, cap, "<unreadable>"); return; }
-    size_t i = 0;
-    for (; i + 1 < cap; ++i) {
-        const u8 c = sb_r8(p + (u32)i);
-        if (c == 0) break;
-        out[i] = (char)c;
-    }
-    out[i] = '\0';
-}
+u32 g_lastSnapTick = 0xFFFFFFFFu;
+float g_maxStep = 0.0f;
+u32 g_maxObj = 0;
+float g_tickMaxStep = 0.0f; // per-window, so one init teleport cannot mask the steady state
+u32 g_tickMaxObj = 0;
+unsigned g_lastReport = 0;
 
 // The placement-only objects, BY NAME. "17 vtables recovered" and "12 dispatches per tick" are both
 // counts of things that may or may not include the one object that matters. The camera question is
@@ -339,13 +342,18 @@ void guest_name(u32 obj, char* out, size_t cap) {
 // JDrama::TLookAtCamera) is not in this list, it is not being substituted however healthy the
 // counts look.
 constexpr int MAX_PLACE_NAMES = 24;
-u32  g_placeObjs[MAX_PLACE_NAMES];
-int  g_placeN = 0;
+u32 g_placeObjs[MAX_PLACE_NAMES];
+int g_placeN = 0;
 bool g_placeOverflow = false;
 
 void note_placement(u32 obj) {
-    for (int i = 0; i < g_placeN; ++i) if (g_placeObjs[i] == obj) return;
-    if (g_placeN >= MAX_PLACE_NAMES) { g_placeOverflow = true; return; }
+    for (int i = 0; i < g_placeN; ++i)
+        if (g_placeObjs[i] == obj)
+            return;
+    if (g_placeN >= MAX_PLACE_NAMES) {
+        g_placeOverflow = true;
+        return;
+    }
     g_placeObjs[g_placeN++] = obj;
 }
 
@@ -364,17 +372,18 @@ void note_placement(u32 obj) {
 // guess is not -- and this matters because the fields it authorises writing to are mUp@+0x30 and
 // mTarget@+0x3C, which on a non-camera would be someone else's data.
 constexpr u32 OFF_CAM_NEAR = 0x28, OFF_CAM_FAR = 0x2C;
-constexpr u32 OFF_CAM_UP = 0x30, OFF_CAM_TARGET = 0x3C;
+constexpr u32 OFF_CAM_TARGET = 0x3C;
 constexpr u32 OFF_CAM_FOVY = 0x48, OFF_CAM_ASPECT = 0x4C;
 
 bool looks_like_lookat_camera(u32 obj) {
-    if (!sb_ram_fast(obj) || !sb_ram_fast(obj + 0x4F)) return false;
+    if (!sb_ram_fast(obj) || !sb_ram_fast(obj + 0x4F))
+        return false;
     const float nr = guest_f32(obj + OFF_CAM_NEAR);
     const float fr = guest_f32(obj + OFF_CAM_FAR);
     const float fovy = guest_f32(obj + OFF_CAM_FOVY);
     const float aspect = guest_f32(obj + OFF_CAM_ASPECT);
-    return nr > 0.0f && nr < 1000.0f && fr > 1000.0f && fr < 1.0e7f
-           && fovy > 1.0f && fovy < 179.0f && aspect > 0.1f && aspect < 10.0f;
+    return nr > 0.0f && nr < 1000.0f && fr > 1000.0f && fr < 1.0e7f && fovy > 1.0f &&
+           fovy < 179.0f && aspect > 0.1f && aspect < 10.0f;
 }
 
 // CPolarSubCamera's real state, from the disassembly of its perform (idx6 = 0x80023004):
@@ -392,24 +401,25 @@ bool looks_like_lookat_camera(u32 obj) {
 // This probe checks whether 0x124 and 0x148 are the pose the cached matrix is built FROM (a
 // position and a look-at point), because if they are, the game already maintains prev/cur for the
 // camera and the interpolation should use the game's own pair rather than an external snapshot.
-constexpr u32 OFF_CPSC_A = 0x124, OFF_CPSC_A_PREV = 0x13C;
-constexpr u32 OFF_CPSC_B = 0x148, OFF_CPSC_B_PREV = 0x160;
 
 void report_polar_state(u32 o) {
     lucent::info("interp60",
                  "      CPolarSubCamera state: +0x124 = ({:.2f},{:.2f},{:.2f})  prev@+0x13C = "
                  "({:.2f},{:.2f},{:.2f})",
-                 (double)guest_f32(o + OFF_CPSC_A), (double)guest_f32(o + OFF_CPSC_A + 4),
-                 (double)guest_f32(o + OFF_CPSC_A + 8),
-                 (double)guest_f32(o + OFF_CPSC_A_PREV), (double)guest_f32(o + OFF_CPSC_A_PREV + 4),
-                 (double)guest_f32(o + OFF_CPSC_A_PREV + 8));
+                 (double)guest_f32(o + kPolarEyeOffset), (double)guest_f32(o + kPolarEyeOffset + 4),
+                 (double)guest_f32(o + kPolarEyeOffset + 8),
+                 (double)guest_f32(o + kPolarPreviousEyeOffset),
+                 (double)guest_f32(o + kPolarPreviousEyeOffset + 4),
+                 (double)guest_f32(o + kPolarPreviousEyeOffset + 8));
     lucent::info("interp60",
                  "                             +0x148 = ({:.2f},{:.2f},{:.2f})  prev@+0x160 = "
                  "({:.2f},{:.2f},{:.2f})   [compare against pos/target above]",
-                 (double)guest_f32(o + OFF_CPSC_B), (double)guest_f32(o + OFF_CPSC_B + 4),
-                 (double)guest_f32(o + OFF_CPSC_B + 8),
-                 (double)guest_f32(o + OFF_CPSC_B_PREV), (double)guest_f32(o + OFF_CPSC_B_PREV + 4),
-                 (double)guest_f32(o + OFF_CPSC_B_PREV + 8));
+                 (double)guest_f32(o + kPolarTargetOffset),
+                 (double)guest_f32(o + kPolarTargetOffset + 4),
+                 (double)guest_f32(o + kPolarTargetOffset + 8),
+                 (double)guest_f32(o + kPolarPreviousTargetOffset),
+                 (double)guest_f32(o + kPolarPreviousTargetOffset + 4),
+                 (double)guest_f32(o + kPolarPreviousTargetOffset + 8));
 }
 
 void report_placements() {
@@ -419,45 +429,51 @@ void report_placements() {
         lucent::info("interp60", "    (none) -- no TPlacement-that-is-not-a-TActor was ever "
                                  "dispatched with CUE_MOVE; the camera is NOT being snapshotted");
     for (int i = 0; i < g_placeN; ++i) {
-        char nm[48]; guest_name(g_placeObjs[i], nm, sizeof nm);
+        char nm[48];
+        guest_name(g_placeObjs[i], nm, sizeof nm);
         Entry* e = slot_for(g_placeObjs[i]);
         const bool tracked = e && e->obj == g_placeObjs[i];
         const u32 o = g_placeObjs[i];
         lucent::info("interp60", "    0x{:08x} vptr=0x{:08x} \"{}\"{}", o,
                      sb_ram_fast(o) ? sb_r32(o) : 0u, nm,
                      tracked ? "" : "   [NOT in the snapshot table]");
-        lucent::info("interp60",
-                     "      near={:.2f} far={:.2f} fovy={:.2f} aspect={:.3f} -> "
-                     "looks_like_lookat_camera={}   up=({:.1f},{:.1f},{:.1f}) "
-                     "target=({:.1f},{:.1f},{:.1f})",
-                     (double)guest_f32(o + OFF_CAM_NEAR), (double)guest_f32(o + OFF_CAM_FAR),
-                     (double)guest_f32(o + OFF_CAM_FOVY), (double)guest_f32(o + OFF_CAM_ASPECT),
-                     looks_like_lookat_camera(o) ? "YES" : "NO",
-                     (double)guest_f32(o + OFF_CAM_UP), (double)guest_f32(o + OFF_CAM_UP + 4),
-                     (double)guest_f32(o + OFF_CAM_UP + 8),
-                     (double)guest_f32(o + OFF_CAM_TARGET),
-                     (double)guest_f32(o + OFF_CAM_TARGET + 4),
-                     (double)guest_f32(o + OFF_CAM_TARGET + 8));
-        if (looks_like_lookat_camera(o)) report_polar_state(o);
+        lucent::info(
+            "interp60",
+            "      near={:.2f} far={:.2f} fovy={:.2f} aspect={:.3f} -> "
+            "looks_like_lookat_camera={}   up=({:.1f},{:.1f},{:.1f}) "
+            "target=({:.1f},{:.1f},{:.1f})",
+            (double)guest_f32(o + OFF_CAM_NEAR), (double)guest_f32(o + OFF_CAM_FAR),
+            (double)guest_f32(o + OFF_CAM_FOVY), (double)guest_f32(o + OFF_CAM_ASPECT),
+            looks_like_lookat_camera(o) ? "YES" : "NO", (double)guest_f32(o + kCameraUpOffset),
+            (double)guest_f32(o + kCameraUpOffset + 4), (double)guest_f32(o + kCameraUpOffset + 8),
+            (double)guest_f32(o + OFF_CAM_TARGET), (double)guest_f32(o + OFF_CAM_TARGET + 4),
+            (double)guest_f32(o + OFF_CAM_TARGET + 8));
+        if (looks_like_lookat_camera(o))
+            report_polar_state(o);
     }
 }
 
 void report() {
-    char nm[48]; guest_name(g_maxObj, nm, sizeof nm);
-    char tick_nm[48]; guest_name(g_tickMaxObj, tick_nm, sizeof tick_nm);
-    lucent::info("interp60",
-                 "SNAPSHOT: dispatches={} (tactor={} non-actor={}) | compared={} moved={} ({:.1f}%) "
-                 "| maxStep all-time={:.2f} \"{}\"  this-window={:.2f} \"{}\"  evictions={} "
-                 "| placement-only (cameras etc, position substituted, rotation NOT) = {}",
-                 g_actors + g_nonActors, g_actors, g_nonActors, g_samples, g_moved,
-                 g_samples ? 100.0 * (double)g_moved / (double)g_samples : 0.0,
-                 (double)g_maxStep, nm, (double)g_tickMaxStep, tick_nm, g_evictions, g_placements);
+    char nm[48];
+    guest_name(g_maxObj, nm, sizeof nm);
+    char tick_nm[48];
+    guest_name(g_tickMaxObj, tick_nm, sizeof tick_nm);
+    lucent::info(
+        "interp60",
+        "SNAPSHOT: dispatches={} (tactor={} non-actor={}) | compared={} moved={} ({:.1f}%) "
+        "| maxStep all-time={:.2f} \"{}\"  this-window={:.2f} \"{}\"  evictions={} "
+        "| placement-only (cameras etc, position substituted, rotation NOT) = {}",
+        g_actors + g_nonActors, g_actors, g_nonActors, g_samples, g_moved,
+        g_samples ? 100.0 * (double)g_moved / (double)g_samples : 0.0, (double)g_maxStep, nm,
+        (double)g_tickMaxStep, tick_nm, g_evictions, g_placements);
     if (alpha_setting() >= 0.0f)
-        lucent::info("interp60", "  WRITE alpha={:.2f}: applied={} restored={} (unequal counts mean "
-                                 "a pose was left interpolated into the physics step)",
+        lucent::info("interp60",
+                     "  WRITE alpha={:.2f}: applied={} restored={} (unequal counts mean "
+                     "a pose was left interpolated into the physics step)",
                      (double)alpha_setting(), g_applied, g_restored);
     {
-        char am[48]; guest_name(g_applyMaxObj, am, sizeof am);
+        char am[48];
+        guest_name(g_applyMaxObj, am, sizeof am);
         lucent::info("interp60",
                      "  AT APPLY TIME: {} entries substituted, {} had prev != cur ({:.1f}%), "
                      "largest delta {:.2f} \"{}\" -- if this is 0 there is nothing to interpolate "
@@ -472,13 +488,17 @@ void report() {
                  "ONCE and is not an error, but a run that is all refusals is 30fps)",
                  g_subframes, g_subframeSkips);
     if (g_subframes && g_mardir)
-        lucent::info("interp60", "  re-issue set: {} lists off gpMarDirector 0x{:08x}"
-                                 "  (was printing g_drawN AFTER it is cleared, so it always read 0)",
+        lucent::info("interp60",
+                     "  re-issue set: {} lists off gpMarDirector 0x{:08x}"
+                     "  (was printing g_drawN AFTER it is cleared, so it always read 0)",
                      g_lastDrawN, g_mardir);
     if (g_writeStuck || g_writeLost)
-        lucent::info("interp60", "  WRITE READ-BACK: stuck={} lost={} (lost>0 means the store never "
-                                 "reached the memory the guest reads)", g_writeStuck, g_writeLost);
-    g_tickMaxStep = 0.0f; g_tickMaxObj = 0;
+        lucent::info("interp60",
+                     "  WRITE READ-BACK: stuck={} lost={} (lost>0 means the store never "
+                     "reached the memory the guest reads)",
+                     g_writeStuck, g_writeLost);
+    g_tickMaxStep = 0.0f;
+    g_tickMaxObj = 0;
     report_placements();
     lucent::info("interp60",
                  "  COVERS objects dispatched with CUE_MOVE whose vptr is in kTActorVtables ({} "
@@ -488,12 +508,6 @@ void report() {
                  "actors whose vtable was not recovered, nor non-transform state (JPA particles).",
                  (int)(sizeof(kTActorVtables) / sizeof(kTActorVtables[0])),
                  (int)(sizeof(kTPlacementOnlyVtables) / sizeof(kTPlacementOnlyVtables[0])));
-}
-
-void guest_w_f32(u32 ea, float v) {
-    u32 bits;
-    __builtin_memcpy(&bits, &v, sizeof bits);
-    sb_w32(ea, bits);
 }
 
 // Put the guest transforms back exactly as the game left them. Called before movement runs, so
@@ -508,15 +522,18 @@ bool no_restore() {
 }
 
 void restore_all() {
-    if (no_restore()) return;
+    if (no_restore())
+        return;
     for (int i = 0; i < TABLE_SIZE; ++i) {
         Entry& e = g_tab[i];
-        if (!e.applied) continue;
+        if (!e.applied)
+            continue;
         e.applied = false;
-        if (!sb_ram_fast(e.obj)) continue;
-        guest_w_f32(e.obj + OFF_POSITION + 0, e.cur[0]);
-        guest_w_f32(e.obj + OFF_POSITION + 4, e.cur[1]);
-        guest_w_f32(e.obj + OFF_POSITION + 8, e.cur[2]);
+        if (!sb_ram_fast(e.obj))
+            continue;
+        guest_w_f32(e.obj + kPositionOffset + 0, e.cur[0]);
+        guest_w_f32(e.obj + kPositionOffset + 4, e.cur[1]);
+        guest_w_f32(e.obj + kPositionOffset + 8, e.cur[2]);
         if (!e.posOnly) {
             guest_w_f32(e.obj + OFF_ROTATION + 0, e.curRot[0]);
             guest_w_f32(e.obj + OFF_ROTATION + 4, e.curRot[1]);
@@ -524,7 +541,7 @@ void restore_all() {
         }
         if (e.isCam) {
             for (int k = 0; k < 3; ++k) {
-                guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4, e.curUp[k]);
+                guest_w_f32(e.obj + kCameraUpOffset + (u32)k * 4, e.curUp[k]);
                 guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4, e.curTarget[k]);
             }
         }
@@ -543,19 +560,23 @@ void restore_all() {
 // checked against each other here as well.
 void report_player_coverage() {
     static bool done = false;
-    if (done) return;
-    if (!sb_ram_fast(0x8040E10Cu)) return;
+    if (done)
+        return;
+    if (!sb_ram_fast(0x8040E10Cu))
+        return;
     // 0x8040E10C is gpMarioPos — it points at the player's POSITION, which is TPlacement::mPosition
-    // at object +0x10, NOT at the object. This probe used to treat it as an object pointer, read the
-    // float at mPosition.x as a vptr, get 0x00000000, and conclude in so many words that "the player
-    // is never snapshotted and never substituted, so no alpha can move him". The census
+    // at object +0x10, NOT at the object. This probe used to treat it as an object pointer, read
+    // the float at mPosition.x as a vptr, get 0x00000000, and conclude in so many words that "the
+    // player is never snapshotted and never substituted, so no alpha can move him". The census
     // (SBR_INTERP60_ACTCENSUS) shows マリオ at 0x8136383c substituted every sub-frame while this
     // printed 0x8136384c — the same object, off by exactly the field offset it was already
     // documenting on its own last line.
     const u32 marioPos = sb_r32(0x8040E10Cu);
-    if (!sb_ram_fast(marioPos)) return;       // not created yet; try again next tick
-    const u32 mario = marioPos - OFF_POSITION;
-    if (!sb_ram_fast(mario)) return;
+    if (!sb_ram_fast(marioPos))
+        return; // not created yet; try again next tick
+    const u32 mario = marioPos - kPositionOffset;
+    if (!sb_ram_fast(mario))
+        return;
     done = true;
     const u32 vptr = sb_r32(mario);
     // The derivation is CHECKED, not assumed, and it refuses rather than reporting on a wrong
@@ -572,7 +593,8 @@ void report_player_coverage() {
     const bool actor = is_tactor(vptr);
     Entry* e = slot_for(mario);
     const bool inTable = e && e->obj == mario;
-    char nm[48]; guest_name(mario, nm, sizeof nm);
+    char nm[48];
+    guest_name(mario, nm, sizeof nm);
     lucent::info("interp60",
                  "PLAYER COVERAGE: gpMarioPos 0x8040E10C -> 0x{:08x} = object 0x{:08x} + 0x10; "
                  "object \"{}\" vptr=0x{:08x} is_tactor={} in_snapshot_table={}",
@@ -580,12 +602,13 @@ void report_player_coverage() {
     if (!actor)
         lucent::info("interp60", "  the player's vtable is NOT in kTActorVtables -- he is never "
                                  "snapshotted and never substituted, so no alpha can move him");
-    lucent::info("interp60", "  pos@+0x00 = ({:.2f}, {:.2f}, {:.2f})   pos@+0x10 = ({:.2f}, {:.2f}, "
-                             "{:.2f})   (the snapshot writes +0x10)",
-                 (double)guest_f32(mario), (double)guest_f32(mario + 4), (double)guest_f32(mario + 8),
-                 (double)guest_f32(mario + OFF_POSITION),
-                 (double)guest_f32(mario + OFF_POSITION + 4),
-                 (double)guest_f32(mario + OFF_POSITION + 8));
+    lucent::info("interp60",
+                 "  pos@+0x00 = ({:.2f}, {:.2f}, {:.2f})   pos@+0x10 = ({:.2f}, {:.2f}, "
+                 "{:.2f})   (the snapshot writes +0x10)",
+                 (double)guest_f32(mario), (double)guest_f32(mario + 4),
+                 (double)guest_f32(mario + 8), (double)guest_f32(mario + kPositionOffset),
+                 (double)guest_f32(mario + kPositionOffset + 4),
+                 (double)guest_f32(mario + kPositionOffset + 8));
 }
 
 void apply_all(u32 tick, float alpha) {
@@ -597,16 +620,18 @@ void apply_all(u32 tick, float alpha) {
     // "2.6% of entries moved" cannot tell them apart because it is not about this sub-frame.
     long nApplied = 0, nDiffer = 0;
     float maxD = 0.0f;
-    u32   maxObj = 0;
+    u32 maxObj = 0;
     for (int i = 0; i < TABLE_SIZE; ++i) {
         Entry& e = g_tab[i];
-        if (e.obj == 0 || e.tick != tick || e.applied) continue;
-        if (!sb_ram_fast(e.obj)) continue;
+        if (e.obj == 0 || e.tick != tick || e.applied)
+            continue;
+        if (!sb_ram_fast(e.obj))
+            continue;
         for (int k = 0; k < 3; ++k) {
-            e.cur[k]    = guest_f32(e.obj + OFF_POSITION + (u32)k * 4);
+            e.cur[k] = guest_f32(e.obj + kPositionOffset + (u32)k * 4);
             e.curRot[k] = e.posOnly ? 0.0f : guest_f32(e.obj + OFF_ROTATION + (u32)k * 4);
             if (e.isCam) {
-                e.curUp[k]     = guest_f32(e.obj + OFF_CAM_UP + (u32)k * 4);
+                e.curUp[k] = guest_f32(e.obj + kCameraUpOffset + (u32)k * 4);
                 e.curTarget[k] = guest_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4);
             }
         }
@@ -617,31 +642,39 @@ void apply_all(u32 tick, float alpha) {
         // camera's prev equals its cur then every alpha renders the same view no matter how
         // correctly the lerp is written.
         if (e.isCam) {
-            const float dp = (e.cur[0]-e.pos[0])*(e.cur[0]-e.pos[0])
-                           + (e.cur[1]-e.pos[1])*(e.cur[1]-e.pos[1])
-                           + (e.cur[2]-e.pos[2])*(e.cur[2]-e.pos[2]);
-            const float dt = (e.curTarget[0]-e.target[0])*(e.curTarget[0]-e.target[0])
-                           + (e.curTarget[1]-e.target[1])*(e.curTarget[1]-e.target[1])
-                           + (e.curTarget[2]-e.target[2])*(e.curTarget[2]-e.target[2]);
+            const float dp = (e.cur[0] - e.pos[0]) * (e.cur[0] - e.pos[0]) +
+                             (e.cur[1] - e.pos[1]) * (e.cur[1] - e.pos[1]) +
+                             (e.cur[2] - e.pos[2]) * (e.cur[2] - e.pos[2]);
+            const float dt = (e.curTarget[0] - e.target[0]) * (e.curTarget[0] - e.target[0]) +
+                             (e.curTarget[1] - e.target[1]) * (e.curTarget[1] - e.target[1]) +
+                             (e.curTarget[2] - e.target[2]) * (e.curTarget[2] - e.target[2]);
             static long cn = 0;
             if (++cn <= 4 || (cn % 300) == 0)
-                lucent::info("interp60",
-                             "CAMERA prev->cur #{}: eye moved {:.3f}, target moved {:.3f}{}",
-                             cn, (double)std::sqrt(dp), (double)std::sqrt(dt),
-                             (dp == 0.0f && dt == 0.0f)
-                                 ? "  (zero AT THIS SAMPLE — the camera is static right now; that is "
-                                   "not evidence about WHERE the snapshot is taken, and reading it "
-                                   "as such was wrong once already)" : "");
+                lucent::info(
+                    "interp60", "CAMERA prev->cur #{}: eye moved {:.3f}, target moved {:.3f}{}", cn,
+                    (double)std::sqrt(dp), (double)std::sqrt(dt),
+                    (dp == 0.0f && dt == 0.0f)
+                        ? "  (zero AT THIS SAMPLE — the camera is static right now; that is "
+                          "not evidence about WHERE the snapshot is taken, and reading it "
+                          "as such was wrong once already)"
+                        : "");
         }
         {
-            const float dx = e.cur[0] - e.pos[0], dy = e.cur[1] - e.pos[1], dz = e.cur[2] - e.pos[2];
+            const float dx = e.cur[0] - e.pos[0], dy = e.cur[1] - e.pos[1],
+                        dz = e.cur[2] - e.pos[2];
             const float d2 = dx * dx + dy * dy + dz * dz;
             if (d2 > 0.0f) {
                 ++g_applyDiff;
                 ++nDiffer;
                 const float d = std::sqrt(d2);
-                if (d > g_applyMax) { g_applyMax = d; g_applyMaxObj = e.obj; }
-                if (d > maxD) { maxD = d; maxObj = e.obj; }
+                if (d > g_applyMax) {
+                    g_applyMax = d;
+                    g_applyMaxObj = e.obj;
+                }
+                if (d > maxD) {
+                    maxD = d;
+                    maxObj = e.obj;
+                }
             }
         }
         e.applied = true;
@@ -657,12 +690,15 @@ void apply_all(u32 tick, float alpha) {
         }();
         if (kick != 0.0f) {
             const float want = e.cur[1] + kick;
-            guest_w_f32(e.obj + OFF_POSITION + 4, want);
+            guest_w_f32(e.obj + kPositionOffset + 4, want);
             // READ-BACK CHECK. "The write had no visible effect" has two causes that look the same:
             // the store did not stick, or it stuck and nothing read it. Only a read-back separates
             // them, and it must be counted rather than assumed.
-            const float got = guest_f32(e.obj + OFF_POSITION + 4);
-            if (got == want) ++g_writeStuck; else ++g_writeLost;
+            const float got = guest_f32(e.obj + kPositionOffset + 4);
+            if (got == want)
+                ++g_writeStuck;
+            else
+                ++g_writeLost;
             ++g_applied;
             continue;
         }
@@ -673,10 +709,11 @@ void apply_all(u32 tick, float alpha) {
         // endpoints directly, and using the (1-a)*p + a*c form in between, is exact at both ends.
         if (alpha >= 1.0f) {
             for (int k = 0; k < 3; ++k) {
-                guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.cur[k]);
-                if (!e.posOnly) guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.curRot[k]);
+                guest_w_f32(e.obj + kPositionOffset + (u32)k * 4, e.cur[k]);
+                if (!e.posOnly)
+                    guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.curRot[k]);
                 if (e.isCam) {
-                    guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4, e.curUp[k]);
+                    guest_w_f32(e.obj + kCameraUpOffset + (u32)k * 4, e.curUp[k]);
                     guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4, e.curTarget[k]);
                 }
             }
@@ -685,10 +722,11 @@ void apply_all(u32 tick, float alpha) {
         }
         if (alpha <= 0.0f) {
             for (int k = 0; k < 3; ++k) {
-                guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, e.pos[k]);
-                if (!e.posOnly) guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k]);
+                guest_w_f32(e.obj + kPositionOffset + (u32)k * 4, e.pos[k]);
+                if (!e.posOnly)
+                    guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k]);
                 if (e.isCam) {
-                    guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4, e.up[k]);
+                    guest_w_f32(e.obj + kCameraUpOffset + (u32)k * 4, e.up[k]);
                     guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4, e.target[k]);
                 }
             }
@@ -697,13 +735,17 @@ void apply_all(u32 tick, float alpha) {
         }
         for (int k = 0; k < 3; ++k) {
             const float v = (1.0f - alpha) * e.pos[k] + alpha * e.cur[k];
-            if (e.isCam) { g_camObj = e.obj; g_camWrote[k] = v; g_camCur[k] = e.cur[k]; }
-            guest_w_f32(e.obj + OFF_POSITION + (u32)k * 4, v);
+            if (e.isCam) {
+                g_camObj = e.obj;
+                g_camWrote[k] = v;
+                g_camCur[k] = e.cur[k];
+            }
+            guest_w_f32(e.obj + kPositionOffset + (u32)k * 4, v);
             if (e.isCam) {
                 // Aim components lerp linearly like the eye. Not a slerp: mUp and mTarget are a
-                // world-space up vector and a look-at POINT, not an orientation, so the shortest-arc
-                // problem that applies to Euler rotation does not arise here.
-                guest_w_f32(e.obj + OFF_CAM_UP + (u32)k * 4,
+                // world-space up vector and a look-at POINT, not an orientation, so the
+                // shortest-arc problem that applies to Euler rotation does not arise here.
+                guest_w_f32(e.obj + kCameraUpOffset + (u32)k * 4,
                             (1.0f - alpha) * e.up[k] + alpha * e.curUp[k]);
                 guest_w_f32(e.obj + OFF_CAM_TARGET + (u32)k * 4,
                             (1.0f - alpha) * e.target[k] + alpha * e.curTarget[k]);
@@ -711,10 +753,13 @@ void apply_all(u32 tick, float alpha) {
             // Angles are Euler degrees here; a naive lerp is wrong across the +-180 seam. Take the
             // shortest arc rather than sweeping the long way round, which would spin an actor a
             // full turn in one sub-frame whenever it crossed the wrap point.
-            if (e.posOnly) continue;
+            if (e.posOnly)
+                continue;
             float d = e.curRot[k] - e.rot[k];
-            while (d > 180.0f)  d -= 360.0f;
-            while (d < -180.0f) d += 360.0f;
+            while (d > 180.0f)
+                d -= 360.0f;
+            while (d < -180.0f)
+                d += 360.0f;
             guest_w_f32(e.obj + OFF_ROTATION + (u32)k * 4, e.rot[k] + d * alpha);
         }
         ++g_applied;
@@ -729,21 +774,27 @@ void apply_all(u32 tick, float alpha) {
     // population. Names are Shift-JIS; pipe the log through `iconv -f SHIFT_JIS -t UTF-8`.
     if (std::getenv("SBR_INTERP60_ACTCENSUS") && (long)VIGetRetraceCount() >= viewseq_at()) {
         static bool done = false;
-        if (!done) { done = true;
-            lucent::info("i60census", "=== the substitution set of ONE sub-frame: {} objects ===",
-                         nApplied);
+        if (!done) {
+            done = true;
+            lucent::info("i60census",
+                         "=== the substitution set of ONE sub-frame: {} objects ===", nApplied);
             for (int i = 0; i < TABLE_SIZE; ++i) {
                 const Entry& e = g_tab[i];
-                if (e.obj == 0 || e.tick != tick) continue;
+                if (e.obj == 0 || e.tick != tick)
+                    continue;
                 const u32 vptr = sb_ram_fast(e.obj) ? sb_r32(e.obj) : 0;
-                char nm[48]; guest_name(e.obj, nm, sizeof nm);
-                const float dx = e.cur[0]-e.pos[0], dy = e.cur[1]-e.pos[1], dz = e.cur[2]-e.pos[2];
-                lucent::info("i60census", "  0x{:08x} vptr=0x{:08x} moved {:8.3f}  pos=({:.1f},"
-                                          "{:.1f},{:.1f})  \"{}\"",
-                             e.obj, vptr, (double)std::sqrt(dx*dx+dy*dy+dz*dz),
+                char nm[48];
+                guest_name(e.obj, nm, sizeof nm);
+                const float dx = e.cur[0] - e.pos[0], dy = e.cur[1] - e.pos[1],
+                            dz = e.cur[2] - e.pos[2];
+                lucent::info("i60census",
+                             "  0x{:08x} vptr=0x{:08x} moved {:8.3f}  pos=({:.1f},"
+                             "{:.1f},{:.1f})  \"{}\"",
+                             e.obj, vptr, (double)std::sqrt(dx * dx + dy * dy + dz * dz),
                              (double)e.cur[0], (double)e.cur[1], (double)e.cur[2], nm);
             }
-            lucent::info("i60census", "=== end of set (this is the COMPLETE set, not a sample) ===");
+            lucent::info("i60census",
+                         "=== end of set (this is the COMPLETE set, not a sample) ===");
         }
     }
 
@@ -751,13 +802,15 @@ void apply_all(u32 tick, float alpha) {
     // actors simply were not moving". It carries its denominator and names its largest mover.
     if (std::getenv("SBR_INTERP60_ACTTALLY") && (long)VIGetRetraceCount() >= viewseq_at()) {
         static int lines = 0;
-        if (lines < 8) { ++lines;
-            char nm[48]; guest_name(maxObj, nm, sizeof nm);
+        if (lines < 8) {
+            ++lines;
+            char nm[48];
+            guest_name(maxObj, nm, sizeof nm);
             lucent::info("i60act",
                          "present {} alpha={:.2f}: {} entries substituted, {} had prev != cur, "
                          "largest {:.3f} units \"{}\"{}",
-                         (long)VIGetRetraceCount(), (double)alpha, nApplied, nDiffer,
-                         (double)maxD, maxObj ? nm : "(none)",
+                         (long)VIGetRetraceCount(), (double)alpha, nApplied, nDiffer, (double)maxD,
+                         maxObj ? nm : "(none)",
                          nApplied == 0
                              ? "   <-- NOTHING was substituted: no table entry carried this tick, "
                                "so the actor alpha could not have changed a pixel"
@@ -779,8 +832,8 @@ bool trace_on() {
     return v;
 }
 long g_traceLines = 0;
-u32  g_lastTraceMask = 0xFFFFFFFFu;
-long g_traceRun = 0;          // dispatches collapsed into the current run
+u32 g_lastTraceMask = 0xFFFFFFFFu;
+long g_traceRun = 0; // dispatches collapsed into the current run
 long g_tracePresents = 0;
 
 // The trace has to start LATE and it has to be complete, and the first version was neither.
@@ -788,8 +841,9 @@ long g_tracePresents = 0;
 // It began at boot, where the scene is a loading screen, and it capped at 90 transitions -- so it
 // truncated inside the first tick and the sequence it printed was read as "the tick's phase order".
 // That reading put the DRAW lists at the START of a direct() call, which is the opposite of what
-// MarDirectorDirect.cpp does (movement -> calcAnim -> PreEntry -> the draw lists). The bracket built
-// on it consequently covered a handful of early 0x8 dispatches and none of the actual draw lists.
+// MarDirectorDirect.cpp does (movement -> calcAnim -> PreEntry -> the draw lists). The bracket
+// built on it consequently covered a handful of early 0x8 dispatches and none of the actual draw
+// lists.
 //
 // The draw lists dispatch with mask 0xffffffff, which is why a `mask & 0x8` test both matched them
 // and matched almost everything else -- a test that cannot separate the phases cannot place a
@@ -805,21 +859,31 @@ long trace_start_present() {
 }
 
 void trace_flush_run() {
-    if (g_traceRun == 0) return;
+    if (g_traceRun == 0)
+        return;
     lucent::info("i60trace", "  mask=0x{:<10x} x{}", g_lastTraceMask, g_traceRun);
     g_traceRun = 0;
     ++g_traceLines;
 }
 
 void trace_dispatch(u32 mask) {
-    if (!trace_on()) return;
-    if ((long)VIGetRetraceCount() < trace_start_present()) return;
-    if (g_tracePresents > 3) return;
-    if (g_traceLines == 400) { ++g_traceLines;
+    if (!trace_on())
+        return;
+    if ((long)VIGetRetraceCount() < trace_start_present())
+        return;
+    if (g_tracePresents > 3)
+        return;
+    if (g_traceLines == 400) {
+        ++g_traceLines;
         lucent::info("i60trace", "  [TRUNCATED at 400 runs -- the sequence below is INCOMPLETE]");
-        return; }
-    if (g_traceLines > 400) return;
-    if (mask == g_lastTraceMask) { ++g_traceRun; return; }
+        return;
+    }
+    if (g_traceLines > 400)
+        return;
+    if (mask == g_lastTraceMask) {
+        ++g_traceRun;
+        return;
+    }
     trace_flush_run();
     g_lastTraceMask = mask;
     g_traceRun = 1;
@@ -833,13 +897,15 @@ u32 follow_obj() {
     // "mario" dereferences gpMarioOriginal (0x8040E10C) rather than needing the address of the
     // day; anything else is taken as a literal guest address.
     static const char* e = std::getenv("SBR_INTERP60_FOLLOW");
-    if (!e) return 0;
-    if (e[0] == 'm') return sb_ram_fast(0x8040E10Cu) ? sb_r32(0x8040E10Cu) : 0u;
+    if (!e)
+        return 0;
+    if (e[0] == 'm')
+        return sb_ram_fast(0x8040E10Cu) ? sb_r32(0x8040E10Cu) : 0u;
     static const u32 a = (u32)std::strtoul(e, nullptr, 0);
     return a;
 }
 long g_followLines = 0;
-u32  g_followLastMask = 0xFFFFFFFFu;
+u32 g_followLastMask = 0xFFFFFFFFu;
 
 // Print ALL THREE components, not just y. A camera panning horizontally has a constant y, so a
 // y-only follower would report "unchanged" through the very transition being looked for — a
@@ -847,17 +913,19 @@ u32  g_followLastMask = 0xFFFFFFFFu;
 // print". Also prints the aim, since that is half the camera's pose.
 void follow(u32 mask, const char* where) {
     const u32 o = follow_obj();
-    if (!o || g_followLines > 120) return;
-    if (mask == g_followLastMask && where[0] == 'd') return;
+    if (!o || g_followLines > 120)
+        return;
+    if (mask == g_followLastMask && where[0] == 'd')
+        return;
     g_followLastMask = mask;
     ++g_followLines;
-    lucent::info("i60follow",
-                 "  mask=0x{:<10x} {:<9} pos=({:9.2f},{:8.2f},{:9.2f})  target=({:9.2f},{:8.2f},{:9.2f})",
-                 mask, where,
-                 (double)guest_f32(o + OFF_POSITION), (double)guest_f32(o + OFF_POSITION + 4),
-                 (double)guest_f32(o + OFF_POSITION + 8),
-                 (double)guest_f32(o + OFF_CAM_TARGET), (double)guest_f32(o + OFF_CAM_TARGET + 4),
-                 (double)guest_f32(o + OFF_CAM_TARGET + 8));
+    lucent::info(
+        "i60follow",
+        "  mask=0x{:<10x} {:<9} pos=({:9.2f},{:8.2f},{:9.2f})  target=({:9.2f},{:8.2f},{:9.2f})",
+        mask, where, (double)guest_f32(o + kPositionOffset),
+        (double)guest_f32(o + kPositionOffset + 4), (double)guest_f32(o + kPositionOffset + 8),
+        (double)guest_f32(o + OFF_CAM_TARGET), (double)guest_f32(o + OFF_CAM_TARGET + 4),
+        (double)guest_f32(o + OFF_CAM_TARGET + 8));
 }
 
 // ── the perform-list seam ────────────────────────────────────────────────────
@@ -880,11 +948,11 @@ bool lists_on() {
     static const bool v = std::getenv("SBR_INTERP60_LISTS") != nullptr;
     return v;
 }
-int  g_listDepth = 0;
-long g_listDispatches = 0;      // testPerform calls since the current outermost list opened
+int g_listDepth = 0;
+long g_listDispatches = 0; // testPerform calls since the current outermost list opened
 long g_listTicks = 0;
 long g_listLines = 0;
-int  g_listSeq = 0;
+int g_listSeq = 0;
 
 // ── resolving TMarDirector from the observed list pointers ───────────────────
 // The re-issue set is named by FIELD (mPerformListPreEntry @ +0x34, DrawBufGroup @ +0x40,
@@ -899,32 +967,41 @@ int  g_listSeq = 0;
 // way a symbol constant is not -- a candidate either satisfies every offset simultaneously or it
 // is not the director -- and it reports its denominator and its candidate COUNT, because "found
 // one" and "found eleven, took the first" must not print the same way.
-constexpr u32 kListSlots[] = {0x1C, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C, 0x40, 0x44, 0x48};
-const char* const kListNames[] = {"GX", "Silhouette", "GXPost", "Movement", "CalcAnim", "unk30",
-                                  "PreEntry", "Graffito", "Pollution", "DrawBufGroup",
-                                  "ShinePfLstMov", "ShinePfLstAnm"};
-
+constexpr u32 kListSlots[] = {0x1C, 0x20, 0x24, 0x28, 0x2C, 0x30,
+                              0x34, 0x38, 0x3C, 0x40, 0x44, 0x48};
+const char* const kListNames[] = {"GX",        "Silhouette",   "GXPost",        "Movement",
+                                  "CalcAnim",  "unk30",        "PreEntry",      "Graffito",
+                                  "Pollution", "DrawBufGroup", "ShinePfLstMov", "ShinePfLstAnm"};
 
 // Anchored on the four slots a director must hold and that a stray coincidence will not: two draw
 // lists, PreEntry, and movement. Requiring four simultaneous hits from a set of at most a dozen
 // addresses makes a false match vanishingly unlikely, and the count below proves it empirically
 // rather than by that argument.
 void resolve_mardir() {
-    if (g_mardir || g_seenN < 6) return;
+    if (g_mardir || g_seenN < 6)
+        return;
     long scanned = 0, cands = 0;
     u32 first = 0;
     for (u32 a = 0x80000000u; a < 0x81800000u; a += 4) {
-        if (!sb_ram_fast(a) || !sb_ram_fast(a + 0x48)) continue;
+        if (!sb_ram_fast(a) || !sb_ram_fast(a + 0x48))
+            continue;
         ++scanned;
-        if (!seen(sb_r32(a + 0x34))) continue;      // PreEntry
-        if (!seen(sb_r32(a + 0x40))) continue;      // DrawBufGroup
-        if (!seen(sb_r32(a + 0x1C))) continue;      // GX
-        if (!seen(sb_r32(a + 0x28))) continue;      // Movement
+        if (!seen(sb_r32(a + 0x34)))
+            continue; // PreEntry
+        if (!seen(sb_r32(a + 0x40)))
+            continue; // DrawBufGroup
+        if (!seen(sb_r32(a + 0x1C)))
+            continue; // GX
+        if (!seen(sb_r32(a + 0x28)))
+            continue; // Movement
         ++cands;
-        if (!first) first = a;
+        if (!first)
+            first = a;
     }
-    lucent::info("i60lists", "TMarDirector scan: {} words examined, {} candidate(s) matched all "
-                             "four anchor slots (PreEntry/DrawBufGroup/GX/Movement)", scanned, cands);
+    lucent::info("i60lists",
+                 "TMarDirector scan: {} words examined, {} candidate(s) matched all "
+                 "four anchor slots (PreEntry/DrawBufGroup/GX/Movement)",
+                 scanned, cands);
     if (cands == 0) {
         lucent::info("i60lists", "  NO DIRECTOR FOUND. The re-issue set cannot be named by field, "
                                  "and nothing downstream may assume one was resolved.");
@@ -937,8 +1014,8 @@ void resolve_mardir() {
     lucent::info("i60lists", "  gpMarDirector = 0x{:08x}", g_mardir);
     for (size_t i = 0; i < sizeof(kListSlots) / sizeof(kListSlots[0]); ++i) {
         const u32 p = sb_r32(g_mardir + kListSlots[i]);
-        lucent::info("i60lists", "    +0x{:02x} {:<14} = 0x{:08x}{}", kListSlots[i], kListNames[i], p,
-                     seen(p) ? "   <- performed this tick" : "");
+        lucent::info("i60lists", "    +0x{:02x} {:<14} = 0x{:08x}{}", kListSlots[i], kListNames[i],
+                     p, seen(p) ? "   <- performed this tick" : "");
     }
 }
 
@@ -949,12 +1026,18 @@ void resolve_mardir() {
 // fixed list set would either draw something the tick did not or miss something it did. The block
 // is delimited by the director's own Movement list, which is the first thing after the draws.
 void record_draw_list(u32 list, u32 mask, u32 gfx) {
-    if (!g_mardir) return;
-    if (list == sb_r32(g_mardir + 0x28)) { g_sawMovement = true; return; }   // draws are over
-    if (g_sawMovement) return;
-    if (g_drawN >= (int)(sizeof(g_drawLists) / sizeof(g_drawLists[0]))) return;
+    if (!g_mardir)
+        return;
+    if (list == sb_r32(g_mardir + 0x28)) {
+        g_sawMovement = true;
+        return;
+    } // draws are over
+    if (g_sawMovement)
+        return;
+    if (g_drawN >= (int)(sizeof(g_drawLists) / sizeof(g_drawLists[0])))
+        return;
     g_drawLists[g_drawN] = list;
-    g_drawCues[g_drawN]  = mask;
+    g_drawCues[g_drawN] = mask;
     ++g_drawN;
     // The TGraphics the game passes is a stack temporary of direct(), long gone by the time the
     // seam runs. Snapshot its bytes so the re-issue can hand the lists an identical one; a
@@ -964,7 +1047,8 @@ void record_draw_list(u32 list, u32 mask, u32 gfx) {
     // this TGraphics (`MTXCopy(param_2->mViewMtx, j3dSys.getViewMtx())`), so a snapshot taken once
     // at the first tick would render every later sub-frame through the camera of that first tick.
     if (!g_gfxValid && sb_ram_fast(gfx) && sb_ram_fast(gfx + 0xFF)) {
-        for (u32 i = 0; i < 0x100; ++i) g_gfxSnap[i] = sb_r8(gfx + i);
+        for (u32 i = 0; i < 0x100; ++i)
+            g_gfxSnap[i] = sb_r8(gfx + i);
         g_gfxValid = true;
     }
 }
@@ -972,12 +1056,12 @@ void record_draw_list(u32 list, u32 mask, u32 gfx) {
 void list_perform(CPUState& cpu) {
     const u32 list = (u32)cpu.gpr[3];
     const u32 mask = (u32)cpu.gpr[4];
-    const u32 gfx  = (u32)cpu.gpr[5];
+    const u32 gfx = (u32)cpu.gpr[5];
     // Nested performs belong to their outermost ancestor, and nothing inside a sub-frame re-issue
     // is part of the tick's own structure.
     if (g_listDepth != 0 || g_inSubframe || !enabled()) {
         ++g_listDepth;
-        sbr_tick_split_call(cpu);
+        func_802a4e28(cpu);
         --g_listDepth;
         return;
     }
@@ -985,7 +1069,7 @@ void list_perform(CPUState& cpu) {
     g_listDispatches = 0;
     ++g_listDepth;
     g_curList = list;
-    sbr_tick_split_call(cpu);
+    func_802a4e28(cpu);
     g_curList = 0;
     --g_listDepth;
     record_draw_list(list, mask, gfx);
@@ -999,28 +1083,37 @@ void list_perform(CPUState& cpu) {
 
 void snapshot(CPUState& cpu, u32 mask) {
     const u32 obj = (u32)cpu.gpr[3];
-    if (!sb_ram_fast(obj)) return;
-    if (!(mask & CUE_MOVE)) return;
+    if (!sb_ram_fast(obj))
+        return;
+    if (!(mask & CUE_MOVE))
+        return;
 
     const u32 vptr = sb_r32(obj);
     const bool actor = is_tactor(vptr);
     const bool placement = !actor && is_placement_only(vptr);
-    if (!actor && !placement) { ++g_nonActors; return; }
+    if (!actor && !placement) {
+        ++g_nonActors;
+        return;
+    }
     ++g_actors;
-    if (placement) { ++g_placements; note_placement(obj); }
+    if (placement) {
+        ++g_placements;
+        note_placement(obj);
+    }
 
     Entry* e = slot_for(obj);
-    if (!e) return;
+    if (!e)
+        return;
     e->posOnly = placement;
 
-    // The GUEST TICK, not the present count. A sub-frame adds a second present, so VIGetRetraceCount
-    // stops advancing 1:1 with ticks the moment interpolation is on -- and the (prev) entries are
-    // keyed on it, so using it would age every entry out after a single tick and silently disable
-    // the snapshot exactly when it starts being needed.
+    // The GUEST TICK, not the present count. A sub-frame adds a second present, so
+    // VIGetRetraceCount stops advancing 1:1 with ticks the moment interpolation is on -- and the
+    // (prev) entries are keyed on it, so using it would age every entry out after a single tick and
+    // silently disable the snapshot exactly when it starts being needed.
     const u32 tick = g_gameTick;
-    const float px = guest_f32(obj + OFF_POSITION + 0);
-    const float py = guest_f32(obj + OFF_POSITION + 4);
-    const float pz = guest_f32(obj + OFF_POSITION + 8);
+    const float px = guest_f32(obj + kPositionOffset + 0);
+    const float py = guest_f32(obj + kPositionOffset + 4);
+    const float pz = guest_f32(obj + kPositionOffset + 8);
 
     if (e->obj == obj && e->tick + 1 >= tick && e->tick != tick) {
         // A live (prev) from the previous tick: measure the step interpolation would cover.
@@ -1030,17 +1123,26 @@ void snapshot(CPUState& cpu, u32 mask) {
         if (d2 > 0.0f) {
             ++g_moved;
             const float d = std::sqrt(d2);
-            if (d > g_maxStep) { g_maxStep = d; g_maxObj = obj; }
-            if (d > g_tickMaxStep) { g_tickMaxStep = d; g_tickMaxObj = obj; }
+            if (d > g_maxStep) {
+                g_maxStep = d;
+                g_maxObj = obj;
+            }
+            if (d > g_tickMaxStep) {
+                g_tickMaxStep = d;
+                g_tickMaxObj = obj;
+            }
         }
     }
 
-    if (e->obj == obj && e->tick == tick) return;   // already snapshotted this tick
+    if (e->obj == obj && e->tick == tick)
+        return; // already snapshotted this tick
 
     e->obj = obj;
     e->tick = tick;
     g_lastSnapTick = tick;
-    e->pos[0] = px; e->pos[1] = py; e->pos[2] = pz;
+    e->pos[0] = px;
+    e->pos[1] = py;
+    e->pos[2] = pz;
     if (!e->posOnly) {
         e->rot[0] = guest_f32(obj + OFF_ROTATION + 0);
         e->rot[1] = guest_f32(obj + OFF_ROTATION + 4);
@@ -1051,7 +1153,7 @@ void snapshot(CPUState& cpu, u32 mask) {
     e->isCam = e->posOnly && looks_like_lookat_camera(obj);
     if (e->isCam) {
         for (int k = 0; k < 3; ++k) {
-            e->up[k]     = guest_f32(obj + OFF_CAM_UP + (u32)k * 4);
+            e->up[k] = guest_f32(obj + kCameraUpOffset + (u32)k * 4);
             e->target[k] = guest_f32(obj + OFF_CAM_TARGET + (u32)k * 4);
         }
     }
@@ -1095,11 +1197,11 @@ void snapshot(CPUState& cpu, u32 mask) {
 //
 // A 5000-unit kick applied to every snapshotted object left the scene's view matrix byte-identical,
 // so the object being substituted ("camera 1", the only TPlacement-that-is-not-a-TActor dispatched
-// at runtime) is provably NOT the source of the view. Rather than guess which other object is, watch
-// mViewMtx across each dispatch inside a sub-frame and name the one whose call changed it. That is
-// the object whose fields the interpolation has to reach.
-u32  g_viewWriter = 0;
-int  g_viewWrites = 0;
+// at runtime) is provably NOT the source of the view. Rather than guess which other object is,
+// watch mViewMtx across each dispatch inside a sub-frame and name the one whose call changed it.
+// That is the object whose fields the interpolation has to reach.
+u32 g_viewWriter = 0;
+int g_viewWrites = 0;
 
 // Reports EVERY writer in order, not the first. The first version latched on the first hit and
 // named 鏡カメラ (TMirrorCamera) — the reflection PRE-RENDER, which writes a view before the main
@@ -1118,35 +1220,36 @@ void attribute_view_write(CPUState& cpu, u32 gfxAddr) {
     if (before != after) {
         g_viewWriter = obj;
         ++g_viewWrites;
-        char nm[48]; guest_name(obj, nm, sizeof nm);
+        char nm[48];
+        guest_name(obj, nm, sizeof nm);
         const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
         lucent::info("interp60",
                      "VIEW WRITER #{}: object 0x{:08x} vptr=0x{:08x} \"{}\" changed mViewMtx "
                      "({:.2f} -> {:.2f}) | is_tactor={} is_placement_only={} looks_like_camera={}",
                      g_viewWrites, obj, vptr, nm, (double)before, (double)after,
-                     is_tactor(vptr) ? "YES" : "no",
-                     is_placement_only(vptr) ? "YES" : "no",
+                     is_tactor(vptr) ? "YES" : "no", is_placement_only(vptr) ? "YES" : "no",
                      looks_like_lookat_camera(obj) ? "YES" : "no");
-        lucent::info("interp60",
-                     "  its pos@+0x10 = ({:.2f},{:.2f},{:.2f})  fields@+0x30 = ({:.2f},{:.2f},{:.2f})"
-                     "  @+0x3C = ({:.2f},{:.2f},{:.2f})",
-                     (double)guest_f32(obj + 0x10), (double)guest_f32(obj + 0x14),
-                     (double)guest_f32(obj + 0x18), (double)guest_f32(obj + 0x30),
-                     (double)guest_f32(obj + 0x34), (double)guest_f32(obj + 0x38),
-                     (double)guest_f32(obj + 0x3C), (double)guest_f32(obj + 0x40),
-                     (double)guest_f32(obj + 0x44));
+        lucent::info(
+            "interp60",
+            "  its pos@+0x10 = ({:.2f},{:.2f},{:.2f})  fields@+0x30 = ({:.2f},{:.2f},{:.2f})"
+            "  @+0x3C = ({:.2f},{:.2f},{:.2f})",
+            (double)guest_f32(obj + 0x10), (double)guest_f32(obj + 0x14),
+            (double)guest_f32(obj + 0x18), (double)guest_f32(obj + 0x30),
+            (double)guest_f32(obj + 0x34), (double)guest_f32(obj + 0x38),
+            (double)guest_f32(obj + 0x3C), (double)guest_f32(obj + 0x40),
+            (double)guest_f32(obj + 0x44));
     }
 }
 
-// WHICH view reaches j3dSys? TSmJ3DScn::perform does MTXCopy(param_2->mViewMtx, j3dSys.getViewMtx()),
-// and j3dSys's view matrix is the global the whole scene is drawn through. mViewMtx is written eight
-// times per sub-frame by five objects, so "who writes it last" is not the question — the question is
-// what it held at the instant the scene copied it.
+// WHICH view reaches j3dSys? TSmJ3DScn::perform does MTXCopy(param_2->mViewMtx,
+// j3dSys.getViewMtx()), and j3dSys's view matrix is the global the whole scene is drawn through.
+// mViewMtx is written eight times per sub-frame by five objects, so "who writes it last" is not the
+// question — the question is what it held at the instant the scene copied it.
 //
 // Watching the DESTINATION rather than the source answers that directly: every time the j3dSys view
-// changes during a sub-frame, name the dispatch that changed it and what it now holds. Reports every
-// change, not the first: the previous attributor latched on the first writer and named a reflection
-// pre-render four dispatches early.
+// changes during a sub-frame, name the dispatch that changed it and what it now holds. Reports
+// every change, not the first: the previous attributor latched on the first writer and named a
+// reflection pre-render four dispatches early.
 constexpr u32 J3DSYS_VIEWMTX = 0x804045DCu;
 
 void watch_j3dsys(CPUState& cpu) {
@@ -1157,12 +1260,14 @@ void watch_j3dsys(CPUState& cpu) {
     const float after = guest_f32(J3DSYS_VIEWMTX + 3 * 4);
     if (before != after && n < 16) {
         ++n;
-        char nm[48]; guest_name(obj, nm, sizeof nm);
-        lucent::info("interp60",
-                     "j3dSys VIEW <- {:.2f} (was {:.2f}) by dispatch on 0x{:08x} \"{}\" | "
-                     "gfx mViewMtx currently {:.2f}",
-                     (double)after, (double)before, obj, nm,
-                     (double)(g_subframeGfx ? guest_f32(g_subframeGfx + OFF_VIEWMTX + 3 * 4) : 0.0f));
+        char nm[48];
+        guest_name(obj, nm, sizeof nm);
+        lucent::info(
+            "interp60",
+            "j3dSys VIEW <- {:.2f} (was {:.2f}) by dispatch on 0x{:08x} \"{}\" | "
+            "gfx mViewMtx currently {:.2f}",
+            (double)after, (double)before, obj, nm,
+            (double)(g_subframeGfx ? guest_f32(g_subframeGfx + OFF_VIEWMTX + 3 * 4) : 0.0f));
     }
 }
 
@@ -1207,26 +1312,21 @@ long viewseq_at() {
     return v;
 }
 
-// How far the camera moved between the prev/cur the sub-frame is lerping. Written by camera_apply,
-// read by viewseq_begin -- because a present INDEX is not a control. Two samples of this probe were
-// taken at fixed presents (1100 and 1600) and both printed identical views at every alpha; the
-// reading looked like "alpha reaches nothing" and was in fact "the camera was parked at both", which
-// no amount of care in the view plumbing could have distinguished. The probe therefore arms on the
-// quantity that has to be non-zero for its own question to be answerable.
-float g_camSep = 0.0f;
-
-bool g_seqActive   = false;   // this sub-frame is the one being reported
-bool g_seqDone     = false;   // one sub-frame has been reported; never start another
+bool g_seqActive = false; // this sub-frame is the one being reported
+bool g_seqDone = false;   // one sub-frame has been reported; never start another
 long g_seqDispatch = 0;
-int  g_seqGfxWrites = 0;
-int  g_seqSceneSets = 0;
-uint32_t g_seqPassStart = 0;  // stream position at the last j3dSys change
+int g_seqGfxWrites = 0;
+int g_seqSceneSets = 0;
+uint32_t g_seqPassStart = 0; // stream position at the last j3dSys change
 
 void read_mtx(u32 ea, float* out) {
-    for (int i = 0; i < 12; ++i) out[i] = guest_f32(ea + (u32)i * 4);
+    for (int i = 0; i < 12; ++i)
+        out[i] = guest_f32(ea + (u32)i * 4);
 }
 bool mtx_differs(const float* a, const float* b) {
-    for (int i = 0; i < 12; ++i) if (a[i] != b[i]) return true;
+    for (int i = 0; i < 12; ++i)
+        if (a[i] != b[i])
+            return true;
     return false;
 }
 
@@ -1241,10 +1341,13 @@ float viewseq_min_sep() {
 }
 
 void viewseq_begin() {
-    if (!viewseq_on() || g_seqDone) return;
-    if ((long)VIGetRetraceCount() < viewseq_at()) return;
+    if (!viewseq_on() || g_seqDone)
+        return;
+    if ((long)VIGetRetraceCount() < viewseq_at())
+        return;
     // Arm only where the answer can differ: the camera must actually be between two distinct poses.
-    if (g_camSep < viewseq_min_sep()) return;
+    if (camera_separation() < viewseq_min_sep())
+        return;
     g_seqActive = true;
     g_seqDispatch = 0;
     g_seqGfxWrites = 0;
@@ -1253,19 +1356,21 @@ void viewseq_begin() {
     lucent::info("i60seq",
                  "=== view sequence for ONE sub-frame (present {}, camera |cur-prev| = {:.3f} "
                  "units -- the separation any alpha difference has to come out of) ===",
-                 (long)VIGetRetraceCount(), (double)g_camSep);
+                 (long)VIGetRetraceCount(), (double)camera_separation());
 }
 
 void viewseq_end() {
-    if (!g_seqActive) return;
+    if (!g_seqActive)
+        return;
     lucent::info("i60seq", "  pass {} emitted {} KB (to end of sub-frame)", g_seqSceneSets,
                  (sbr_gxfifo_stream_pos() - g_seqPassStart) >> 10);
     lucent::info("i60seq",
                  "=== summary: {} dispatches examined, {} gfx mViewMtx writes, {} j3dSys view sets",
                  g_seqDispatch, g_seqGfxWrites, g_seqSceneSets);
     if (g_seqGfxWrites == 0)
-        lucent::info("i60seq", "  NOTE: NO object wrote gfx mViewMtx in this sub-frame -- the view "
-                               "the scene used was inherited from the snapshot, not produced here.");
+        lucent::info("i60seq",
+                     "  NOTE: NO object wrote gfx mViewMtx in this sub-frame -- the view "
+                     "the scene used was inherited from the snapshot, not produced here.");
     if (g_seqSceneSets == 0)
         lucent::info("i60seq", "  NOTE: j3dSys's view never changed -- either the scene reuses a "
                                "view identical to what j3dSys already held, or no scene node ran.");
@@ -1277,21 +1382,25 @@ void viewseq_dispatch(CPUState& cpu) {
     const u32 obj = (u32)cpu.gpr[3];
     float gfxBefore[12] = {0}, gfxAfter[12] = {0};
     const bool haveGfx = g_subframeGfx && sb_ram_fast(g_subframeGfx);
-    if (haveGfx) read_mtx(g_subframeGfx + OFF_VIEWMTX, gfxBefore);
+    if (haveGfx)
+        read_mtx(g_subframeGfx + OFF_VIEWMTX, gfxBefore);
     float sceneBefore[12], sceneAfter[12];
     read_mtx(J3DSYS_VIEWMTX, sceneBefore);
 
     func_802fcc94(cpu);
 
     ++g_seqDispatch;
-    if (haveGfx) read_mtx(g_subframeGfx + OFF_VIEWMTX, gfxAfter);
+    if (haveGfx)
+        read_mtx(g_subframeGfx + OFF_VIEWMTX, gfxAfter);
     read_mtx(J3DSYS_VIEWMTX, sceneAfter);
 
-    const bool gfxChanged   = haveGfx && mtx_differs(gfxBefore, gfxAfter);
+    const bool gfxChanged = haveGfx && mtx_differs(gfxBefore, gfxAfter);
     const bool sceneChanged = mtx_differs(sceneBefore, sceneAfter);
-    if (!gfxChanged && !sceneChanged) return;
+    if (!gfxChanged && !sceneChanged)
+        return;
 
-    char nm[48]; guest_name(obj, nm, sizeof nm);
+    char nm[48];
+    guest_name(obj, nm, sizeof nm);
     const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
     if (gfxChanged) {
         ++g_seqGfxWrites;
@@ -1319,29 +1428,32 @@ void viewseq_dispatch(CPUState& cpu) {
 
 void interp_test_perform(CPUState& cpu) {
     ++g_listDispatches;
-    if (g_seqActive) { viewseq_dispatch(cpu); return; }
-    if (g_inSubframe && std::getenv("SBR_INTERP60_J3DSYS")
-        && (long)VIGetRetraceCount() >= 1100) {
+    if (g_seqActive) {
+        viewseq_dispatch(cpu);
+        return;
+    }
+    if (g_inSubframe && std::getenv("SBR_INTERP60_J3DSYS") && (long)VIGetRetraceCount() >= 1100) {
         watch_j3dsys(cpu);
         return;
     }
-    if (g_inSubframe && std::getenv("SBR_INTERP60_VIEWWHO")
-        && (long)VIGetRetraceCount() >= 1100) {
+    if (g_inSubframe && std::getenv("SBR_INTERP60_VIEWWHO") && (long)VIGetRetraceCount() >= 1100) {
         attribute_view_write(cpu, g_subframeGfx);
         return;
     }
     if (g_inSubframe) {
         const u32 o = (u32)cpu.gpr[3];
-        if (sb_ram_fast(o) && is_placement_only(sb_r32(o))) ++g_camDispatches;
+        if (sb_ram_fast(o) && is_placement_only(sb_r32(o)))
+            ++g_camDispatches;
     }
     // Inside a sub-frame, report progress by DISPATCH and by stream position. A list that never
     // returns is otherwise a single silent stack sample: these two numbers say whether it is
     // advancing through its objects, stuck on one, or emitting without bound — three different
     // faults that look identical from outside.
     if (g_inSubframe && g_subframes < 2 && (g_listDispatches % 64) == 0)
-        lucent::info("i60sub", "     ... dispatch {} of this list, stream={} KB",
-                     g_listDispatches, sbr_gxfifo_stream_pos() >> 10);
-    if (std::getenv("SBR_VPTR_DUMP")) sbr_vptr_note((unsigned)cpu.gpr[3]);
+        lucent::info("i60sub", "     ... dispatch {} of this list, stream={} KB", g_listDispatches,
+                     sbr_gxfifo_stream_pos() >> 10);
+    if (std::getenv("SBR_VPTR_DUMP"))
+        sbr_vptr_note((unsigned)cpu.gpr[3]);
 
     if (enabled() && !g_inSubframe) {
         const u32 mask = (u32)cpu.gpr[4];
@@ -1355,7 +1467,10 @@ void interp_test_perform(CPUState& cpu) {
         snapshot(cpu, mask);
 
         const unsigned frame = VIGetRetraceCount();
-        if (frame >= g_lastReport + 600) { g_lastReport = frame; report(); }
+        if (frame >= g_lastReport + 600) {
+            g_lastReport = frame;
+            report();
+        }
     }
 
     func_802fcc94(cpu);
@@ -1378,258 +1493,6 @@ bool order_on() {
     return v;
 }
 
-// ── the camera, interpolated in the game's OWN terms ─────────────────────────
-//
-// From the disassembly of CPolarSubCamera::perform (vtable idx6 = 0x80023004):
-//
-//   movement path : 0x124 -> 0x13c and 0x148 -> 0x160        (the game saves its previous pose)
-//                   ... C_MTXLookAt(0x1ec, 0x124, 0x30, 0x148)   (and builds the view from it)
-//   view path     : PSMTXCopy(0x1ec -> TGraphics+0xb4)       (copies the cached matrix, computes nothing)
-//
-// So the sub-frame does exactly what the game does, with an interpolated pose: lerp the game's own
-// prev/cur into 0x124 and 0x148, call the game's own C_MTXLookAt with the game's own argument list,
-// and let the view path copy the result. No external snapshot, no allowlist, no layout signature —
-// and NOT a matrix lerp: the matrix is DERIVED from an interpolated pose, which is the distinction
-// the standing directive draws.
-constexpr u32 OFF_CPSC_VIEWMTX = 0x1EC;   // Mtx (3x4) built by C_MTXLookAt
-constexpr u32 CPSC_PERFORM = 0x80023004u; // its perform, used as an exact identity test
-
-// Exact identification: read the object's vtable slot 6 (MWCC vptr points at two zero header words,
-// so slot k is at vptr + 8 + 4k) and require it to BE CPolarSubCamera::perform. A heuristic on
-// near/far/fovy already accepted an object whose pose was not where it assumed; an address equality
-// on the very function whose disassembly these offsets came from cannot.
-bool is_polar_sub_camera(u32 obj) {
-    if (!sb_ram_fast(obj)) return false;
-    const u32 vptr = sb_r32(obj);
-    if (!sb_ram_fast(vptr + 0x20)) return false;
-    return sb_r32(vptr + 8 + 6 * 4) == CPSC_PERFORM;
-}
-
-struct CamSave {
-    u32   obj = 0;
-    float eye[3] = {0, 0, 0}, at[3] = {0, 0, 0};
-    float view[12] = {0};
-};
-
-// Substitute lerp(prev, cur) for the camera pose and rebuild its view matrix. Returns what has to
-// be put back.
-// It REFUSES LOUDLY. Returning an empty CamSave on a failed identity test is a silent no-op, and a
-// silent no-op here is indistinguishable from a working interpolation whose camera happens not to
-// be moving -- which is exactly the reading that produced "the camera INTERPOLATES, exactly". Both
-// outcomes are reported, with the numbers that separate them: the object, its vtable slot 6 against
-// the CPolarSubCamera::perform this whole offset set was disassembled from, and the prev/cur pair
-// the lerp is built out of. A prev == cur pair means alpha CANNOT change the view no matter how
-// correct the write is, and it must never be read as "alpha does nothing".
-CamSave camera_apply(CPUState& cpu, u32 obj, float alpha) {
-    CamSave sv;
-    if (!is_polar_sub_camera(obj)) {
-        static long n = 0;
-        if (++n <= 3 || (n % 900) == 0) {
-            const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
-            const u32 slot6 = sb_ram_fast(vptr + 0x20) ? sb_r32(vptr + 8 + 6 * 4) : 0;
-            char nm[48]; guest_name(obj, nm, sizeof nm);
-            lucent::info("i60cam",
-                         "camera_apply REFUSED #{}: object 0x{:08x} \"{}\" vptr=0x{:08x} "
-                         "slot6=0x{:08x} != CPolarSubCamera::perform 0x{:08x} -- NO camera "
-                         "interpolation happened this sub-frame, and every alpha will render the "
-                         "same view.",
-                         n, obj, nm, vptr, slot6, CPSC_PERFORM);
-        }
-        return sv;
-    }
-    sv.obj = obj;
-    // SBR_INTERP60_CAMTRACE=1: the cached view matrix's translation column BEFORE and AFTER the
-    // substitution, one line per tick.
-    //
-    // This is the check that the pixel gate cannot make. The gate established that alpha=1.0
-    // reproduces the following main frame to 0.25% while alpha=0.0 sits 75.5% away from the
-    // PRECEDING one -- i.e. the sub-frame responds to alpha but covers only about a fifth of the
-    // tick's motion. "The camera under-reaches" and "the camera is exact and everything else
-    // under-reaches" are indistinguishable from pixels, and they need opposite fixes.
-    //
-    // Read it as a SEQUENCE, not a line: at alpha=0.0 the AFTER value on tick N must equal the
-    // BEFORE value on tick N-1, because the pose being substituted is literally the one the
-    // previous tick rendered. Any shortfall between those two numbers is the camera's share of the
-    // deficit, measured against the camera's own previous frame rather than against an expectation.
-    static const bool camtrace = std::getenv("SBR_INTERP60_CAMTRACE") != nullptr;
-    float vBefore[3] = {0, 0, 0};
-    const bool trace = camtrace && (long)VIGetRetraceCount() >= viewseq_at();
-    if (trace)
-        for (int k = 0; k < 3; ++k)
-            vBefore[k] = guest_f32(obj + OFF_CPSC_VIEWMTX + (u32)(3 + 4 * k) * 4);
-    for (int k = 0; k < 3; ++k) {
-        sv.eye[k] = guest_f32(obj + OFF_CPSC_A + (u32)k * 4);
-        sv.at[k]  = guest_f32(obj + OFF_CPSC_B + (u32)k * 4);
-    }
-    for (int i = 0; i < 12; ++i) sv.view[i] = guest_f32(obj + OFF_CPSC_VIEWMTX + (u32)i * 4);
-
-    for (int k = 0; k < 3; ++k) {
-        const float pe = guest_f32(obj + OFF_CPSC_A_PREV + (u32)k * 4);
-        const float pa = guest_f32(obj + OFF_CPSC_B_PREV + (u32)k * 4);
-        guest_w_f32(obj + OFF_CPSC_A + (u32)k * 4, (1.0f - alpha) * pe + alpha * sv.eye[k]);
-        guest_w_f32(obj + OFF_CPSC_B + (u32)k * 4, (1.0f - alpha) * pa + alpha * sv.at[k]);
-    }
-
-    // The game's own call, with the game's own arguments.
-    const u32 savedSp = (u32)cpu.gpr[1];
-    cpu.gpr[3] = obj + OFF_CPSC_VIEWMTX;
-    cpu.gpr[4] = obj + OFF_CPSC_A;
-    cpu.gpr[5] = obj + OFF_CAM_UP;
-    cpu.gpr[6] = obj + OFF_CPSC_B;
-    func_80349f5c(cpu);
-    cpu.gpr[1] = savedSp;
-
-    // The positive side of the same report. Carries the prev/cur SEPARATION, because that is the
-    // denominator: a lerp between two equal poses is a correct lerp that cannot move a pixel.
-    {
-        float d = 0.0f;
-        for (int k = 0; k < 3; ++k) {
-            const float pe = guest_f32(obj + OFF_CPSC_A_PREV + (u32)k * 4);
-            const float e  = sv.eye[k] - pe;
-            d += e * e;
-        }
-        g_camSep = std::sqrt(d);
-        if (trace) {
-            // SBR_INTERP60_CAMFAST=<units>: report only ticks where the camera moved at least this
-            // far. A flat 12-line cap answers "what is the camera doing at the start", which is the
-            // BORING case — the run opens with the camera parked, so twelve lines of 0.000 is all it
-            // ever showed. Capping by novelty instead is the rule this project already has for
-            // diagnostics; here the novelty is speed, because the whole question is where a large
-            // camera motion happens.
-            static const float fast = [] {
-                const char* e = std::getenv("SBR_INTERP60_CAMFAST");
-                return e ? (float)std::atof(e) : -1.0f;
-            }();
-            static int lines = 0;
-            const bool want = fast >= 0.0f ? (g_camSep >= fast) : (lines < 12);
-            if (want && lines < 40) { ++lines;
-                lucent::info("i60cam",
-                             "CAMTRACE present {} alpha={:.2f}: cached view t BEFORE=({:.2f},"
-                             "{:.2f},{:.2f})  AFTER=({:.2f},{:.2f},{:.2f})  |eye cur-prev|={:.3f}",
-                             (long)VIGetRetraceCount(), (double)alpha,
-                             (double)vBefore[0], (double)vBefore[1], (double)vBefore[2],
-                             (double)guest_f32(obj + OFF_CPSC_VIEWMTX + 3 * 4),
-                             (double)guest_f32(obj + OFF_CPSC_VIEWMTX + 7 * 4),
-                             (double)guest_f32(obj + OFF_CPSC_VIEWMTX + 11 * 4),
-                             (double)g_camSep);
-            }
-        }
-        static long n = 0;
-        if (++n <= 3 || (n % 900) == 0) {
-            lucent::info("i60cam",
-                         "camera_apply #{} on 0x{:08x} alpha={:.2f}: eye prev=({:.2f},{:.2f},{:.2f})"
-                         " cur=({:.2f},{:.2f},{:.2f}) |cur-prev|={:.3f}{}",
-                         n, obj, (double)alpha,
-                         (double)guest_f32(obj + OFF_CPSC_A_PREV),
-                         (double)guest_f32(obj + OFF_CPSC_A_PREV + 4),
-                         (double)guest_f32(obj + OFF_CPSC_A_PREV + 8),
-                         (double)sv.eye[0], (double)sv.eye[1], (double)sv.eye[2],
-                         (double)g_camSep,
-                         d == 0.0f ? "   <-- prev == cur: the camera did not move this tick, so no "
-                                     "alpha can change this sub-frame's view" : "");
-        }
-    }
-    return sv;
-}
-
-// ── the PLAYER, rebuilt in the game's own terms ──────────────────────────────
-//
-// ROOT CAUSE, from the decomp rather than from a pixel diff. TMario does not reach
-// TLiveActor::perform's 0x2 branch at all, so no amount of re-issuing the director's calc-anim list
-// can move him. His pose becomes a matrix in TMario::calcAnim -> calcBaseMtx, which builds a TR
-// matrix from mPosition + mModelFaceAngle and copies it into the model's base TR matrix
-// (src/Player/MarioDraw.cpp:1920 and :1582) -- and TMario::perform calls calcAnim ONLY here:
-//
-//     if ((param_1 & 1) && mFreezeTimer <= 0) { thinkAloha(); calcAnim(2, graphics); ... }
-//
-// Gated on cue bit 0x1. That is the MOVEMENT bit, and it is the one bit a sub-frame must never set,
-// because the same branch runs playerControl() -- the physics. So the player's pose-to-matrix step
-// is structurally unreachable from a draw-only re-issue, which is exactly the shape of the camera's
-// problem and takes exactly the camera's answer: call the GAME'S OWN function with an interpolated
-// pose already written, and let it produce the matrix. No lerped matrix, no reimplemented math.
-//
-// The identity control is what makes this safe to try: calcAnim also runs callbacks and the
-// skeleton, so calling it a second time within a tick could double-apply something. At alpha=1.0
-// the substituted pose IS the game's pose, so the sub-frame must still reproduce the following main
-// frame to the 0.075/channel it reaches today. If it does not, this call has a side effect and the
-// number will say so rather than hiding inside a midpoint nobody can check.
-bool player_on() {
-    static const bool v = std::getenv("SBR_INTERP60_PLAYER") != nullptr;
-    return v;
-}
-
-// The player object, derived and CHECKED the same way report_player_coverage does it: 0x8040E10C is
-// gpMarioPos and points at mPosition, i.e. the object +0x10.
-u32 player_obj() {
-    if (!sb_ram_fast(0x8040E10Cu)) return 0;
-    const u32 p = sb_r32(0x8040E10Cu);
-    if (!sb_ram_fast(p)) return 0;
-    const u32 obj = p - OFF_POSITION;
-    if (!sb_ram_fast(obj)) return 0;
-    const u32 vptr = sb_r32(obj);
-    if (vptr < 0x80000000u || !sb_ram_fast(vptr)) return 0;
-    return obj;
-}
-
-// TMario's waist smoothers, and why calling calcAnim twice is not free.
-//
-// considerWaist() (decomp src/Player/MarioDraw.cpp:1471) ends with two INTEGRATORS:
-//
-//     mWaistPitch += angleChangeRate * (targetPitch - mWaistPitch);
-//     mWaistRoll  += angleChangeRate * (targetRoll  - mWaistRoll);
-//
-// Exponential smoothers toward a target. Every extra calcAnim call advances them an extra step, so
-// a sub-frame that calls calcAnim leaves Mario's waist further along than the tick alone would —
-// which persists, and is the whole of the player seam's 4,619-pixel leak. Two floats, so this takes
-// the camera's treatment: save them and put them back bit-exactly.
-constexpr u32 OFF_MARIO_WAIST_ROLL  = 0x3D8;   // f32 mWaistRoll  (Mario.hpp:1738)
-constexpr u32 OFF_MARIO_WAIST_PITCH = 0x3DC;   // f32 mWaistPitch (Mario.hpp:1739)
-// mMarioScreenPos (Mario.hpp:1764) — Mario's position ON SCREEN, so it is derived from the VIEW.
-// The sub-frame runs calcAnim under the interpolated view, so this is left holding an interpolated
-// projection, and it persists. Named by SBR_INTERP60_PLAYER_DIFF rather than guessed: the diff
-// reported exactly three changed words at +0x450/+0x454/+0x458 and nothing else in 0x800 bytes.
-constexpr u32 OFF_MARIO_SCREEN_POS  = 0x450;   // TVec3<f32> mMarioScreenPos
-
-u32   g_waistObj = 0;
-float g_waistSave[5] = {0, 0, 0, 0, 0};
-
-void player_apply(CPUState& cpu, u32 gfx, bool saveWaist) {
-    if (!player_on()) return;
-    const u32 obj = player_obj();
-    if (!obj) {
-        static bool said = false;
-        if (!said) { said = true;
-            lucent::info("i60player", "SBR_INTERP60_PLAYER: the player object could not be derived "
-                                      "from gpMarioPos -- calcAnim was NOT called and this run "
-                                      "tests nothing about the player.");
-        }
-        return;
-    }
-    // Saved on the SUBSTITUTION pass only. The post-restore recompute pass calls calcAnim again and
-    // advances the smoothers a third time; both extra advances are undone by the single restore at
-    // the end of the sub-frame, which writes back the value the GAME computed.
-    if (saveWaist) {
-        player_snapshot(obj);
-        g_waistObj = obj;
-        g_waistSave[0] = guest_f32(obj + OFF_MARIO_WAIST_ROLL);
-        g_waistSave[1] = guest_f32(obj + OFF_MARIO_WAIST_PITCH);
-        for (int k = 0; k < 3; ++k)
-            g_waistSave[2 + k] = guest_f32(obj + OFF_MARIO_SCREEN_POS + (u32)k * 4);
-    }
-    const u32 savedSp = (u32)cpu.gpr[1];
-    cpu.gpr[3] = obj;
-    cpu.gpr[4] = 2;        // the cue the game itself passes: matrices + skeleton, no frame advance
-    cpu.gpr[5] = gfx;
-    func_80244800(cpu);
-    cpu.gpr[1] = savedSp;
-    static long n = 0;
-    if (++n <= 3 || (n % 900) == 0)
-        lucent::info("i60player", "calcAnim(2) #{} on player 0x{:08x} at pose ({:.2f},{:.2f},{:.2f})",
-                     n, obj, (double)guest_f32(obj + OFF_POSITION),
-                     (double)guest_f32(obj + OFF_POSITION + 4),
-                     (double)guest_f32(obj + OFF_POSITION + 8));
-}
-
 // ── the SCENERY actors, rebuilt in the game's own terms ──────────────────────
 //
 // Same seam as the player and the camera, third instance: the substituted pose is turned into a
@@ -1646,7 +1509,8 @@ void player_apply(CPUState& cpu, u32 gfx, bool saveWaist) {
 // wrong-signature call on the game thread. So the address read out of the slot must itself be a
 // KNOWN calcRootMatrix (kCalcRootAddrs). If the object is not an actor, or the slot index is wrong,
 // the address is not in the set and the actor is SKIPPED. A skipped actor does not interpolate; a
-// wrong call corrupts memory — the failure modes are asymmetric and the check follows the asymmetry.
+// wrong call corrupts memory — the failure modes are asymmetric and the check follows the
+// asymmetry.
 //
 // This is why re-issuing the director's calc-anim list was the wrong instrument for the same idea:
 // that list also runs MActor::frameUpdate and updateAnmSound, advancing every animation a second
@@ -1669,10 +1533,10 @@ long g_calcRootCalls = 0, g_calcRootSkipped = 0;
 // that agreed on slot 37 were the subset well-formed enough to be scanned past it. An index agreed
 // on by a biased subset is not the index.
 //
-// Guest memory has no such problem: the vtable is simply there. So walk each live actor's vtable and
-// report WHICH slot holds a known calcRootMatrix, as a histogram over real objects. A single
-// dominant index is the answer and its dominance is the evidence; a scatter means there is no shared
-// slot and the whole dispatch-by-index approach is wrong, which is equally worth knowing.
+// Guest memory has no such problem: the vtable is simply there. So walk each live actor's vtable
+// and report WHICH slot holds a known calcRootMatrix, as a histogram over real objects. A single
+// dominant index is the answer and its dominance is the evidence; a scatter means there is no
+// shared slot and the whole dispatch-by-index approach is wrong, which is equally worth knowing.
 //
 // Objects whose calcRootMatrix is weak/inlined carry an address that is in no list, so they cannot
 // contribute — that is the coverage gap, and the "no hit" count reports it rather than hiding it.
@@ -1681,13 +1545,16 @@ constexpr int kVtScanSlots = 128;
 // Is this guest vtable TLiveActor-derived? Counted, cached, and it REFUSES on a short vtable rather
 // than passing it: an unreadable slot ends the scan, so a truncated read can only lower the count.
 bool is_liveactor_vtable(u32 vptr) {
-    if (!sb_ram_fast(vptr)) return false;
+    if (!sb_ram_fast(vptr))
+        return false;
     int hits = 0;
     for (int k = 0; k < kVtScanSlots; ++k) {
         const u32 ea = vptr + 8u + (u32)k * 4u;
-        if (!sb_ram_fast(ea)) break;
+        if (!sb_ram_fast(ea))
+            break;
         if (in_sorted(kLiveActorMethodAddrs, kLiveActorMethodCount, sb_r32(ea))) {
-            if (++hits >= kLiveActorMinHits) return true;
+            if (++hits >= kLiveActorMinHits)
+                return true;
         }
     }
     return false;
@@ -1695,48 +1562,63 @@ bool is_liveactor_vtable(u32 vptr) {
 
 // TLiveActor layout (decomp include/Strategic/LiveActor.hpp:148, :173, :22-23). These gate the
 // dispatch below exactly as TLiveActor::perform gates its own call.
-constexpr u32 OFF_LA_MACTOR   = 0x74;   // MActor* mMActor
-constexpr u32 OFF_LA_LIVEFLAG = 0xF0;   // u32 mLiveFlag
-constexpr u32 kLiveFlagHidden     = 0x2;
+constexpr u32 OFF_LA_MACTOR = 0x74;   // MActor* mMActor
+constexpr u32 OFF_LA_LIVEFLAG = 0xF0; // u32 mLiveFlag
+constexpr u32 kLiveFlagHidden = 0x2;
 constexpr u32 kLiveFlagClippedOut = 0x4;
 
 void calcroot_scan(u32 tick) {
     static bool done = false;
-    if (done || !std::getenv("SBR_INTERP60_CALCROOT_SCAN")) return;
+    if (done || !std::getenv("SBR_INTERP60_CALCROOT_SCAN"))
+        return;
     done = true;
     int hist[kVtScanSlots] = {0};
     int objs = 0, noHit = 0, multi = 0;
     for (int i = 0; i < TABLE_SIZE; ++i) {
         const Entry& e = g_tab[i];
-        if (e.obj == 0 || e.tick != tick || e.posOnly || !sb_ram_fast(e.obj)) continue;
+        if (e.obj == 0 || e.tick != tick || e.posOnly || !sb_ram_fast(e.obj))
+            continue;
         ++objs;
         const u32 vptr = sb_r32(e.obj);
         int found = -1, nFound = 0;
         for (int k = 0; k < kVtScanSlots; ++k) {
             const u32 ea = vptr + 8u + (u32)k * 4u;
-            if (!sb_ram_fast(ea)) break;
+            if (!sb_ram_fast(ea))
+                break;
             if (in_sorted(kCalcRootAddrs, kCalcRootAddrCount, sb_r32(ea))) {
-                if (found < 0) found = k;
+                if (found < 0)
+                    found = k;
                 ++nFound;
             }
         }
-        if (found < 0) { ++noHit; continue; }
-        if (nFound > 1) ++multi;
+        if (found < 0) {
+            ++noHit;
+            continue;
+        }
+        if (nFound > 1)
+            ++multi;
         ++hist[found];
     }
-    lucent::info("i60actors", "=== calcRootMatrix slot scan over {} live substituted actors ===", objs);
-    lucent::info("i60actors", "  {} carried NO known calcRootMatrix in their first {} slots "
-                              "(weak/inlined override, or not an actor)", noHit, kVtScanSlots);
+    lucent::info("i60actors",
+                 "=== calcRootMatrix slot scan over {} live substituted actors ===", objs);
+    lucent::info("i60actors",
+                 "  {} carried NO known calcRootMatrix in their first {} slots "
+                 "(weak/inlined override, or not an actor)",
+                 noHit, kVtScanSlots);
     if (multi)
-        lucent::info("i60actors", "  {} carried MORE THAN ONE known calcRootMatrix address -- the "
-                                  "first is reported, and that ambiguity is a reason to distrust a "
-                                  "single index", multi);
+        lucent::info("i60actors",
+                     "  {} carried MORE THAN ONE known calcRootMatrix address -- the "
+                     "first is reported, and that ambiguity is a reason to distrust a "
+                     "single index",
+                     multi);
     int best = -1;
     for (int k = 0; k < kVtScanSlots; ++k)
-        if (hist[k] && (best < 0 || hist[k] > hist[best])) best = k;
+        if (hist[k] && (best < 0 || hist[k] > hist[best]))
+            best = k;
     for (int k = 0; k < kVtScanSlots; ++k)
-        if (hist[k]) lucent::info("i60actors", "    slot {:>3} : {} object(s){}", k, hist[k],
-                                  k == best ? "   <- dominant" : "");
+        if (hist[k])
+            lucent::info("i60actors", "    slot {:>3} : {} object(s){}", k, hist[k],
+                         k == best ? "   <- dominant" : "");
     if (best < 0)
         lucent::info("i60actors", "  NO SLOT FOUND IN ANY OBJECT. Either every live actor's "
                                   "calcRootMatrix is weak, or the address set is wrong. Nothing "
@@ -1750,11 +1632,14 @@ void calcroot_scan(u32 tick) {
 // only the name and reason say which gap to close, and the names are the difference between "some
 // props" and "every NPC in the scene".
 void note_mover(bool moved, u32 obj, const char* why) {
-    if (!moved || !std::getenv("SBR_INTERP60_MOVERS")) return;
+    if (!moved || !std::getenv("SBR_INTERP60_MOVERS"))
+        return;
     static int lines = 0;
-    if (lines >= 24) return;
+    if (lines >= 24)
+        return;
     ++lines;
-    char nm[48]; guest_name(obj, nm, sizeof nm);
+    char nm[48];
+    guest_name(obj, nm, sizeof nm);
     const u32 vptr = sb_ram_fast(obj) ? sb_r32(obj) : 0;
     lucent::info("i60movers", "  mover 0x{:08x} vptr=0x{:08x} \"{}\": {}", obj, vptr, nm, why);
 }
@@ -1778,7 +1663,8 @@ int actor_calls() {
 
 void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool requireApplied) {
     calcroot_scan(tick);
-    if (!actors_on()) return;
+    if (!actors_on())
+        return;
     const u32 savedSp = (u32)cpu.gpr[1];
     long called = 0, skipped = 0, skippedGuard = 0;
     long movedTotal = 0, movedCalled = 0;
@@ -1789,10 +1675,14 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
         // iterated ZERO actors and the two attempted leak fixes produced bit-identical numbers.
         // Bit-identical output across a code change is not a null result; it is the signal that the
         // code did not run, and it should have been read that way immediately.
-        if (e.obj == 0 || e.tick != tick) continue;
-        if (requireApplied && !e.applied) continue;
-        if (e.posOnly) continue;                       // cameras and other non-actors
-        if (!sb_ram_fast(e.obj)) continue;
+        if (e.obj == 0 || e.tick != tick)
+            continue;
+        if (requireApplied && !e.applied)
+            continue;
+        if (e.posOnly)
+            continue; // cameras and other non-actors
+        if (!sb_ram_fast(e.obj))
+            continue;
         // Only an actor whose prev differs from cur can change a pixel, so the counts that matter
         // are the MOVERS. "110 actors dispatched" and "the alpha still changes nothing" are
         // perfectly consistent if all 110 were stationary — an aggregate over the whole set cannot
@@ -1801,7 +1691,11 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
         movedTotal += moved ? 1 : 0;
         const u32 vptr = sb_r32(e.obj);
         const u32 slotEA = vptr + 8u + (u32)kCalcRootSlot * 4u;
-        if (!sb_ram_fast(slotEA)) { ++skipped; note_mover(moved, e.obj, "vtable slot unreadable"); continue; }
+        if (!sb_ram_fast(slotEA)) {
+            ++skipped;
+            note_mover(moved, e.obj, "vtable slot unreadable");
+            continue;
+        }
         const u32 fnAddr = sb_r32(slotEA);
         // IDENTIFY THE CLASS, not the pointer.
         //
@@ -1812,18 +1706,25 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
         //
         // A vtable carrying at least two TLiveActor-owned method addresses is TLiveActor-derived;
         // inherited, un-overridden slots make that hard to fake. And once the class is established,
-        // slot 46 IS calcRootMatrix by C++ layout — a subclass appends virtuals, never inserts them,
-        // so every TLiveActor virtual sits at the same index in every subclass. That is why the
-        // NEIGHBOURS of slot 46 in the NPC vtable are TLiveActor methods at their inherited
+        // slot 46 IS calcRootMatrix by C++ layout — a subclass appends virtuals, never inserts
+        // them, so every TLiveActor virtual sits at the same index in every subclass. That is why
+        // the NEIGHBOURS of slot 46 in the NPC vtable are TLiveActor methods at their inherited
         // indices (43 belongToGround, 44 getRootJointMtx, 47 setGroundCollision, 52 drawObject,
         // 53 performOnlyDraw, 59 updateAnmSound): the layout is shared, and that is the evidence.
-        if (!is_liveactor_vtable(vptr)) { ++skipped;
-            { char w[112]; std::snprintf(w, sizeof w, "vtable 0x%08x carries fewer than %d "
-                          "TLiveActor methods -- not identified as TLiveActor-derived, so slot %d "
-                          "is not known to be calcRootMatrix", vptr, kLiveActorMinHits,
-                          kCalcRootSlot);
-              note_mover(moved, e.obj, w); }
-            continue; }
+        if (!is_liveactor_vtable(vptr)) {
+            ++skipped;
+            {
+                char w[112];
+                std::snprintf(
+                    w, sizeof w,
+                    "vtable 0x%08x carries fewer than %d "
+                    "TLiveActor methods -- not identified as TLiveActor-derived, so slot %d "
+                    "is not known to be calcRootMatrix",
+                    vptr, kLiveActorMinHits, kCalcRootSlot);
+                note_mover(moved, e.obj, w);
+            }
+            continue;
+        }
         // THE GAME'S OWN GUARDS, reproduced. TLiveActor::perform does not call calcRootMatrix
         // unconditionally (decomp src/Strategic/liveactor.cpp:404):
         //
@@ -1835,12 +1736,18 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
         // Calling the game's own function is only faithful if it is called under the game's own
         // preconditions — an unguarded call is a different operation that happens to share a name.
         const u32 mActor = sb_ram_fast(e.obj + OFF_LA_MACTOR) ? sb_r32(e.obj + OFF_LA_MACTOR) : 0;
-        if (!mActor || !sb_ram_fast(mActor)) { ++skippedGuard;
-            note_mover(moved, e.obj, "no MActor -- the game would not call it either"); continue; }
-        const u32 liveFlag = sb_ram_fast(e.obj + OFF_LA_LIVEFLAG) ? sb_r32(e.obj + OFF_LA_LIVEFLAG) : 0;
-        if (liveFlag & (kLiveFlagHidden | kLiveFlagClippedOut)) { ++skippedGuard;
+        if (!mActor || !sb_ram_fast(mActor)) {
+            ++skippedGuard;
+            note_mover(moved, e.obj, "no MActor -- the game would not call it either");
+            continue;
+        }
+        const u32 liveFlag =
+            sb_ram_fast(e.obj + OFF_LA_LIVEFLAG) ? sb_r32(e.obj + OFF_LA_LIVEFLAG) : 0;
+        if (liveFlag & (kLiveFlagHidden | kLiveFlagClippedOut)) {
+            ++skippedGuard;
             note_mover(moved, e.obj, "hidden or clipped out -- the game would not call it either");
-            continue; }
+            continue;
+        }
         // call_ppc, not a raw table lookup: it is the one path the generated code routes every
         // bl and bctrl through, so an OVERRIDDEN calcRootMatrix is honoured here exactly as it
         // would be during the tick. Dispatching around it would silently run the recomp body of a
@@ -1850,12 +1757,13 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
             call_ppc(cpu, fnAddr);
             cpu.gpr[1] = savedSp;
         }
-        // THE SECOND HALF, and it is not optional. The game does `calcRootMatrix(); mMActor->calc();`
-        // as a pair (liveactor.cpp:414). calcRootMatrix only writes the model's base TR matrix;
-        // without calc() that never reaches the node matrices the packets reference, and the
-        // substitution is invisible however correctly it was written. Measured: kick=3000 on every
-        // dispatched actor moved 0 pixels with calcRootMatrix alone.
-        if (substituteAnim) anim_apply(cpu, mActor, alpha_act());
+        // THE SECOND HALF, and it is not optional. The game does `calcRootMatrix();
+        // mMActor->calc();` as a pair (liveactor.cpp:414). calcRootMatrix only writes the model's
+        // base TR matrix; without calc() that never reaches the node matrices the packets
+        // reference, and the substitution is invisible however correctly it was written. Measured:
+        // kick=3000 on every dispatched actor moved 0 pixels with calcRootMatrix alone.
+        if (substituteAnim)
+            anim_apply(cpu, mActor, alpha_act());
         if (actor_calls() & 2) {
             cpu.gpr[3] = mActor;
             func_80239770(cpu);
@@ -1885,11 +1793,11 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
                      "calcRootMatrix) and {} on the game's own guards "
                      "(no MActor, or hidden/clipped); of the {} that actually MOVED this tick, {} "
                      "were dispatched{}",
-                     n, called, skipped, kCalcRootSlot, skippedGuard,
-                     movedTotal, movedCalled,
-                     called == 0 ? "   <-- NONE dispatched: no substituted actor's vtable carried a "
-                                   "recognised calcRootMatrix, so this run interpolates no scenery"
-                                 : "");
+                     n, called, skipped, kCalcRootSlot, skippedGuard, movedTotal, movedCalled,
+                     called == 0
+                         ? "   <-- NONE dispatched: no substituted actor's vtable carried a "
+                           "recognised calcRootMatrix, so this run interpolates no scenery"
+                         : "");
 }
 
 // ── ANIMATION PHASE, interpolated ────────────────────────────────────────────
@@ -1913,24 +1821,28 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
 // STATE_LOOPED_ONCE exactly then. Stepping back linearly across that discontinuity would be
 // meaningless, so such a controller is left at cur for that tick. That is the game's own signal,
 // not a tolerance.
-constexpr u32 OFF_FC_STATE = 0x5;    // u8  mState  (reset each update; nonzero = wrapped/clamped)
-constexpr u32 OFF_FC_RATE  = 0xC;    // f32 mRate
-constexpr u32 OFF_FC_FRAME = 0x10;   // f32 mFrame
-constexpr int kAnmTypes = 6;         // BCK, BLK, BPK, BTP, BTK, BRK
+constexpr u32 OFF_FC_STATE = 0x5;  // u8  mState  (reset each update; nonzero = wrapped/clamped)
+constexpr u32 OFF_FC_RATE = 0xC;   // f32 mRate
+constexpr u32 OFF_FC_FRAME = 0x10; // f32 mFrame
+constexpr int kAnmTypes = 6;       // BCK, BLK, BPK, BTP, BTK, BRK
 
 bool anim_on() {
     static const bool v = std::getenv("SBR_INTERP60_ANIM") != nullptr;
     return v;
 }
 
-struct FrameSave { u32 ctrl; float frame; };
+struct FrameSave {
+    u32 ctrl;
+    float frame;
+};
 FrameSave g_frameSaves[4096];
-int  g_frameSaveN = 0;
+int g_frameSaveN = 0;
 long g_animSubst = 0, g_animHeld = 0;
 
 // Substitute lerp(prev, cur, alpha) into every frame controller of one MActor.
 void anim_apply(CPUState& cpu, u32 mActor, float alpha) {
-    if (!anim_on()) return;
+    if (!anim_on())
+        return;
     const u32 savedSp = (u32)cpu.gpr[1];
     for (int t = 0; t < kAnmTypes; ++t) {
         cpu.gpr[3] = mActor;
@@ -1938,13 +1850,19 @@ void anim_apply(CPUState& cpu, u32 mActor, float alpha) {
         func_80238f08(cpu);
         cpu.gpr[1] = savedSp;
         const u32 fc = (u32)cpu.gpr[3];
-        if (!fc || !sb_ram_fast(fc + OFF_FC_FRAME)) continue;
-        if (sb_r8(fc + OFF_FC_STATE) != 0) { ++g_animHeld; continue; }   // wrapped this tick
+        if (!fc || !sb_ram_fast(fc + OFF_FC_FRAME))
+            continue;
+        if (sb_r8(fc + OFF_FC_STATE) != 0) {
+            ++g_animHeld;
+            continue;
+        } // wrapped this tick
         const float rate = guest_f32(fc + OFF_FC_RATE);
-        if (rate == 0.0f) continue;                                      // stopped: nothing to lerp
+        if (rate == 0.0f)
+            continue; // stopped: nothing to lerp
         const float cur = guest_f32(fc + OFF_FC_FRAME);
-        if (g_frameSaveN >= (int)(sizeof(g_frameSaves) / sizeof(g_frameSaves[0]))) return;
-        g_frameSaves[g_frameSaveN].ctrl  = fc;
+        if (g_frameSaveN >= (int)(sizeof(g_frameSaves) / sizeof(g_frameSaves[0])))
+            return;
+        g_frameSaves[g_frameSaveN].ctrl = fc;
         g_frameSaves[g_frameSaveN].frame = cur;
         ++g_frameSaveN;
         // prev = cur - rate, so lerp(prev, cur, alpha) = cur - (1 - alpha) * rate.
@@ -1971,7 +1889,8 @@ void anim_restore() {
                                "animation (null controller, or rate 0), so animation phase cannot "
                                "have changed this sub-frame"
                              : "");
-        g_animSubst = 0; g_animHeld = 0;
+        g_animSubst = 0;
+        g_animHeld = 0;
     }
     for (int i = 0; i < g_frameSaveN; ++i)
         guest_w_f32(g_frameSaves[i].ctrl + OFF_FC_FRAME, g_frameSaves[i].frame);
@@ -1991,10 +1910,10 @@ long g_vcTick = 0, g_vcSub = 0;
 
 // ── MATRIX PROVENANCE TRACER (SBR_INTERP60_MTXTRACE=1) ───────────────────────
 //
-// Built to STOP guessing. Four hypotheses about why the background ignores an interpolated view have
-// each been reasoned from correct-looking state and each been wrong about the pixels. The chain from
-// j3dSys's view to a drawable's matrices is short and entirely in guest memory, so it can simply be
-// WATCHED instead of inferred.
+// Built to STOP guessing. Four hypotheses about why the background ignores an interpolated view
+// have each been reasoned from correct-looking state and each been wrong about the pixels. The
+// chain from j3dSys's view to a drawable's matrices is short and entirely in guest memory, so it
+// can simply be WATCHED instead of inferred.
 //
 // J3DModel (decomp J3DModel.hpp:284): mDrawMtxBuf[2] at +0x60/+0x64, each a Mtx** indexed by
 // mCurrentViewNo at +0x7C. getDrawMtxPtr() is mDrawMtxBuf[1][viewNo], and viewCalc() SWAPS the two
@@ -2004,13 +1923,13 @@ long g_vcTick = 0, g_vcSub = 0;
 //
 // It pins ONE model so the output is a readable story rather than 140 interleaved ones. Unset,
 // SBR_INTERP60_MTXTRACE_ADDR auto-pins the first model viewCalc'd after arming and says which it
-// chose; the run is deterministic, so that is a stable choice and can be pinned explicitly to follow
-// a different one.
+// chose; the run is deterministic, so that is a stable choice and can be pinned explicitly to
+// follow a different one.
 constexpr u32 OFF_JM_DRAWBUF0 = 0x60;
 constexpr u32 OFF_JM_DRAWBUF1 = 0x64;
-constexpr u32 OFF_JM_VIEWNO   = 0x7C;
+constexpr u32 OFF_JM_VIEWNO = 0x7C;
 
-u32 g_mtxModel = 0;   // declared above for the sub-frame boundary probes
+u32 g_mtxModel = 0; // declared above for the sub-frame boundary probes
 
 bool mtxtrace_on() {
     static const bool v = std::getenv("SBR_INTERP60_MTXTRACE") != nullptr;
@@ -2020,11 +1939,14 @@ bool mtxtrace_on() {
 // mDrawMtxBuf[which][viewNo] — the Mtx* the game would hand a packet.
 u32 draw_mtx_ptr(u32 model, int which) {
     const u32 basePtr = sb_r32(model + (which ? OFF_JM_DRAWBUF1 : OFF_JM_DRAWBUF0));
-    if (!sb_ram_fast(basePtr)) return 0;
+    if (!sb_ram_fast(basePtr))
+        return 0;
     const u32 viewNo = sb_r32(model + OFF_JM_VIEWNO);
-    if (viewNo > 4) return 0;                    // sane view index; the game uses 0 here
+    if (viewNo > 4)
+        return 0; // sane view index; the game uses 0 here
     const u32 ea = basePtr + viewNo * 4;
-    if (!sb_ram_fast(ea)) return 0;
+    if (!sb_ram_fast(ea))
+        return 0;
     return sb_r32(ea);
 }
 
@@ -2032,16 +1954,19 @@ u32 draw_mtx_ptr(u32 model, int which) {
 // matrix was built from, since that is the whole question.
 void mtx_translation(u32 mtxPtr, float* out) {
     out[0] = out[1] = out[2] = 0.0f;
-    if (!mtxPtr || !sb_ram_fast(mtxPtr + 44)) return;
+    if (!mtxPtr || !sb_ram_fast(mtxPtr + 44))
+        return;
     out[0] = guest_f32(mtxPtr + 3 * 4);
     out[1] = guest_f32(mtxPtr + 7 * 4);
     out[2] = guest_f32(mtxPtr + 11 * 4);
 }
 
 void mtxtrace_report(u32 model, const char* when) {
-    if (!mtxtrace_on() || model != g_mtxModel || !model) return;
+    if (!mtxtrace_on() || model != g_mtxModel || !model)
+        return;
     static long lines = 0;
-    if (lines >= 40) return;
+    if (lines >= 40)
+        return;
     ++lines;
     const u32 p0 = draw_mtx_ptr(model, 0), p1 = draw_mtx_ptr(model, 1);
     float t0[3], t1[3], view[3];
@@ -2053,10 +1978,9 @@ void mtxtrace_report(u32 model, const char* when) {
     lucent::info("i60mtx",
                  "{:<22} {}  j3dSys view t=({:.2f},{:.2f},{:.2f}) | buf0 {:08x} t=({:.2f},{:.2f},"
                  "{:.2f}) | buf1(DRAWN) {:08x} t=({:.2f},{:.2f},{:.2f})",
-                 when, g_inSubframe ? "[SUB ]" : "[tick]",
-                 (double)view[0], (double)view[1], (double)view[2],
-                 p0, (double)t0[0], (double)t0[1], (double)t0[2],
-                 p1, (double)t1[0], (double)t1[1], (double)t1[2]);
+                 when, g_inSubframe ? "[SUB ]" : "[tick]", (double)view[0], (double)view[1],
+                 (double)view[2], p0, (double)t0[0], (double)t0[1], (double)t0[2], p1,
+                 (double)t1[0], (double)t1[1], (double)t1[2]);
 }
 bool viewcalc_on() {
     static const bool v = std::getenv("SBR_INTERP60_VIEWCALC") != nullptr;
@@ -2071,14 +1995,18 @@ bool viewcalc_on() {
 // run under the MIRROR camera's view (y = -1177) — the reflection pre-render, not the background.
 // A conclusion drawn from it would have been about the wrong model entirely. The census makes the
 // population visible so a representative model can be pinned instead of assumed.
-u32  g_censusSeen[64];
-int  g_censusN = 0;
+u32 g_censusSeen[64];
+int g_censusN = 0;
 bool g_censusDone = false;
 
 void mtx_census(u32 model) {
-    if (g_censusDone || !std::getenv("SBR_INTERP60_MTXCENSUS")) return;
-    if ((long)VIGetRetraceCount() < viewseq_at()) return;
-    for (int i = 0; i < g_censusN; ++i) if (g_censusSeen[i] == model) return;
+    if (g_censusDone || !std::getenv("SBR_INTERP60_MTXCENSUS"))
+        return;
+    if ((long)VIGetRetraceCount() < viewseq_at())
+        return;
+    for (int i = 0; i < g_censusN; ++i)
+        if (g_censusSeen[i] == model)
+            return;
     if (g_censusN >= (int)(sizeof(g_censusSeen) / sizeof(g_censusSeen[0]))) {
         lucent::info("i60census", "  (census table full at {} models; the rest are NOT listed)",
                      g_censusN);
@@ -2093,42 +2021,61 @@ void mtx_census(u32 model) {
                  model, flags, (flags & 1) ? "SET (anim matrices, view NEVER read)" : "clear",
                  (double)guest_f32(J3DSYS_VIEWMTX + 3 * 4),
                  (double)guest_f32(J3DSYS_VIEWMTX + 7 * 4),
-                 (double)guest_f32(J3DSYS_VIEWMTX + 11 * 4),
-                 g_inSubframe ? "[SUB]" : "[tick]");
+                 (double)guest_f32(J3DSYS_VIEWMTX + 11 * 4), g_inSubframe ? "[SUB]" : "[tick]");
 }
 
 // The direct question is not WHICH models viewCalc inside a sub-frame but under WHICH VIEW they do
-// it, so bucket the calls by the view that was live. A distinct-model census answers "who ran"; this
-// answers "did the recompute see the interpolated view", which is the thing that decides whether the
-// geometry can move. Buckets are keyed on the view's y translation, which separates the main camera
+// it, so bucket the calls by the view that was live. A distinct-model census answers "who ran";
+// this answers "did the recompute see the interpolated view", which is the thing that decides
+// whether the geometry can move. Buckets are keyed on the view's y translation, which separates the
+// main camera
 // (~+590) from the mirror (~-1177) unambiguously at this scene.
-float g_subframeCamY = 0.0f;   // the interpolated camera view's y, captured at sub-frame start
+float g_subframeCamY = 0.0f; // the interpolated camera view's y, captured at sub-frame start
 
-// SBR_INTERP60_VCLIST=1 — attribute the TICK's viewCalc calls to the outermost perform list that was
-// running. The sub-frame re-issues a recorded set of lists; if the background's viewCalc happens in a
-// list that set does not include, the name of that list IS the fix. Choosing a list to re-issue by
-// elimination is what produced the "calc-anim rebuilds everything" error, so this names it instead.
-struct ListVC { u32 list; long n; };
+// SBR_INTERP60_VCLIST=1 — attribute the TICK's viewCalc calls to the outermost perform list that
+// was running. The sub-frame re-issues a recorded set of lists; if the background's viewCalc
+// happens in a list that set does not include, the name of that list IS the fix. Choosing a list to
+// re-issue by elimination is what produced the "calc-anim rebuilds everything" error, so this names
+// it instead.
+struct ListVC {
+    u32 list;
+    long n;
+};
 ListVC g_listVC[16];
-int    g_listVCN = 0;
+int g_listVCN = 0;
 
 void list_vc_note(u32 list) {
-    for (int i = 0; i < g_listVCN; ++i) if (g_listVC[i].list == list) { ++g_listVC[i].n; return; }
-    if (g_listVCN < 16) { g_listVC[g_listVCN].list = list; g_listVC[g_listVCN].n = 1; ++g_listVCN; }
+    for (int i = 0; i < g_listVCN; ++i)
+        if (g_listVC[i].list == list) {
+            ++g_listVC[i].n;
+            return;
+        }
+    if (g_listVCN < 16) {
+        g_listVC[g_listVCN].list = list;
+        g_listVC[g_listVCN].n = 1;
+        ++g_listVCN;
+    }
 }
 
-// The director's own field names for its lists, so the report says "CalcAnim" rather than a pointer.
+// The director's own field names for its lists, so the report says "CalcAnim" rather than a
+// pointer.
 const char* list_name(u32 list) {
-    if (!g_mardir) return "?";
+    if (!g_mardir)
+        return "?";
     for (size_t i = 0; i < sizeof(kListSlots) / sizeof(kListSlots[0]); ++i)
-        if (sb_r32(g_mardir + kListSlots[i]) == list) return kListNames[i];
+        if (sb_r32(g_mardir + kListSlots[i]) == list)
+            return kListNames[i];
     return "(not one of the director's lists)";
 }
 
 void list_vc_report() {
-    if (!std::getenv("SBR_INTERP60_VCLIST") || g_listVCN == 0) return;
+    if (!std::getenv("SBR_INTERP60_VCLIST") || g_listVCN == 0)
+        return;
     static int n = 0;
-    if (++n > 2) { g_listVCN = 0; return; }
+    if (++n > 2) {
+        g_listVCN = 0;
+        return;
+    }
     lucent::info("i60vclist", "=== tick viewCalc calls, by the outermost perform list running ===");
     for (int i = 0; i < g_listVCN; ++i)
         lucent::info("i60vclist", "    {:<16} 0x{:08x}  ->  {} call(s)",
@@ -2137,24 +2084,38 @@ void list_vc_report() {
                               "above that is not in it cannot rebuild its models' matrices)");
     g_listVCN = 0;
 }
-struct ViewBucket { float y; long n; };
+struct ViewBucket {
+    float y;
+    long n;
+};
 ViewBucket g_vcBuckets[8];
-int  g_vcBucketN = 0;
+int g_vcBucketN = 0;
 
 void vc_bucket(float y) {
     for (int i = 0; i < g_vcBucketN; ++i)
-        if (g_vcBuckets[i].y == y) { ++g_vcBuckets[i].n; return; }
-    if (g_vcBucketN < 8) { g_vcBuckets[g_vcBucketN].y = y; g_vcBuckets[g_vcBucketN].n = 1;
-                           ++g_vcBucketN; }
+        if (g_vcBuckets[i].y == y) {
+            ++g_vcBuckets[i].n;
+            return;
+        }
+    if (g_vcBucketN < 8) {
+        g_vcBuckets[g_vcBucketN].y = y;
+        g_vcBuckets[g_vcBucketN].n = 1;
+        ++g_vcBucketN;
+    }
 }
 
 void vc_buckets_report() {
-    if (!viewcalc_on() || g_vcBucketN == 0) return;
+    if (!viewcalc_on() || g_vcBucketN == 0)
+        return;
     static long n = 0;
-    if (++n > 4 && (n % 900) != 0) { g_vcBucketN = 0; return; }
-    lucent::info("i60vc", "sub-frame #{}: viewCalc calls bucketed by the view they ran under "
-                          "(reference: this sub-frame's camera view y={:.2f}; an ortho pass is "
-                          "y=0; the mirror pass is strongly negative):",
+    if (++n > 4 && (n % 900) != 0) {
+        g_vcBucketN = 0;
+        return;
+    }
+    lucent::info("i60vc",
+                 "sub-frame #{}: viewCalc calls bucketed by the view they ran under "
+                 "(reference: this sub-frame's camera view y={:.2f}; an ortho pass is "
+                 "y=0; the mirror pass is strongly negative):",
                  n, (double)g_subframeCamY);
     for (int i = 0; i < g_vcBucketN; ++i)
         // NO NAME IS ASSERTED. The first version labelled anything with y >= 0 "the main camera",
@@ -2170,7 +2131,8 @@ void vc_buckets_report() {
 void viewcalc_hook(CPUState& cpu) {
     if (g_inSubframe) {
         ++g_vcSub;
-        if (viewcalc_on()) vc_bucket(guest_f32(J3DSYS_VIEWMTX + 7 * 4));
+        if (viewcalc_on())
+            vc_bucket(guest_f32(J3DSYS_VIEWMTX + 7 * 4));
     } else {
         ++g_vcTick;
         if (std::getenv("SBR_INTERP60_VCLIST") && (long)VIGetRetraceCount() >= viewseq_at())
@@ -2188,104 +2150,39 @@ void viewcalc_hook(CPUState& cpu) {
         mtxtrace_report(model, "viewCalc BEFORE");
         func_802deeb8(cpu);
         mtxtrace_report(model, "viewCalc AFTER");
-        if (!g_inSubframe) sbr_i60r_record(model);
+        if (!g_inSubframe)
+            sbr_i60r_record(model);
         return;
     }
     func_802deeb8(cpu);
     // RECORD-AND-REPLACE: the real viewCalc has just written this model's final draw matrices, so
     // this is the one moment they exist for the tick. Recording INSIDE a sub-frame would overwrite
     // the tick's values with interpolated ones and the next tick would lerp from a midpoint.
-    if (!g_inSubframe) sbr_i60r_record(model);
-}
-
-// SBR_INTERP60_PLAYER_DIFF=1 — name the fields the sub-frame leaves changed on the player object.
-//
-// Two guesses at the player leak have now failed (a second calcAnim from the true pose; saving and
-// restoring the waist smoothers, which considerWaist visibly integrates). Guessing at a third is
-// the pattern this arc keeps paying for, so: snapshot the object before the sub-frame touches it,
-// compare after everything has been restored, and print the OFFSETS that differ. The field is then
-// looked up in Mario.hpp rather than hypothesised.
-//
-// Bounded to the first 0x800 bytes — TMario is large, and an unbounded diff would report the whole
-// object. The bound is stated in the output so a leak beyond it cannot read as "no leak".
-constexpr u32 kPlayerDiffBytes = 0x800;
-u8   g_playerSnap[kPlayerDiffBytes];
-bool g_playerSnapped = false;
-
-void player_snapshot(u32 obj) {
-    if (!std::getenv("SBR_INTERP60_PLAYER_DIFF") || !obj) return;
-    for (u32 i = 0; i < kPlayerDiffBytes; ++i) g_playerSnap[i] = sb_r8(obj + i);
-    g_playerSnapped = true;
-}
-
-void player_diff(u32 obj) {
-    if (!g_playerSnapped || !obj) return;
-    g_playerSnapped = false;
-    static int reports = 0;
-    if (reports >= 3) return;
-    ++reports;
-    int n = 0;
-    lucent::info("i60pdiff", "=== player object bytes changed by the sub-frame (first 0x{:x} bytes "
-                             "only; a leak past that is NOT covered) ===", kPlayerDiffBytes);
-    for (u32 i = 0; i < kPlayerDiffBytes; i += 4) {
-        u32 before = 0, after = 0;
-        for (int k = 0; k < 4; ++k) {
-            before = (before << 8) | g_playerSnap[i + k];
-            after  = (after  << 8) | sb_r8(obj + i + k);
-        }
-        if (before == after) continue;
-        if (++n > 24) { lucent::info("i60pdiff", "  ... more than 24 differing words; stopping"); break; }
-        float fb, fa;
-        __builtin_memcpy(&fb, &before, 4); __builtin_memcpy(&fa, &after, 4);
-        lucent::info("i60pdiff", "  +0x{:03x}: 0x{:08x} -> 0x{:08x}   (as f32: {:.4f} -> {:.4f})",
-                     i, before, after, (double)fb, (double)fa);
-    }
-    if (n == 0)
-        lucent::info("i60pdiff", "  NOTHING changed in this range -- the player leak, if real, is "
-                                 "outside it or is not on the player object at all.");
-}
-
-void player_restore() {
-    if (!g_waistObj) return;
-    player_diff(g_waistObj);
-    guest_w_f32(g_waistObj + OFF_MARIO_WAIST_ROLL,  g_waistSave[0]);
-    guest_w_f32(g_waistObj + OFF_MARIO_WAIST_PITCH, g_waistSave[1]);
-    for (int k = 0; k < 3; ++k)
-        guest_w_f32(g_waistObj + OFF_MARIO_SCREEN_POS + (u32)k * 4, g_waistSave[2 + k]);
-    g_waistObj = 0;
-}
-
-void camera_restore(const CamSave& sv) {
-    if (!sv.obj) return;
-    for (int k = 0; k < 3; ++k) {
-        guest_w_f32(sv.obj + OFF_CPSC_A + (u32)k * 4, sv.eye[k]);
-        guest_w_f32(sv.obj + OFF_CPSC_B + (u32)k * 4, sv.at[k]);
-    }
-    // The matrix is restored rather than rebuilt: putting back exactly what the game computed is
-    // bit-exact, whereas recomputing it would re-derive a value the game already has and could
-    // differ in the last bits.
-    for (int i = 0; i < 12; ++i)
-        guest_w_f32(sv.obj + OFF_CPSC_VIEWMTX + (u32)i * 4, sv.view[i]);
+    if (!g_inSubframe)
+        sbr_i60r_record(model);
 }
 
 void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
-    if (!list || !sb_ram_fast(list)) return;
+    if (!list || !sb_ram_fast(list))
+        return;
     const long camBefore = g_camDispatches;
     // The first sub-frames are traced list by list, entry AND exit. A re-issue that hangs inside
     // guest code otherwise produces silence, and silence is the one output that cannot be told from
     // "never ran" -- the exit line is what distinguishes them.
     const bool loud = g_subframes < 2;
-    if (loud) lucent::info("i60sub", "  -> list 0x{:08x} cue=0x{:x} stream={} KB", list, cue,
-                           sbr_gxfifo_stream_pos() >> 10);
+    if (loud)
+        lucent::info("i60sub", "  -> list 0x{:08x} cue=0x{:x} stream={} KB", list, cue,
+                     sbr_gxfifo_stream_pos() >> 10);
     cpu.gpr[3] = list;
     cpu.gpr[4] = cue;
     cpu.gpr[5] = gfx;
-    sbr_tick_split_call(cpu);
+    func_802a4e28(cpu);
     // The GX BYTES this list emitted. "The re-issue hangs" and "the re-issue emits a hundred times
     // the geometry it should" produce the same silence from outside; only the stream size separates
     // them, and a whole tick is about 2.25 MB, so anything far past that is the answer.
-    if (loud) lucent::info("i60sub", "  <- list 0x{:08x} returned, stream={} KB", list,
-                           sbr_gxfifo_stream_pos() >> 10);
+    if (loud)
+        lucent::info("i60sub", "  <- list 0x{:08x} returned, stream={} KB", list,
+                     sbr_gxfifo_stream_pos() >> 10);
     if (order_on()) {
         // Sample LATE. The first sub-frames happen before gameplay, where the camera is static and
         // every alpha agrees by construction — a window that lands there answers the question with
@@ -2296,7 +2193,8 @@ void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
             return e ? std::atol(e) : 1100L;
         }();
         static long n = 0;
-        if ((long)VIGetRetraceCount() >= at && n < 40) { ++n;
+        if ((long)VIGetRetraceCount() >= at && n < 40) {
+            ++n;
             lucent::info("i60order",
                          "  list 0x{:08x}: camera dispatches {} | view translation after = "
                          "({:.2f}, {:.2f}, {:.2f})",
@@ -2317,9 +2215,10 @@ void perform_list(CPUState& cpu, u32 list, u32 cue, u32 gfx) {
 // no snapshot tick means no sub-frame, counted and reported. A sub-frame that quietly renders
 // nothing would show up as "60fps that looks like 30" with no way to tell it from a bad alpha.
 // The cue both view-calc re-issues pass. ONE definition, because the second pass exists to balance
-// the first: two passes issued with different cues would not cancel, and that is the kind of drift a
-// duplicated literal invites. SBR_INTERP60_PREENTRY_VC_CUE overrides it for A/B (0 restores nothing
-// — pass the old `cue & ~0x203` value explicitly if you want the darkening back for comparison).
+// the first: two passes issued with different cues would not cancel, and that is the kind of drift
+// a duplicated literal invites. SBR_INTERP60_PREENTRY_VC_CUE overrides it for A/B (0 restores
+// nothing — pass the old `cue & ~0x203` value explicitly if you want the darkening back for
+// comparison).
 u32 preentry_vc_cue() {
     static const u32 v = [] {
         const char* e = std::getenv("SBR_INTERP60_PREENTRY_VC_CUE");
@@ -2354,20 +2253,23 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // SBR_INTERP60_CENSUS=1 reaches the seam without SBR_INTERP60: the census is a statement about
     // the SCENE, so it must be obtainable from a run that does no interpolation at all — that is
     // the baseline every interpolation reading is compared against.
-    if (!enabled() && !sbr_i60r_recording()) return;
+    if (!enabled() && !sbr_i60r_recording())
+        return;
     // RE-ENTRANCY. The re-issued lists are ordinary guest code and may reach the frame seam again
     // (anything in them that waits on a retrace does). Without this guard each nesting level starts
     // another sub-frame and the frame never completes -- which presents as a hang, not as an error.
-    if (g_inSubframe) return;
+    if (g_inSubframe)
+        return;
     ++g_gameTick;
-    g_sawMovement = false;          // next tick records its own draw block
-    if (!g_mardir) resolve_mardir();
+    g_sawMovement = false; // next tick records its own draw block
+    if (!g_mardir)
+        resolve_mardir();
 
     const float alpha = alpha_setting();
-    // The recording must advance on EVERY tick that reaches the seam, including the ones that render
-    // no sub-frame. A tick that skips the swap leaves `prev` two or more ticks behind `cur`, and the
-    // lerp then spans a distance the alpha was never scaled for — a plausible-looking frame computed
-    // from the wrong pair, which is the hardest kind of wrong to see.
+    // The recording must advance on EVERY tick that reaches the seam, including the ones that
+    // render no sub-frame. A tick that skips the swap leaves `prev` two or more ticks behind `cur`,
+    // and the lerp then spans a distance the alpha was never scaled for — a plausible-looking frame
+    // computed from the wrong pair, which is the hardest kind of wrong to see.
     struct TickAdvance {
         ~TickAdvance() { sbr_i60r_begin_tick(); }
     } tickAdvance;
@@ -2380,14 +2282,19 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // static" and "this configuration never reached the census", which are opposite conclusions.
     sbr_i60r_census();
     sbr_i60r_report();
-    if (alpha < 0.0f) { g_drawN = 0; return; }
+    if (alpha < 0.0f) {
+        g_drawN = 0;
+        return;
+    }
     // Say what this run is actually doing, once. An ablation whose two alphas are set by
     // environment is otherwise invisible in its own log, and a run mislabelled in the shell is
     // indistinguishable from a result.
     {
         static bool said = false;
-        if (!said) { said = true;
-            lucent::info("i60sub", "alphas: camera={:.2f}  actors={:.2f}  (SBR_INTERP60_ALPHA={:.2f})",
+        if (!said) {
+            said = true;
+            lucent::info("i60sub",
+                         "alphas: camera={:.2f}  actors={:.2f}  (SBR_INTERP60_ALPHA={:.2f})",
                          (double)alpha_cam(), (double)alpha_act(), (double)alpha);
         }
     }
@@ -2404,7 +2311,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // recomp-era implementation used the same construction.
     const u32 savedSp = (u32)cpu.gpr[1];
     const u32 gfx = (savedSp - 0x110u) & ~0xFu;
-    for (u32 i = 0; i < 0x100; ++i) sb_w8(gfx + i, g_gfxSnap[i]);
+    for (u32 i = 0; i < 0x100; ++i)
+        sb_w8(gfx + i, g_gfxSnap[i]);
     cpu.gpr[1] = (gfx - 0x20u) & ~0xFu;
 
     g_inSubframe = true;
@@ -2421,14 +2329,14 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // re-issued with a calc or view-calc cue, so there is nothing to restore and nothing to
     // recompute afterwards — the entire apply/restore/recompute ladder the substitution path needs
     // (camera_restore, anim_restore, restore_all, the balancing PreEntry passes, player_apply's
-    // second call) is absent because the state it repairs is never disturbed. The camera comes along
-    // for free: viewCalc has already concatenated j3dSys's view into every draw matrix, so lerping
-    // the RESULT interpolates the camera and the actor together, in one place, by construction.
-    // See interp60_replace.cpp for what this does and does not cover.
+    // second call) is absent because the state it repairs is never disturbed. The camera comes
+    // along for free: viewCalc has already concatenated j3dSys's view into every draw matrix, so
+    // lerping the RESULT interpolates the camera and the actor together, in one place, by
+    // construction. See interp60_replace.cpp for what this does and does not cover.
     if (sbr_i60r_enabled()) {
-        // THE CAMERA IS INTERPOLATED SEPARATELY, AS A POSE. This is dusklight's split, and it is not
-        // a redundancy: interp_view() lerps eye/center/up/bank/fovy and rebuilds the matrix, while
-        // record_final_mtx() covers per-model matrices, because the two reach the hardware by
+        // THE CAMERA IS INTERPOLATED SEPARATELY, AS A POSE. This is dusklight's split, and it is
+        // not a redundancy: interp_view() lerps eye/center/up/bank/fovy and rebuilds the matrix,
+        // while record_final_mtx() covers per-model matrices, because the two reach the hardware by
         // different routes.
         //
         // Measured here, which is why it is not taken on faith: with model replacement alone,
@@ -2443,16 +2351,18 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         // lerps the pose and rebuilds the cached matrix with the game's own C_MTXLookAt, then
         // restores the matrix bit-exactly. It is a pose lerp, not a matrix lerp, which is the same
         // choice dusklight makes and for the same reason.
-        const CamSave camSaveR = camera_apply(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha_cam());
+        const CameraSave camSaveR =
+            apply_camera(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha_cam(), viewseq_at());
         // j3dSys's view is what static geometry is drawn through, so it must hold the interpolated
         // view for the duration of the sub-frame. Saved and put back with everything else.
         float j3dViewSaveR[12];
-        bool  j3dViewSavedR = false;
-        if (camSaveR.obj && sb_ram_fast(camSaveR.obj + OFF_CPSC_VIEWMTX)) {
-            for (int i = 0; i < 12; ++i) j3dViewSaveR[i] = guest_f32(J3DSYS_VIEWMTX + (u32)i * 4);
+        bool j3dViewSavedR = false;
+        if (camSaveR.object && sb_ram_fast(camSaveR.object + kPolarViewMatrixOffset)) {
+            for (int i = 0; i < 12; ++i)
+                j3dViewSaveR[i] = guest_f32(J3DSYS_VIEWMTX + (u32)i * 4);
             j3dViewSavedR = true;
             for (int i = 0; i < 12; ++i) {
-                const float v = guest_f32(camSaveR.obj + OFF_CPSC_VIEWMTX + (u32)i * 4);
+                const float v = guest_f32(camSaveR.object + kPolarViewMatrixOffset + (u32)i * 4);
                 guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4, v);
                 // AND INTO THE TGraphics, or the seed above is undone before it is read.
                 //
@@ -2483,9 +2393,9 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         // with prev != cur, 0 clobbered — and alpha 0.0 and alpha 1.0 still produced BYTE-IDENTICAL
         // frames. The reason is that emitting the draw is not the same event as reading the matrix.
         // J3D draws shapes with GXLoadPosMtxIndx, which carries an INDEX into the array set by
-        // GXSetArray; the matrix itself is fetched from guest memory when the FIFO is processed, and
-        // that happens at the copy/present, not at the perform. Restoring before the present handed
-        // aurora the original values and the interpolated ones were never read by anything.
+        // GXSetArray; the matrix itself is fetched from guest memory when the FIFO is processed,
+        // and that happens at the copy/present, not at the perform. Restoring before the present
+        // handed aurora the original values and the interpolated ones were never read by anything.
         //
         // Nothing between here and the present runs game code, so the window is still closed before
         // anything can derive state from the substituted values.
@@ -2496,12 +2406,12 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         }
         present();
         sbr_i60r_restore();
-        // Same reason as the matrix restore: put the view back only once the frame that reads it has
-        // been presented. Nothing here derives state — these are plain writes of saved bytes.
+        // Same reason as the matrix restore: put the view back only once the frame that reads it
+        // has been presented. Nothing here derives state — these are plain writes of saved bytes.
         if (j3dViewSavedR)
             for (int i = 0; i < 12; ++i)
                 guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4, j3dViewSaveR[i]);
-        camera_restore(camSaveR);
+        restore_camera(camSaveR);
 
         {
             static long n = 0;
@@ -2523,7 +2433,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     }
 
     float viewBefore[12];
-    for (int i = 0; i < 12; ++i) viewBefore[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
+    for (int i = 0; i < 12; ++i)
+        viewBefore[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
     g_camDispatches = 0;
     const unsigned long xfbBefore = sbr_gxfifo_xfb_copies();
     const uint32_t streamBefore = sbr_gxfifo_stream_pos();
@@ -2558,7 +2469,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
 
     // Pass 1: interpolated pose -> enter -> draw -> present.
     apply_all(g_lastSnapTick, alpha_act());
-    const CamSave camSave = camera_apply(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha_cam());
+    const CameraSave camSave =
+        apply_camera(cpu, g_camObj ? g_camObj : g_placeObjs[0], alpha_cam(), viewseq_at());
     // SBR_INTERP60_CALCANIM=1 — a HYPOTHESIS TEST, not a fix.
     //
     // The ablation says the actor alpha changes not one byte of the frame while the camera alpha
@@ -2601,28 +2513,29 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // restoring its cached matrix bit-exactly, and it is most of the 340,509-pixel actor leak —
     // the seed runs whenever a camera is substituted, not only under the calc-anim re-issue.
     float j3dViewSave[12];
-    bool  j3dViewSaved = false;
-    if (camSave.obj && sb_ram_fast(camSave.obj + OFF_CPSC_VIEWMTX)) {
-        for (int i = 0; i < 12; ++i) j3dViewSave[i] = guest_f32(J3DSYS_VIEWMTX + (u32)i * 4);
+    bool j3dViewSaved = false;
+    if (camSave.object && sb_ram_fast(camSave.object + kPolarViewMatrixOffset)) {
+        for (int i = 0; i < 12; ++i)
+            j3dViewSave[i] = guest_f32(J3DSYS_VIEWMTX + (u32)i * 4);
         j3dViewSaved = true;
         for (int i = 0; i < 12; ++i)
             guest_w_f32(J3DSYS_VIEWMTX + (u32)i * 4,
-                        guest_f32(camSave.obj + OFF_CPSC_VIEWMTX + (u32)i * 4));
+                        guest_f32(camSave.object + kPolarViewMatrixOffset + (u32)i * 4));
     }
 
     // SBR_INTERP60_PREENTRY_VC=1 — re-issue PreEntry with the VIEW-CALC bit ONLY.
     //
-    // This is the fix the whole arc was looking for, and it is only writable because the phase is now
-    // NAMED rather than guessed. SBR_INTERP60_VCLIST attributes the tick's viewCalc calls to the
-    // outermost list running:
+    // This is the fix the whole arc was looking for, and it is only writable because the phase is
+    // now NAMED rather than guessed. SBR_INTERP60_VCLIST attributes the tick's viewCalc calls to
+    // the outermost list running:
     //
     //     GX        ->  14 calls      (the ortho pass, the only ones a sub-frame currently gets)
     //     PreEntry  -> 105 calls      <- the background's model-view rebuild
     //
-    // The sub-frame skips PreEntry on purpose: re-running it appends a SECOND entry set into buffers
-    // that are already full and the following draw never finishes (measured; SBR_INTERP60_PREENTRY=1
-    // keeps that fault reproducible). But entry and view-calc are SEPARATE bits in the same perform
-    // (liveactor.cpp:418-421):
+    // The sub-frame skips PreEntry on purpose: re-running it appends a SECOND entry set into
+    // buffers that are already full and the following draw never finishes (measured;
+    // SBR_INTERP60_PREENTRY=1 keeps that fault reproducible). But entry and view-calc are SEPARATE
+    // bits in the same perform (liveactor.cpp:418-421):
     //
     //     if (cue & 4)     mMActor->viewCalc();     <- rebuild model-view from j3dSys
     //     if (cue & 0x200) drawObject(param_2);     <- ENTER into the draw buffers
@@ -2656,10 +2569,13 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         const u32 ca = sb_r32(g_mardir + 0x2C);
         if (!ca || !sb_ram_fast(ca)) {
             static bool said = false;
-            if (!said) { said = true;
-                lucent::info("i60sub", "SBR_INTERP60_CALCANIM: director +0x2C is 0x{:08x}, which is "
-                                       "not usable memory -- calc-anim was NOT re-issued and this "
-                                       "run tests nothing.", ca);
+            if (!said) {
+                said = true;
+                lucent::info("i60sub",
+                             "SBR_INTERP60_CALCANIM: director +0x2C is 0x{:08x}, which is "
+                             "not usable memory -- calc-anim was NOT re-issued and this "
+                             "run tests nothing.",
+                             ca);
             }
         } else {
             // CUE 0x4 ONLY — this is the whole point, and it is why the first attempt at this was
@@ -2679,12 +2595,14 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
             perform_list(cpu, ca, cue & ~0x3u, gfx);
         }
     }
-    player_apply(cpu, gfx, true);
+    apply_player(cpu, gfx, true);
     actors_calc_root(cpu, g_lastSnapTick, true, true);
     mtxtrace_report(g_mtxModel, "sub-frame START");
-    g_subframeCamY = camSave.obj ? guest_f32(camSave.obj + OFF_CPSC_VIEWMTX + 7 * 4) : 0.0f;
+    g_subframeCamY =
+        camSave.object ? guest_f32(camSave.object + kPolarViewMatrixOffset + 7 * 4) : 0.0f;
     viewseq_begin();
-    if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
+    if (!noEntry)
+        perform_list(cpu, preEntry, cue, gfx);
     // SBR_INTERP60_DROPLAST=1: omit the last recorded draw list from the re-issue.
     //
     // A PLUMBING control that does not involve poses at all. Every pose-based test so far has
@@ -2696,7 +2614,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     static const bool dropLast = std::getenv("SBR_INTERP60_DROPLAST") != nullptr;
     const int drawN = dropLast && g_drawN > 1 ? g_drawN - 1 : g_drawN;
     mtxtrace_report(g_mtxModel, "before draw lists");
-    for (int i = 0; i < drawN; ++i) perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
+    for (int i = 0; i < drawN; ++i)
+        perform_list(cpu, g_drawLists[i], g_drawCues[i] & cue, gfx);
     mtxtrace_report(g_mtxModel, "after draw lists");
     viewseq_end();
     // THE ARTIFACT, not the state. Two alphas that emit the same bytes cannot render different
@@ -2713,34 +2632,36 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         static long n = 0;
         static int moving = 0;
         const uint32_t now = sbr_gxfifo_stream_pos();
-        const bool interesting = g_camSep >= 1.0f && moving < 8 && ++moving;
+        const bool interesting = camera_separation() >= 1.0f && moving < 8 && ++moving;
         if (++n <= 6 || (n % 900) == 0 || interesting)
-            lucent::info("i60stream",
-                         "sub-frame #{} alpha={:.2f} |cam cur-prev|={:.3f}: emitted {} bytes, "
-                         "FNV-1a {:016x}{}",
-                         n, (double)alpha, (double)g_camSep, now - streamBefore,
-                         sbr_gxfifo_stream_hash(streamBefore, now),
-                         now == streamBefore
-                             ? "   <-- emitted NOTHING; a hash over an empty range says nothing "
-                               "about alpha"
-                             : (g_camSep == 0.0f
-                                    ? "   <-- the camera did not move this tick, so two alphas MUST "
-                                      "hash the same here and their agreeing proves nothing"
-                                    : ""));
+            lucent::info(
+                "i60stream",
+                "sub-frame #{} alpha={:.2f} |cam cur-prev|={:.3f}: emitted {} bytes, "
+                "FNV-1a {:016x}{}",
+                n, (double)alpha, (double)camera_separation(), now - streamBefore,
+                sbr_gxfifo_stream_hash(streamBefore, now),
+                now == streamBefore
+                    ? "   <-- emitted NOTHING; a hash over an empty range says nothing "
+                      "about alpha"
+                    : (camera_separation() == 0.0f
+                           ? "   <-- the camera did not move this tick, so two alphas MUST "
+                             "hash the same here and their agreeing proves nothing"
+                           : ""));
     }
     // Does the substituted camera pose SURVIVE the re-issue?
     //
     // The camera's own perform runs inside the re-issue (measured: 16 dispatches), and
     // CPolarSubCamera::perform is the camera's update, not merely a matrix build. If it recomputes
     // mPosition from its internal state (angle, distance, target chase), it overwrites the lerp
-    // before C_MTXLookAt ever reads it — and the sub-frame renders pose N, which is exactly what the
-    // pixel gate reports. Substituting a field that its owner recomputes is futile, and no amount of
-    // correct lerping fixes it; the fix would be to snapshot the state the recompute reads instead.
+    // before C_MTXLookAt ever reads it — and the sub-frame renders pose N, which is exactly what
+    // the pixel gate reports. Substituting a field that its owner recomputes is futile, and no
+    // amount of correct lerping fixes it; the fix would be to snapshot the state the recompute
+    // reads instead.
     if (g_camObj && sb_ram_fast(g_camObj)) {
         static long n = 0;
         if (++n <= 4 || (n % 300) == 0) {
-            const float x = guest_f32(g_camObj + OFF_POSITION);
-            const float z = guest_f32(g_camObj + OFF_POSITION + 8);
+            const float x = guest_f32(g_camObj + kPositionOffset);
+            const float z = guest_f32(g_camObj + kPositionOffset + 8);
             lucent::info("i60sub",
                          "camera pose after re-issue #{}: ({:.2f}, _, {:.2f})   lerp wrote "
                          "({:.2f}, _, {:.2f})   cur is ({:.2f}, _, {:.2f}){}",
@@ -2748,7 +2669,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                          (double)g_camCur[0], (double)g_camCur[2],
                          (x == g_camCur[0] && z == g_camCur[2] && g_camWrote[0] != g_camCur[0])
                              ? "   <-- REVERTED to cur: the camera recomputed its own position "
-                               "during the re-issue and discarded the substitution" : "");
+                               "during the re-issue and discarded the substitution"
+                             : "");
         }
     }
 
@@ -2760,9 +2682,9 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
     // showing the previous image however much was drawn.
     //
     // The copy lives in TDisplay::endRendering (JDRDisplay.cpp:36), which calls waitForRetrace and
-    // then IssueGXCopyDisp -> GXCopyDisp. Calling the game's own endRendering is the faithful way to
-    // emit it: the copy's parameters (src rect, Y scale, dst width, clamp, filter, clear) come from
-    // the display's own render mode, and reproducing that sequence by hand would be a second
+    // then IssueGXCopyDisp -> GXCopyDisp. Calling the game's own endRendering is the faithful way
+    // to emit it: the copy's parameters (src rect, Y scale, dst width, clamp, filter, clear) come
+    // from the display's own render mode, and reproducing that sequence by hand would be a second
     // implementation of it to keep in step. The frame seam recognises the re-entry and returns
     // without presenting, so only the copy happens.
     // SBR_INTERP60_COPY=1 — OFF BY DEFAULT, because it is not yet correct.
@@ -2786,7 +2708,7 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
 
     present();
 
-    camera_restore(camSave);
+    restore_camera(camSave);
     // Animation frames go back with everything else: they were substituted for the sub-frame's
     // render only, and the next tick's frameUpdate must advance from the value the GAME computed,
     // not from a midpoint. Restoring the saved value (rather than adding the delta back) is what
@@ -2832,10 +2754,11 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         for (int p = 0; p < preentry_vc_passes(); ++p)
             perform_list(cpu, preEntry, preentry_vc_cue(), gfx);
 
-    player_apply(cpu, gfx, false);
+    apply_player(cpu, gfx, false);
     actors_calc_root(cpu, g_lastSnapTick, false, false);
-    player_restore();
-    if (!noEntry) perform_list(cpu, preEntry, cue, gfx);
+    restore_player();
+    if (!noEntry)
+        perform_list(cpu, preEntry, cue, gfx);
 
     // Did the re-issue move the view, and did the camera take part?
     {
@@ -2845,7 +2768,11 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
         for (int i = 0; i < 12; ++i) {
             viewAfter[i] = guest_f32(gfx + OFF_VIEWMTX + (u32)i * 4);
             const float d = viewAfter[i] - viewBefore[i];
-            if (d != 0.0f) { ++changed; if (d > maxd || -d > maxd) maxd = d < 0 ? -d : d; }
+            if (d != 0.0f) {
+                ++changed;
+                if (d > maxd || -d > maxd)
+                    maxd = d < 0 ? -d : d;
+            }
         }
         static long n = 0;
         if (++n <= 3 || (n % 600) == 0)
@@ -2854,14 +2781,15 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                          "camera dispatched {}x inside the sub-frame{}",
                          n, changed, (double)maxd, g_camDispatches,
                          changed == 0 ? "  <-- the view is UNCHANGED: no camera field can reach "
-                                        "this sub-frame" : "");
+                                        "this sub-frame"
+                                      : "");
         const unsigned long xfb = sbr_gxfifo_xfb_copies() - xfbBefore;
         if (++n <= 4 || (n % 600) == 0)
-            lucent::info("i60sub",
-                         "  copy-to-XFB triggers emitted by this sub-frame: {}{}", xfb,
+            lucent::info("i60sub", "  copy-to-XFB triggers emitted by this sub-frame: {}{}", xfb,
                          xfb == 0 ? "  <-- NONE. The sub-frame rendered into the EFB and was never "
                                     "copied out, so the display keeps showing the previous image "
-                                    "however much geometry was emitted." : "");
+                                    "however much geometry was emitted."
+                                  : "");
     }
 
     vc_buckets_report();
@@ -2879,7 +2807,8 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
                              : (g_vcSub < g_vcTick / 4
                                     ? "   <-- far fewer: most drawables keep the tick's matrices"
                                     : ""));
-        g_vcSub = 0; g_vcTick = 0;
+        g_vcSub = 0;
+        g_vcTick = 0;
     }
     g_inSubframe = false;
     cpu.gpr[1] = savedSp;
@@ -2897,12 +2826,17 @@ extern "C" void sbr_interp60_subframe(CPUState& cpu, void (*present)(void)) {
 // The frame seam asks this before doing any of its own work: inside a sub-frame the game's
 // endRendering is being called only for its COPY, and a nested present would end the very frame the
 // sub-frame is still building.
-extern "C" int sbr_interp60_in_subframe() { return g_inSubframe ? 1 : 0; }
+extern "C" int sbr_interp60_in_subframe() {
+    return g_inSubframe ? 1 : 0;
+}
 
 extern "C" void sbr_interp60_restore() {
-    if (!enabled()) return;
-    if (follow_obj() && g_followLines <= 120) { ++g_followLines;
-        lucent::info("i60follow", "  ---------------- PRESENT ----------------"); }
+    if (!enabled())
+        return;
+    if (follow_obj() && g_followLines <= 120) {
+        ++g_followLines;
+        lucent::info("i60follow", "  ---------------- PRESENT ----------------");
+    }
     if (trace_on() && (long)VIGetRetraceCount() >= trace_start_present() && g_tracePresents <= 3) {
         trace_flush_run();
         ++g_tracePresents;
@@ -2913,10 +2847,12 @@ extern "C" void sbr_interp60_restore() {
         lucent::info("i60lists", "PRESENT  (end of tick {}; {} outermost perform calls so far)",
                      g_listTicks, g_listLines);
         if (g_listLines == 0)
-            lucent::info("i60lists", "  NOTE: zero outermost calls were seen this tick -- the "
-                                     "sub-frame body cannot be built from a sequence that is empty");
+            lucent::info("i60lists",
+                         "  NOTE: zero outermost calls were seen this tick -- the "
+                         "sub-frame body cannot be built from a sequence that is empty");
         g_listSeq = 0;
-        if (g_listTicks == 2) resolve_mardir();   // after a full tick has populated the seen-set
+        if (g_listTicks == 2)
+            resolve_mardir(); // after a full tick has populated the seen-set
     }
 }
 
@@ -2930,7 +2866,8 @@ void end_rendering(CPUState& cpu) {
     // The copy has now been issued. Under SBR_PRESENT_AFTER_COPY this is where the frame is
     // actually presentable; without it this call does nothing. Never during a sub-frame, whose own
     // endRendering call exists only to emit a copy.
-    if (!g_inSubframe) sbr_frame_present_now();
+    if (!g_inSubframe)
+        sbr_frame_present_now();
 }
 } // namespace
 

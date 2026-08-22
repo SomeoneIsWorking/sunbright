@@ -1,5 +1,11 @@
 # decomp vs recomp: where the frame time actually goes, and what that means for true 60fps
 
+> **Measurement supersession (2026-08-22):** The runtime-cost, FPS-equivalent, and phase-dominance
+> conclusions below are invalid as optimization evidence. They are host elapsed measurements taken
+> under different contention and sometimes charge the same work to different phases. Claims C016
+> and C021 are falsified; C019 and C020 now use no-loss sampling and deterministic owning-subsystem
+> counters. Retain this entry as history, not as a current performance model.
+
 The 60fps path decision (lerp vs native 60 Hz, decomp vs recomp) was resting on an assumption:
 *native decomp logic is much cheaper than recompiled PPC, so the decomp can afford to run its game
 logic at 60 Hz.* The first half is true. The second half does not follow, because logic is not the
@@ -131,7 +137,8 @@ is correctly cached behind a static, so the classic hot-loop-`getenv` win is not
 target — restructuring a 1022-line per-vertex function — but it has one large advantage over the
 bypass: it helps **both** runtimes, since both reach the same code, rather than only the decomp.
 
-Claim C018 recorded the wrong attribution and has been falsified; C019 records this one. Worth
+Claim C018 recorded the wrong attribution and was falsified at the time; the old C019 attribution
+described here was itself superseded on 2026-08-22 by bounded no-loss sampling. Worth
 noting how close this came to costing a large arc: the bypass was a coherent, well-evidenced-looking
 proposal built on one unmeasured assumption about *which part* of a measured 11.5 ms was overhead.
 

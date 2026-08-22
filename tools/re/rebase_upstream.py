@@ -379,6 +379,13 @@ def cmd_converge(args):
     print("file kept every native fix — only that it kept the ones this stage exercises.")
 
 
+def runtime_smoke_passed(returncode, output):
+    """A timeout is a pass only after the decomp runtime proved gameplay and frame progress."""
+    return (returncode in (0, 137)
+            and "APP_STATE_GAMEPLAY" in output
+            and "[draw-stats] frame=" in output)
+
+
 def runtime_gate():
     """Actually RUN the thing once, because building it is not the test.
 
@@ -399,14 +406,15 @@ def runtime_gate():
               "pass — the adopted files are unverified at runtime.")
         return
     print("\n[converge] runtime smoke test (one short run of the decomp runtime) ...")
-    env = dict(os.environ, SB_RUNNER="run.sh", SB_RUN_SECS="100")
+    env = dict(os.environ, SB_RUNNER="run-decomp.sh", SB_RUN_SECS="30", SB_DRAW_STATS="1")
     # errors="replace", NOT text=True: the boot log is Shift-JIS, and a strict utf-8 decode raises
     # UnicodeDecodeError from inside subprocess — the gate would abort with a traceback instead of
     # reporting on the run it just did, which is a gate that fails closed in the least useful way.
     r = subprocess.run([runner, "SB_STAGE=1"], cwd=REPO, env=env,
                        capture_output=True, text=True, errors="replace")
     # 137 is our own SIGKILL at the wall-clock cap: the run survived to the end of its budget.
-    if r.returncode in (0, 137):
+    output = r.stdout + r.stderr
+    if runtime_smoke_passed(r.returncode, output):
         print("[converge] runtime smoke test PASSED (the boot path still runs). This is a floor, "
               "not proof: it exercises one stage and cannot see a fix the boot path never uses.")
         return
@@ -416,12 +424,36 @@ def runtime_gate():
     print("           halves and re-running — a header that overlays file bytes or carries an")
     print("           LP64/BE fix is the usual cause, and the compiler cannot see either.")
     print("           Adopted files are still in the worktree; nothing was committed.")
+    if "APP_STATE_GAMEPLAY" not in output:
+        print("           Missing progress marker: APP_STATE_GAMEPLAY")
+    if "[draw-stats] frame=" not in output:
+        print("           Missing progress marker: completed draw-work frame")
+    print("\n".join(output.splitlines()[-80:]))
+    raise SystemExit("decomp runtime smoke failed; convergence is NOT verified")
+
+
+def cmd_selftest(_args):
+    good = "[fastboot] -> stage 1 scenario 0 (APP_STATE_GAMEPLAY)\n[draw-stats] frame=0"
+    cases = (
+        (0, good, True, "clean known-good"),
+        (137, good, True, "bounded known-good"),
+        (139, good, False, "crash"),
+        (137, "[draw-stats] frame=0", False, "startup hang"),
+        (137, "APP_STATE_GAMEPLAY", False, "no completed frame"),
+    )
+    for returncode, output, expected, label in cases:
+        actual = runtime_smoke_passed(returncode, output)
+        if actual != expected:
+            raise RuntimeError(f"runtime-gate control failed for {label}: got {actual}")
+    print("rebase_upstream selftest: PASS (known-good, crash, startup-hang, no-frame controls)")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.add_argument("--selftest", action="store_true",
+                    help="exercise runtime-gate positive and negative controls")
+    sub = ap.add_subparsers(dest="cmd")
 
     sub.add_parser("status", help="how far behind upstream + divergence summary"
                    ).set_defaults(func=cmd_status)
@@ -446,6 +478,11 @@ def main():
     cv.set_defaults(func=cmd_converge)
 
     args = ap.parse_args()
+    if args.selftest:
+        cmd_selftest(args)
+        return
+    if args.cmd is None:
+        ap.error("a subcommand is required")
     args.func(args)
 
 

@@ -18,7 +18,15 @@ import tempfile
 
 
 REPO = Path(__file__).resolve().parents[1]
-BUILD_DIRECTORIES = (REPO / "build-sms-recomp", REPO / "scratch" / "build-recompiler")
+# These are the repository's documented, current CMake build trees. Keep the legacy trees after
+# them so an older local configuration remains usable, but never let it shadow the shipping build's
+# command for the same translation unit.
+BUILD_DIRECTORIES = (
+    REPO / "build",
+    REPO / "build-recomp",
+    REPO / "build-sms-recomp",
+    REPO / "scratch" / "build-recompiler",
+)
 CPP_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 EXCLUDED_PREFIXES = (

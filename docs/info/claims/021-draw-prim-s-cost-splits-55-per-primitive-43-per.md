@@ -1,10 +1,11 @@
 ---
 id: C021
 kind: claim
-status: holds
+status: falsified
 created: 2026-08-05
 tags: perf
 depends: extern/aurora/lib/gx/command_processor.cpp#draw_prim
+falsified_on: 2026-08-22
 ---
 
 ## Claim
@@ -18,3 +19,13 @@ SB_PROFILE_DRAWPRIM rdtsc phase probes on Delfino; probe cost 0.3ns = 0.5% of bo
 ## What would falsify it
 
 handle_draw_unmerged is restructured, or the DP_PHASE probes in draw_prim move/change
+
+## FALSIFIED 2026-08-22
+
+The percentage split and nanoseconds-per-call conclusion came from I011's TSC elapsed profiler.
+Its accounting controls validate the partition, but they do not make host-time attribution stable
+under unrelated system contention. I011 is now distrusted for optimization selection. Preserve the
+path call counts as diagnostic population data, but do not use the 55/43 split, percent-of-drain,
+or latency percentiles as evidence of what should be optimized.
+
+> Anything that cited this claim as proof must be re-checked. Grep the repo for it.

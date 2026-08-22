@@ -1,5 +1,11 @@
 # 2026-07-16 — Performance: renderer 33× faster (J3D texture cache missing every draw)
 
+> **Measurement supersession (2026-08-22):** The elapsed microseconds, speedup ratio, and FPS
+> ceiling below are historical observations, not admissible optimization evidence. Their root-cause
+> evidence survives independently: the cache missed every draw, conversion/upload counts collapsed
+> after stable content identities were introduced, and render-output controls remained correct.
+> Future optimization choices use deterministic subsystem work and bounded no-loss sampling.
+
 User: "Performance is not ideal." Title/file-select ran ~17 fps in turbo.
 
 ## Profiling chain (build-the-instrument-first)

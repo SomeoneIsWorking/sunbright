@@ -1,5 +1,10 @@
 # 7.0 million `getenv` calls per run — measuring diagnostic-gate sprawl instead of guessing at it
 
+> **Measurement supersession (2026-08-22):** The exact intercepted call counts and the logging
+> ownership cleanup remain valid. The isolated nanoseconds-per-`getenv`, derived frame percentage,
+> and comparison against per-primitive latency are host elapsed estimates and are retired as
+> optimization evidence. The one-off `getenv_cost.c` clock benchmark has therefore been removed.
+
 The trigger was a correction: *"you should use lucent for config, not getenv."* I had "fixed" a
 per-primitive `std::getenv` in aurora's `draw_prim` by caching it in a static — which removed the
 2.9 ms/frame but kept the banned `getenv + gated fprintf` idiom, treating the symptom. The real fix
@@ -86,7 +91,8 @@ honest number matters more than the impressive one.
 A wall-clock A/B was not possible: this machine carried load average 9.8 during the attempt, and the
 journal entry before this one already records that frame times taken at different loads are not
 comparable. So the effect was derived from two quantities that ARE load-robust — the count of calls
-removed, and the cost of one call measured in CPU time (`tools/perf/getenv_cost.c`,
+removed, and the cost of one call measured in CPU time (the historical
+`tools/perf/getenv_cost.c`, removed when elapsed micro-benchmarks were retired,
 `CLOCK_PROCESS_CPUTIME_ID`):
 
     environ entries: 116

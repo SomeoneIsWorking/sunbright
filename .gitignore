@@ -1,4 +1,6 @@
 build/
+!tools/build/
+!tools/build/encode_sjis_literals.py
 build-*/
 build.stale*/
 port/build*/

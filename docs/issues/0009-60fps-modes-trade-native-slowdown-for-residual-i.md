@@ -12,10 +12,11 @@ updated: 2026-08-22
 
 The modes fail for different reasons:
 
-- Native 60 executes a complete game/FIFO/render tick at 60 Hz. A controlled Delfino run measured
-  about 14.6 ms guest/FIFO plus 7.7 ms render work per tick and fell to 45–52 Hz in heavy intervals,
-  over the 16.67 ms total budget. The slowdown is renderer/FIFO throughput, not a missing BSE
-  timing adjustment.
+- Native 60 executes a complete game/FIFO/render tick at 60 Hz. Deterministic settled-plaza work
+  accounting shows roughly 123.5k guest FIFO appends (357 KB), 1.80 MB after display-list expansion,
+  30.4k auto-sized primitives / 506k indexed-field visits, and about 1.42k finalized Aurora draws
+  per tick. No missing BSE timing adjustment can remove that work; the optimization target is the
+  duplicated FIFO/Aurora command path and repeated per-draw state/cache work.
 - `TDLColorTexQuad::draw` (0x80224f0c) and `TDLTexQuad::draw` (0x80225408) rebuild persistent indexed
   XYZ-f32 arrays each 30 Hz tick while using an identity position matrix. Matrix pairing therefore
   cannot interpolate their motion.
@@ -23,8 +24,8 @@ The modes fail for different reasons:
 
 ## What was tried / dead ends
 
-- Treating the native symptom as another frame-rate formula is rejected: the measured tick is
-  already over budget, so a constant can only alter simulation behavior or pacing.
+- Treating the native symptom as another frame-rate formula is rejected: a constant can only alter
+  simulation behavior or pacing; it cannot reduce the measured internal command/draw workload.
 - Ordinary matrix tagging cannot fix the two TDL batches. Identity-to-identity pairing leaves their
   moving array bytes untouched and can produce a false-success count.
 - A stage-1 idle run is not a live control for the TDL seam: it produced 0 marked indexed draws. The
@@ -39,21 +40,33 @@ control passes and the full interpolated runtime exits clean with 360 simulation
 presents and no GPU faults. The active stage-1 scene did not exercise either TDL batch, so their
 graphics-registry verdict remains `camera-only` pending a live spray/question/splash capture.
 
-Native 60 remains performance-limited. Its proper follow-up is measured FIFO/render optimization
-until the complete tick fits 16.67 ms; this issue remains investigating rather than pretending the
-native symptom is fixed.
+Native 60 remains performance-limited. Its proper follow-up is FIFO/render optimization selected by
+internal work counts and no-loss CPU sampling; this issue remains investigating rather than
+pretending the native symptom is fixed.
 
 ### Note (2026-08-22)
-2026-08-22: Root causes separated. Indexed-array interpolation seam implemented with a passing known-motion control, but the stage-1 run reached zero active TDL batches, so live coverage remains unverified. Native 60 remains over its 16.67 ms budget and needs measured FIFO/render optimization.
+2026-08-22: Root causes separated. Indexed-array interpolation seam implemented with a passing known-motion control, but the stage-1 run reached zero active TDL batches, so live coverage remains unverified. Native 60 needs internal-work-driven FIFO/render optimization.
 
 ### Note (2026-08-22)
-Optimized the proven guest-call and MMIO routing costs without changing cadence: sparse exact-address dispatch reduced call_ppc + override_lookup samples from 9.65% to 3.96%, and the retained per-thread MMIO device cache reduced its routing cost. Follow-up Native-60 ticks are roughly 20.5-21.2 ms versus the 22.3 ms baseline, still above 16.67 ms. Remaining profile leaders are draw_prim, retained-array XXH3 hashing, Sunbright FIFO parsing, and Aurora command processing. Evidence: debug_journal/2026-08-22_native60_dispatch_optimization.md.
+Optimized the proven guest-call and MMIO routing costs without changing cadence: sparse exact-address dispatch reduced call_ppc + override_lookup sampling share from 9.65% to 3.96%, and the retained per-thread MMIO device cache reduced its routing work. Remaining sampled leaders are draw_prim, retained-array XXH3 hashing, Sunbright FIFO parsing, and Aurora command processing. Evidence: debug_journal/2026-08-22_native60_dispatch_optimization.md.
 
 ### Dead end (2026-08-22)
-Do not replace the FIFO scalar append with vector::push_back (35-40 ms guest regression), introduce the tested raw gather buffer (16.9 ms versus 12.5 ms), add value-sensitive CP dirty suppression (no measured gain), or expose the MMIO cache as an external header TLS (13.7 ms versus 12.5 ms). All were measured and reverted; exact context is in debug_journal/2026-08-22_native60_dispatch_optimization.md.
+The earlier scalar-append/raw-gather experiments were judged only by host elapsed time and are not reusable evidence. The current `GxFifoInput` is instead justified by exact work elimination: it removes one generic range insertion per guest store, preserves byte order under a known-difference control, and reports zero settled-frame compactions/moved bytes.
 
 ### Note (2026-08-22)
-Compile-time direct-target caching reduced combined guest target-resolution samples from 3.96% to 1.22% (84,148 direct sites using per-target slots; 7,409 genuinely indirect sites). A bounded Native-60 run remained GPU-safe, but heavy ticks are still roughly 20.5-21.2 ms, so the issue remains investigating. Evidence: debug_journal/2026-08-22_native60_dispatch_optimization.md.
+Compile-time direct-target caching reduced combined guest target-resolution sampling share from 3.96% to 1.22% (84,148 direct sites using per-target slots; 7,409 genuinely indirect sites). The issue remains investigating because FIFO parsing, array scanning and per-draw cache hashing remain sampled leaders. Evidence: debug_journal/2026-08-22_native60_dispatch_optimization.md.
 
 ### Dead end (2026-08-22)
-A page-version fingerprint for Aurora's 20.74 MiB/frame unchanged persistent arrays reduced XXH3 samples from 4.14% to about 0.64%, but its same-binary control measured 21.4 ms enabled versus 21.3 ms disabled. Per-store versioning was worse (guest work about 13 ms to 20 ms). The prototype and Aurora changes were removed; do not reintroduce guest-store dirty tracking without a cheaper authoritative dirty source.
+A page-version fingerprint for Aurora's unchanged persistent arrays reduced XXH3 sampling share, but
+required touching authoritative dirty state on every guest store. The prototype was removed: it
+shifted work into a much larger event population and had no cheap authoritative dirty source. Do not
+reintroduce guest-store dirty tracking without first proving a lower-work invalidation source.
+
+### Note (2026-08-22)
+
+Internal-work correction: `SB_DRAW_STATS` + `gxwork` reports roughly 123.5k write-gather appends /
+357 KB guest input, 1.80 MB after display-list expansion, 30.4k auto-array scans / 506k field visits,
+and 1.42k finalized draws per settled plaza frame. `GxFifoInput` removes the per-store generic vector
+insertion; its live control reports zero compactions and capacity growth after warmup. A 499 Hz
+bounded capture recorded 10,398 samples with zero losses. Wall-clock frame averages are no longer
+used to choose work.

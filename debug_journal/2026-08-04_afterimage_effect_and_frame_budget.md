@@ -1,5 +1,10 @@
 # The dash-blur afterimage at 60fps, and where the frame budget actually goes
 
+> **Measurement supersession (2026-08-22):** The EFB-feedback diagnosis below remains a behavioral
+> finding. The elapsed frame-budget rankings and milliseconds-per-phase do not: host clock readings
+> are affected by unrelated contention and are no longer used to select optimization work. Exact
+> byte/draw populations remain historical observations only when their owning counter is named.
+
 Two user-reported problems from playing with `SBR_60FPS=1`: the ghost/afterimage trail behind Mario
 is jittery, and performance is poor. They have different causes and neither is guesswork below.
 

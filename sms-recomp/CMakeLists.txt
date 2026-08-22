@@ -123,6 +123,9 @@ add_library(sms-recomp-rt STATIC runtime/rt_core.cpp runtime/devices/mmio.cpp
                                  runtime/devices/dev_mi.cpp
                                  runtime/devices/dev_gxregs.cpp
                                  runtime/devices/dev_gxfifo.cpp
+                                 runtime/devices/gx_fifo_2d.cpp
+                                 runtime/devices/gx_fifo_input.cpp
+                                 runtime/devices/gx_fifo_vertex_layout.cpp
                                  runtime/boot_env.cpp
                                  runtime/guest_sched.cpp)
 target_include_directories(sms-recomp-rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/devices" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/render" "${CMAKE_CURRENT_SOURCE_DIR}/overrides" "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
@@ -165,6 +168,12 @@ add_executable(gx_light_test tests/gx_light_test.cpp runtime/render/gx_light.cpp
 target_link_libraries(gx_light_test PRIVATE lucent::lucent)
 target_include_directories(gx_light_test PRIVATE runtime runtime/render runtime/devices)
 add_test(NAME gx_light COMMAND gx_light_test)
+
+add_executable(gx_fifo_input_test tests/gx_fifo_input_test.cpp
+                                  runtime/devices/gx_fifo_input.cpp
+                                  runtime/devices/gx_fifo_vertex_layout.cpp)
+target_include_directories(gx_fifo_input_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME gx_fifo_input COMMAND gx_fifo_input_test)
 
 add_executable(guest_address_table_test tests/guest_address_table_test.cpp)
 target_include_directories(guest_address_table_test PRIVATE runtime)
