@@ -10,8 +10,7 @@
 //   guest memory : g_ram_base, g_l1_base, mem_r{8,16,32,64}_slow, mem_w{...}_slow
 //   dispatch     : call_ppc, tail_ppc
 //   cpu/os state : msr_get, msr_set_raw, icbi32
-//   diagnostics  : g_in_poll_yield, g_poll_last, g_poll_reps, sb_poll_fire,
-//                  g_watch_wa, sb_watch_fire
+//   diagnostics  : g_watch_wa, sb_watch_fire
 //   paired single: psq_load, psq_store
 //
 // The fast paths are already inline in intrinsics.h (sb_ram_fast + __builtin_bswap*),
@@ -48,9 +47,6 @@ static const size_t kL1Size = 0x00040000;   // 256 KB locked-L1 at 0xE0000000
 
 u8* g_ram_base = nullptr;
 u8* g_l1_base = nullptr;
-bool g_in_poll_yield = false;
-u32 g_poll_last = 0;
-u32 g_poll_reps = 0;
 u32 g_watch_wa = 0; // armed watch address; 0 = disarmed
 
 extern void aram_device_init();
@@ -334,25 +330,24 @@ void rt_install_crash_handler() {
     }
 }
 
-void call_ppc(CPUState& cpu, u32 address) {
+RecompFunc resolve_ppc_target(CPUState& cpu, u32 address) {
     address = code_addr_fold(address);
-    // Overrides win over the recompiled body. Checked here rather than by patching the
-    // jump table because the generated code routes EVERY call — direct bl and indirect
-    // bctrl alike — through this one function, so a single check covers both.
-    if (auto fn = override_lookup(address)) {
-        fn(cpu);
-        return;
-    }
-    if (auto fn = lookup(address)) {
-        fn(cpu);
-        return;
-    }
+    // Overrides win over the recompiled body. Direct call sites cache the result of this
+    // lookup; dynamically computed branches enter through call_ppc and resolve each target.
+    if (auto fn = override_lookup(address))
+        return fn;
+    if (auto fn = lookup(address))
+        return fn;
     // Not recompiled. In the Dolphin era this fell through to the JIT; standalone
     // there is no fallback, so this is a hard stop rather than a silent no-op that
     // would let execution wander on with a half-executed call.
     lucent::error("rt", "call to un-recompiled address 0x{:08x} (lr=0x{:08x})", address, cpu.lr);
     rt_dump_guest_stack("un-recompiled call");
     std::abort();
+}
+
+void call_ppc(CPUState& cpu, u32 address) {
+    resolve_ppc_target(cpu, address)(cpu);
 }
 
 void tail_ppc(CPUState& cpu, u32 address) {
@@ -384,13 +379,6 @@ void msr_set_raw(u32 v) {
 void icbi32(u32 /*ea*/) {}
 
 // ── Diagnostics carried over from the Dolphin era ────────────────────────────
-// sb_poll_note() (inline, intrinsics.h) calls this when the same address is read 24
-// times in a row, i.e. a guest spin-loop. With cooperative threading it becomes a
-// yield point; until the scheduler is standing it only reports.
-void sb_poll_fire(u32 ea) {
-    lucent::debug("poll", "spin-loop on 0x{:08x}", ea);
-}
-
 void sb_watch_fire(u32 ea, u32 value, int width, void* ret) {
     lucent::warn("watch", "write 0x{:08x} ({} bytes) @ 0x{:08x} from {}", value, width, ea, ret);
     rt_dump_guest_stack("watchpoint");

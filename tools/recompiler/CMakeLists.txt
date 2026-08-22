@@ -11,8 +11,12 @@
 # with the recomp runtime once that is stood up.
 cmake_minimum_required(VERSION 3.20)
 project(sunbright_recomp CXX)
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  message(FATAL_ERROR "sunbright-recomp requires clang++; configure with -DCMAKE_CXX_COMPILER=clang++")
+endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 file(GLOB RECOMP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 # disc_loader.cpp is self-contained (no Dolphin headers) - keep it

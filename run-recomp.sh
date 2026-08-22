@@ -45,12 +45,6 @@ NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 configure_sunbright_sdl_video
 
 BIN="$HERE/build-sms-recomp/sms-recomp"
-if [[ ! -x "$BIN" ]]; then
-    echo "[run-recomp] building sms-recomp ..." >&2
-    cmake -S "$HERE/sms-recomp" -B "$HERE/build-sms-recomp" -DCMAKE_BUILD_TYPE=Release >&2
-    cmake --build "$HERE/build-sms-recomp" --target sms-recomp -j"$NCPU" >&2
-fi
-
 ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 [[ -f "$ROM" ]] || { echo "[run-recomp] ROM not found: $ROM (set SUNBRIGHT_ROM or drop rom.rvz)" >&2; exit 1; }
 
@@ -63,6 +57,17 @@ if [[ ! -f "$DOL" ]]; then
     echo "[run-recomp] there, or pass a path: ./run-recomp.sh \"$ROM\" /path/to/sms.dol" >&2
     exit 1
 fi
+
+# The launcher is a shipping interface: never run a stale executable merely because one exists.
+# Configure once, then ask the build system to prove the target is current on every launch; an
+# up-to-date incremental build is cheap and a changed source file can no longer be ignored.
+if [[ ! -f "$HERE/build-sms-recomp/CMakeCache.txt" ]]; then
+    echo "[run-recomp] configuring sms-recomp with clang++ ..." >&2
+    cmake -S "$HERE/sms-recomp" -B "$HERE/build-sms-recomp" -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_COMPILER=clang++ >&2
+fi
+echo "[run-recomp] ensuring sms-recomp is current ..." >&2
+cmake --build "$HERE/build-sms-recomp" --target sms-recomp -j"$NCPU" >&2
 
 # A WINDOWLESS RUN MUST ALSO BE SILENT. SB_HEADLESS=1 suppressed the window but not the audio
 # device, so every automated/diagnostic run — which is every run that sets it — played the game

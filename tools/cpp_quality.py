@@ -18,7 +18,7 @@ import tempfile
 
 
 REPO = Path(__file__).resolve().parents[1]
-BUILD = REPO / "build-sms-recomp"
+BUILD_DIRECTORIES = (REPO / "build-sms-recomp", REPO / "scratch" / "build-recompiler")
 CPP_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 EXCLUDED_PREFIXES = (
@@ -50,21 +50,25 @@ def changed_files() -> list[str]:
     return sorted(name for name in names if is_first_party_cpp(name) and (REPO / name).is_file())
 
 
-def compile_database() -> dict[str, dict[str, object]]:
-    database_path = BUILD / "compile_commands.json"
-    if not database_path.is_file():
-        raise RuntimeError(
-            f"missing {database_path.relative_to(REPO)}; configure the Clang build before linting"
-        )
-    entries = json.loads(database_path.read_text())
-    commands: dict[str, dict[str, object]] = {}
-    for entry in entries:
-        source = Path(str(entry["file"])).resolve()
-        try:
-            relative = str(source.relative_to(REPO))
-        except ValueError:
+def compile_databases() -> dict[str, tuple[dict[str, object], Path]]:
+    commands: dict[str, tuple[dict[str, object], Path]] = {}
+    found = False
+    for build in BUILD_DIRECTORIES:
+        database_path = build / "compile_commands.json"
+        if not database_path.is_file():
             continue
-        commands.setdefault(relative, entry)
+        found = True
+        entries = json.loads(database_path.read_text())
+        for entry in entries:
+            source = Path(str(entry["file"])).resolve()
+            try:
+                relative = str(source.relative_to(REPO))
+            except ValueError:
+                continue
+            commands.setdefault(relative, (entry, build))
+    if not found:
+        expected = ", ".join(str(path.relative_to(REPO) / "compile_commands.json") for path in BUILD_DIRECTORIES)
+        raise RuntimeError(f"no compile database found; expected one of: {expected}")
     return commands
 
 
@@ -93,7 +97,7 @@ def check(paths: list[str]) -> int:
         return 0
 
     try:
-        commands = compile_database()
+        commands = compile_databases()
     except (RuntimeError, json.JSONDecodeError) as error:
         print(f"cpp-quality: {error}")
         return 2
@@ -102,7 +106,7 @@ def check(paths: list[str]) -> int:
     non_clang = [
         source
         for source in sources
-        if source in commands and not command_uses_clang(commands[source])
+        if source in commands and not command_uses_clang(commands[source][0])
     ]
     if missing:
         print("cpp-quality: translation units missing from compile_commands.json:")
@@ -115,10 +119,16 @@ def check(paths: list[str]) -> int:
             print(f"  {source}")
         return 2
 
-    tidy = subprocess.run(["clang-tidy", "-p", str(BUILD), "--quiet", *sources], cwd=REPO)
-    if tidy.returncode:
-        print("cpp-quality: clang-tidy failed")
-        return tidy.returncode
+    sources_by_build: dict[Path, list[str]] = {}
+    for source in sources:
+        sources_by_build.setdefault(commands[source][1], []).append(source)
+    for build, build_sources in sorted(sources_by_build.items()):
+        tidy = subprocess.run(
+            ["clang-tidy", "-p", str(build), "--quiet", *build_sources], cwd=REPO
+        )
+        if tidy.returncode:
+            print(f"cpp-quality: clang-tidy failed for {build.relative_to(REPO)}")
+            return tidy.returncode
     print(
         f"cpp-quality: clang-format passed for {len(paths)} file(s); "
         f"clang-tidy passed for {len(sources)} translation unit(s)"

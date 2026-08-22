@@ -1,19 +1,18 @@
 #include "c_emitter.h"
+#include <algorithm>
+#include <cassert>
+#include <cctype>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cassert>
-#include <cstring>
-#include <cctype>
-#include <cstdint>
-#include <algorithm>
 #include <unordered_set>
 
-// Call model: recomp→recomp calls and returns stay on the native C stack. `bl`/
-// `bctrl` emit an inline C call that *continues* after the callee returns; `blr`
-// emits a C `return`; `b`/`bctr` that leave the function emit `tail_ppc`. The
-// runtime (call_ppc/tail_ppc/SunbrightBridge::Run, runtime/dolphin_hook.cpp) bridges
-// to Dolphin for non-recompiled targets.
+// Call model: recomp→recomp calls and returns stay on the native C stack. Branches with a
+// statically known target use call_ppc_direct<Target>(), whose program-wide per-target slot is
+// resolved once and then called directly. Only true indirect transfers (`bctrl`, `blrl`, `bctr`)
+// enter the general runtime dispatcher. `blr` emits a C `return`; an out-of-function direct `b`
+// calls its known target and then returns from the current C function.
 
 // PPC rotate-word mask MASK(mb, me): set bits mb..me inclusive in big-endian bit
 // numbering (MSB = bit 0 = C bit 31), WRAPPING when mb > me (bits mb..31 and
@@ -25,7 +24,8 @@ static u32 ppc_rotate_mask(u32 mb, u32 me) {
     u32 m = 0;
     for (u32 b = mb;; b = (b + 1) & 31) {
         m |= (0x80000000u >> b);
-        if (b == me) break;
+        if (b == me)
+            break;
     }
     return m;
 }
@@ -65,7 +65,8 @@ void CEmitter::emit_jump_table(const std::vector<u32>& func_addrs) {
     for (u32 addr : func_addrs)
         out_ << "    { 0x" << std::hex << addr << "u, func_" << addr << " },\n";
     out_ << "    { 0, nullptr }\n};\n";
-    out_ << "extern \"C\" const size_t g_recomp_table_size = " << std::dec << func_addrs.size() << "u;\n";
+    out_ << "extern \"C\" const size_t g_recomp_table_size = " << std::dec << func_addrs.size()
+         << "u;\n";
 }
 
 std::string CEmitter::ea(const PPCInstr& i) {
@@ -94,7 +95,7 @@ std::string CEmitter::ea_x(const PPCInstr& i) {
 }
 
 std::string CEmitter::cr_bit(u8 bi) {
-    const char* fields[] = {"lt","gt","eq","so"};
+    const char* fields[] = {"lt", "gt", "eq", "so"};
     char buf[32];
     snprintf(buf, sizeof(buf), "cpu.cr[%d].%s", bi / 4, fields[bi % 4]);
     return buf;
@@ -106,8 +107,7 @@ void CEmitter::set_cr0(const PPCInstr& i, const std::string& result) {
 }
 
 void CEmitter::emit_function(const EmitContext& ctx) {
-    out_ << "\nextern \"C\" void func_" << std::hex << ctx.func_addr
-         << "(CPUState& cpu) {\n";
+    out_ << "\nextern \"C\" void func_" << std::hex << ctx.func_addr << "(CPUState& cpu) {\n";
 
     for (const auto& i : ctx.instrs) {
         // Emit label if this is a branch target within the function
@@ -129,10 +129,10 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     const std::string b = "cpu.gpr[" + std::to_string(i.rB) + "]";
     const std::string s = "cpu.gpr[" + std::to_string(i.rS) + "]";
 
-    const std::string fd  = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";
-    const std::string fa  = "cpu.fpr[" + std::to_string(i.rA) + "].ps0";
-    const std::string fb  = "cpu.fpr[" + std::to_string(i.rB) + "].ps0";
-    const std::string fc  = "cpu.fpr[" + std::to_string(i.rC) + "].ps0";
+    const std::string fd = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";
+    const std::string fa = "cpu.fpr[" + std::to_string(i.rA) + "].ps0";
+    const std::string fb = "cpu.fpr[" + std::to_string(i.rB) + "].ps0";
+    const std::string fc = "cpu.fpr[" + std::to_string(i.rC) + "].ps0";
 
     const std::string psd0 = "cpu.fpr[" + std::to_string(i.rD) + "].ps0";
     const std::string psd1 = "cpu.fpr[" + std::to_string(i.rD) + "].ps1";
@@ -165,19 +165,20 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     case PPCOp::ADDO:
-        line("{ u32 _r = %s + %s; cpu.xer.ov = add_overflow(%s,%s,_r); cpu.xer.so|=cpu.xer.ov; %s=_r; }",
+        line("{ u32 _r = %s + %s; cpu.xer.ov = add_overflow(%s,%s,_r); cpu.xer.so|=cpu.xer.ov; "
+             "%s=_r; }",
              a.c_str(), b.c_str(), a.c_str(), b.c_str(), d.c_str());
         set_cr0(i, d);
         break;
 
-    case PPCOp::ADDIC:  // addic: rA + SIMM, set CA (immediate form)
-        line("{ u32 _r = %s + %d; cpu.xer.ca = add_carry(%s,(u32)%d); %s=_r; }",
-             a.c_str(), (int)i.simm, a.c_str(), (int)i.simm, d.c_str());
+    case PPCOp::ADDIC: // addic: rA + SIMM, set CA (immediate form)
+        line("{ u32 _r = %s + %d; cpu.xer.ca = add_carry(%s,(u32)%d); %s=_r; }", a.c_str(),
+             (int)i.simm, a.c_str(), (int)i.simm, d.c_str());
         set_cr0(i, d);
         break;
-    case PPCOp::ADDC:   // addc: rA + rB, set CA (register form)
-        line("{ u32 _r = %s + %s; cpu.xer.ca = add_carry(%s,%s); %s=_r; }",
-             a.c_str(), b.c_str(), a.c_str(), b.c_str(), d.c_str());
+    case PPCOp::ADDC: // addc: rA + rB, set CA (register form)
+        line("{ u32 _r = %s + %s; cpu.xer.ca = add_carry(%s,%s); %s=_r; }", a.c_str(), b.c_str(),
+             a.c_str(), b.c_str(), d.c_str());
         set_cr0(i, d);
         break;
 
@@ -188,7 +189,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     case PPCOp::ADDME:
-        line("{ u32 _r = %s + 0xFFFFFFFFu + cpu.xer.ca; cpu.xer.ca = add_carry3(%s,0xFFFFFFFFu,cpu.xer.ca); %s=_r; }",
+        line("{ u32 _r = %s + 0xFFFFFFFFu + cpu.xer.ca; cpu.xer.ca = "
+             "add_carry3(%s,0xFFFFFFFFu,cpu.xer.ca); %s=_r; }",
              a.c_str(), a.c_str(), d.c_str());
         set_cr0(i, d);
         break;
@@ -205,18 +207,19 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     case PPCOp::SUBFIC:
-        line("{ u32 _r = %d - (s32)%s; cpu.xer.ca = sub_carry((u32)%d, %s); %s=_r; }",
-             (int)i.simm, a.c_str(), (int)i.simm, a.c_str(), d.c_str());
+        line("{ u32 _r = %d - (s32)%s; cpu.xer.ca = sub_carry((u32)%d, %s); %s=_r; }", (int)i.simm,
+             a.c_str(), (int)i.simm, a.c_str(), d.c_str());
         break;
 
     case PPCOp::SUBFC:
-        line("{ u32 _r = %s - %s; cpu.xer.ca = sub_carry(%s,%s); %s=_r; }",
-             b.c_str(), a.c_str(), b.c_str(), a.c_str(), d.c_str());
+        line("{ u32 _r = %s - %s; cpu.xer.ca = sub_carry(%s,%s); %s=_r; }", b.c_str(), a.c_str(),
+             b.c_str(), a.c_str(), d.c_str());
         set_cr0(i, d);
         break;
 
     case PPCOp::SUBFE:
-        line("{ u32 _r = ~%s + %s + cpu.xer.ca; cpu.xer.ca = add_carry3(~%s,%s,cpu.xer.ca); %s=_r; }",
+        line("{ u32 _r = ~%s + %s + cpu.xer.ca; cpu.xer.ca = add_carry3(~%s,%s,cpu.xer.ca); %s=_r; "
+             "}",
              a.c_str(), b.c_str(), a.c_str(), b.c_str(), d.c_str());
         set_cr0(i, d);
         break;
@@ -228,7 +231,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     case PPCOp::SUBFME:
-        line("{ u32 _r = ~%s + 0xFFFFFFFFu + cpu.xer.ca; cpu.xer.ca = add_carry3(~%s,0xFFFFFFFFu,cpu.xer.ca); %s=_r; }",
+        line("{ u32 _r = ~%s + 0xFFFFFFFFu + cpu.xer.ca; cpu.xer.ca = "
+             "add_carry3(~%s,0xFFFFFFFFu,cpu.xer.ca); %s=_r; }",
              a.c_str(), a.c_str(), d.c_str());
         set_cr0(i, d);
         break;
@@ -274,22 +278,26 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
 
     // ── Compare ─────────────────────────────────────────────────────────────
     case PPCOp::CMP:
-        line("{ s32 _a=(s32)%s,_b=(s32)%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=cpu.xer.so; }",
+        line("{ s32 _a=(s32)%s,_b=(s32)%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; "
+             "cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=cpu.xer.so; }",
              a.c_str(), b.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
 
     case PPCOp::CMPI:
-        line("{ s32 _a=(s32)%s,_b=%d; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=cpu.xer.so; }",
+        line("{ s32 _a=(s32)%s,_b=%d; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; "
+             "cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=cpu.xer.so; }",
              a.c_str(), (int)i.simm, i.crfD, i.crfD, i.crfD, i.crfD);
         break;
 
     case PPCOp::CMPL:
-        line("{ u32 _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=cpu.xer.so; }",
+        line("{ u32 _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; "
+             "cpu.cr[%d].so=cpu.xer.so; }",
              a.c_str(), b.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
 
     case PPCOp::CMPLI:
-        line("{ u32 _a=%s,_b=0x%xu; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=cpu.xer.so; }",
+        line("{ u32 _a=%s,_b=0x%xu; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; "
+             "cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=cpu.xer.so; }",
              a.c_str(), (u32)i.uimm, i.crfD, i.crfD, i.crfD, i.crfD);
         break;
 
@@ -368,8 +376,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     }
     case PPCOp::RLWIMI: {
         u32 mask = ppc_rotate_mask(i.mb, i.me);
-        line("%s = (rotl32(%s, %d) & 0x%xu) | (%s & ~0x%xu);",
-             a.c_str(), s.c_str(), i.sh, mask, a.c_str(), mask);
+        line("%s = (rotl32(%s, %d) & 0x%xu) | (%s & ~0x%xu);", a.c_str(), s.c_str(), i.sh, mask,
+             a.c_str(), mask);
         set_cr0(i, a);
         break;
     }
@@ -380,19 +388,21 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
     }
     case PPCOp::SLW:
-        line("%s = (%s & 0x20) ? 0 : (%s << (%s & 0x1F));", a.c_str(), b.c_str(), s.c_str(), b.c_str());
+        line("%s = (%s & 0x20) ? 0 : (%s << (%s & 0x1F));", a.c_str(), b.c_str(), s.c_str(),
+             b.c_str());
         set_cr0(i, a);
         break;
     case PPCOp::SRW:
-        line("%s = (%s & 0x20) ? 0 : (%s >> (%s & 0x1F));", a.c_str(), b.c_str(), s.c_str(), b.c_str());
+        line("%s = (%s & 0x20) ? 0 : (%s >> (%s & 0x1F));", a.c_str(), b.c_str(), s.c_str(),
+             b.c_str());
         set_cr0(i, a);
         break;
     case PPCOp::SRAW:
         // The shift amount is the low 6 bits of rB; a value >= 32 gives an all-sign result and a
         // carry of (sign & any-bit-set). `(1u << _n) - 1` was evaluated for the carry regardless of
         // that branch, and `1u << _n` is UNDEFINED for _n >= 32 — a latent wrong-carry the moment a
-        // variable shift-right-algebraic by >= 32 occurs. `_m` is the shifted-out-bit mask, computed
-        // without the UB.
+        // variable shift-right-algebraic by >= 32 occurs. `_m` is the shifted-out-bit mask,
+        // computed without the UB.
         line("{ u32 _n=%s&0x3F; u32 _m=_n>=32?0xFFFFFFFFu:((1u<<_n)-1); "
              "%s=(_n>=32)?(u32)((s32)%s>>31):(u32)((s32)%s>>_n); "
              "cpu.xer.ca=((s32)%s<0)&&((%s&_m)!=0); }",
@@ -400,8 +410,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         set_cr0(i, a);
         break;
     case PPCOp::SRAWI:
-        line("{ %s=(s32)%s>>%d; cpu.xer.ca=(s32)%s<0&&(%s&0x%xu)!=0; }",
-             a.c_str(), s.c_str(), i.sh, s.c_str(), s.c_str(), (1u << i.sh) - 1);
+        line("{ %s=(s32)%s>>%d; cpu.xer.ca=(s32)%s<0&&(%s&0x%xu)!=0; }", a.c_str(), s.c_str(), i.sh,
+             s.c_str(), s.c_str(), (1u << i.sh) - 1);
         set_cr0(i, a);
         break;
 
@@ -410,11 +420,11 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         bool intra = ctx.branch_targets.count(i.target) > 0;
         if (i.lk) {
             line("cpu.lr = 0x%xu;", i.pc + 4);
-            line("call_ppc(cpu, 0x%xu);", i.target);          // call, continue inline
+            line("call_ppc_direct<0x%xu>(cpu);", i.target); // known call, continue inline
         } else if (intra) {
             line("goto lbl_%x;", i.target);
         } else if (i.target != 0) {
-            line("tail_ppc(cpu, 0x%xu); return;", i.target);  // tail branch out of the function (`b target`)
+            line("call_ppc_direct<0x%xu>(cpu); return;", i.target); // known tail branch
         } else {
             line("return; // indirect unconditional branch");
         }
@@ -422,9 +432,9 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     }
 
     case PPCOp::BC: {
-        bool ctr_decr   = !(i.bo & 0x04);
-        bool ctr_zero   = (i.bo & 0x02);
-        bool cond_true  = (i.bo & 0x08);
+        bool ctr_decr = !(i.bo & 0x04);
+        bool ctr_zero = (i.bo & 0x02);
+        bool cond_true = (i.bo & 0x08);
         bool cond_ignore = (i.bo & 0x10);
 
         std::string parts;
@@ -437,49 +447,54 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
             std::string cc_cond = cond_true ? cc : ("!" + cc);
             parts = parts.empty() ? cc_cond : (parts + " && " + cc_cond);
         }
-        if (parts.empty()) parts = "true";
+        if (parts.empty())
+            parts = "true";
 
         bool intra = ctx.branch_targets.count(i.target) > 0;
         if (i.lk) {
-            line("if (%s) { cpu.lr = 0x%xu; call_ppc(cpu, 0x%xu); }", parts.c_str(), i.pc + 4, i.target);
+            line("if (%s) { cpu.lr = 0x%xu; call_ppc_direct<0x%xu>(cpu); }", parts.c_str(),
+                 i.pc + 4, i.target);
         } else if (intra) {
             line("if (%s) goto lbl_%x;", parts.c_str(), i.target);
         } else {
             // conditional tail branch out of the function
-            line("if (%s) { tail_ppc(cpu, 0x%xu); return; }", parts.c_str(), i.target);
+            line("if (%s) { call_ppc_direct<0x%xu>(cpu); return; }", parts.c_str(), i.target);
         }
         break;
     }
 
     case PPCOp::BCLR:
-        if (i.bo == 0x14) {  // always blr
+        if (i.bo == 0x14) { // always blr
             if (i.lk) {
                 // blrl: save return addr in LR, then call old LR (continues inline).
                 line("{ u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); }", i.pc + 4);
             } else {
-                line("return;");  // blr → C return
+                line("return;"); // blr → C return
             }
         } else {
             // Conditional blr — complex BO decode
-            if (!(i.bo & 4)) line("cpu.ctr--;");
+            if (!(i.bo & 4))
+                line("cpu.ctr--;");
             std::string cond = "true";
             if (!(i.bo & 0x10)) {
                 cond = cr_bit(i.bi);
-                if (!(i.bo & 0x08)) cond = "!" + cond;
+                if (!(i.bo & 0x08))
+                    cond = "!" + cond;
             }
             if (i.lk) {
-                line("if (%s) { u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); }", cond.c_str(), i.pc + 4);
+                line("if (%s) { u32 _tgt = cpu.lr; cpu.lr = 0x%xu; call_ppc(cpu, _tgt); }",
+                     cond.c_str(), i.pc + 4);
             } else {
-                line("if (%s) return;", cond.c_str());  // conditional blr → conditional C return
+                line("if (%s) return;", cond.c_str()); // conditional blr → conditional C return
             }
         }
         break;
 
     case PPCOp::BCCTR:
-        if (i.lk) {                                     // bctrl — indirect call
+        if (i.lk) { // bctrl — indirect call
             line("cpu.lr = 0x%xu;", i.pc + 4);
             line("call_ppc(cpu, cpu.ctr);");
-        } else {                                        // bctr — computed/tail branch
+        } else { // bctr — computed/tail branch
             // If this is a jump table into THIS function, dispatch CTR to the in-function case
             // labels instead of handing off to Dolphin's JIT via tail_ppc (which corrupts
             // non-volatile regs across the recomp↔JIT boundary — the boot render crash). Genuine
@@ -488,7 +503,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
                 std::vector<u32> tgts(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
                 std::sort(tgts.begin(), tgts.end());
                 line("switch (cpu.ctr) {");
-                for (u32 t : tgts) line("case 0x%xu: goto lbl_%x;", t, t);
+                for (u32 t : tgts)
+                    line("case 0x%xu: goto lbl_%x;", t, t);
                 line("default: tail_ppc(cpu, cpu.ctr); return;");
                 line("}");
             } else {
@@ -501,41 +517,79 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::MFSPR: {
         u16 spr = decode_spr(i.spr);
         switch (spr) {
-        case SPR_LR:    line("%s = cpu.lr;",  d.c_str()); break;
-        case SPR_CTR:   line("%s = cpu.ctr;", d.c_str()); break;
-        case SPR_XER:   line("%s = (cpu.xer.so<<31)|(cpu.xer.ov<<30)|(cpu.xer.ca<<29)|cpu.xer.byte_count;", d.c_str()); break;
-        case SPR_GQR0: case SPR_GQR0+1: case SPR_GQR0+2: case SPR_GQR0+3:
-        case SPR_GQR0+4: case SPR_GQR0+5: case SPR_GQR0+6: case SPR_GQR0+7:
-            line("%s = cpu.gqr[%d];", d.c_str(), spr - SPR_GQR0); break;
-        case SPR_SRR0:  line("%s = cpu.srr0;", d.c_str()); break;
-        case SPR_SRR1:  line("%s = cpu.srr1;", d.c_str()); break;
+        case SPR_LR:
+            line("%s = cpu.lr;", d.c_str());
+            break;
+        case SPR_CTR:
+            line("%s = cpu.ctr;", d.c_str());
+            break;
+        case SPR_XER:
+            line("%s = (cpu.xer.so<<31)|(cpu.xer.ov<<30)|(cpu.xer.ca<<29)|cpu.xer.byte_count;",
+                 d.c_str());
+            break;
+        case SPR_GQR0:
+        case SPR_GQR0 + 1:
+        case SPR_GQR0 + 2:
+        case SPR_GQR0 + 3:
+        case SPR_GQR0 + 4:
+        case SPR_GQR0 + 5:
+        case SPR_GQR0 + 6:
+        case SPR_GQR0 + 7:
+            line("%s = cpu.gqr[%d];", d.c_str(), spr - SPR_GQR0);
+            break;
+        case SPR_SRR0:
+            line("%s = cpu.srr0;", d.c_str());
+            break;
+        case SPR_SRR1:
+            line("%s = cpu.srr1;", d.c_str());
+            break;
         default:
             // Storage-only SPR (see cpu_state.h): return what was written.
-            line("%s = cpu.spr[%u];", d.c_str(), (unsigned)spr); break;
+            line("%s = cpu.spr[%u];", d.c_str(), (unsigned)spr);
+            break;
             // Not modeled in CPUState — read Dolphin's live SPR (HID0/HID2/BAT/...)
-            line("%s = spr_get(%d);", d.c_str(), spr); break;
+            line("%s = spr_get(%d);", d.c_str(), spr);
+            break;
         }
         break;
     }
     case PPCOp::MTSPR: {
         u16 spr = decode_spr(i.spr);
         switch (spr) {
-        case SPR_LR:    line("cpu.lr = %s;",  s.c_str()); break;
-        case SPR_CTR:   line("cpu.ctr = %s;", s.c_str()); break;
+        case SPR_LR:
+            line("cpu.lr = %s;", s.c_str());
+            break;
+        case SPR_CTR:
+            line("cpu.ctr = %s;", s.c_str());
+            break;
         case SPR_XER:
-            line("cpu.xer.so=((%s)>>31)&1; cpu.xer.ov=((%s)>>30)&1; cpu.xer.ca=((%s)>>29)&1; cpu.xer.byte_count=(%s)&0x7F;",
+            line("cpu.xer.so=((%s)>>31)&1; cpu.xer.ov=((%s)>>30)&1; cpu.xer.ca=((%s)>>29)&1; "
+                 "cpu.xer.byte_count=(%s)&0x7F;",
                  s.c_str(), s.c_str(), s.c_str(), s.c_str());
             break;
-        case SPR_GQR0: case SPR_GQR0+1: case SPR_GQR0+2: case SPR_GQR0+3:
-        case SPR_GQR0+4: case SPR_GQR0+5: case SPR_GQR0+6: case SPR_GQR0+7:
-            line("cpu.gqr[%d] = %s;", spr - SPR_GQR0, s.c_str()); break;
-        case SPR_SRR0:  line("cpu.srr0 = %s;", s.c_str()); break;
-        case SPR_SRR1:  line("cpu.srr1 = %s;", s.c_str()); break;
+        case SPR_GQR0:
+        case SPR_GQR0 + 1:
+        case SPR_GQR0 + 2:
+        case SPR_GQR0 + 3:
+        case SPR_GQR0 + 4:
+        case SPR_GQR0 + 5:
+        case SPR_GQR0 + 6:
+        case SPR_GQR0 + 7:
+            line("cpu.gqr[%d] = %s;", spr - SPR_GQR0, s.c_str());
+            break;
+        case SPR_SRR0:
+            line("cpu.srr0 = %s;", s.c_str());
+            break;
+        case SPR_SRR1:
+            line("cpu.srr1 = %s;", s.c_str());
+            break;
         default:
             // Storage-only SPR (see cpu_state.h): inert on a PC, keep the value.
-            line("cpu.spr[%u] = %s;", (unsigned)spr, s.c_str()); break;
+            line("cpu.spr[%u] = %s;", (unsigned)spr, s.c_str());
+            break;
             // Not modeled in CPUState — write Dolphin's live SPR (HID0/HID2/BAT/...)
-            line("spr_set(%d, %s);", spr, s.c_str()); break;
+            line("spr_set(%d, %s);", spr, s.c_str());
+            break;
         }
         break;
     }
@@ -547,50 +601,103 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     // lwarx / stwcx. — load-linked / store-conditional. This runtime runs the guest on ONE thread
-    // with a single scheduling token (native_os_thread.cpp), so a reservation set by lwarx can never
-    // be broken by another processor between it and the stwcx.: the store-conditional ALWAYS
+    // with a single scheduling token (native_os_thread.cpp), so a reservation set by lwarx can
+    // never be broken by another processor between it and the stwcx.: the store-conditional ALWAYS
     // succeeds. That makes the faithful single-core reduction a plain load and a plain store whose
-    // CR0[EQ] reports success — not a stub. (The decoder's old "treat as LWZ" comment described this
-    // intent but never implemented it; the ops fell through to the unhandled abort.)
-    case PPCOp::LWARX: line("%s = MEM_R32(%s);", d.c_str(), ea_x(i).c_str()); break;
+    // CR0[EQ] reports success — not a stub. (The decoder's old "treat as LWZ" comment described
+    // this intent but never implemented it; the ops fell through to the unhandled abort.)
+    case PPCOp::LWARX:
+        line("%s = MEM_R32(%s);", d.c_str(), ea_x(i).c_str());
+        break;
     case PPCOp::STWCX:
         // Store, then CR0 = 0b00 | success | SO, with success always true here.
-        line("MEM_W32(%s, %s); cpu.cr[0].lt=0; cpu.cr[0].gt=0; cpu.cr[0].eq=1; cpu.cr[0].so=cpu.xer.so;",
+        line("MEM_W32(%s, %s); cpu.cr[0].lt=0; cpu.cr[0].gt=0; cpu.cr[0].eq=1; "
+             "cpu.cr[0].so=cpu.xer.so;",
              ea_x(i).c_str(), s.c_str());
         break;
 
     // ── Load integer ────────────────────────────────────────────────────────
-    case PPCOp::LWZ:  line("%s = MEM_R32(%s);", d.c_str(), ea(i).c_str()); break;
-    case PPCOp::LWZU: line("%s = MEM_R32(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str()); break;
-    case PPCOp::LWZX: line("%s = MEM_R32(%s);", d.c_str(), ea_x(i).c_str()); break;
-    case PPCOp::LWZUX:line("%s = MEM_R32(%s); %s += %s;", d.c_str(), ea_x(i).c_str(), a.c_str(), b.c_str()); break;
-    case PPCOp::LBZ:  line("%s = MEM_R8(%s);",  d.c_str(), ea(i).c_str()); break;
-    case PPCOp::LBZU: line("%s = MEM_R8(%s);  %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str()); break;
-    case PPCOp::LBZX: line("%s = MEM_R8(%s);",  d.c_str(), ea_x(i).c_str()); break;
-    case PPCOp::LBZUX:line("%s = MEM_R8(%s);  %s += %s;", d.c_str(), ea_x(i).c_str(), a.c_str(), b.c_str()); break;
-    case PPCOp::LHZ:  line("%s = MEM_R16(%s);", d.c_str(), ea(i).c_str()); break;
-    case PPCOp::LHZU: line("%s = MEM_R16(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str()); break;
-    case PPCOp::LHZX: line("%s = MEM_R16(%s);", d.c_str(), ea_x(i).c_str()); break;
-    case PPCOp::LHA:   line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea(i).c_str()); break;
-    case PPCOp::LHAU:  line("%s = (u32)(s32)(s16)MEM_R16(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str()); break;
-    case PPCOp::LHAX:  line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea_x(i).c_str()); break;
-    case PPCOp::LHAUX: line("%s = (u32)(s32)(s16)MEM_R16(%s); %s += %s;", d.c_str(), ea_x(i).c_str(), a.c_str(), b.c_str()); break;
+    case PPCOp::LWZ:
+        line("%s = MEM_R32(%s);", d.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::LWZU:
+        line("%s = MEM_R32(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::LWZX:
+        line("%s = MEM_R32(%s);", d.c_str(), ea_x(i).c_str());
+        break;
+    case PPCOp::LWZUX:
+        line("%s = MEM_R32(%s); %s += %s;", d.c_str(), ea_x(i).c_str(), a.c_str(), b.c_str());
+        break;
+    case PPCOp::LBZ:
+        line("%s = MEM_R8(%s);", d.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::LBZU:
+        line("%s = MEM_R8(%s);  %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::LBZX:
+        line("%s = MEM_R8(%s);", d.c_str(), ea_x(i).c_str());
+        break;
+    case PPCOp::LBZUX:
+        line("%s = MEM_R8(%s);  %s += %s;", d.c_str(), ea_x(i).c_str(), a.c_str(), b.c_str());
+        break;
+    case PPCOp::LHZ:
+        line("%s = MEM_R16(%s);", d.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::LHZU:
+        line("%s = MEM_R16(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::LHZX:
+        line("%s = MEM_R16(%s);", d.c_str(), ea_x(i).c_str());
+        break;
+    case PPCOp::LHA:
+        line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::LHAU:
+        line("%s = (u32)(s32)(s16)MEM_R16(%s); %s = %s;", d.c_str(), ea(i).c_str(), a.c_str(),
+             ea(i).c_str());
+        break;
+    case PPCOp::LHAX:
+        line("%s = (u32)(s32)(s16)MEM_R16(%s);", d.c_str(), ea_x(i).c_str());
+        break;
+    case PPCOp::LHAUX:
+        line("%s = (u32)(s32)(s16)MEM_R16(%s); %s += %s;", d.c_str(), ea_x(i).c_str(), a.c_str(),
+             b.c_str());
+        break;
 
     // ── Store integer ────────────────────────────────────────────────────────
-    case PPCOp::STW:  line("MEM_W32(%s, %s);", ea(i).c_str(),   s.c_str()); break;
-    case PPCOp::STWU: line("MEM_W32(%s, %s); %s = %s;", ea(i).c_str(), s.c_str(), a.c_str(), ea(i).c_str()); break;
-    case PPCOp::STWX: line("MEM_W32(%s, %s);", ea_x(i).c_str(), s.c_str()); break;
-    case PPCOp::STB:  line("MEM_W8(%s, (u8)%s);",  ea(i).c_str(),   s.c_str()); break;
-    case PPCOp::STBU: line("MEM_W8(%s, (u8)%s);  %s = %s;", ea(i).c_str(), s.c_str(), a.c_str(), ea(i).c_str()); break;
-    case PPCOp::STBX: line("MEM_W8(%s, (u8)%s);",  ea_x(i).c_str(), s.c_str()); break;
-    case PPCOp::STH:  line("MEM_W16(%s, (u16)%s);", ea(i).c_str(),  s.c_str()); break;
-    case PPCOp::STHU: line("MEM_W16(%s, (u16)%s); %s = %s;", ea(i).c_str(), s.c_str(), a.c_str(), ea(i).c_str()); break;
-    case PPCOp::STHX: line("MEM_W16(%s, (u16)%s);", ea_x(i).c_str(), s.c_str()); break;
+    case PPCOp::STW:
+        line("MEM_W32(%s, %s);", ea(i).c_str(), s.c_str());
+        break;
+    case PPCOp::STWU:
+        line("MEM_W32(%s, %s); %s = %s;", ea(i).c_str(), s.c_str(), a.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::STWX:
+        line("MEM_W32(%s, %s);", ea_x(i).c_str(), s.c_str());
+        break;
+    case PPCOp::STB:
+        line("MEM_W8(%s, (u8)%s);", ea(i).c_str(), s.c_str());
+        break;
+    case PPCOp::STBU:
+        line("MEM_W8(%s, (u8)%s);  %s = %s;", ea(i).c_str(), s.c_str(), a.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::STBX:
+        line("MEM_W8(%s, (u8)%s);", ea_x(i).c_str(), s.c_str());
+        break;
+    case PPCOp::STH:
+        line("MEM_W16(%s, (u16)%s);", ea(i).c_str(), s.c_str());
+        break;
+    case PPCOp::STHU:
+        line("MEM_W16(%s, (u16)%s); %s = %s;", ea(i).c_str(), s.c_str(), a.c_str(), ea(i).c_str());
+        break;
+    case PPCOp::STHX:
+        line("MEM_W16(%s, (u16)%s);", ea_x(i).c_str(), s.c_str());
+        break;
 
     // ── Load/store FP ────────────────────────────────────────────────────────
     case PPCOp::LFS:
         line("%s = MEM_RF32(%s);", fd.c_str(), ea(i).c_str());
-        line("cpu.fpr[%d].ps1 = cpu.fpr[%d].ps0;", i.rD, i.rD);  // GC loads ps1=ps0
+        line("cpu.fpr[%d].ps1 = cpu.fpr[%d].ps0;", i.rD, i.rD); // GC loads ps1=ps0
         break;
     case PPCOp::LFSU:
         line("%s = MEM_RF32(%s); %s = %s;", fd.c_str(), ea(i).c_str(), a.c_str(), ea(i).c_str());
@@ -611,7 +718,8 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("MEM_WF32(%s, (f32)%s);", ea(i).c_str(), fd.c_str());
         break;
     case PPCOp::STFSU:
-        line("MEM_WF32(%s, (f32)%s); %s = %s;", ea(i).c_str(), fd.c_str(), a.c_str(), ea(i).c_str());
+        line("MEM_WF32(%s, (f32)%s); %s = %s;", ea(i).c_str(), fd.c_str(), a.c_str(),
+             ea(i).c_str());
         break;
     case PPCOp::STFSX:
         line("MEM_WF32(%s, (f32)%s);", ea_x(i).c_str(), fd.c_str());
@@ -630,39 +738,100 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         break;
 
     // ── FP arithmetic ────────────────────────────────────────────────────────
-    case PPCOp::FADD:  line("%s = %s + %s;", fd.c_str(), fa.c_str(), fb.c_str()); break;
-    case PPCOp::FSUB:  line("%s = %s - %s;", fd.c_str(), fa.c_str(), fb.c_str()); break;
-    case PPCOp::FMUL:  line("%s = %s * %s;", fd.c_str(), fa.c_str(), fc.c_str()); break;
-    case PPCOp::FDIV:  line("%s = %s / %s;", fd.c_str(), fa.c_str(), fb.c_str()); break;
+    case PPCOp::FADD:
+        line("%s = %s + %s;", fd.c_str(), fa.c_str(), fb.c_str());
+        break;
+    case PPCOp::FSUB:
+        line("%s = %s - %s;", fd.c_str(), fa.c_str(), fb.c_str());
+        break;
+    case PPCOp::FMUL:
+        line("%s = %s * %s;", fd.c_str(), fa.c_str(), fc.c_str());
+        break;
+    case PPCOp::FDIV:
+        line("%s = %s / %s;", fd.c_str(), fa.c_str(), fb.c_str());
+        break;
     // Single-precision scalar FP ops BROADCAST the result to BOTH paired slots (ps1=ps0) on
     // Gekko — Dolphin's `ps[FD].Fill(result)` (see Interpreter_FloatingPoint.cpp: "PS1 must be set
     // to the value of PS0 or DragonballZ will be f**ked up"). Emitting ps0 only left ps1 stale, so
-    // any later paired use of ps1 read garbage — the every-other-pixel comb in the THP paired-single
-    // IDCT (and the skinned-model distortion). Double-precision ops below leave ps1 unchanged.
-    case PPCOp::FADDS: line("%s = (f32)(%s + %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FSUBS: line("%s = (f32)(%s - %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FMULS: line("%s = (f32)(%s * %s); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FDIVS: line("%s = (f32)(%s / %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    // any later paired use of ps1 read garbage — the every-other-pixel comb in the THP
+    // paired-single IDCT (and the skinned-model distortion). Double-precision ops below leave ps1
+    // unchanged.
+    case PPCOp::FADDS:
+        line("%s = (f32)(%s + %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(),
+             psd0.c_str());
+        break;
+    case PPCOp::FSUBS:
+        line("%s = (f32)(%s - %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(),
+             psd0.c_str());
+        break;
+    case PPCOp::FMULS:
+        line("%s = (f32)(%s * %s); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), psd1.c_str(),
+             psd0.c_str());
+        break;
+    case PPCOp::FDIVS:
+        line("%s = (f32)(%s / %s); %s = %s;", fd.c_str(), fa.c_str(), fb.c_str(), psd1.c_str(),
+             psd0.c_str());
+        break;
     // Gekko's madd family is a true fused multiply-add (single rounding), matching
     // Dolphin's std::fma(). Emitting a*c+b would round twice and diverge.
-    case PPCOp::FMADD: line("%s = std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FMSUB: line("%s = std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMADD:line("%s = -std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FNMSUB:line("%s = -std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str()); break;
-    case PPCOp::FMADDS:line("%s = (f32)std::fma(%s, %s, %s); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FMSUBS:line("%s = (f32)std::fma(%s, %s, -(%s)); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FNMADDS:line("%s = (f32)(-std::fma(%s, %s, %s)); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FNMSUBS:line("%s = (f32)(-std::fma(%s, %s, -(%s))); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FABS:  line("%s = std::abs(%s);", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FNABS: line("%s = -std::abs(%s);", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FNEG:  line("%s = -%s;", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FMR:   line("%s = %s;", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FRSP:  line("%s = (f32)%s; %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FCTIW: line("%s = std::bit_cast<f64>((u64)(u32)(s32)%s);", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FCTIWZ:line("%s = std::bit_cast<f64>((u64)(u32)(s32)%s);", fd.c_str(), fb.c_str()); break;
-    case PPCOp::FRES:  line("%s = fres(%s); %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
-    case PPCOp::FRSQRTE:line("%s = frsqrte(%s);", fd.c_str(), fb.c_str()); break;  // double-est: ps0 only (Dolphin SetPS0)
-    case PPCOp::FRESS: line("%s = (f32)fres(%s); %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str()); break;
+    case PPCOp::FMADD:
+        line("%s = std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str());
+        break;
+    case PPCOp::FMSUB:
+        line("%s = std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str());
+        break;
+    case PPCOp::FNMADD:
+        line("%s = -std::fma(%s, %s, %s);", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str());
+        break;
+    case PPCOp::FNMSUB:
+        line("%s = -std::fma(%s, %s, -(%s));", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str());
+        break;
+    case PPCOp::FMADDS:
+        line("%s = (f32)std::fma(%s, %s, %s); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(),
+             fb.c_str(), psd1.c_str(), psd0.c_str());
+        break;
+    case PPCOp::FMSUBS:
+        line("%s = (f32)std::fma(%s, %s, -(%s)); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(),
+             fb.c_str(), psd1.c_str(), psd0.c_str());
+        break;
+    case PPCOp::FNMADDS:
+        line("%s = (f32)(-std::fma(%s, %s, %s)); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(),
+             fb.c_str(), psd1.c_str(), psd0.c_str());
+        break;
+    case PPCOp::FNMSUBS:
+        line("%s = (f32)(-std::fma(%s, %s, -(%s))); %s = %s;", fd.c_str(), fa.c_str(), fc.c_str(),
+             fb.c_str(), psd1.c_str(), psd0.c_str());
+        break;
+    case PPCOp::FABS:
+        line("%s = std::abs(%s);", fd.c_str(), fb.c_str());
+        break;
+    case PPCOp::FNABS:
+        line("%s = -std::abs(%s);", fd.c_str(), fb.c_str());
+        break;
+    case PPCOp::FNEG:
+        line("%s = -%s;", fd.c_str(), fb.c_str());
+        break;
+    case PPCOp::FMR:
+        line("%s = %s;", fd.c_str(), fb.c_str());
+        break;
+    case PPCOp::FRSP:
+        line("%s = (f32)%s; %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str());
+        break;
+    case PPCOp::FCTIW:
+        line("%s = std::bit_cast<f64>((u64)(u32)(s32)%s);", fd.c_str(), fb.c_str());
+        break;
+    case PPCOp::FCTIWZ:
+        line("%s = std::bit_cast<f64>((u64)(u32)(s32)%s);", fd.c_str(), fb.c_str());
+        break;
+    case PPCOp::FRES:
+        line("%s = fres(%s); %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str());
+        break;
+    case PPCOp::FRSQRTE:
+        line("%s = frsqrte(%s);", fd.c_str(), fb.c_str());
+        break; // double-est: ps0 only (Dolphin SetPS0)
+    case PPCOp::FRESS:
+        line("%s = (f32)fres(%s); %s = %s;", fd.c_str(), fb.c_str(), psd1.c_str(), psd0.c_str());
+        break;
     case PPCOp::FSEL:
         line("%s = (%s >= 0.0) ? %s : %s;", fd.c_str(), fa.c_str(), fc.c_str(), fb.c_str());
         break;
@@ -671,11 +840,13 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         // compares — set when either operand is NaN (not hardcoded 0). A wrong FU
         // sends bun/bns branches the wrong way (found via the diff harness: atan2f
         // returned Inf instead of NaN).
-        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=(std::isnan(_a)||std::isnan(_b)); }",
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; "
+             "cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=(std::isnan(_a)||std::isnan(_b)); }",
              fa.c_str(), fb.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
-    case PPCOp::FCMPO:  // ordered compare — same result as FCMPU for our purposes
-        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=(std::isnan(_a)||std::isnan(_b)); }",
+    case PPCOp::FCMPO: // ordered compare — same result as FCMPU for our purposes
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; "
+             "cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=(std::isnan(_a)||std::isnan(_b)); }",
              fa.c_str(), fb.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
 
@@ -704,20 +875,28 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         // FUSED like fmadds, then rounded to single (was a*c+b in double, unfused
         // and unrounded — caught by the PSMTXConcat native-port shadow harness:
         // 1-ULP divergences vs the fused hardware order)
-        line("%s = (f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = (f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = (f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(),
+             psb0.c_str());
+        line("%s = (f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(),
+             psb1.c_str());
         break;
     case PPCOp::PS_MSUB:
-        line("%s = (f32)std::fma(%s, %s, -%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = (f32)std::fma(%s, %s, -%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = (f32)std::fma(%s, %s, -%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(),
+             psb0.c_str());
+        line("%s = (f32)std::fma(%s, %s, -%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(),
+             psb1.c_str());
         break;
     case PPCOp::PS_NMADD:
-        line("%s = -(f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = -(f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = -(f32)std::fma(%s, %s, %s);", psd0.c_str(), psa0.c_str(), psc0.c_str(),
+             psb0.c_str());
+        line("%s = -(f32)std::fma(%s, %s, %s);", psd1.c_str(), psa1.c_str(), psc1.c_str(),
+             psb1.c_str());
         break;
     case PPCOp::PS_NMSUB:
-        line("%s = -(f32)std::fma(%s, %s, -%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(), psb0.c_str());
-        line("%s = -(f32)std::fma(%s, %s, -%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(), psb1.c_str());
+        line("%s = -(f32)std::fma(%s, %s, -%s);", psd0.c_str(), psa0.c_str(), psc0.c_str(),
+             psb0.c_str());
+        line("%s = -(f32)std::fma(%s, %s, -%s);", psd1.c_str(), psa1.c_str(), psc1.c_str(),
+             psb1.c_str());
         break;
     case PPCOp::PS_NEG:
         line("%s = -%s;", psd0.c_str(), psb0.c_str());
@@ -759,13 +938,13 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     // second reads only ps1.) This DOL happens never to encode frD == frC — 0 of 60 ps_muls0 and
     // 0 of 38 ps_madds0 sites — so it is latent here, but it is a silent wrong-answer bug the
     // moment it appears, which is precisely the shape of the ps_sum1 defect. Stage through a temp.
-    case PPCOp::PS_MULS0:  // fD.ps0 = fA.ps0 * fC.ps0; fD.ps1 = fA.ps1 * fC.ps0
-        line("{ const f64 _c=%s; %s = (f32)(%s * _c); %s = (f32)(%s * _c); }",
-             psc0.c_str(), psd0.c_str(), psa0.c_str(), psd1.c_str(), psa1.c_str());
+    case PPCOp::PS_MULS0: // fD.ps0 = fA.ps0 * fC.ps0; fD.ps1 = fA.ps1 * fC.ps0
+        line("{ const f64 _c=%s; %s = (f32)(%s * _c); %s = (f32)(%s * _c); }", psc0.c_str(),
+             psd0.c_str(), psa0.c_str(), psd1.c_str(), psa1.c_str());
         break;
-    case PPCOp::PS_MULS1:  // fD.ps0 = fA.ps0 * fC.ps1; fD.ps1 = fA.ps1 * fC.ps1
-        line("{ const f64 _c=%s; %s = (f32)(%s * _c); %s = (f32)(%s * _c); }",
-             psc1.c_str(), psd0.c_str(), psa0.c_str(), psd1.c_str(), psa1.c_str());
+    case PPCOp::PS_MULS1: // fD.ps0 = fA.ps0 * fC.ps1; fD.ps1 = fA.ps1 * fC.ps1
+        line("{ const f64 _c=%s; %s = (f32)(%s * _c); %s = (f32)(%s * _c); }", psc1.c_str(),
+             psd0.c_str(), psa0.c_str(), psd1.c_str(), psa1.c_str());
         break;
     case PPCOp::PS_MADDS0: // fD.ps0 = fA.ps0*fC.ps0 + fB.ps0; fD.ps1 = fA.ps1*fC.ps0 + fB.ps1
         line("{ const f64 _c=%s; %s = (f32)std::fma(%s, _c, %s); %s = (f32)std::fma(%s, _c, %s); }",
@@ -793,16 +972,20 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     // first — rD may alias rA or rB, and the previous ps_merge00 also took ps1
     // from fA instead of fB.
     case PPCOp::PS_MERGE00:
-        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa0.c_str(), psb0.c_str(), psd0.c_str(), psd1.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa0.c_str(), psb0.c_str(), psd0.c_str(),
+             psd1.c_str());
         break;
     case PPCOp::PS_MERGE01:
-        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa0.c_str(), psb1.c_str(), psd0.c_str(), psd1.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa0.c_str(), psb1.c_str(), psd0.c_str(),
+             psd1.c_str());
         break;
     case PPCOp::PS_MERGE10:
-        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa1.c_str(), psb0.c_str(), psd0.c_str(), psd1.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa1.c_str(), psb0.c_str(), psd0.c_str(),
+             psd1.c_str());
         break;
     case PPCOp::PS_MERGE11:
-        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa1.c_str(), psb1.c_str(), psd0.c_str(), psd1.c_str());
+        line("{ f64 _a=%s,_b=%s; %s=_a; %s=_b; }", psa1.c_str(), psb1.c_str(), psd0.c_str(),
+             psd1.c_str());
         break;
 
     // ── psq_l / psq_st ───────────────────────────────────────────────────────
@@ -810,33 +993,51 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     // MEM_R32(ea)/MEM_R32(ea+4) here was only valid for float; quantized types (u8/s8/u16/s16)
     // need a narrow, correctly-strided access. See runtime/memory_bridge.cpp.
     case PPCOp::PSQ_L:
-        line("psq_load(%s, cpu.gqr[%d], %d, &%s, &%s);", ea(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
+        line("psq_load(%s, cpu.gqr[%d], %d, &%s, &%s);", ea(i).c_str(), i.i_gqr, i.w, psd0.c_str(),
+             psd1.c_str());
         break;
     case PPCOp::PSQ_LU: {
         std::string addr = ea(i);
-        line("{ u32 _ea=%s; psq_load(_ea, cpu.gqr[%d], %d, &%s, &%s); %s = _ea; }",
-             addr.c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str(), a.c_str());
+        line("{ u32 _ea=%s; psq_load(_ea, cpu.gqr[%d], %d, &%s, &%s); %s = _ea; }", addr.c_str(),
+             i.i_gqr, i.w, psd0.c_str(), psd1.c_str(), a.c_str());
         break;
     }
     case PPCOp::PSQ_ST:
-        line("psq_store(%s, cpu.gqr[%d], %d, %s, %s);", ea(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
+        line("psq_store(%s, cpu.gqr[%d], %d, %s, %s);", ea(i).c_str(), i.i_gqr, i.w, psd0.c_str(),
+             psd1.c_str());
         break;
     case PPCOp::PSQ_STU: {
         std::string addr = ea(i);
-        line("{ u32 _ea=%s; psq_store(_ea, cpu.gqr[%d], %d, %s, %s); %s = _ea; }",
-             addr.c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str(), a.c_str());
+        line("{ u32 _ea=%s; psq_store(_ea, cpu.gqr[%d], %d, %s, %s); %s = _ea; }", addr.c_str(),
+             i.i_gqr, i.w, psd0.c_str(), psd1.c_str(), a.c_str());
         break;
     }
 
     // ── CR logic ─────────────────────────────────────────────────────────────
-    case PPCOp::CRAND: line("%s = %s & %s;",  cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
-    case PPCOp::CRANDC:line("%s = %s & !%s;", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
-    case PPCOp::CROR:  line("%s = %s | %s;",  cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
-    case PPCOp::CRORC: line("%s = %s | !%s;", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
-    case PPCOp::CRXOR: line("%s = %s ^ %s;",  cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
-    case PPCOp::CRNOR: line("%s = !(%s | %s);",  cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
-    case PPCOp::CRNAND:line("%s = !(%s & %s);", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
-    case PPCOp::CREQV: line("%s = !(%s ^ %s);", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str()); break;
+    case PPCOp::CRAND:
+        line("%s = %s & %s;", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
+    case PPCOp::CRANDC:
+        line("%s = %s & !%s;", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
+    case PPCOp::CROR:
+        line("%s = %s | %s;", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
+    case PPCOp::CRORC:
+        line("%s = %s | !%s;", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
+    case PPCOp::CRXOR:
+        line("%s = %s ^ %s;", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
+    case PPCOp::CRNOR:
+        line("%s = !(%s | %s);", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
+    case PPCOp::CRNAND:
+        line("%s = !(%s & %s);", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
+    case PPCOp::CREQV:
+        line("%s = !(%s ^ %s);", cr_bit(i.rD).c_str(), cr_bit(i.rA).c_str(), cr_bit(i.rB).c_str());
+        break;
     case PPCOp::MCRF:
         line("cpu.cr[%d] = cpu.cr[%d];", i.crfD, i.crfS);
         break;
@@ -845,10 +1046,16 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     case PPCOp::SC:
         line("os_hle_call(cpu, 0x%xu);", i.pc);
         break;
-    case PPCOp::SYNC: case PPCOp::ISYNC: case PPCOp::EIEIO:
-    case PPCOp::DCBT: case PPCOp::DCBTST: case PPCOp::DCBF:
+    case PPCOp::SYNC:
+    case PPCOp::ISYNC:
+    case PPCOp::EIEIO:
+    case PPCOp::DCBT:
+    case PPCOp::DCBTST:
+    case PPCOp::DCBF:
     case PPCOp::DCBI:
-    case PPCOp::DCBST: case PPCOp::TLBIE: case PPCOp::TLBSYNC:
+    case PPCOp::DCBST:
+    case PPCOp::TLBIE:
+    case PPCOp::TLBSYNC:
         line("// %s — no-op in recomp", i.mnemonic().c_str());
         break;
     // icbi is NOT a no-op: recomp execution never fetches through Dolphin's instruction cache,
@@ -867,14 +1074,23 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("dcbz32(%s);", ea_x(i).c_str());
         break;
 
-    case PPCOp::MFMSR: line("%s = msr_get(); // live MSR from Dolphin", d.c_str()); break;
-    case PPCOp::MFSR:  line("%s = 0; // MFSR: segment registers not emulated", d.c_str()); break;
-    case PPCOp::MFSRIN:line("%s = 0; // MFSRIN: segment registers not emulated", d.c_str()); break;
+    case PPCOp::MFMSR:
+        line("%s = msr_get(); // live MSR from Dolphin", d.c_str());
+        break;
+    case PPCOp::MFSR:
+        line("%s = 0; // MFSR: segment registers not emulated", d.c_str());
+        break;
+    case PPCOp::MFSRIN:
+        line("%s = 0; // MFSRIN: segment registers not emulated", d.c_str());
+        break;
     // MTMSR: set the modeled MSR without a synchronous exception check (delivery is deferred to a
     // recomp→JIT boundary — matches the OSDisableInterrupts hazard fix; never deliver mid-tree).
-    case PPCOp::MTMSR: line("msr_set_raw(%s);", s.c_str()); break;
+    case PPCOp::MTMSR:
+        line("msr_set_raw(%s);", s.c_str());
+        break;
     // RFI (exception return / OS context switch): restore MSR from SRR1, branch to SRR0. The
-    // function ends here — tail-branch to the resumed PC (recomp target → nested call; else handoff).
+    // function ends here — tail-branch to the resumed PC (recomp target → nested call; else
+    // handoff).
     case PPCOp::RFI:
         line("msr_set_raw(cpu.srr1);");
         line("tail_ppc(cpu, cpu.srr0 & ~3u);");
@@ -904,9 +1120,9 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         // exactly like mfspr. Read Dolphin's live 64-bit time base so spin/delay
         // loops that wait for the clock to advance actually terminate.
         u16 tbr = decode_spr(i.spr);
-        if (tbr == 269)          // TBU (upper 32)
+        if (tbr == 269) // TBU (upper 32)
             line("%s = (u32)(tb_get() >> 32);", d.c_str());
-        else                      // TBL (lower 32)
+        else // TBL (lower 32)
             line("%s = (u32)tb_get();", d.c_str());
         break;
     }
@@ -914,11 +1130,13 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
     // ── FPSCR ops ─────────────────────────────────────────────────────────────
     case PPCOp::MFFS:
         line("%s = std::bit_cast<f64>((u64)cpu.fpscr);", fd.c_str());
-        if (i.rc) line("update_cr1(cpu);");
+        if (i.rc)
+            line("update_cr1(cpu);");
         break;
     case PPCOp::MTFSF:
-        line("{ u32 _v=(u32)(u64)std::bit_cast<u64>(%s); cpu.fpscr=(_v&0x%xu)|(cpu.fpscr&~0x%xu); }",
-             fd.c_str(), (u32)i.fm << 8, (u32)i.fm << 8);
+        line(
+            "{ u32 _v=(u32)(u64)std::bit_cast<u64>(%s); cpu.fpscr=(_v&0x%xu)|(cpu.fpscr&~0x%xu); }",
+            fd.c_str(), (u32)i.fm << 8, (u32)i.fm << 8);
         break;
     case PPCOp::MTFSB0:
         line("cpu.fpscr &= ~(1u << (31 - %d));", i.rD);
@@ -927,28 +1145,32 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         line("cpu.fpscr |= (1u << (31 - %d));", i.rD);
         break;
     case PPCOp::MTFSFI:
-        line("cpu.fpscr = (cpu.fpscr & ~(0xFu << (28 - %d*4))) | (%uu << (28 - %d*4));",
-             i.crfD, i.wi, i.crfD);
+        line("cpu.fpscr = (cpu.fpscr & ~(0xFu << (28 - %d*4))) | (%uu << (28 - %d*4));", i.crfD,
+             i.wi, i.crfD);
         break;
 
     // ── PS compare ────────────────────────────────────────────────────────────
     case PPCOp::PS_CMPU0:
     case PPCOp::PS_CMPO0:
-        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; "
+             "cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
              psa0.c_str(), psb0.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
     case PPCOp::PS_CMPU1:
     case PPCOp::PS_CMPO1:
-        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
+        line("{ double _a=%s,_b=%s; cpu.cr[%d].lt=_a<_b; cpu.cr[%d].gt=_a>_b; "
+             "cpu.cr[%d].eq=_a==_b; cpu.cr[%d].so=0; }",
              psa1.c_str(), psb1.c_str(), i.crfD, i.crfD, i.crfD, i.crfD);
         break;
 
     // ── psq_lx / psq_stx (indexed PS quantized) ──────────────────────────────
     case PPCOp::PSQ_LX:
-        line("psq_load(%s, cpu.gqr[%d], %d, &%s, &%s);", ea_x(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
+        line("psq_load(%s, cpu.gqr[%d], %d, &%s, &%s);", ea_x(i).c_str(), i.i_gqr, i.w,
+             psd0.c_str(), psd1.c_str());
         break;
     case PPCOp::PSQ_STX:
-        line("psq_store(%s, cpu.gqr[%d], %d, %s, %s);", ea_x(i).c_str(), i.i_gqr, i.w, psd0.c_str(), psd1.c_str());
+        line("psq_store(%s, cpu.gqr[%d], %d, %s, %s);", ea_x(i).c_str(), i.i_gqr, i.w, psd0.c_str(),
+             psd1.c_str());
         break;
 
     // ── Unhandled ────────────────────────────────────────────────────────────
@@ -964,35 +1186,4 @@ void CEmitter::emit_instr(const PPCInstr& i, const EmitContext& ctx) {
         unhandled_ops_.push_back(i.mnemonic());
         break;
     }
-}
-
-// Linear scan to find function boundaries.
-// Heuristic: BL target = new function start; BCLR with bo=0x14 = function end.
-std::vector<u32> find_call_targets(const u8* text, u32 base_addr, u32 size) {
-    std::vector<u32> targets;
-    for (u32 off = 0; off + 4 <= size; off += 4) {
-        u32 word_be;
-        std::memcpy(&word_be, text + off, 4);
-        u32 word = __builtin_bswap32(word_be);  // ROM is big-endian
-        u32 pc   = base_addr + off;
-        PPCInstr instr = decode(word, pc);
-
-        // bl / bcl → the callee starts at the branch target, wherever it lives.
-        if ((instr.op == PPCOp::B || instr.op == PPCOp::BC) && instr.lk)
-            targets.push_back(instr.target);
-    }
-    std::sort(targets.begin(), targets.end());
-    targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
-    return targets;
-}
-
-std::vector<u32> find_functions(const u8* text, u32 base_addr, u32 size) {
-    std::vector<u32> funcs;
-    funcs.push_back(base_addr);  // section start is a function start by definition
-    for (u32 t : find_call_targets(text, base_addr, size))
-        if (t >= base_addr && t < base_addr + size) funcs.push_back(t);
-
-    std::sort(funcs.begin(), funcs.end());
-    funcs.erase(std::unique(funcs.begin(), funcs.end()), funcs.end());
-    return funcs;
 }

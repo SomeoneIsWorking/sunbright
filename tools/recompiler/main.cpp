@@ -1,20 +1,21 @@
-#include <cstdio>
-#include "disc_loader.h"
-#include <memory>
-#include <iterator>
-#include "dol_parser.h"
-#include "ppc_decoder.h"
 #include "c_emitter.h"
+#include "disc_loader.h"
+#include "dol_parser.h"
 #include "func_collect.h"
+#include "function_discovery.h"
+#include "ppc_decoder.h"
+#include <cstdio>
+#include <iterator>
+#include <memory>
 
-#include <iostream>
-#include <fstream>
-#include <filesystem>
-#include <iomanip>
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <map>
 #include <set>
-#include <algorithm>
 #include <unordered_map>
 
 namespace fs = std::filesystem;
@@ -26,9 +27,12 @@ namespace fs = std::filesystem;
 // SPRs we model directly in CPUState; mtspr/mfspr to anything else (HID0/HID2,
 // L2CR, WPAR, BATs, DABR, …) carries HW side effects only Dolphin reproduces.
 static bool spr_is_modeled(u16 spr) {
-    if (spr == SPR_XER || spr == SPR_LR || spr == SPR_CTR) return true;
-    if (spr == SPR_SRR0 || spr == SPR_SRR1) return true;   // exception/context save-restore — modeled
-    if (spr >= SPR_GQR0 && spr <= SPR_GQR0 + 7) return true;
+    if (spr == SPR_XER || spr == SPR_LR || spr == SPR_CTR)
+        return true;
+    if (spr == SPR_SRR0 || spr == SPR_SRR1)
+        return true; // exception/context save-restore — modeled
+    if (spr >= SPR_GQR0 && spr <= SPR_GQR0 + 7)
+        return true;
     // Everything else is modelled as plain storage in CPUState::spr[] — see the note
     // there. On a standalone PC port these configure hardware that does not exist
     // (caches, BATs/MMU, core config), so write-then-read-back IS the correct
@@ -41,21 +45,25 @@ static bool spr_is_modeled(u16 spr) {
 static bool function_needs_jit(const std::vector<PPCInstr>& instrs) {
     for (const auto& i : instrs) {
         switch (i.op) {
-        // MTMSR (→ msr_set_raw) and RFI (→ restore SRR1→MSR + branch SRR0) are modeled in the recomp,
-        // so the OS interrupt/scheduler/context-switch primitives are recompiled (PC port owns them).
-        // NOTE (2026-06-05): routing MTMSR/RFI back to JIT here HANGS boot immediately at early OS
-        // init (the first context switch spins under run_jit_sync) — the pre-fb76ced handoff-based
-        // boot can't be restored by function_needs_jit alone; the recompiled scheduler boots further
-        // (reaches THP). The post-THP crash is fixed by finishing native threading, not this revert.
-        // Only genuine HW side effects below stay JIT.
-        case PPCOp::MTSR:  case PPCOp::MTSRIN:
-        case PPCOp::TLBIE: case PPCOp::TLBSYNC:
-        case PPCOp::ECIWX: case PPCOp::ECOWX:
+        // MTMSR (→ msr_set_raw) and RFI (→ restore SRR1→MSR + branch SRR0) are modeled in the
+        // recomp, so the OS interrupt/scheduler/context-switch primitives are recompiled (PC port
+        // owns them). NOTE (2026-06-05): routing MTMSR/RFI back to JIT here HANGS boot immediately
+        // at early OS init (the first context switch spins under run_jit_sync) — the pre-fb76ced
+        // handoff-based boot can't be restored by function_needs_jit alone; the recompiled
+        // scheduler boots further (reaches THP). The post-THP crash is fixed by finishing native
+        // threading, not this revert. Only genuine HW side effects below stay JIT.
+        case PPCOp::MTSR:
+        case PPCOp::MTSRIN:
+        case PPCOp::TLBIE:
+        case PPCOp::TLBSYNC:
+        case PPCOp::ECIWX:
+        case PPCOp::ECOWX:
             return true;
         case PPCOp::MTSPR:
         case PPCOp::MFSPR:
             // Touching a hardware SPR (cache/MMU/gather-pipe/power) — needs the JIT.
-            if (!spr_is_modeled(decode_spr(i.spr))) return true;
+            if (!spr_is_modeled(decode_spr(i.spr)))
+                return true;
             break;
         default:
             break;
@@ -66,12 +74,15 @@ static bool function_needs_jit(const std::vector<PPCInstr>& instrs) {
 
 static void print_usage(const char* prog) {
     std::cerr << "Usage:\n"
-              << "  " << prog << " <disc.iso|game.dol> --output <dir>   # Recompile (.dol needs no Dolphin)\n"
+              << "  " << prog
+              << " <disc.iso|game.dol> --output <dir>   # Recompile (.dol needs no Dolphin)\n"
               << "  " << prog << " <disc.rvz|disc.iso> --analyze-only     # Analyze\n"
               << "  " << prog << " <disc.rvz|disc.iso> --dump-dol --output <path>\n"
               << "  " << prog << " <disc> --disasm <hexaddr> [count]      # Disassemble\n"
-              << "  " << prog << " <disc> --xref <hexaddr> [--funcs f]    # Who calls/branches to ADDR\n"
-              << "  " << prog << " <disc> --callees <hexaddr> [--funcs f] # What the fn at ADDR calls\n"
+              << "  " << prog
+              << " <disc> --xref <hexaddr> [--funcs f]    # Who calls/branches to ADDR\n"
+              << "  " << prog
+              << " <disc> --callees <hexaddr> [--funcs f] # What the fn at ADDR calls\n"
               << "  " << prog << " --version\n";
 }
 
@@ -85,15 +96,13 @@ static void analyze_mode(const DiscLoader& disc, const DOL& dol) {
     DiscInfo di = disc.info();
     std::cout << "=== Disc Info ===\n"
               << "Game ID:  " << di.game_id << "\n"
-              << "Title:    " << di.title   << "\n\n";
+              << "Title:    " << di.title << "\n\n";
 
     std::cout << "=== DOL Layout ===\n"
               << "Entry:    0x" << std::hex << dol.entry << "\n";
     for (const auto& s : dol.sections) {
-        std::cout << (s.is_text ? "  TEXT" : "  DATA")
-                  << "  0x" << std::hex << s.addr
-                  << " – 0x" << (s.addr + s.size)
-                  << "  (" << std::dec << s.size << " bytes)\n";
+        std::cout << (s.is_text ? "  TEXT" : "  DATA") << "  0x" << std::hex << s.addr << " – 0x"
+                  << (s.addr + s.size) << "  (" << std::dec << s.size << " bytes)\n";
     }
 
     std::cout << "\n=== Function Scan ===\n";
@@ -102,21 +111,21 @@ static void analyze_mode(const DiscLoader& disc, const DOL& dol) {
 
     for (const auto& [base, data] : dol.text_sections()) {
         auto funcs = find_functions(data.data(), base, data.size());
-        std::cout << "  Section 0x" << std::hex << base << ": "
-                  << std::dec << funcs.size() << " functions\n";
+        std::cout << "  Section 0x" << std::hex << base << ": " << std::dec << funcs.size()
+                  << " functions\n";
         total_funcs += funcs.size();
         total_instrs += data.size() / 4;
     }
 
-    std::cout << "  Total: " << total_funcs << " functions, "
-              << total_instrs << " instructions\n";
+    std::cout << "  Total: " << total_funcs << " functions, " << total_instrs << " instructions\n";
 
     std::cout << "\n=== Filesystem ===\n";
     auto files = disc.list_files();
     std::cout << "  " << files.size() << " files\n";
     size_t rel_count = 0;
     for (const auto& f : files) {
-        if (f.ends_with(".rel")) rel_count++;
+        if (f.ends_with(".rel"))
+            rel_count++;
         if (files.size() <= 20 || f.ends_with(".rel") || f.ends_with(".dol"))
             std::cout << "  " << f << "\n";
     }
@@ -136,12 +145,16 @@ static void analyze_mode(const DiscLoader& disc, const DOL& dol) {
     }
     // Print top 20
     std::vector<std::pair<int, PPCOp>> sorted;
-    for (auto& [op, cnt] : hist) sorted.emplace_back(cnt, op);
+    sorted.reserve(hist.size());
+    for (auto& [op, cnt] : hist)
+        sorted.emplace_back(cnt, op);
     std::sort(sorted.rbegin(), sorted.rend());
     int shown = 0;
     for (auto& [cnt, op] : sorted) {
-        if (++shown > 20) break;
-        PPCInstr dummy{}; dummy.op = op;
+        if (++shown > 20)
+            break;
+        PPCInstr dummy{};
+        dummy.op = op;
         std::cout << "  " << std::setw(8) << cnt << "x  " << dummy.mnemonic() << "\n";
     }
     int unknown = hist[PPCOp::UNKNOWN];
@@ -157,8 +170,7 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
     // changes the buckets shift and old files would linger → duplicate symbols.
     for (const auto& e : fs::directory_iterator(out_dir)) {
         const std::string n = e.path().filename().string();
-        if ((n.rfind("functions_", 0) == 0 && n.size() > 4 &&
-             n.substr(n.size() - 4) == ".cpp") ||
+        if ((n.rfind("functions_", 0) == 0 && n.size() > 4 && n.substr(n.size() - 4) == ".cpp") ||
             n == "functions.cpp" || n == "functions.h" || n == "jump_table.cpp")
             fs::remove(e.path());
     }
@@ -184,15 +196,24 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         return false;
     };
     auto is_term = [](u32 w) -> bool {
-        if (w == 0x4E800020 || w == 0x4E800420) return true;   // blr, bctr
-        if (w == 0) return true;                                // padding
+        if (w == 0x4E800020 || w == 0x4E800420)
+            return true; // blr, bctr
+        if (w == 0)
+            return true; // padding
         u32 op = w >> 26;
-        if (op == 18 && !(w & 1)) return true;                  // b (no lk)
-        if (op == 19) { u32 xo = (w >> 1) & 0x3ff; if (xo == 16 || xo == 528) return true; } // bclr/bcctr
+        if (op == 18 && !(w & 1))
+            return true; // b (no lk)
+        if (op == 19) {
+            u32 xo = (w >> 1) & 0x3ff;
+            if (xo == 16 || xo == 528)
+                return true;
+        } // bclr/bcctr
         return false;
     };
     auto is_section_start = [&](u32 a) -> bool {
-        for (const auto& s : dol.sections) if (s.is_text && a == s.addr) return true;
+        for (const auto& s : dol.sections)
+            if (s.is_text && a == s.addr)
+                return true;
         return false;
     };
     // Pointer/vtable discovery is ON by default. It was opt-in while the recompiler
@@ -210,24 +231,31 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         // labels and stray data addresses that happen to land in .text, so over-adding is safe
         // (an extra real function is harmless; ptr entries never act as fend boundaries).
         auto consider = [&](u32 v) {
-            if (v & 3) return;
+            if (v & 3)
+                return;
             u32 w, prev;
-            if (!text_word(v, w)) return;                // points into .text?
-            if (w == 0) return;                          // padding is never a function
+            if (!text_word(v, w))
+                return; // points into .text?
+            if (w == 0)
+                return; // padding is never a function
             // A trivial C++ ctor/dtor compiles to a single `blr`, and this codebase is
             // full of them — one is handed to __construct_array as the element ctor.
             // Rejecting every terminator-first candidate discarded all of them, so the
             // call through the pointer hit an address that was never recompiled. Other
             // terminators (b/bctr) stay rejected: as a FIRST word they are far more
             // likely to be a stray data value than a thunk.
-            if (is_term(w) && w != 0x4E800020u) return;
+            if (is_term(w) && w != 0x4E800020u)
+                return;
             // A bare `blr` IS a complete function body, and MWCC merges identical bodies —
             // several empty virtuals end up pointing at the SAME blr, which is therefore
             // usually preceded by another function's last instruction rather than by a
             // terminator. Accept it without the boundary test, otherwise those entries are
             // never discovered and an indirect call to one aborts at runtime (observed:
             // 0x800339a0, reached once stage 15 started loading).
-            if (w == 0x4E800020u) { ptr_funcs.insert(v); return; }
+            if (w == 0x4E800020u) {
+                ptr_funcs.insert(v);
+                return;
+            }
             if (is_section_start(v) || (text_word(v - 4, prev) && is_term(prev)))
                 ptr_funcs.insert(v);
         };
@@ -236,7 +264,9 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         //     looks like a .text entry.
         for (const auto& s : dol.sections)
             for (u32 off = 0; off + 4 <= s.size; off += 4) {
-                u32 v; std::memcpy(&v, s.data.data() + off, 4); v = __builtin_bswap32(v);
+                u32 v;
+                std::memcpy(&v, s.data.data() + off, 4);
+                v = __builtin_bswap32(v);
                 consider(v);
             }
 
@@ -252,17 +282,22 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         //     cleanly yet (they need function_needs_jit-style routing / native ports first), so
         //     enabling it as-is destabilizes boot. WIP — keep off until those are handled.
         for (const auto& s : dol.sections) {
-            if (getenv("SUNBRIGHT_NO_DISCOVER_CODEPTRS")) break;
-            if (!s.is_text) continue;
-            u32 hi[32]; bool hi_ok[32] = {};
+            if (getenv("SUNBRIGHT_NO_DISCOVER_CODEPTRS"))
+                break;
+            if (!s.is_text)
+                continue;
+            u32 hi[32];
+            bool hi_ok[32] = {};
             for (u32 off = 0; off + 4 <= s.size; off += 4) {
-                u32 w; std::memcpy(&w, s.data.data() + off, 4); w = __builtin_bswap32(w);
+                u32 w;
+                std::memcpy(&w, s.data.data() + off, 4);
+                w = __builtin_bswap32(w);
                 const u32 op = w >> 26;
-                const u32 f21 = (w >> 21) & 31, f16 = (w >> 16) & 31;  // the two GPR fields
+                const u32 f21 = (w >> 21) & 31, f16 = (w >> 16) & 31; // the two GPR fields
                 // First CONSUME a tracked high-half (lis result still live in the base register).
-                if (op == 14 && f16 != 0 && hi_ok[f16])               // addi rD,rA,SIMM
+                if (op == 14 && f16 != 0 && hi_ok[f16]) // addi rD,rA,SIMM
                     consider(hi[f16] + (u32)(s32)(s16)(w & 0xffff));
-                else if (op == 24 && hi_ok[f21])                      // ori rA,rS,UIMM (rS=f21)
+                else if (op == 24 && hi_ok[f21]) // ori rA,rS,UIMM (rS=f21)
                     consider(hi[f21] | (w & 0xffff));
                 // Then UPDATE validity. SOUNDNESS RULE: pair a lis only with a following addi/ori
                 // that has NO intervening write to the base register. We don't fully decode every
@@ -270,12 +305,15 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
                 // instruction (over-invalidating only costs a missed pair → that fn falls to the
                 // interpreter, which is handled; under-invalidating would mint a BOGUS entry from a
                 // stale high-half — that crashed boot). A branch/terminator clears all (block end).
-                if (op == 15 && f16 == 0) {              // lis rD,SIMM — set the tracked high-half
-                    hi[f21] = (u32)((s32)(s16)(w & 0xffff) << 16); hi_ok[f21] = true;
+                if (op == 15 && f16 == 0) { // lis rD,SIMM — set the tracked high-half
+                    hi[f21] = (u32)((s32)(s16)(w & 0xffff) << 16);
+                    hi_ok[f21] = true;
                 } else if (is_term(w)) {
-                    for (bool& b : hi_ok) b = false;
+                    for (bool& b : hi_ok)
+                        b = false;
                 } else {
-                    hi_ok[f21] = false; hi_ok[f16] = false;
+                    hi_ok[f21] = false;
+                    hi_ok[f16] = false;
                 }
             }
         }
@@ -310,7 +348,8 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         // names an entry point), so they DO belong in real_funcs and DO act as fend
         // boundaries — without that, the preceding function swallows their body.
         for (u32 t : cross_targets)
-            if (t >= base && t < sec_end) real_funcs.push_back(t);
+            if (t >= base && t < sec_end)
+                real_funcs.push_back(t);
         std::sort(real_funcs.begin(), real_funcs.end());
         real_funcs.erase(std::unique(real_funcs.begin(), real_funcs.end()), real_funcs.end());
 
@@ -322,79 +361,84 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         // NOT added to real_funcs, so they never act as fend boundaries (re-truncating the
         // preceding function — the JAIBasic-style bug). Also force-CFG below (collect whole).
         static const std::unordered_set<u32> kForceEntry = {
-            0x8031d83cu,  // JASystem::TTrack tick (87.2% of interp steps)
-            0x8001fa88u,  // THP movie player region (6.2%)
-            0x80316ffcu,  // JASystem::Kernel portCmdInit region (2.5%)
-            0x803121acu,  // __UpdateJcToDSP__Q28JASystem6Driver (0.7%)
-            0x8031a2ecu,  // read16__Q28JASystem8TSeqCtrl (0.2%)
+            0x8031d83cu, // JASystem::TTrack tick (87.2% of interp steps)
+            0x8001fa88u, // THP movie player region (6.2%)
+            0x80316ffcu, // JASystem::Kernel portCmdInit region (2.5%)
+            0x803121acu, // __UpdateJcToDSP__Q28JASystem6Driver (0.7%)
+            0x8031a2ecu, // read16__Q28JASystem8TSeqCtrl (0.2%)
             // 2nd wave: undiscovered indirect-callees the above redistributed load onto
             // (re-profiled after forcing the first wave). Same JAudio class, verified real
             // function starts (prologue + preceding blr).
-            0x803399ccu,  // JAudio region (44.5% of residual interp steps, long loop)
-            0x8031a50cu,  // JAudio leaf (18.5%)
-            0x8030fe50u,  // JAudio leaf (10.9%)
-            0x80313ddcu,  // JAudio region (9.2%)
+            0x803399ccu, // JAudio region (44.5% of residual interp steps, long loop)
+            0x8031a50cu, // JAudio leaf (18.5%)
+            0x8030fe50u, // JAudio leaf (10.9%)
+            0x80313ddcu, // JAudio region (9.2%)
             // 3rd wave: the JASystem audio THREAD ENTRIES themselves (OSCreateThread targets — real
             // prologues, preceded by blr). Without these the audio thread runs its WHOLE life under
             // the interpreter (guest_thread_body falls to interp_run_until when the entry isn't a
-            // recomp func), where the general-table TTrack-tick override (ttrack_tick_native) is NOT
-            // consulted, so the tick spins and the cooperative nthr scheduler never switches to the
-            // renderer → vps=0. Recompiled, the thread runs on the native stack: the override fires
-            // and OS block points yield. (Ref mislabels them portCmdInit+0x278 / TCardManager+0x184.)
-            0x803171ecu,  // JASystem::Kernel audio thread proc (portCmdInit)
-            0x80311170u,  // JASystem::AudioThread main proc — the DSP-synced mix/seq thread (entry
-                          // missed by discovery): its loop OSReceiveMessage's each audio frame then
-                          // updateDac → TSeqParser::mainProc → TTrack tick. Under interp the
-                          // ttrack_tick_native override is skipped so the tick spins (vps=0);
-                          // recompiled it runs on the native stack and the override fires.
-            0x80312000u,  // JASystem DSP-channel loop head INSIDE func_8031204c's body: 8031204c is
-                          // also a real indirect entry, so its emission starts mid-loop and the
-                          // backward branch to 80312000 left ITS body → tail_ppc handoff at every
-                          // audio frame boundary (unwound the native audioproc loop, 2026-06-11).
-                          // As a forced ENTRY the loop head gets its own emission; the backward
-                          // branch becomes a recomp call that returns via blr.
-            0x802b3264u,  // TCardManager thread proc (NOT audio — ref mislabels it TCardManager+0x184;
-                          // its CARDProbeEx/__EXIProbe debounce loop is unblocked by the OSYieldThread
-                          // CoreTiming-advance fix, ecd63ac).
+            // recomp func), where the general-table TTrack-tick override (ttrack_tick_native) is
+            // NOT consulted, so the tick spins and the cooperative nthr scheduler never switches to
+            // the renderer → vps=0. Recompiled, the thread runs on the native stack: the override
+            // fires and OS block points yield. (Ref mislabels them portCmdInit+0x278 /
+            // TCardManager+0x184.)
+            0x803171ecu, // JASystem::Kernel audio thread proc (portCmdInit)
+            0x80311170u, // JASystem::AudioThread main proc — the DSP-synced mix/seq thread (entry
+                         // missed by discovery): its loop OSReceiveMessage's each audio frame then
+                         // updateDac → TSeqParser::mainProc → TTrack tick. Under interp the
+                         // ttrack_tick_native override is skipped so the tick spins (vps=0);
+                         // recompiled it runs on the native stack and the override fires.
+            0x80312000u, // JASystem DSP-channel loop head INSIDE func_8031204c's body: 8031204c is
+                         // also a real indirect entry, so its emission starts mid-loop and the
+                         // backward branch to 80312000 left ITS body → tail_ppc handoff at every
+                         // audio frame boundary (unwound the native audioproc loop, 2026-06-11).
+                         // As a forced ENTRY the loop head gets its own emission; the backward
+                         // branch becomes a recomp call that returns via blr.
+            0x802b3264u, // TCardManager thread proc (NOT audio — ref mislabels it
+                         // TCardManager+0x184; its CARDProbeEx/__EXIProbe debounce loop is
+                         // unblocked by the OSYieldThread CoreTiming-advance fix, ecd63ac).
             // 4th wave (2026-06-10): EVERY remaining OSCreateThread entry observed at boot —
             // verified mflr prologues. Pointer-only targets (entry built by lis/addi into
             // OSCreateThread's r4): neither bl-reachability nor data-table pointer discovery
             // finds them, so their threads ran their WHOLE LIVES under the interpreter (~100x):
             // the THP video decode crawled at 134M+ interp steps (pc=80371af0, Huffman inner
             // loop) = slow intro movie + general boot sluggishness + no input responsiveness.
-            0x802c54b8u,  // JKRThread::start trampoline (4 worker threads incl. THP decode pool)
-            0x802a9184u,  // render/draw-sync thread
-            0x802a7878u,  // boot setup thread A
-            0x802a7080u,  // boot setup thread B
-            0x802b6fdcu,  // boot stage thread
-            0x8001dcd0u,  // game thread (movie era)
-            0x8001fc04u,  // game thread (movie era)
-            0x800200d8u,  // game thread (movie era)
-            0x80296dd4u,  // game thread
-            // GX draw-sync token callback chain (registered via GXSetDrawSyncCallback — pointer-only;
-            // the funcs-map label at 802a8db8 is a DIFFERENT method, the live global holds 802a9318):
-            0x802a9318u,  // TDrawSyncManager::drawSyncCallback (static)
-            0x802a9078u,  // TDrawSyncManager::drawSyncCallbackSub
+            0x802c54b8u, // JKRThread::start trampoline (4 worker threads incl. THP decode pool)
+            0x802a9184u, // render/draw-sync thread
+            0x802a7878u, // boot setup thread A
+            0x802a7080u, // boot setup thread B
+            0x802b6fdcu, // boot stage thread
+            0x8001dcd0u, // game thread (movie era)
+            0x8001fc04u, // game thread (movie era)
+            0x800200d8u, // game thread (movie era)
+            0x80296dd4u, // game thread
+            // GX draw-sync token callback chain (registered via GXSetDrawSyncCallback —
+            // pointer-only; the funcs-map label at 802a8db8 is a DIFFERENT method, the live global
+            // holds 802a9318):
+            0x802a9318u, // TDrawSyncManager::drawSyncCallback (static)
+            0x802a9078u, // TDrawSyncManager::drawSyncCallbackSub
             // GX shared TEV dispatchers (perf): tiny recompiled GXSetTev* entries TAIL (`b`) into
             // these shared bctr dispatchers; un-recompiled, every TEV call siglongjmp'd to the JIT
             // and bounced back — 12.26M of 12.58M tails at file select = the 0.6 fps in-scene
             // crawl (tail-hist, 2026-06-10). As recomp entries the chain stays on the C stack
             // (their bctr cases are already discovered entries).
-            0x8035ce14u,  // GX TEV-register dispatcher (97.5% of tails)
-            0x8035c334u,  // second GX dispatcher (2.5%)
+            0x8035ce14u, // GX TEV-register dispatcher (97.5% of tails)
+            0x8035c334u, // second GX dispatcher (2.5%)
         };
 
-        auto funcs = real_funcs;                       // all recomp ENTRY points = real + discovered
-        for (u32 p : ptr_funcs)                        // merge in vtable/ptr entries
-            if (p >= base && p < sec_end) funcs.push_back(p);
-        for (u32 p : kForceEntry)                      // merge in forced indirect-call entries
-            if (p >= base && p < sec_end) funcs.push_back(p);
+        auto funcs = real_funcs; // all recomp ENTRY points = real + discovered
+        for (u32 p : ptr_funcs)  // merge in vtable/ptr entries
+            if (p >= base && p < sec_end)
+                funcs.push_back(p);
+        for (u32 p : kForceEntry) // merge in forced indirect-call entries
+            if (p >= base && p < sec_end)
+                funcs.push_back(p);
         // The DOL entry point is a function root BY DEFINITION. It is not necessarily
         // in the symbol map — GMSE01's __start (0x8000522c) is not — and nothing bl's
         // to it, so neither symbol lookup nor bl-reachability discovers it. Without
         // this the recompiled image has no way in: dispatch on the entry address hits
         // an empty table and aborts. Seed it explicitly.
-        if (dol.entry >= base && dol.entry < sec_end) funcs.push_back(dol.entry);
+        if (dol.entry >= base && dol.entry < sec_end)
+            funcs.push_back(dol.entry);
         std::sort(funcs.begin(), funcs.end());
         funcs.erase(std::unique(funcs.begin(), funcs.end()), funcs.end());
         all_funcs.insert(all_funcs.end(), funcs.begin(), funcs.end());
@@ -402,7 +446,7 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         // For each entry, collect instructions until the next REAL function boundary or bl
         for (size_t fi = 0; fi < funcs.size(); fi++) {
             u32 faddr = funcs[fi];
-            u32 fend  = next_func_boundary(faddr, real_funcs, sec_end);
+            u32 fend = next_func_boundary(faddr, real_funcs, sec_end);
 
             // Force full-CFG collection for specific functions even when the global linear mode is
             // on. Linear mode stops at the first unconditional branch, which TRUNCATES functions
@@ -410,31 +454,53 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
             // making the dropped blocks — and anything they bl — unreachable by recomp overrides).
             // These J2D draw functions must be whole so the 2D quad emitter they bl (0x802cd2ec) is
             // emitted as call_ppc and can be owned natively (the widescreen HUD layout, hud.cpp):
-            //   0x802cc838 J2DPicture::drawFullSet — bl's the quad emitter from its (truncated) tail.
-            //   0x801441e0 TGCConsole2::drawWater, 0x80144840 drawJuice — these draw the FLUDD blue
-            //     gauge; hud.cpp wraps them to shift the gauge for widescreen and must regain control
-            //     when they return. Linear-truncated, they'd tail_ppc out (siglongjmp) and never
-            //     return to the override → its scope flag would leak and shift the whole screen. Whole
-            //     (force-CFG) they end in blr and return cleanly.
+            //   0x802cc838 J2DPicture::drawFullSet — bl's the quad emitter from its (truncated)
+            //   tail. 0x801441e0 TGCConsole2::drawWater, 0x80144840 drawJuice — these draw the
+            //   FLUDD blue
+            //     gauge; hud.cpp wraps them to shift the gauge for widescreen and must regain
+            //     control when they return. Linear-truncated, they'd tail_ppc out (siglongjmp) and
+            //     never return to the override → its scope flag would leak and shift the whole
+            //     screen. Whole (force-CFG) they end in blr and return cleanly.
             static const std::unordered_set<u32> kForceCFG = {
-                0x802cc838u, 0x801441e0u, 0x80144840u,
+                0x802cc838u,
+                0x801441e0u,
+                0x80144840u,
                 // Forced indirect-call entries (see kForceEntry above) — collect whole so linear
                 // mode doesn't truncate them mid-body into a JIT bounce (defeats the purpose).
-                0x8031d83cu, 0x8001fa88u, 0x80316ffcu, 0x803121acu, 0x8031a2ecu,
-                0x803399ccu, 0x8031a50cu, 0x8030fe50u, 0x80313ddcu,
-                0x803171ecu, 0x80311170u, 0x802b3264u,   // audio + card thread procs (3rd wave)
+                0x8031d83cu,
+                0x8001fa88u,
+                0x80316ffcu,
+                0x803121acu,
+                0x8031a2ecu,
+                0x803399ccu,
+                0x8031a50cu,
+                0x8030fe50u,
+                0x80313ddcu,
+                0x803171ecu,
+                0x80311170u,
+                0x802b3264u, // audio + card thread procs (3rd wave)
                 // 4th wave thread entries + the draw-sync callback chain: collect whole (CFG) so
                 // linear mode can't truncate them mid-body into a JIT bounce.
-                0x802c54b8u, 0x802a9184u, 0x802a7878u, 0x802a7080u, 0x802b6fdcu,
-                0x8001dcd0u, 0x8001fc04u, 0x800200d8u, 0x80296dd4u,
-                0x802a9318u, 0x802a9078u,
-                0x8035ce14u, 0x8035c334u,  // GX shared TEV dispatchers (perf)
+                0x802c54b8u,
+                0x802a9184u,
+                0x802a7878u,
+                0x802a7080u,
+                0x802b6fdcu,
+                0x8001dcd0u,
+                0x8001fc04u,
+                0x800200d8u,
+                0x80296dd4u,
+                0x802a9318u,
+                0x802a9078u,
+                0x8035ce14u,
+                0x8035c334u, // GX shared TEV dispatchers (perf)
             };
 
             // Collection (linear-truncate vs full-CFG) is extracted to func_collect.{h,cpp} and
             // unit-tested (tools/recompiler/tests) — its behaviour repeatedly broke assumptions.
             const bool use_cfg = getenv("SUNBRIGHT_CFG") || kForceCFG.count(faddr);
-            func_instrs[faddr] = collect_function(data.data(), base, data.size(), faddr, fend, use_cfg);
+            func_instrs[faddr] =
+                collect_function(data.data(), base, data.size(), faddr, fend, use_cfg);
         }
     }
 
@@ -492,10 +558,10 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
         const std::string part = namebuf;
         part_files.push_back(part);
 
-        std::ofstream f(out_dir + "/" + part);
+        std::ofstream f(fs::path(out_dir) / part);
         f << "// AUTO-GENERATED by sunbright-recomp — DO NOT EDIT\n"
-          << "// Functions 0x" << std::hex << all_funcs[start]
-          << " .. 0x" << all_funcs[end - 1] << "\n"
+          << "// Functions 0x" << std::hex << all_funcs[start] << " .. 0x" << all_funcs[end - 1]
+          << "\n"
           << "#include \"functions.h\"\n";
 
         CEmitter emitter(f);
@@ -503,23 +569,26 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
             u32 addr = all_funcs[fi];
             EmitContext ctx;
             ctx.func_addr = addr;
-            ctx.instrs    = func_instrs[addr];
+            ctx.instrs = func_instrs[addr];
 
             ctx.branch_targets = intra_branch_targets(ctx.instrs, addr);
-            // Pull computed-`bctr` jump-table case labels into the function so they emit as in-function
-            // `switch(ctr){goto}` rather than a `tail_ppc` handoff to Dolphin's JIT (the boot crash).
+            // Pull computed-`bctr` jump-table case labels into the function so they emit as
+            // in-function `switch(ctr){goto}` rather than a `tail_ppc` handoff to Dolphin's JIT
+            // (the boot crash).
             if (!ctx.instrs.empty()) {
                 const u32 fend = ctx.instrs.back().pc + 4;
                 auto any_word = [&](u32 a, u32& out) -> bool {
                     for (const auto& s : dol.sections)
                         if (a >= s.addr && a + 4 <= s.addr + s.size) {
                             std::memcpy(&out, s.data.data() + (a - s.addr), 4);
-                            out = __builtin_bswap32(out); return true;
+                            out = __builtin_bswap32(out);
+                            return true;
                         }
                     return false;
                 };
                 ctx.jumptable_targets = jumptable_targets(ctx.instrs, addr, fend, any_word);
-                ctx.branch_targets.insert(ctx.jumptable_targets.begin(), ctx.jumptable_targets.end());
+                ctx.branch_targets.insert(ctx.jumptable_targets.begin(),
+                                          ctx.jumptable_targets.end());
             }
             emitter.emit_function(ctx);
         }
@@ -544,47 +613,61 @@ static int recompile_mode(const DOL& dol, const std::string& out_dir) {
 
     std::cout << "Output written to " << out_dir << "/\n"
               << "  functions.h     (" << all_funcs.size() << " declarations)\n"
-              << "  functions_*.cpp (" << part_files.size() << " files, "
-              << all_funcs.size() << " functions)\n"
+              << "  functions_*.cpp (" << part_files.size() << " files, " << all_funcs.size()
+              << " functions)\n"
               << "  jump_table.cpp  (" << all_funcs.size() << " entries)\n";
 
     return 0;
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { print_usage(argv[0]); return 1; }
-    if (strcmp(argv[1], "--version") == 0) { print_version(); return 0; }
+    if (argc < 2) {
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (strcmp(argv[1], "--version") == 0) {
+        print_version();
+        return 0;
+    }
 
     std::string disc_path = argv[1];
     bool analyze_only = false;
-    bool dump_dol     = false;
-    bool dump_funcs   = false;
-    bool do_disasm    = false;
-    u32  disasm_addr  = 0;
-    int  disasm_count = 64;
-    bool do_xref      = false;   // --xref ADDR  : who directly branches to ADDR
-    bool do_callees   = false;   // --callees ADDR : what the function at ADDR directly calls
-    u32  xref_addr    = 0;
+    bool dump_dol = false;
+    bool dump_funcs = false;
+    bool do_disasm = false;
+    u32 disasm_addr = 0;
+    int disasm_count = 64;
+    bool do_xref = false;    // --xref ADDR  : who directly branches to ADDR
+    bool do_callees = false; // --callees ADDR : what the function at ADDR directly calls
+    u32 xref_addr = 0;
     std::string funcs_path = "reference/sms_gmse01_funcs.txt";
     std::string out_dir;
 
     for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--analyze-only") == 0) analyze_only = true;
-        if (strcmp(argv[i], "--dump-dol")     == 0) dump_dol = true;
-        if (strcmp(argv[i], "--dump-funcs")   == 0) dump_funcs = true;
-        if (strcmp(argv[i], "--output") == 0 && i+1 < argc) out_dir = argv[++i];
-        if (strcmp(argv[i], "--disasm") == 0 && i+1 < argc) {
+        if (strcmp(argv[i], "--analyze-only") == 0)
+            analyze_only = true;
+        if (strcmp(argv[i], "--dump-dol") == 0)
+            dump_dol = true;
+        if (strcmp(argv[i], "--dump-funcs") == 0)
+            dump_funcs = true;
+        if (strcmp(argv[i], "--output") == 0 && i + 1 < argc)
+            out_dir = argv[++i];
+        if (strcmp(argv[i], "--disasm") == 0 && i + 1 < argc) {
             do_disasm = true;
             disasm_addr = (u32)strtoul(argv[++i], nullptr, 16);
-            if (i + 1 < argc && argv[i+1][0] != '-') disasm_count = atoi(argv[++i]);
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                disasm_count = atoi(argv[++i]);
         }
-        if (strcmp(argv[i], "--xref") == 0 && i+1 < argc) {
-            do_xref = true; xref_addr = (u32)strtoul(argv[++i], nullptr, 16);
+        if (strcmp(argv[i], "--xref") == 0 && i + 1 < argc) {
+            do_xref = true;
+            xref_addr = (u32)strtoul(argv[++i], nullptr, 16);
         }
-        if (strcmp(argv[i], "--callees") == 0 && i+1 < argc) {
-            do_callees = true; xref_addr = (u32)strtoul(argv[++i], nullptr, 16);
+        if (strcmp(argv[i], "--callees") == 0 && i + 1 < argc) {
+            do_callees = true;
+            xref_addr = (u32)strtoul(argv[++i], nullptr, 16);
         }
-        if (strcmp(argv[i], "--funcs") == 0 && i+1 < argc) funcs_path = argv[++i];
+        if (strcmp(argv[i], "--funcs") == 0 && i + 1 < argc)
+            funcs_path = argv[++i];
     }
 
     // Accept EITHER a disc image OR an already-extracted .dol. The DOL path exists
@@ -592,8 +675,8 @@ int main(int argc, char** argv) {
     // owns disc reading — the recompiler only ever needed the executable. Everything
     // except --analyze-only works from the DOL alone (recompile_mode never touched
     // the DiscLoader; its "disc" hits were the words discovery/discovered).
-    const bool dol_input = disc_path.size() > 4 &&
-                           disc_path.compare(disc_path.size() - 4, 4, ".dol") == 0;
+    const bool dol_input =
+        disc_path.size() > 4 && disc_path.compare(disc_path.size() - 4, 4, ".dol") == 0;
 
     std::vector<u8> dol_bytes;
     std::unique_ptr<DiscLoader> disc;
@@ -601,9 +684,15 @@ int main(int argc, char** argv) {
     if (dol_input) {
         std::cout << "Loading DOL: " << disc_path << "\n";
         std::ifstream f(disc_path, std::ios::binary);
-        if (!f) { std::cerr << "Failed to open DOL: " << disc_path << "\n"; return 1; }
+        if (!f) {
+            std::cerr << "Failed to open DOL: " << disc_path << "\n";
+            return 1;
+        }
         dol_bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-        if (dol_bytes.empty()) { std::cerr << "DOL is empty: " << disc_path << "\n"; return 1; }
+        if (dol_bytes.empty()) {
+            std::cerr << "DOL is empty: " << disc_path << "\n";
+            return 1;
+        }
     } else {
         std::cout << "Loading disc: " << disc_path << "\n";
         disc = std::make_unique<DiscLoader>(disc_path);
@@ -621,7 +710,8 @@ int main(int argc, char** argv) {
     DOL dol = DOL::from_bytes(dol_bytes);
 
     if (dump_dol) {
-        if (out_dir.empty()) out_dir = "scratch/bin/sms.dol";
+        if (out_dir.empty())
+            out_dir = "scratch/bin/sms.dol";
         if (auto p = std::filesystem::path(out_dir).parent_path(); !p.empty())
             std::filesystem::create_directories(p);
         std::ofstream f(out_dir, std::ios::binary);
@@ -632,11 +722,14 @@ int main(int argc, char** argv) {
 
     if (do_disasm) {
         for (const auto& [base, data] : dol.text_sections()) {
-            if (disasm_addr < base || disasm_addr >= base + data.size()) continue;
+            if (disasm_addr < base || disasm_addr >= base + data.size())
+                continue;
             for (int k = 0; k < disasm_count; k++) {
                 u32 a = disasm_addr + k * 4, off = a - base;
-                if (off + 4 > data.size()) break;
-                u32 w_be; std::memcpy(&w_be, data.data() + off, 4);
+                if (off + 4 > data.size())
+                    break;
+                u32 w_be;
+                std::memcpy(&w_be, data.data() + off, 4);
                 u32 w = __builtin_bswap32(w_be);
                 PPCInstr ins = decode(w, a);
                 std::printf("%08x: %08x  %s\n", a, w, ins.mnemonic().c_str());
@@ -649,53 +742,67 @@ int main(int argc, char** argv) {
 
     // ── Static cross-reference (durable RE tool) ────────────────────────────────────────────
     // --xref ADDR    : every direct branch (bl / b / bc) in the DOL whose target == ADDR, named by
-    //                  the function that CONTAINS the call site (FuncName+0xNN). Answers "who calls X
-    //                  / what gates X" without hand-decoding branch displacements.
+    //                  the function that CONTAINS the call site (FuncName+0xNN). Answers "who calls
+    //                  X / what gates X" without hand-decoding branch displacements.
     // --callees ADDR : every direct branch OUT of the function at ADDR (to its next-func boundary),
     //                  named by target. Answers "what does this function call".
-    // Names come from --funcs (default reference/sms_gmse01_funcs.txt): "<hexaddr> <symbol>" per line.
+    // Names come from --funcs (default reference/sms_gmse01_funcs.txt): "<hexaddr> <symbol>" per
+    // line.
     if (do_xref || do_callees) {
-        std::vector<std::pair<u32, std::string>> syms;   // sorted by addr
+        std::vector<std::pair<u32, std::string>> syms; // sorted by addr
         {
             std::ifstream f(funcs_path);
-            if (!f) { std::cerr << "could not open funcs file: " << funcs_path << "\n"; return 1; }
+            if (!f) {
+                std::cerr << "could not open funcs file: " << funcs_path << "\n";
+                return 1;
+            }
             std::string line;
             while (std::getline(f, line)) {
-                if (line.empty()) continue;
+                if (line.empty())
+                    continue;
                 char* end = nullptr;
                 u32 a = (u32)strtoul(line.c_str(), &end, 16);
-                if (end == line.c_str()) continue;
-                while (*end == ' ' || *end == '\t') end++;
+                if (end == line.c_str())
+                    continue;
+                while (*end == ' ' || *end == '\t')
+                    end++;
                 syms.emplace_back(a, std::string(end));
             }
             std::sort(syms.begin(), syms.end());
         }
         // Largest symbol addr <= a → "name+0xNN" (or raw hex if before the first symbol).
         auto name_of = [&](u32 a) -> std::string {
-            auto it = std::upper_bound(syms.begin(), syms.end(), a,
-                        [](u32 v, const std::pair<u32,std::string>& p){ return v < p.first; });
+            auto it = std::upper_bound(
+                syms.begin(), syms.end(), a,
+                [](u32 v, const std::pair<u32, std::string>& p) { return v < p.first; });
             char buf[160];
-            if (it == syms.begin()) { std::snprintf(buf, sizeof buf, "%08x", a); return buf; }
+            if (it == syms.begin()) {
+                std::snprintf(buf, sizeof buf, "%08x", a);
+                return buf;
+            }
             --it;
-            if (it->first == a) std::snprintf(buf, sizeof buf, "%s", it->second.c_str());
-            else                std::snprintf(buf, sizeof buf, "%s+0x%x", it->second.c_str(), a - it->first);
+            if (it->first == a)
+                std::snprintf(buf, sizeof buf, "%s", it->second.c_str());
+            else
+                std::snprintf(buf, sizeof buf, "%s+0x%x", it->second.c_str(), a - it->first);
             return buf;
         };
         auto is_direct_branch = [](const PPCInstr& i) {
-            return i.op == PPCOp::B || i.op == PPCOp::BC;   // bl/b/ba/bla = B(+lk); bc family = BC
+            return i.op == PPCOp::B || i.op == PPCOp::BC; // bl/b/ba/bla = B(+lk); bc family = BC
         };
         if (do_xref) {
             std::printf("xref: callers of %08x (%s)\n", xref_addr, name_of(xref_addr).c_str());
             int n = 0;
             for (const auto& [base, data] : dol.text_sections()) {
                 for (size_t off = 0; off + 4 <= data.size(); off += 4) {
-                    u32 w_be; std::memcpy(&w_be, data.data() + off, 4);
+                    u32 w_be;
+                    std::memcpy(&w_be, data.data() + off, 4);
                     u32 a = base + (u32)off;
                     PPCInstr ins = decode(__builtin_bswap32(w_be), a);
                     if (is_direct_branch(ins) && ins.target == xref_addr) {
                         std::printf("  %08x  %-4s  in %s\n", a,
                                     ins.lk ? (ins.op == PPCOp::BC ? "bcl" : "bl")
-                                           : (ins.op == PPCOp::BC ? "bc"  : "b"),
+                                           : (ins.op == PPCOp::BC ? "bc" : "b"),
                                     name_of(a).c_str());
                         n++;
                     }
@@ -707,24 +814,29 @@ int main(int argc, char** argv) {
         // --callees: scan [xref_addr, next-symbol) for direct branches out, named by target.
         u32 end_addr = 0xFFFFFFFFu;
         {
-            auto it = std::upper_bound(syms.begin(), syms.end(), xref_addr,
-                        [](u32 v, const std::pair<u32,std::string>& p){ return v < p.first; });
-            if (it != syms.end()) end_addr = it->first;
+            auto it = std::upper_bound(
+                syms.begin(), syms.end(), xref_addr,
+                [](u32 v, const std::pair<u32, std::string>& p) { return v < p.first; });
+            if (it != syms.end())
+                end_addr = it->first;
         }
-        std::printf("callees: direct branches out of %s  [%08x,%08x)\n",
-                    name_of(xref_addr).c_str(), xref_addr, end_addr);
+        std::printf("callees: direct branches out of %s  [%08x,%08x)\n", name_of(xref_addr).c_str(),
+                    xref_addr, end_addr);
         int n = 0;
         for (const auto& [base, data] : dol.text_sections()) {
-            if (xref_addr < base || xref_addr >= base + data.size()) continue;
+            if (xref_addr < base || xref_addr >= base + data.size())
+                continue;
             for (u32 a = xref_addr; a < end_addr; a += 4) {
                 u32 off = a - base;
-                if (off + 4 > data.size()) break;
-                u32 w_be; std::memcpy(&w_be, data.data() + off, 4);
+                if (off + 4 > data.size())
+                    break;
+                u32 w_be;
+                std::memcpy(&w_be, data.data() + off, 4);
                 PPCInstr ins = decode(__builtin_bswap32(w_be), a);
                 if (is_direct_branch(ins)) {
                     std::printf("  %08x  %-4s -> %s\n", a,
                                 ins.lk ? (ins.op == PPCOp::BC ? "bcl" : "bl")
-                                       : (ins.op == PPCOp::BC ? "bc"  : "b"),
+                                       : (ins.op == PPCOp::BC ? "bc" : "b"),
                                 name_of(ins.target).c_str());
                     n++;
                 }

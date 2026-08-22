@@ -51,3 +51,9 @@ Optimized the proven guest-call and MMIO routing costs without changing cadence:
 
 ### Dead end (2026-08-22)
 Do not replace the FIFO scalar append with vector::push_back (35-40 ms guest regression), introduce the tested raw gather buffer (16.9 ms versus 12.5 ms), add value-sensitive CP dirty suppression (no measured gain), or expose the MMIO cache as an external header TLS (13.7 ms versus 12.5 ms). All were measured and reverted; exact context is in debug_journal/2026-08-22_native60_dispatch_optimization.md.
+
+### Note (2026-08-22)
+Compile-time direct-target caching reduced combined guest target-resolution samples from 3.96% to 1.22% (84,148 direct sites using per-target slots; 7,409 genuinely indirect sites). A bounded Native-60 run remained GPU-safe, but heavy ticks are still roughly 20.5-21.2 ms, so the issue remains investigating. Evidence: debug_journal/2026-08-22_native60_dispatch_optimization.md.
+
+### Dead end (2026-08-22)
+A page-version fingerprint for Aurora's 20.74 MiB/frame unchanged persistent arrays reduced XXH3 samples from 4.14% to about 0.64%, but its same-binary control measured 21.4 ms enabled versus 21.3 ms disabled. Per-store versioning was worse (guest work about 13 ms to 20 ms). The prototype and Aurora changes were removed; do not reintroduce guest-store dirty tracking without a cheaper authoritative dirty source.
