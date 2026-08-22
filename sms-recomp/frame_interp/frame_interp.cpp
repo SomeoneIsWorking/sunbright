@@ -9,9 +9,9 @@
 
 #include "frame_interp.h"
 
-#include "stream_interp.h"
-#include "populations.h"
 #include "app/frame_rate.h"
+#include "populations.h"
+#include "stream_interp.h"
 
 #include <lucent/log.h>
 
@@ -28,7 +28,7 @@ void name_population(uint8_t pop, const char* name);
 void report_audit();
 void report_ortho_motion();
 void report_vertex_interp();
-}
+} // namespace interp
 } // namespace aurora::gfx
 
 // Registered once so the audit reads as systems rather than numbers. Kept here, beside the one
@@ -36,7 +36,8 @@ void report_vertex_interp();
 // would produce a numbered row that looks like a different population.
 void sbr_pop_register_names() {
     static bool done = false;
-    if (done) return;
+    if (done)
+        return;
     done = true;
     aurora::gfx::interp::name_population(SB_POP_J3D_SHAPE, "J3D shape (world)");
     aurora::gfx::interp::name_population(SB_POP_SHADOW_VOLUME, "shadow volume");
@@ -57,6 +58,7 @@ void sbr_pop_register_names() {
     aurora::gfx::interp::name_population(SB_POP_BRIDGE, "hanging-bridge ropes");
     aurora::gfx::interp::name_population(SB_POP_COGWHEEL, "balance scale (deforming)");
     aurora::gfx::interp::name_population(SB_POP_WIPE, "screen wipe (deforming)");
+    aurora::gfx::interp::name_population(SB_POP_TDL_QUAD, "TDL indexed quad (deforming)");
 }
 
 namespace sb::frame_interp {
@@ -81,10 +83,10 @@ unsigned long g_dispatched = 0;
 unsigned long g_syncedTicks = 0;
 
 Mode resolve_mode() {
-    if (!sbr_lerp_enabled()) return Mode::Off;
-    const Mode resolved = sb::app::frame_rate::interpolation_matches_refresh()
-                              ? Mode::Unlimited
-                              : Mode::Capped;
+    if (!sbr_lerp_enabled())
+        return Mode::Off;
+    const Mode resolved =
+        sb::app::frame_rate::interpolation_matches_refresh() ? Mode::Unlimited : Mode::Capped;
     static Mode previous = Mode::Off;
     if (resolved != previous) {
         lucent::info("interp", "frame interpolation: {}",
@@ -96,19 +98,26 @@ Mode resolve_mode() {
 
 } // namespace
 
-Mode mode() { return resolve_mode(); }
-bool is_enabled() { return mode() != Mode::Off; }
+Mode mode() {
+    return resolve_mode();
+}
+bool is_enabled() {
+    return mode() != Mode::Off;
+}
 
 float interpolation_step() {
-    if (!is_enabled()) return 1.0f;
+    if (!is_enabled())
+        return 1.0f;
     // A synced tick must present EXACTLY, which is step 1.0 — not 0.5 with the replacement
     // suppressed, because those differ for anything the replacement does not cover.
-    if (presentation_sync_active()) return 1.0f;
+    if (presentation_sync_active())
+        return 1.0f;
     return g_presentationAlpha;
 }
 
 void request_presentation_sync() {
-    if (!is_enabled()) return;
+    if (!is_enabled())
+        return;
     g_syncRequested = true;
     ++g_syncedTicks;
     // Forwarded immediately rather than latched and forwarded at the seam: the mechanism that
@@ -117,10 +126,13 @@ void request_presentation_sync() {
     aurora::gfx::snap_next_interpolation();
 }
 
-bool presentation_sync_active() { return is_enabled() && g_syncRequested; }
+bool presentation_sync_active() {
+    return is_enabled() && g_syncRequested;
+}
 
 void add_interpolation_callback(Callback cb, void* user) {
-    if (!is_enabled() || cb == nullptr) return;
+    if (!is_enabled() || cb == nullptr)
+        return;
     g_callbacks.push_back({cb, user});
     ++g_registrations;
 }
@@ -134,10 +146,13 @@ void begin_sim_tick() {
     g_syncRequested = false;
 }
 
-uint64_t sim_tick_seq() { return g_tickSeq; }
+uint64_t sim_tick_seq() {
+    return g_tickSeq;
+}
 
 void present_interpolated_frame(float alpha) {
-    if (!is_enabled()) return;
+    if (!is_enabled())
+        return;
     g_presentationAlpha = alpha;
     ++g_presentedFrames;
     for (const Registration& r : g_callbacks) {
@@ -147,25 +162,27 @@ void present_interpolated_frame(float alpha) {
 }
 
 void report() {
-    if (!is_enabled()) return;
+    if (!is_enabled())
+        return;
     sbr_pop_register_names();
     aurora::gfx::interp::report_audit();
     aurora::gfx::interp::report_ortho_motion();
     aurora::gfx::interp::report_vertex_interp();
-    lucent::info("interp",
-                 "frame interpolation: {} simulation tick(s), {} in-between frame(s) presented, "
-                 "{} presentation-sync request(s). Callbacks: {} registration(s) produced {} "
-                 "dispatch(es).{}",
-                 g_ticks, g_presentedFrames, g_syncedTicks, g_registrations, g_dispatched,
-                 g_registrations == 0
-                     ? "   <-- NO SYSTEM REGISTERED A CALLBACK. That is not 'no effect needed one': "
-                       "it means nothing in this build opts into presentation-frame work, so every "
-                       "effect is running at the simulation rate inside an interpolated frame."
-                 : g_dispatched == 0
-                     ? "   <-- registrations happened but NOTHING WAS EVER DISPATCHED, so "
-                       "present_interpolated_frame() is not being reached. The registrations are "
-                       "being cleared by the next tick before the in-between frame presents."
-                     : "");
+    lucent::info(
+        "interp",
+        "frame interpolation: {} simulation tick(s), {} in-between frame(s) presented, "
+        "{} presentation-sync request(s). Callbacks: {} registration(s) produced {} "
+        "dispatch(es).{}",
+        g_ticks, g_presentedFrames, g_syncedTicks, g_registrations, g_dispatched,
+        g_registrations == 0
+            ? "   <-- NO SYSTEM REGISTERED A CALLBACK. That is not 'no effect needed one': "
+              "it means nothing in this build opts into presentation-frame work, so every "
+              "effect is running at the simulation rate inside an interpolated frame."
+        : g_dispatched == 0
+            ? "   <-- registrations happened but NOTHING WAS EVER DISPATCHED, so "
+              "present_interpolated_frame() is not being reached. The registrations are "
+              "being cleared by the next tick before the in-between frame presents."
+            : "");
 }
 
 } // namespace sb::frame_interp

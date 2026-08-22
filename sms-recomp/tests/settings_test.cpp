@@ -6,89 +6,109 @@
 #include <fstream>
 
 int main() {
-  const std::filesystem::path root = "scratch/tests/settings";
-  std::filesystem::create_directories(root);
-  const auto path = root / "sunbright.ini";
+    const std::filesystem::path root = "scratch/tests/settings";
+    std::filesystem::create_directories(root);
+    const auto path = root / "sunbright.ini";
 
-  {
-    std::ofstream out(path);
-    out << "version=1\nrenderer=native\nframerate=native-60\n";
-  }
-  assert(sb::app::settings().load(path));
-  assert(sb::app::settings().effective().renderer == sb::app::Renderer::Native);
-  assert(sb::app::frame_rate::runs_native_game_rate());
-  assert(sb::app::frame_rate::game_retrace_count(2) == 1);
-  assert(sb::app::frame_rate::game_hz() == 60.0);
-  assert(sb::app::frame_rate::game_rate_multiplier() == 2.0);
-  assert(sb::app::frame_rate::animation_rate_constant() == 1.0f);
-  assert(sb::app::frame_rate::model_gate_step() == 0.02f);
-  assert(sb::app::frame_rate::boid_speed_scale() == 0.5f);
-  assert(sb::app::frame_rate::fixed_delta_animation_rate() == 2.0f);
-  assert(sb::app::frame_rate::joint_coin_animation_rate() == 0.5f);
-  assert(sb::app::frame_rate::textbox_entry_frames() == 40);
-  assert(sb::app::frame_rate::native_frame_period_ns() == 16666667);
+    {
+        std::ofstream out(path);
+        out << "version=1\nrenderer=native\nframerate=native-60\n";
+    }
+    assert(sb::app::settings().load(path));
+    assert(sb::app::settings().effective().renderer == sb::app::Renderer::Native);
+    assert(sb::app::settings().effective().hazeEnabled == true); // default when absent
+    assert(sb::app::frame_rate::runs_native_game_rate());
+    assert(sb::app::frame_rate::game_retrace_count(2) == 1);
+    assert(sb::app::frame_rate::game_hz() == 60.0);
+    assert(sb::app::frame_rate::game_rate_multiplier() == 2.0);
+    assert(sb::app::frame_rate::animation_rate_constant() == 1.0f);
+    assert(sb::app::frame_rate::model_gate_step() == 0.02f);
+    assert(sb::app::frame_rate::boid_speed_scale() == 0.5f);
+    assert(sb::app::frame_rate::fixed_delta_animation_rate() == 2.0f);
+    assert(sb::app::frame_rate::joint_coin_animation_rate() == 0.5f);
+    assert(sb::app::frame_rate::textbox_entry_frames() == 40);
+    assert(sb::app::frame_rate::native_frame_period_ns() == 16666667);
 
-  sb::app::settings().set_frame_rate(sb::app::FrameRateMode::Vanilla);
-  assert(sb::app::frame_rate::game_retrace_count(0) == 0);
-  assert(sb::app::frame_rate::game_retrace_count(2) == 2);
-  assert(sb::app::frame_rate::game_hz() == 30.0);
-  assert(sb::app::frame_rate::game_rate_multiplier() == 1.0);
-  assert(sb::app::frame_rate::animation_rate_constant() == 0.5f);
-  assert(sb::app::frame_rate::model_gate_step() == 0.01f);
-  assert(sb::app::frame_rate::boid_speed_scale() == 1.0f);
-  assert(sb::app::frame_rate::textbox_entry_frames() == 20);
+    sb::app::settings().set_frame_rate(sb::app::FrameRateMode::Vanilla);
+    assert(sb::app::frame_rate::game_retrace_count(0) == 0);
+    assert(sb::app::frame_rate::game_retrace_count(2) == 2);
+    assert(sb::app::frame_rate::game_hz() == 30.0);
+    assert(sb::app::frame_rate::game_rate_multiplier() == 1.0);
+    assert(sb::app::frame_rate::animation_rate_constant() == 0.5f);
+    assert(sb::app::frame_rate::model_gate_step() == 0.01f);
+    assert(sb::app::frame_rate::boid_speed_scale() == 1.0f);
+    assert(sb::app::frame_rate::textbox_entry_frames() == 20);
 
-  sb::app::settings().set_renderer(sb::app::Renderer::Aurora);
-  sb::app::settings().set_frame_rate(
-      sb::app::FrameRateMode::InterpolatedMatchRefresh);
-  assert(sb::app::settings().save());
-  assert(sb::app::frame_rate::interpolates());
-  assert(sb::app::frame_rate::interpolation_matches_refresh());
-  sb::app::frame_rate::set_display_refresh_hz(120.0);
-  unsigned presentations = 0;
-  for (unsigned tick = 0; tick < 1000; ++tick)
-    presentations += sb::app::frame_rate::presentation_count_for_tick();
-  assert(presentations == 4004);
+    sb::app::settings().set_renderer(sb::app::Renderer::Aurora);
+    sb::app::settings().set_frame_rate(sb::app::FrameRateMode::InterpolatedMatchRefresh);
+    sb::app::settings().set_haze_enabled(false);
+    assert(sb::app::settings().save());
+    assert(sb::app::settings().effective().hazeEnabled == false);
+    assert(sb::app::frame_rate::interpolates());
+    assert(sb::app::frame_rate::interpolation_matches_refresh());
+    sb::app::frame_rate::set_display_refresh_hz(120.0);
+    unsigned presentations = 0;
+    for (unsigned tick = 0; tick < 1000; ++tick)
+        presentations += sb::app::frame_rate::presentation_count_for_tick();
+    assert(presentations == 4004);
 
-  sb::app::frame_rate::set_display_refresh_hz(144.0);
-  presentations = 0;
-  for (unsigned tick = 0; tick < 1000; ++tick) {
-    const unsigned count = sb::app::frame_rate::presentation_count_for_tick();
-    assert(count == 4 || count == 5);
-    presentations += count;
-  }
-  assert(presentations == 4804);
+    sb::app::frame_rate::set_display_refresh_hz(144.0);
+    presentations = 0;
+    for (unsigned tick = 0; tick < 1000; ++tick) {
+        const unsigned count = sb::app::frame_rate::presentation_count_for_tick();
+        assert(count == 4 || count == 5);
+        presentations += count;
+    }
+    assert(presentations == 4804);
 
-  sb::app::settings().set_frame_rate(sb::app::FrameRateMode::NativeMatchRefresh);
-  sb::app::frame_rate::set_display_refresh_hz(120.0);
-  assert(sb::app::frame_rate::game_hz() == 120.0);
-  assert(sb::app::frame_rate::game_rate_multiplier() == 4.0);
-  assert(sb::app::frame_rate::animation_rate_constant() == 2.0f);
-  assert(sb::app::frame_rate::model_gate_step() == 0.04f);
-  assert(sb::app::frame_rate::boid_speed_scale() == 0.25f);
-  assert(sb::app::frame_rate::textbox_entry_frames() == 80);
-  assert(sb::app::frame_rate::native_frame_period_ns() == 8333333);
+    sb::app::settings().set_frame_rate(sb::app::FrameRateMode::NativeMatchRefresh);
+    sb::app::frame_rate::set_display_refresh_hz(120.0);
+    assert(sb::app::frame_rate::game_hz() == 120.0);
+    assert(sb::app::frame_rate::game_rate_multiplier() == 4.0);
+    assert(sb::app::frame_rate::animation_rate_constant() == 2.0f);
+    assert(sb::app::frame_rate::model_gate_step() == 0.04f);
+    assert(sb::app::frame_rate::boid_speed_scale() == 0.25f);
+    assert(sb::app::frame_rate::textbox_entry_frames() == 80);
+    assert(sb::app::frame_rate::native_frame_period_ns() == 8333333);
 
-  sb::app::frame_rate::set_display_refresh_hz(144.0);
-  assert(sb::app::frame_rate::game_hz() == 144.0);
-  assert(sb::app::frame_rate::game_rate_multiplier() == 4.8);
-  assert(sb::app::frame_rate::animation_rate_constant() == 2.4f);
-  assert(sb::app::frame_rate::model_gate_step() == 0.048f);
-  assert(sb::app::frame_rate::textbox_entry_frames() == 96);
-  assert(sb::app::frame_rate::native_frame_period_ns() == 6944444);
+    sb::app::frame_rate::set_display_refresh_hz(144.0);
+    assert(sb::app::frame_rate::game_hz() == 144.0);
+    assert(sb::app::frame_rate::game_rate_multiplier() == 4.8);
+    assert(sb::app::frame_rate::animation_rate_constant() == 2.4f);
+    assert(sb::app::frame_rate::model_gate_step() == 0.048f);
+    assert(sb::app::frame_rate::textbox_entry_frames() == 96);
+    assert(sb::app::frame_rate::native_frame_period_ns() == 6944444);
 
-  sb::app::SettingsStore reloaded;
-  assert(reloaded.load(path));
-  assert(reloaded.persisted().renderer == sb::app::Renderer::Aurora);
-  assert(reloaded.persisted().frameRate ==
-         sb::app::FrameRateMode::InterpolatedMatchRefresh);
+    sb::app::SettingsStore reloaded;
+    assert(reloaded.load(path));
+    assert(reloaded.persisted().renderer == sb::app::Renderer::Aurora);
+    assert(reloaded.persisted().frameRate == sb::app::FrameRateMode::InterpolatedMatchRefresh);
+    assert(reloaded.persisted().hazeEnabled == false);
 
-  const auto invalidPath = root / "invalid.ini";
-  {
-    std::ofstream out(invalidPath);
-    out << "version=1\nrenderer=aurora\nframerate=made-up\n";
-  }
-  sb::app::SettingsStore invalid;
-  assert(!invalid.load(invalidPath));
-  return 0;
+    const auto invalidPath = root / "invalid.ini";
+    {
+        std::ofstream out(invalidPath);
+        out << "version=1\nrenderer=aurora\nframerate=made-up\n";
+    }
+    sb::app::SettingsStore invalid;
+    assert(!invalid.load(invalidPath));
+
+    // Haze roundtrip: a valid file with haze=true parses correctly
+    const auto hazePath = root / "haze.ini";
+    {
+        std::ofstream out(hazePath);
+        out << "version=1\nrenderer=aurora\nframerate=vanilla\nhaze=true\n";
+    }
+    sb::app::SettingsStore hazeOk;
+    assert(hazeOk.load(hazePath));
+    assert(hazeOk.persisted().hazeEnabled == true);
+
+    // Haze roundtrip: haze=false persists and reloads
+    sb::app::settings().set_haze_enabled(false);
+    assert(sb::app::settings().save());
+    sb::app::SettingsStore hazeOff;
+    assert(hazeOff.load(path));
+    assert(hazeOff.persisted().hazeEnabled == false);
+
+    return 0;
 }

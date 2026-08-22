@@ -184,12 +184,12 @@ logger — that is debt to convert, not a feature.
 | `SB_SHIMMER_DBG` | 1 | `decomp/sms/src/Map/Shimmer.cpp` | gated print |
 | `SB_SKIP_ADD` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_SKIP_ADD_OVERLAY` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
-| `SB_SKIP_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SKIP_BF` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_SKIP_BIGQUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_SKIP_COPY_QUAD` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_SKIP_COVERING` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_SKIP_DUOTONE` | 1 | `decomp/sms/src/JSystem/J2D/J2DPicture.cpp` |  |
-| `SB_SKIP_FADER` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
+| `SB_SKIP_FADER` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_SKIP_GHOST` | 1 | `decomp/sms/src/System/MarDirectorDirect.cpp` |  |
 | `SB_SKIP_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_SKIP_MARK` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
@@ -273,6 +273,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
 | `SBR_GPU_FENCE_TIMEOUT` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_GPU_GUARD_SELFTEST` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_HAZE` | 2 | `sms-recomp/app/settings.cpp` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_INTERP60` | 2 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
 | `SBR_INTERP60_ACTCENSUS` | 1 | `sms-recomp/frame_interp/subframe_legacy.cpp` |  |
@@ -381,4 +382,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**360 switches; 68 still gate a raw print.**
+**361 switches; 66 still gate a raw print.**

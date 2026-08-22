@@ -23,4 +23,4 @@ A default launch shows host UI before game output, requires UI action to enter t
 
 ## Re-confirmed 2026-08-21
 
-The shipping run.sh launcher, exercised through run-safe with SBR_FASTBOOT=0 and SBR_QUIT_AFTER=80, entered recompiled code at 0x8000522c and reached BOOT/NLOGO without UI action; SBR_UI_SELFTEST=2 verified Escape still opens and closes the 7-option menu; both runs exited 0 with zero GPU faults
+The shipping run.sh launcher, exercised through run-safe with SBR_FASTBOOT=0 and SBR_QUIT_AFTER=80, entered recompiled code at 0x8000522c and reached BOOT/NLOGO without UI action; SBR_UI_SELFTEST=2 verified Escape still opened and closed the then-current 7-option menu; both runs exited 0 with zero GPU faults

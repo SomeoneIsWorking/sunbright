@@ -28,6 +28,7 @@ versioned text file:
 version=1
 renderer=aurora
 framerate=vanilla
+haze=true
 ```
 
 Unknown keys, malformed lines, and unsupported versions fail at the config boundary. UI changes
@@ -62,14 +63,20 @@ history is never displayed. Environment overrides remain authoritative for diagn
 | Vanilla | Game-requested retrace interval, normally 30 Hz | One present per tick | Wired |
 | Interpolated 60 FPS | Original 30 Hz logic | One midpoint plus exact frame | Wired |
 | Interpolated Match Refresh | Original 30000/1001 Hz logic | Interpolation samples matching the active display rate | Wired |
-| Native 60 FPS | 60 Hz game logic with BetterSunshineEngine-derived timing fixes | One present per 60 Hz game tick | Wired; BSE HX timer-initializer gap below |
-| Native Match Refresh | Game logic at the active display rate with the same continuous BSE timing formulas | One present per game tick | Wired; BSE HX timer-initializer gap below |
+| Native 60 FPS | 60 Hz game logic with BetterSunshineEngine-derived timing fixes | One present per 60 Hz game tick | Wired, but performance-limited: heavy Delfino intervals miss the 16.67 ms budget; BSE HX timer-initializer gap below |
+| Native Match Refresh | Game logic at the active display rate with the same continuous BSE timing formulas | One present per game tick | Wired, but only reaches the requested rate when the full game/render tick fits that display's budget; BSE HX timer-initializer gap below |
 
 The native override is at the real semantic boundary: immediately before calling the recompiled
 `JDrama::TVideo::waitForRetrace`, the runtime applies BetterSunshineEngine's three-part base timing
 contract: the requested retrace interval, SMS's animation-rate constant, and ModelGate's per-tick
 step. The original game body therefore observes the override. Changing only the first value was the
 root cause of the former double-speed Native 60 mode.
+
+Native mode does twice the simulation and FIFO/render work instead of manufacturing a second
+presentation from one retained tick. On the current Aurora path, a measured Delfino run spent about
+14.6 ms in guest/FIFO work plus 7.7 ms in rendering per tick and fell to roughly 45–52 Hz in heavy
+intervals. That is a renderer/FIFO throughput gap, not another timing constant to tune. Interpolated
+60 remains the practical smooth mode until that path is brought below 16.67 ms.
 
 `sms-recomp/bse/` owns BSE's targeted compatibility behavior, separately from host cadence and
 render interpolation. It currently keeps boid travel speed stable, preserves the fixed-delta
@@ -94,11 +101,24 @@ at runtime would be a bandaid and is deliberately not used. Sunbright's existing
 HUD, EFB-copy, and screen-effect widescreen implementation remains authoritative; importing BSE's
 guest widescreen patches would create a second, less complete owner for the same policy.
 
+## Haze
+
+`haze` is a boolean toggle (persisted as `haze=true` or `haze=false`) that controls the TShimmer
+heat-haze screen effect. When enabled the shimmer mesh is drawn and samples the screen capture;
+when disabled the guest `perform` body is skipped entirely — the mesh is never drawn and no screen
+capture is taken, reducing GPU cost and removing the visual distortion. Other screen-space effects
+(dash blur, water refraction, bath mist, mirror pre-render) are unaffected.
+
+The in-game Escape menu exposes this as a single toggle under the "Effects" section heading.
+Environment override: `SBR_HAZE=0` disables haze for the session without rewriting the persisted
+file; `SBR_HAZE=1` forces it on. The setting is read once per frame from `app::settings().effective()`
+in the TShimmer override seam (`sms-recomp/frame_interp/effects_screen.cpp`).
+
 ## Windowless verification
 
 `SBR_UI_SELFTEST=N` exits before guest memory, disc, or DOL loading. It pushes Escape through SDL,
 requires the shipping Aurora event route to open the in-game window, renders exactly `N` settings
-frames, checks the 1088x768 window and all seven choices have nonzero computed area inside the
+frames, checks the 1088x768 window and all eight choices have nonzero computed area inside the
 viewport, then pushes Escape again and requires the production modal loop to close. Run it through
 `run-safe.sh`, which keeps the window hidden and checks the kernel's GPU-reset log. The control must
 name a Vulkan adapter; Aurora's sandbox-only Null fallback cannot allocate its staging buffers and

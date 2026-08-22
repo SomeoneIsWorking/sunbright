@@ -11,7 +11,7 @@ SBR_UI_SELFTEST headless Escape, modal-loop, and RmlUi layout control
 
 ## Validated by
 
-Reported INVALID when the settings panel extended beyond the 1280x960 viewport. After the RCSS fix, `SBR_UI_SELFTEST=2` pushed Escape through SDL into the shipping Aurora event route, observed the window open, reported a 1088x768 window with 7/7 controls visible, exercised `Runtime::pause_while_open`, pushed Escape again, observed it close, and exited 0 under SDL's windowless offscreen driver on 2026-08-20.
+Reported INVALID when the settings panel extended beyond the 1280x960 viewport. After the RCSS fix, `SBR_UI_SELFTEST=2` pushed Escape through SDL into the shipping Aurora event route, observed the window open, reported a 1088x768 window with the then-current 7/7 controls visible, exercised `Runtime::pause_while_open`, pushed Escape again, observed it close, and exited 0 under SDL's windowless offscreen driver on 2026-08-20. Re-run after the haze control was added on 2026-08-22: 8/8 controls visible, open/close path clean, zero GPU faults.
 
 ## Known failure modes
 
