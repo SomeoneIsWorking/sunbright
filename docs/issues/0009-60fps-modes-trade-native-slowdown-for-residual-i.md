@@ -45,3 +45,9 @@ native symptom is fixed.
 
 ### Note (2026-08-22)
 2026-08-22: Root causes separated. Indexed-array interpolation seam implemented with a passing known-motion control, but the stage-1 run reached zero active TDL batches, so live coverage remains unverified. Native 60 remains over its 16.67 ms budget and needs measured FIFO/render optimization.
+
+### Note (2026-08-22)
+Optimized the proven guest-call and MMIO routing costs without changing cadence: sparse exact-address dispatch reduced call_ppc + override_lookup samples from 9.65% to 3.96%, and the retained per-thread MMIO device cache reduced its routing cost. Follow-up Native-60 ticks are roughly 20.5-21.2 ms versus the 22.3 ms baseline, still above 16.67 ms. Remaining profile leaders are draw_prim, retained-array XXH3 hashing, Sunbright FIFO parsing, and Aurora command processing. Evidence: debug_journal/2026-08-22_native60_dispatch_optimization.md.
+
+### Dead end (2026-08-22)
+Do not replace the FIFO scalar append with vector::push_back (35-40 ms guest regression), introduce the tested raw gather buffer (16.9 ms versus 12.5 ms), add value-sensitive CP dirty suppression (no measured gain), or expose the MMIO cache as an external header TLS (13.7 ms versus 12.5 ms). All were measured and reverted; exact context is in debug_journal/2026-08-22_native60_dispatch_optimization.md.

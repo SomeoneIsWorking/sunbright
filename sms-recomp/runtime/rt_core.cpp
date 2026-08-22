@@ -17,21 +17,22 @@
 // The fast paths are already inline in intrinsics.h (sb_ram_fast + __builtin_bswap*),
 // so only the slow/MMIO paths land here.
 
-#include "cpu_state.h"
-#include "intrinsics.h"
 #include "../overrides/overrides.h"
+#include "cpu_state.h"
+#include "guest_address_table.h"
+#include "intrinsics.h"
 #include "mmio.h"
 
-#include <lucent/log.h>
 #include <lucent/config.h>
+#include <lucent/log.h>
 
 #include <cmath>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
-#include <sys/mman.h>
-#include <csignal>
-#include <execinfo.h>
 #include <ctime>
+#include <execinfo.h>
+#include <sys/mman.h>
 #include <unordered_map>
 
 // ── Guest memory ─────────────────────────────────────────────────────────────
@@ -41,16 +42,16 @@
 // otherwise a stray access in 0x01800000..0x01FFFFFF would run off the end. We map
 // 32 MB and treat [24 MB, 32 MB) as a poison window that faults loudly rather than
 // silently aliasing.
-static const size_t kMem1Size = 0x01800000;  // 24 MB, the real MEM1
-static const size_t kMapSize  = 0x02000000;  // 32 MB, the full sb_ram_fast mask range
-static const size_t kL1Size   = 0x00040000;  // 256 KB locked-L1 at 0xE0000000
+static const size_t kMem1Size = 0x01800000; // 24 MB, the real MEM1
+static const size_t kMapSize = 0x02000000;  // 32 MB, the full sb_ram_fast mask range
+static const size_t kL1Size = 0x00040000;   // 256 KB locked-L1 at 0xE0000000
 
-u8*  g_ram_base      = nullptr;
-u8*  g_l1_base       = nullptr;
+u8* g_ram_base = nullptr;
+u8* g_l1_base = nullptr;
 bool g_in_poll_yield = false;
-u32  g_poll_last     = 0;
-u32  g_poll_reps     = 0;
-u32  g_watch_wa      = 0;   // armed watch address; 0 = disarmed
+u32 g_poll_last = 0;
+u32 g_poll_reps = 0;
+u32 g_watch_wa = 0; // armed watch address; 0 = disarmed
 
 extern void aram_device_init();
 extern void dsp_device_init();
@@ -67,10 +68,10 @@ extern void gxfifo_device_init();
 extern void gxfifo_stats(u64&, u64&, u64&);
 
 extern "C" bool rt_mem_init() {
-    if (g_ram_base) return true;
+    if (g_ram_base)
+        return true;
 
-    void* p = mmap(nullptr, kMapSize, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* p = mmap(nullptr, kMapSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) {
         lucent::error("rt", "failed to map {} MB of guest RAM", kMapSize >> 20);
         return false;
@@ -82,12 +83,11 @@ extern "C" bool rt_mem_init() {
 
     g_ram_base = (u8*)p;
 
-    void* l1 = mmap(nullptr, kL1Size, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* l1 = mmap(nullptr, kL1Size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     g_l1_base = (l1 == MAP_FAILED) ? nullptr : (u8*)l1;
 
-    lucent::info("rt", "guest memory ready: MEM1 {} MB @ {}, L1 {} KB @ {}",
-                 kMem1Size >> 20, (void*)g_ram_base, kL1Size >> 10, (void*)g_l1_base);
+    lucent::info("rt", "guest memory ready: MEM1 {} MB @ {}, L1 {} KB @ {}", kMem1Size >> 20,
+                 (void*)g_ram_base, kL1Size >> 10, (void*)g_l1_base);
 
     // Devices register after guest RAM exists (ARAM DMAs into it).
     dsp_device_init();
@@ -105,7 +105,7 @@ extern "C" bool rt_mem_init() {
         lucent::info("rt", "watchpoint armed at 0x{:08x}", g_watch_wa);
     }
     aram_device_init();
-    sram_device_init();   // attaches to EXI, so it must come after exi_device_init()
+    sram_device_init(); // attaches to EXI, so it must come after exi_device_init()
     return true;
 }
 
@@ -127,9 +127,10 @@ static void slow_report(const char* op, u32 ea, unsigned width) {
 // let it run on for millions of instructions before anything looked wrong (measured: 314k
 // reads of 0x1d0 in 15 s, long after whatever produced the NULL). Stop at the cause.
 static void trap_null(const char* op, u32 ea, unsigned width) {
-    if ((ea >> 28) != 0 || ea >= 0x00010000u) return;
-    lucent::error("rt", "NULL-pointer {}{} at guest address 0x{:08x} (field offset 0x{:x})",
-                  op, width * 8, ea, ea);
+    if ((ea >> 28) != 0 || ea >= 0x00010000u)
+        return;
+    lucent::error("rt", "NULL-pointer {}{} at guest address 0x{:08x} (field offset 0x{:x})", op,
+                  width * 8, ea, ea);
     rt_dump_guest_stack("null dereference");
     std::abort();
 }
@@ -137,38 +138,62 @@ static void trap_null(const char* op, u32 ea, unsigned width) {
 // A device gets first refusal; anything unclaimed is still reported loudly.
 static u32 slow_read(u32 ea, unsigned width) {
     u32 v = 0;
-    if (mmio_read(ea, width, v)) return v;
+    if (mmio_read(ea, width, v))
+        return v;
     trap_null("r", ea, width);
     // FAIL FAST. Returning 0 for a device nobody implemented is a fabricated hardware
     // answer: the guest treats it as real, and a 0 that should have been a pointer becomes
     // a NULL dereference thousands of instructions later with no trace of where it came
     // from. Stopping here names the missing device at the exact instruction that needed it,
     // which is also the order in which devices should be implemented.
-    lucent::error("rt", "read{} from unrouted device register 0x{:08x} — no device claims "
-                        "it, and inventing a value would corrupt the guest silently",
+    lucent::error("rt",
+                  "read{} from unrouted device register 0x{:08x} — no device claims "
+                  "it, and inventing a value would corrupt the guest silently",
                   width * 8, ea);
     rt_dump_guest_stack("unrouted device read");
     std::abort();
 }
 static void slow_write(u32 ea, unsigned width, u32 v) {
-    if (mmio_write(ea, width, v)) return;
+    if (mmio_write(ea, width, v))
+        return;
     trap_null("w", ea, width);
     slow_report("w", ea, width);
 }
 
-u8  mem_r8_slow (u32 ea)            { return (u8) slow_read(ea, 1); }
-u16 mem_r16_slow(u32 ea)            { return (u16)slow_read(ea, 2); }
-u32 mem_r32_slow(u32 ea)            { return       slow_read(ea, 4); }
-u64 mem_r64_slow(u32 ea)            { slow_report("r", ea, 8); return 0; }
-void mem_w8_slow (u32 ea, u8  v)    { slow_write(ea, 1, v); }
-void mem_w16_slow(u32 ea, u16 v)    { slow_write(ea, 2, v); }
-void mem_w32_slow(u32 ea, u32 v)    { slow_write(ea, 4, v); }
-void mem_w64_slow(u32 ea, u64 v)    { (void)v; slow_report("w", ea, 8); }
+u8 mem_r8_slow(u32 ea) {
+    return (u8)slow_read(ea, 1);
+}
+u16 mem_r16_slow(u32 ea) {
+    return (u16)slow_read(ea, 2);
+}
+u32 mem_r32_slow(u32 ea) {
+    return slow_read(ea, 4);
+}
+u64 mem_r64_slow(u32 ea) {
+    slow_report("r", ea, 8);
+    return 0;
+}
+void mem_w8_slow(u32 ea, u8 v) {
+    slow_write(ea, 1, v);
+}
+void mem_w16_slow(u32 ea, u16 v) {
+    slow_write(ea, 2, v);
+}
+void mem_w32_slow(u32 ea, u32 v) {
+    slow_write(ea, 4, v);
+}
+void mem_w64_slow(u32 ea, u64 v) {
+    (void)v;
+    slow_report("w", ea, 8);
+}
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
-struct JumpEntry { u32 addr; void (*fn)(CPUState&); };
-extern "C" const JumpEntry  g_recomp_table[];
-extern "C" const size_t     g_recomp_table_size;
+struct JumpEntry {
+    u32 addr;
+    void (*fn)(CPUState&);
+};
+extern "C" const JumpEntry g_recomp_table[];
+extern "C" const size_t g_recomp_table_size;
 
 // Fold an instruction address onto the cached-virtual window the recompiled image is
 // keyed by. The GameCube BATs give every code byte three aliases — 0x8xxxxxxx cached,
@@ -179,21 +204,33 @@ extern "C" const size_t     g_recomp_table_size;
 // OS control transfer. Modelling the fixed alias is faithful; it is what the BATs do.
 static u32 code_addr_fold(u32 addr) {
     const u32 phys = addr & 0x0FFFFFFFu;
-    if (phys >= kMem1Size) return addr;   // not a MEM1 alias — leave it to fail loudly
+    if (phys >= kMem1Size)
+        return addr; // not a MEM1 alias — leave it to fail loudly
     return 0x80000000u | phys;
 }
 
 // The generated table is emitted in ascending address order, so a binary search is
 // both correct and O(log n) — this is the hottest call in the whole runtime.
-static void (*lookup(u32 addr))(CPUState&) {
-    size_t lo = 0, hi = g_recomp_table_size;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        u32 a = g_recomp_table[mid].addr;
-        if (a == addr) return g_recomp_table[mid].fn;
-        if (a < addr) lo = mid + 1; else hi = mid;
+using RecompiledFunction = void(CPUState&);
+
+struct RecompiledDispatch {
+    GuestAddressTable<RecompiledFunction> functions;
+
+    RecompiledDispatch() {
+        for (size_t i = 0; i < g_recomp_table_size; ++i) {
+            const auto& entry = g_recomp_table[i];
+            if (!functions.insert(entry.addr, entry.fn)) {
+                lucent::error("rt", "duplicate or invalid recompiled function address 0x{:08x}",
+                              entry.addr);
+                std::abort();
+            }
+        }
     }
-    return nullptr;
+};
+
+static RecompiledFunction* lookup(u32 addr) {
+    static RecompiledDispatch dispatch;
+    return dispatch.functions.find(addr);
 }
 
 // Every blocker in the standalone bring-up is "execution reached address X" and the first
@@ -205,7 +242,10 @@ void rt_dump_guest_stack(const char* why) {
     int n = backtrace(frames, 64);
     char** names = backtrace_symbols(frames, n);
     lucent::error("rt", "guest call stack ({}):", why);
-    if (!names) { lucent::error("rt", "  <backtrace_symbols failed>"); return; }
+    if (!names) {
+        lucent::error("rt", "  <backtrace_symbols failed>");
+        return;
+    }
     for (int i = 0; i < n; i++) {
         // Only the guest frames are interesting; runtime frames are noise.
         if (const char* f = std::strstr(names[i], "func_"))
@@ -237,9 +277,10 @@ extern "C" void rt_fatal_signal(int sig, siginfo_t* info, void*) {
                            : sig == SIGILL  ? "SIGILL"
                            : sig == SIGABRT ? "SIGABRT"
                                             : "fatal signal";
-        lucent::error("rt", "{} at fault address {} — the host call stack follows. A frame named "
-                            "func_<addr> is GUEST code at that guest address; frames without one "
-                            "are the runtime or a library.",
+        lucent::error("rt",
+                      "{} at fault address {} — the host call stack follows. A frame named "
+                      "func_<addr> is GUEST code at that guest address; frames without one "
+                      "are the runtime or a library.",
                       name, info != nullptr ? info->si_addr : nullptr);
         rt_dump_guest_stack(name);
         // The HOST frames too, unfiltered. rt_dump_guest_stack keeps only func_* frames, which is
@@ -250,11 +291,13 @@ extern "C" void rt_fatal_signal(int sig, siginfo_t* info, void*) {
         char** names = backtrace_symbols(frames, n);
         if (names != nullptr) {
             lucent::error("rt", "host call stack ({} frame(s)):", n);
-            for (int i = 0; i < n; i++) lucent::error("rt", "  #{:<2} {}", i, names[i]);
+            for (int i = 0; i < n; i++)
+                lucent::error("rt", "  #{:<2} {}", i, names[i]);
             std::free(names);
         } else {
-            lucent::error("rt", "host call stack: backtrace_symbols failed, so the frames above are "
-                                "all there is");
+            lucent::error("rt",
+                          "host call stack: backtrace_symbols failed, so the frames above are "
+                          "all there is");
         }
     }
     std::signal(sig, SIG_DFL);
@@ -270,17 +313,19 @@ void rt_install_crash_handler() {
     sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
     sigemptyset(&sa.sa_mask);
     // SIGABRT TOO. It was left out at first because "we don't call abort()" — but the runtime does,
-    // every hard-stop path in this file does, an unhandled C++ exception does, and so does Dawn when
-    // a GPU assertion fails. Exit code 134 with no other output is the same unattributable silence
-    // that kept issue #2 open for a SIGSEGV, and it turned up the same day on a shutdown path.
-    // SA_RESETHAND plus the re-raise means the second abort dies plainly rather than looping.
-    for (int sig : {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) sigaction(sig, &sa, nullptr);
+    // every hard-stop path in this file does, an unhandled C++ exception does, and so does Dawn
+    // when a GPU assertion fails. Exit code 134 with no other output is the same unattributable
+    // silence that kept issue #2 open for a SIGSEGV, and it turned up the same day on a shutdown
+    // path. SA_RESETHAND plus the re-raise means the second abort dies plainly rather than looping.
+    for (int sig : {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT})
+        sigaction(sig, &sa, nullptr);
 
     if (const char* e = std::getenv("SBR_CRASH_SELFTEST"); e != nullptr && e[0] == '1') {
-        lucent::info("rt", "SELF-TEST: dereferencing a null pointer on purpose. The correct outcome "
-                           "is the fault report that follows, then death by the real signal. A run "
-                           "that reaches the next line means the handler is not installed and every "
-                           "silent 139 stays unattributed.");
+        lucent::info("rt",
+                     "SELF-TEST: dereferencing a null pointer on purpose. The correct outcome "
+                     "is the fault report that follows, then death by the real signal. A run "
+                     "that reaches the next line means the handler is not installed and every "
+                     "silent 139 stays unattributed.");
         volatile int* p = nullptr;
         *p = 1;
         lucent::error("rt", "SELF-TEST DID NOT FAULT — a null store was accepted, so this build "
@@ -294,18 +339,25 @@ void call_ppc(CPUState& cpu, u32 address) {
     // Overrides win over the recompiled body. Checked here rather than by patching the
     // jump table because the generated code routes EVERY call — direct bl and indirect
     // bctrl alike — through this one function, so a single check covers both.
-    if (auto fn = override_lookup(address)) { fn(cpu); return; }
-    if (auto fn = lookup(address)) { fn(cpu); return; }
+    if (auto fn = override_lookup(address)) {
+        fn(cpu);
+        return;
+    }
+    if (auto fn = lookup(address)) {
+        fn(cpu);
+        return;
+    }
     // Not recompiled. In the Dolphin era this fell through to the JIT; standalone
     // there is no fallback, so this is a hard stop rather than a silent no-op that
     // would let execution wander on with a half-executed call.
-    lucent::error("rt", "call to un-recompiled address 0x{:08x} (lr=0x{:08x})",
-                  address, cpu.lr);
+    lucent::error("rt", "call to un-recompiled address 0x{:08x} (lr=0x{:08x})", address, cpu.lr);
     rt_dump_guest_stack("un-recompiled call");
     std::abort();
 }
 
-void tail_ppc(CPUState& cpu, u32 address) { call_ppc(cpu, address); }
+void tail_ppc(CPUState& cpu, u32 address) {
+    call_ppc(cpu, address);
+}
 
 void rt_unhandled_insn(CPUState& cpu, u32 pc, u32 raw, const char* mnemonic) {
     lucent::error("rt", "unhandled instruction '{}' at 0x{:08x} (raw=0x{:08x}, lr=0x{:08x})",
@@ -319,8 +371,12 @@ void rt_unhandled_insn(CPUState& cpu, u32 pc, u32 raw, const char* mnemonic) {
 // MTMSR/RFI are modeled in the recompiler (the recompiled OS owns interrupt state),
 // so MSR is just storage here; interrupt DELIVERY is the scheduler's job.
 static u32 g_msr = 0;
-u32  msr_get()            { return g_msr; }
-void msr_set_raw(u32 v)   { g_msr = v; }
+u32 msr_get() {
+    return g_msr;
+}
+void msr_set_raw(u32 v) {
+    g_msr = v;
+}
 
 // Instruction-cache invalidate. We never execute from guest memory (all code is
 // recompiled ahead of time), so this is a genuine no-op rather than a stub —
@@ -336,8 +392,7 @@ void sb_poll_fire(u32 ea) {
 }
 
 void sb_watch_fire(u32 ea, u32 value, int width, void* ret) {
-    lucent::warn("watch", "write 0x{:08x} ({} bytes) @ 0x{:08x} from {}",
-                 value, width, ea, ret);
+    lucent::warn("watch", "write 0x{:08x} ({} bytes) @ 0x{:08x} from {}", value, width, ea, ret);
     rt_dump_guest_stack("watchpoint");
 }
 
@@ -350,11 +405,14 @@ void sb_watch_fire(u32 ea, u32 value, int width, void* ret) {
 // It reports the RANGE and the writer rather than a value, because that is what a bulk copy has:
 // the interesting fact is "this transfer covered your address", not which byte landed there.
 void sb_watch_range(u32 ea, u32 len, const char* who) {
-    if (g_watch_wa == 0 || len == 0) return;
-    if (g_watch_wa < ea || g_watch_wa >= ea + len) return;
-    lucent::warn("watch", "BULK WRITE from {} covered the watched address: 0x{:08x} + 0x{:x} bytes "
-                          "spans 0x{:08x} (offset 0x{:x} into the transfer). This is a native device "
-                          "copy, not a guest store, which is why the per-store watchpoint is silent.",
+    if (g_watch_wa == 0 || len == 0)
+        return;
+    if (g_watch_wa < ea || g_watch_wa >= ea + len)
+        return;
+    lucent::warn("watch",
+                 "BULK WRITE from {} covered the watched address: 0x{:08x} + 0x{:x} bytes "
+                 "spans 0x{:08x} (offset 0x{:x} into the transfer). This is a native device "
+                 "copy, not a guest store, which is why the per-store watchpoint is silent.",
                  who, ea, len, g_watch_wa, g_watch_wa - ea);
     rt_dump_guest_stack("watchpoint (bulk)");
 }
@@ -366,26 +424,52 @@ void sb_watch_range(u32 ea, u32 len, const char* who) {
 // m_dequantizeTable/m_quantizeTable. An earlier version used `1u << scale`, which is
 // unsigned and UB for scale >= 32 — e.g. the u8 YUV store uses scale=61 = -3.
 // gqr_ld_type/ld_scale/st_type/st_scale already come from intrinsics.h.
-static inline bool  psq_is_float(u32 t) { return t != 4 && t != 5 && t != 6 && t != 7; }
-static inline u32   psq_stride  (u32 t) { return (t == 4 || t == 6) ? 1u : (t == 5 || t == 7) ? 2u : 4u; }
-static inline float psq_ld_mult (u32 s6) { int s=(int)(s6&0x3F); if(s>=32) s-=64; return std::ldexp(1.0f,-s); }
-static inline float psq_st_mult (u32 s6) { int s=(int)(s6&0x3F); if(s>=32) s-=64; return std::ldexp(1.0f, s); }
+static inline bool psq_is_float(u32 t) {
+    return t != 4 && t != 5 && t != 6 && t != 7;
+}
+static inline u32 psq_stride(u32 t) {
+    return (t == 4 || t == 6) ? 1u : (t == 5 || t == 7) ? 2u : 4u;
+}
+static inline float psq_ld_mult(u32 s6) {
+    int s = (int)(s6 & 0x3F);
+    if (s >= 32)
+        s -= 64;
+    return std::ldexp(1.0f, -s);
+}
+static inline float psq_st_mult(u32 s6) {
+    int s = (int)(s6 & 0x3F);
+    if (s >= 32)
+        s -= 64;
+    return std::ldexp(1.0f, s);
+}
 
 void psq_load(u32 ea, u32 gqr, u32 w, f64* p0, f64* p1) {
     const u32 t = gqr_ld_type(gqr);
-    if (psq_is_float(t)) {                       // float: 4-byte elements, scale ignored
-        u32 r0 = sb_r32(ea); f32 v0; std::memcpy(&v0, &r0, 4); *p0 = v0;
-        if (!w) { u32 r1 = sb_r32(ea + 4); f32 v1; std::memcpy(&v1, &r1, 4); *p1 = v1; }
-        else *p1 = 1.0;
+    if (psq_is_float(t)) { // float: 4-byte elements, scale ignored
+        u32 r0 = sb_r32(ea);
+        f32 v0;
+        std::memcpy(&v0, &r0, 4);
+        *p0 = v0;
+        if (!w) {
+            u32 r1 = sb_r32(ea + 4);
+            f32 v1;
+            std::memcpy(&v1, &r1, 4);
+            *p1 = v1;
+        } else
+            *p1 = 1.0;
         return;
     }
     const float s = psq_ld_mult(gqr_ld_scale(gqr));
     auto one = [&](u32 a) -> f64 {
         switch (t) {
-        case 4:  return (u8) sb_r8 (a) * s;
-        case 5:  return (u16)sb_r16(a) * s;
-        case 6:  return (s8) sb_r8 (a) * s;
-        default: return (s16)sb_r16(a) * s;      // 7 = s16
+        case 4:
+            return (u8)sb_r8(a) * s;
+        case 5:
+            return (u16)sb_r16(a) * s;
+        case 6:
+            return (s8)sb_r8(a) * s;
+        default:
+            return (s16)sb_r16(a) * s; // 7 = s16
         }
     };
     *p0 = one(ea);
@@ -395,22 +479,39 @@ void psq_load(u32 ea, u32 gqr, u32 w, f64* p0, f64* p1) {
 void psq_store(u32 ea, u32 gqr, u32 w, f64 v0, f64 v1) {
     const u32 t = gqr_st_type(gqr);
     if (psq_is_float(t)) {
-        f32 f0 = (f32)v0; u32 b0; std::memcpy(&b0, &f0, 4); sb_w32(ea, b0);
-        if (!w) { f32 f1 = (f32)v1; u32 b1; std::memcpy(&b1, &f1, 4); sb_w32(ea + 4, b1); }
+        f32 f0 = (f32)v0;
+        u32 b0;
+        std::memcpy(&b0, &f0, 4);
+        sb_w32(ea, b0);
+        if (!w) {
+            f32 f1 = (f32)v1;
+            u32 b1;
+            std::memcpy(&b1, &f1, 4);
+            sb_w32(ea + 4, b1);
+        }
         return;
     }
     const float s = psq_st_mult(gqr_st_scale(gqr));
     auto one = [&](u32 a, f64 v) {
         double x = v * s;
         switch (t) {
-        case 4: sb_w8 (a, (u8) (x < 0 ? 0 : x > 255 ? 255 : x)); break;
-        case 5: sb_w16(a, (u16)(x < 0 ? 0 : x > 65535 ? 65535 : x)); break;
-        case 6: sb_w8 (a, (u8) (s8)(x < -128 ? -128 : x > 127 ? 127 : x)); break;
-        default: sb_w16(a, (u16)(s16)(x < -32768 ? -32768 : x > 32767 ? 32767 : x)); break;
+        case 4:
+            sb_w8(a, (u8)(x < 0 ? 0 : x > 255 ? 255 : x));
+            break;
+        case 5:
+            sb_w16(a, (u16)(x < 0 ? 0 : x > 65535 ? 65535 : x));
+            break;
+        case 6:
+            sb_w8(a, (u8)(s8)(x < -128 ? -128 : x > 127 ? 127 : x));
+            break;
+        default:
+            sb_w16(a, (u16)(s16)(x < -32768 ? -32768 : x > 32767 ? 32767 : x));
+            break;
         }
     };
     one(ea, v0);
-    if (!w) one(ea + psq_stride(t), v1);
+    if (!w)
+        one(ea + psq_stride(t), v1);
 }
 
 // ── dcbz / time base / syscall ───────────────────────────────────────────────
@@ -421,7 +522,8 @@ void psq_store(u32 ea, u32 gqr, u32 w, f64 v0, f64 v1) {
 void dcbz32(u32 ea) {
     const u32 base = ea & ~31u;
     for (u32 i = 0; i < 32; i++)
-        if (u8* p = sb_ram_fast(base + i)) *p = 0;
+        if (u8* p = sb_ram_fast(base + i))
+            *p = 0;
 }
 
 extern "C" unsigned VIGetRetraceCount(void) __attribute__((weak));
@@ -450,7 +552,10 @@ u64 tb_get() {
         static unsigned last_frame = 0xFFFFFFFFu;
         static u64 calls = 0;
         const unsigned frame = (&VIGetRetraceCount) ? VIGetRetraceCount() : 0;
-        if (frame != last_frame) { last_frame = frame; calls = 0; }
+        if (frame != last_frame) {
+            last_frame = frame;
+            calls = 0;
+        }
         // MONOTONIC AND UNBOUNDED, both required. The first version returned
         // frame*step + (++calls % step), which wraps: the clock jumped BACKWARD mid-frame, and
         // guest code that spins waiting for the time base to reach a deadline then never
@@ -463,7 +568,8 @@ u64 tb_get() {
         // always advancing even when the guest spins without presenting.
         static u64 last = 0;
         u64 v = (u64)frame * (kTbHz / 60ull) + (++calls) * 64ull;
-        if (v <= last) v = last + 1;
+        if (v <= last)
+            v = last + 1;
         last = v;
         return v;
     }
@@ -486,8 +592,9 @@ void os_hle_call(CPUState& cpu, u32 address) {
     static std::unordered_map<u32, unsigned long> seen;
     unsigned long& n = seen[address];
     if (++n == 1)
-        lucent::warn("os", "unhandled syscall at 0x{:08x} (r3=0x{:08x}) — further "
-                           "occurrences at this address are counted, not logged",
+        lucent::warn("os",
+                     "unhandled syscall at 0x{:08x} (r3=0x{:08x}) — further "
+                     "occurrences at this address are counted, not logged",
                      address, cpu.gpr[3]);
 }
 

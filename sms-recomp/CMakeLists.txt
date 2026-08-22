@@ -166,6 +166,10 @@ target_link_libraries(gx_light_test PRIVATE lucent::lucent)
 target_include_directories(gx_light_test PRIVATE runtime runtime/render runtime/devices)
 add_test(NAME gx_light COMMAND gx_light_test)
 
+add_executable(guest_address_table_test tests/guest_address_table_test.cpp)
+target_include_directories(guest_address_table_test PRIVATE runtime)
+add_test(NAME guest_address_table COMMAND guest_address_table_test)
+
 add_executable(settings_test tests/settings_test.cpp)
 target_link_libraries(settings_test PRIVATE sms-recomp-app)
 add_test(NAME settings COMMAND settings_test)

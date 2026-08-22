@@ -4,21 +4,27 @@
 
 #include <lucent/log.h>
 
-#include <vector>
+#include <deque>
 
 namespace {
 
-// A handful of devices, consulted on every unrouted access. Linear scan is fine and
-// keeps registration order-independent; the hot path never reaches here because
-// sb_ram_fast handles all real RAM inline.
-std::vector<MmioDevice>& devices() {
-    static std::vector<MmioDevice> d;
+// A handful of devices, consulted on every unrouted access. The write-gather pipe is MMIO too and
+// receives every GX command word, so repeated access to one device is a hot path. Keep the general
+// range registry, but remember the last device per thread before falling back to its linear scan.
+std::deque<MmioDevice>& devices() {
+    static std::deque<MmioDevice> d;
     return d;
 }
 
 const MmioDevice* find(u32 ea) {
+    static thread_local const MmioDevice* last = nullptr;
+    if (last != nullptr && ea >= last->lo && ea < last->hi)
+        return last;
     for (const auto& d : devices())
-        if (ea >= d.lo && ea < d.hi) return &d;
+        if (ea >= d.lo && ea < d.hi) {
+            last = &d;
+            return last;
+        }
     return nullptr;
 }
 
@@ -39,11 +45,17 @@ void mmio_register(const MmioDevice& dev) {
 }
 
 bool mmio_read(u32 ea, unsigned width, u32& out) {
-    if (const MmioDevice* d = find(ea)) { out = d->read(ea, width); return true; }
+    if (const MmioDevice* d = find(ea)) {
+        out = d->read(ea, width);
+        return true;
+    }
     return false;
 }
 
 bool mmio_write(u32 ea, unsigned width, u32 value) {
-    if (const MmioDevice* d = find(ea)) { d->write(ea, width, value); return true; }
+    if (const MmioDevice* d = find(ea)) {
+        d->write(ea, width, value);
+        return true;
+    }
     return false;
 }

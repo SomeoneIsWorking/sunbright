@@ -14,15 +14,15 @@
 #include "cpu_state.h"
 
 struct MmioDevice {
-    u32 lo;                 // inclusive
-    u32 hi;                 // exclusive
+    u32 lo; // inclusive
+    u32 hi; // exclusive
     const char* name;
-    u32  (*read )(u32 ea, unsigned width);
+    u32 (*read)(u32 ea, unsigned width);
     void (*write)(u32 ea, unsigned width, u32 value);
 };
 
 void mmio_register(const MmioDevice& dev);
 
 // Return false when no device claims the address, leaving the caller to report it.
-bool mmio_read (u32 ea, unsigned width, u32& out);
+bool mmio_read(u32 ea, unsigned width, u32& out);
 bool mmio_write(u32 ea, unsigned width, u32 value);
