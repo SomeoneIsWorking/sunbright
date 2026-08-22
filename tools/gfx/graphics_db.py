@@ -100,7 +100,7 @@ def cmd_summary(args):
           "yet, and its absence here is not evidence it does not exist.\n")
 
     for field, order in (("re", RE_VERDICTS), ("lerp", ("yes", "partial", "camera-only", "no",
-                                                        "2d-correct", "drew-once",
+                                                        "2d-correct", "drew-once", "discontinuous-correct",
                                                         "no-primitives", "seam-owned",
                                                         "unmeasured"))):
         print(f"  by {field}:")
@@ -151,7 +151,7 @@ def cmd_next(args):
     def rank(r):
         blocked = {"no": 0, "camera-only": 1, "partial": 2, "no-primitives": 4,
                    "unmeasured": 3, "2d-correct": 5, "yes": 5, "seam-owned": 5,
-                   "drew-once": 5}.get(r["lerp"], 3)
+                   "drew-once": 5, "discontinuous-correct": 5}.get(r["lerp"], 3)
         return (blocked, r["key"])
     todo.sort(key=rank)
     if not todo:
@@ -200,6 +200,8 @@ def cmd_next(args):
                "2d-correct": "screen-space; snapping is correct, only the RE verdict is missing",
                "drew-once": "drew on one tick only — a first sighting has nothing to pair with, so "
                             "there is no interpolation verdict to give",
+               "discontinuous-correct": "only reappeared after an absence — no adjacent visible pose "
+                                          "exists to interpolate",
                "seam-owned": "a seam claims its primitives — the verdict lives in the pop.* row "
                              "named in the note, not here",
                "yes": "interpolates; only the RE verdict is missing"}.get(r["lerp"], r["lerp"])

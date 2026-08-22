@@ -34,18 +34,23 @@ The modes fail for different reasons:
 
 ## Resolution
 
-Partial, 2026-08-22. Added an explicit one-shot indexed-deformation marker at the two retail draw
-functions and retained-frame big-endian XYZ interpolation in Aurora. Its synthetic known-motion
-control passes and the full interpolated runtime exits clean with 360 simulation plus 360 in-between
-presents and no GPU faults. The active stage-1 scene did not exercise either TDL batch, so their
-graphics-registry verdict remains `camera-only` pending a live spray/question/splash capture.
+Interpolation half resolved, 2026-08-22. The first whole-array seam was incomplete: dynamic TDL
+batches change membership as particles are born and die, so array length mismatches still snapped
+survivors. The replacement sends one stable key per retail four-vertex quad. Question marks use the
+requesting actor, splash droplets use the retail splash slot, and FLUDD water particles use a native
+sidecar compacted by the exact retail lifetime rule. Metadata follows `TDLTexQuad::reset → request
+→ draw`, not Aurora's unrelated tick index.
+
+The `[A,B] → [B,C]` control proves identity rather than positional alignment: `B` interpolates from
+its own previous quad and newborn `C` remains current. A live stage-1 FLUDD run reported zero
+unkeyed arrays and zero layout mismatches. Its final audit classified 472 arrays as interpolated,
+four as first sightings and one as a correct reappearance after an absence, with zero camera-only
+TDL draws. Both graphics-registry sites are now owned by `pop.tdl-indexed-quad`, whose continuously
+visible path measures 100% interpolated.
 
 Native 60 remains performance-limited. Its proper follow-up is FIFO/render optimization selected by
 internal work counts and no-loss CPU sampling; this issue remains investigating rather than
 pretending the native symptom is fixed.
-
-### Note (2026-08-22)
-2026-08-22: Root causes separated. Indexed-array interpolation seam implemented with a passing known-motion control, but the stage-1 run reached zero active TDL batches, so live coverage remains unverified. Native 60 needs internal-work-driven FIFO/render optimization.
 
 ### Note (2026-08-22)
 Optimized the proven guest-call and MMIO routing costs without changing cadence: sparse exact-address dispatch reduced call_ppc + override_lookup sampling share from 9.65% to 3.96%, and the retained per-thread MMIO device cache reduced its routing work. Remaining sampled leaders are draw_prim, retained-array XXH3 hashing, Sunbright FIFO parsing, and Aurora command processing. Evidence: debug_journal/2026-08-22_native60_dispatch_optimization.md.

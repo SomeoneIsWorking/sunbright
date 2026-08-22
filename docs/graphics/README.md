@@ -39,7 +39,9 @@ emitter address cannot.
   display list) · `seam-owned` (a hand-written seam claims this site's primitives, so the site has
   no verdict of its own — the note names the `pop.*` row that holds the measurement) · `drew-once`
   (every draw was a FIRST SIGHTING — the graphic appeared on one tick and never again, so there was
-  never a previous pose to interpolate from and there is no verdict to give) · `unmeasured`.
+  never a previous pose to interpolate from and there is no verdict to give) ·
+  `discontinuous-correct` (the graphic only returned after an absence, so no adjacent visible pose
+  exists and snapping that return is correct) · `unmeasured`.
 
   `2d-correct` is a statement about the PROJECTION, not a proof that nothing was lost. The audit's
   screen-space motion report (`report_ortho_motion`) measures, per population, whether the ortho

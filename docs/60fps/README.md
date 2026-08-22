@@ -18,33 +18,41 @@ base contract at the real frame seam, and `sms-recomp/bse/` owns BSE's targeted 
 separation is semantic: presentation interpolation and changing the game's own update rate solve
 the same user-facing cadence problem in different ways and must not share state transitions.
 
-## Current mode trade-off (measured 2026-08-22)
+## Current mode trade-off (verified 2026-08-22)
 
 The native-mode slowdown and the remaining interpolated-mode jitter are different defects.
 
-**Native 60 is performance-bound.** A controlled Delfino run settled around 14.6 ms of guest/FIFO
-work plus 7.7 ms of Aurora render work per simulation tick and dropped to roughly 45–52 Hz during
-heavy intervals. A 60 Hz native tick has only 16.67 ms total. The BSE timing contract is reaching
-the game correctly; the frame simply contains more CPU/render work than the current path can finish
-in time. The proper fix is the FIFO/render performance arc. Pacing, skipping work, or changing a
-timing constant would hide the missed budget while changing the game.
+**Native 60 is performance-bound.** The internal work census for one settled Delfino tick reports
+roughly 123.5k guest FIFO appends / 357 KB of guest input, 1.80 MB after display-list expansion,
+30.4k auto-array scans / 506k indexed-field visits, and about 1.42k finalized Aurora draws. Bounded,
+lossless CPU sampling identifies draw submission, retained-array hashing, FIFO parsing, and Aurora
+command processing as the remaining leaders. This project does not use elapsed-frame averages to
+select optimizations: wall-clock results are host-load observations, not properties of the game
+pipeline. The proper fix is to eliminate redundant internal work without changing cadence.
 
-**Two remaining indexed quad emitters are not matrix-carried.** `TDLColorTexQuad::draw`
+**The two indexed quad emitters are now covered outside the matrix path.** `TDLColorTexQuad::draw`
 (`0x80224f0c`, primitive site `0x80224f98`) and `TDLTexQuad::draw` (`0x80225408`, primitive site
 `0x802254fc`) bind persistent, double-buffered, big-endian XYZ-f32 position arrays and draw them
 under an identity position matrix. Ghidra and `decomp/sms/src/MarioUtil/DLUtil.cpp` agree on that
 contract. They are used by question marks, splash droplets, and water-spray refraction. The old
 path paired identity with identity and could report success without moving a vertex.
 
-`sms-recomp/frame_interp/tag_indexed_quad.cpp` now marks those two one-draw emitters with stable
-object identities. Aurora captures the marked indexed array once per SMS tick in
-`extern/aurora/lib/gfx/indexed_interp.cpp`, interpolates only XYZ into temporary retained-frame
-storage, and repoints only the in-between draw's POS array offset. The exact tick keeps its original
-array. The control proves big-endian 0→20 motion produces 5/10/15 at alpha .25/.5/.75 and preserves
-the non-position tail. A 720-present stage-1 run reached neither active quad batch, and the live
-counter says so explicitly; therefore the implementation is landed with a verified arithmetic
-core but the two graphics-registry rows remain `camera-only` until a scene actually exercises the
-seam. A zero-arrival run is not evidence of live coverage.
+`sms-recomp/frame_interp/tag_indexed_quad.cpp` keys every four-vertex member by its real owner:
+question markers by requesting actor, splash droplets by their retail splash slot, and FLUDD water
+quads by a sidecar identity compacted with `TModelWaterManager::garbageCollect`'s exact lifetime
+rule. The key list lives for the retail `TDLTexQuad::reset → request → draw` lifecycle; it is not
+scoped to Aurora's unrelated interpolation tick. Aurora pairs each surviving member independently,
+leaves newborn members at their current pose, and repoints only the in-between draw's POS array.
+The exact tick keeps its original array.
+
+The arithmetic control proves big-endian 0→20 motion produces 5/10/15 at alpha .25/.5/.75, rejects
+changed bytes under a reused same-tick tag, and proves an `[A,B] → [B,C]` membership change follows
+`B` by identity while leaving newborn `C` current. The live FLUDD control
+(`RTRIGGER=255+CSTICK=100/0`) exercised all three request seams. At the 400-tick report it recorded
+50 keyed arrays / 706 quad groups, 583 consecutive survivors, 123 births, zero stale groups, zero
+layout mismatches, and zero unkeyed arrays. The final population audit reported 472 interpolated
+arrays, four first sightings, one correct reappearance after an absence, and zero camera-only draws:
+100% of continuously visible TDL arrays interpolated.
 
 **Target: ONE path, shaped like dusklight's `src/dusk/frame_interpolation.{h,cpp}`.** See
 "Unification" at the bottom for what survives and what goes.

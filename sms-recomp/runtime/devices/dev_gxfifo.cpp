@@ -1516,6 +1516,21 @@ void sbr_gxfifo_draw_tag(uint64_t tag) {
     put_u64(g_out, tag);
 }
 
+// Stable identities for the four-position quads in the next indexed-deform draw. The keys are
+// separate from the draw tag because the tag identifies the batch object while these identities
+// survive births/deaths inside that batch. Aurora consumes the list with the same one-shot lifetime
+// as GX_AURORA_DRAW_TAG_INDEXED_DEFORM.
+void sbr_gxfifo_indexed_quad_keys(const uint64_t* keys, uint16_t count) {
+    if (keys == nullptr || count == 0)
+        return;
+    gxfifo_drain_pending();
+    put_u8(g_out, 0x50);
+    put_u16(g_out, static_cast<u16>(GX_AURORA_DRAW_INDEXED_KEYS));
+    put_u16(g_out, count);
+    for (uint16_t i = 0; i < count; ++i)
+        put_u64(g_out, keys[i]);
+}
+
 const SbrTevState& sbr_gx_fifo_tev() {
     return g_tev;
 }

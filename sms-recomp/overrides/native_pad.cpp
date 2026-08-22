@@ -8,7 +8,7 @@
 // file-select requires pressing START on the title, and an agent run has no keyboard. The
 // decomp runtime has the same facility (SB_PAD_SCRIPT); this is its recomp counterpart.
 //
-//   SBR_PAD_SCRIPT="600:START,640:-,900:STICK=0/-90,1000:STICK=0/0+A"
+//   SBR_PAD_SCRIPT="600:START,640:-,900:STICK=0/-90,1000:STICK=0/0+A+RTRIGGER=255"
 //
 // keys on the PAD read count (one per frame): from read 600 hold START, from 640 hold
 // nothing. Buttons are named (A B X Y Z L R START UP DOWN LEFT RIGHT) or "-" for none.
@@ -23,6 +23,11 @@
 // no leading '+' because '+' combines tokens: "STICK=0/-90+A"). Buttons alone cannot drive this
 // game: file-select is chosen by walking Mario into a file block and head-butting it, and Mario
 // moves on the analog stick — a button-only script can never leave the menu.
+//
+// LTRIGGER=<0..255> and RTRIGGER=<0..255> set the analog shoulder bytes independently of the
+// digital L/R button bits. SMS reads the analog R value to drive FLUDD, so `R` alone is not a
+// control for water-particle rendering. Like the stick axes, a later step that omits a trigger
+// leaves the last scripted value in force.
 
 #include "overrides.h"
 
@@ -41,7 +46,10 @@ struct PADStatus {
 extern "C" unsigned int PADRead(PADStatus* status);
 extern "C" int PADInit(void);
 // {scancode, padButton} pairs; scancode <= 0 (PAD_KEY_INVALID) means "unbound".
-struct PADKeyButtonBinding { int scancode; unsigned int padButton; };
+struct PADKeyButtonBinding {
+    int scancode;
+    unsigned int padButton;
+};
 extern "C" PADKeyButtonBinding* PADGetKeyButtonBindings(unsigned port, unsigned* count);
 extern "C" void PADSetKeyboardActive(unsigned int port, int active);
 
@@ -62,8 +70,8 @@ constexpr u32 PS_BUTTON = 0x00, PS_STICK_X = 0x02, PS_STICK_Y = 0x03;
 constexpr u32 PS_SUB_X = 0x04, PS_SUB_Y = 0x05, PS_TRIG_L = 0x06, PS_TRIG_R = 0x07;
 constexpr u32 PS_ANALOG_A = 0x08, PS_ANALOG_B = 0x09, PS_ERR = 0x0A;
 
-constexpr s8 PAD_ERR_NONE      = 0;
-constexpr s8 PAD_ERR_NO_CTRLR  = -1;
+constexpr s8 PAD_ERR_NONE = 0;
+constexpr s8 PAD_ERR_NO_CTRLR = -1;
 
 struct Step {
     long frame;
@@ -76,31 +84,48 @@ struct Step {
     // the same reason as above: a later step that only touches one must not re-centre the other.
     int subX = 0x8000;
     int subY = 0x8000;
+    // -1 means this step leaves the corresponding analog trigger unchanged.
+    int triggerLeft = -1;
+    int triggerRight = -1;
 };
 std::vector<Step> g_script;
 long g_reads = 0;
 
 u16 button_bit(const std::string& name) {
-    if (name == "LEFT")  return 0x0001;
-    if (name == "RIGHT") return 0x0002;
-    if (name == "DOWN")  return 0x0004;
-    if (name == "UP")    return 0x0008;
-    if (name == "Z")     return 0x0010;
-    if (name == "R")     return 0x0020;
-    if (name == "L")     return 0x0040;
-    if (name == "A")     return 0x0100;
-    if (name == "B")     return 0x0200;
-    if (name == "X")     return 0x0400;
-    if (name == "Y")     return 0x0800;
-    if (name == "START") return 0x1000;
-    if (name == "-")     return 0;
+    if (name == "LEFT")
+        return 0x0001;
+    if (name == "RIGHT")
+        return 0x0002;
+    if (name == "DOWN")
+        return 0x0004;
+    if (name == "UP")
+        return 0x0008;
+    if (name == "Z")
+        return 0x0010;
+    if (name == "R")
+        return 0x0020;
+    if (name == "L")
+        return 0x0040;
+    if (name == "A")
+        return 0x0100;
+    if (name == "B")
+        return 0x0200;
+    if (name == "X")
+        return 0x0400;
+    if (name == "Y")
+        return 0x0800;
+    if (name == "START")
+        return 0x1000;
+    if (name == "-")
+        return 0;
     lucent::error("pad", "unknown button '{}' in SBR_PAD_SCRIPT", name);
     std::abort();
 }
 
 void parse_script() {
     const char* env = std::getenv("SBR_PAD_SCRIPT");
-    if (!env || !*env) return;
+    if (!env || !*env)
+        return;
     std::string s(env), item;
     size_t pos = 0;
     while (pos <= s.size()) {
@@ -127,7 +152,8 @@ void parse_script() {
                         const std::string v = one.substr(isC ? 7 : 6);
                         const size_t slash = v.find('/');
                         if (slash == std::string::npos) {
-                            lucent::error("pad", "SBR_PAD_SCRIPT '{}' must be {}=<x>/<y>", one, what);
+                            lucent::error("pad", "SBR_PAD_SCRIPT '{}' must be {}=<x>/<y>", one,
+                                          what);
                             std::abort();
                         }
                         const int x = (int)std::strtol(v.substr(0, slash).c_str(), nullptr, 10);
@@ -137,31 +163,55 @@ void parse_script() {
                                           what, x, y);
                             std::abort();
                         }
-                        if (isC) { st.subX = x; st.subY = y; }
-                        else     { st.stickX = x; st.stickY = y; }
+                        if (isC) {
+                            st.subX = x;
+                            st.subY = y;
+                        } else {
+                            st.stickX = x;
+                            st.stickY = y;
+                        }
+                    } else if (one.rfind("LTRIGGER=", 0) == 0 || one.rfind("RTRIGGER=", 0) == 0) {
+                        const bool isRight = one[0] == 'R';
+                        const std::string value = one.substr(9);
+                        char* end = nullptr;
+                        const long trigger = std::strtol(value.c_str(), &end, 10);
+                        if (value.empty() || end == nullptr || *end != '\0' || trigger < 0 ||
+                            trigger > 255) {
+                            lucent::error(
+                                "pad", "SBR_PAD_SCRIPT '{}' must be an integer from 0 to 255", one);
+                            std::abort();
+                        }
+                        if (isRight)
+                            st.triggerRight = static_cast<int>(trigger);
+                        else
+                            st.triggerLeft = static_cast<int>(trigger);
                     } else {
                         st.buttons |= button_bit(one);
                     }
                 }
-                if (plus == std::string::npos) break;
+                if (plus == std::string::npos)
+                    break;
                 bp = plus + 1;
             }
             g_script.push_back(st);
         }
-        if (comma == std::string::npos) break;
+        if (comma == std::string::npos)
+            break;
         pos = comma + 1;
     }
     for (const auto& st : g_script)
-        lucent::info("pad", "script: from read {} hold 0x{:04x} stick {}/{} cstick {}/{}", st.frame,
-                     st.buttons, st.stickX == 0x8000 ? 999 : st.stickX,
-                     st.stickY == 0x8000 ? 999 : st.stickY,
-                     st.subX == 0x8000 ? 999 : st.subX, st.subY == 0x8000 ? 999 : st.subY);
+        lucent::info("pad",
+                     "script: from read {} hold 0x{:04x} stick {}/{} cstick {}/{} triggers {}/{}",
+                     st.frame, st.buttons, st.stickX == 0x8000 ? 999 : st.stickX,
+                     st.stickY == 0x8000 ? 999 : st.stickY, st.subX == 0x8000 ? 999 : st.subX,
+                     st.subY == 0x8000 ? 999 : st.subY, st.triggerLeft, st.triggerRight);
 }
 
 u16 scripted_buttons() {
     u16 held = 0;
     for (const auto& st : g_script)
-        if (g_reads >= st.frame) held = st.buttons;   // last matching step wins
+        if (g_reads >= st.frame)
+            held = st.buttons; // last matching step wins
     return held;
 }
 
@@ -170,9 +220,12 @@ void scripted_stick(int& x, int& y) {
     x = 0x8000;
     y = 0x8000;
     for (const auto& st : g_script) {
-        if (g_reads < st.frame) continue;
-        if (st.stickX != 0x8000) x = st.stickX;
-        if (st.stickY != 0x8000) y = st.stickY;
+        if (g_reads < st.frame)
+            continue;
+        if (st.stickX != 0x8000)
+            x = st.stickX;
+        if (st.stickY != 0x8000)
+            y = st.stickY;
     }
 }
 
@@ -180,9 +233,25 @@ void scripted_substick(int& x, int& y) {
     x = 0x8000;
     y = 0x8000;
     for (const auto& st : g_script) {
-        if (g_reads < st.frame) continue;
-        if (st.subX != 0x8000) x = st.subX;
-        if (st.subY != 0x8000) y = st.subY;
+        if (g_reads < st.frame)
+            continue;
+        if (st.subX != 0x8000)
+            x = st.subX;
+        if (st.subY != 0x8000)
+            y = st.subY;
+    }
+}
+
+void scripted_triggers(int& left, int& right) {
+    left = -1;
+    right = -1;
+    for (const auto& st : g_script) {
+        if (g_reads < st.frame)
+            continue;
+        if (st.triggerLeft >= 0)
+            left = st.triggerLeft;
+        if (st.triggerRight >= 0)
+            right = st.triggerRight;
     }
 }
 
@@ -209,7 +278,8 @@ void pad_read(CPUState& cpu) {
             const PADKeyButtonBinding* b = ::PADGetKeyButtonBindings(0, &count);
             unsigned bound = 0;
             for (unsigned i = 0; b != nullptr && i < count; ++i)
-                if (b[i].scancode > 0) ++bound;
+                if (b[i].scancode > 0)
+                    ++bound;
             if (bound == 0)
                 lucent::error("pad", "keyboard is active but NO keys are bound — input is dead");
             else
@@ -237,31 +307,36 @@ void pad_read(CPUState& cpu) {
 
     for (u32 i = 0; i < 4; i++) {
         const u32 p = out + i * PAD_STATUS_SIZE;
-        for (u32 b = 0; b < PAD_STATUS_SIZE; b++) sb_w8(p + b, 0);
+        for (u32 b = 0; b < PAD_STATUS_SIZE; b++)
+            sb_w8(p + b, 0);
         if (i == 0) {
             sb_w16(p + PS_BUTTON, buttons);
             // A script value overrides the host stick; where the script is silent the
             // keyboard still drives, so a scripted run can be nudged by hand.
             int sx = 0x8000, sy = 0x8000;
             scripted_stick(sx, sy);
-            sb_w8 (p + PS_STICK_X,  (u8)(s8)(sx == 0x8000 ? host[0].stickX : sx));
-            sb_w8 (p + PS_STICK_Y,  (u8)(s8)(sy == 0x8000 ? host[0].stickY : sy));
+            sb_w8(p + PS_STICK_X, (u8)(s8)(sx == 0x8000 ? host[0].stickX : sx));
+            sb_w8(p + PS_STICK_Y, (u8)(s8)(sy == 0x8000 ? host[0].stickY : sy));
             int cx = 0x8000, cy = 0x8000;
             scripted_substick(cx, cy);
-            sb_w8 (p + PS_SUB_X,    (u8)(s8)(cx == 0x8000 ? host[0].substickX : cx));
-            sb_w8 (p + PS_SUB_Y,    (u8)(s8)(cy == 0x8000 ? host[0].substickY : cy));
-            sb_w8 (p + PS_TRIG_L,   host[0].triggerLeft);
-            sb_w8 (p + PS_TRIG_R,   host[0].triggerRight);
-            sb_w8 (p + PS_ANALOG_A, host[0].analogA);
-            sb_w8 (p + PS_ANALOG_B, host[0].analogB);
-            sb_w8 (p + PS_ERR, (u8)PAD_ERR_NONE);
+            sb_w8(p + PS_SUB_X, (u8)(s8)(cx == 0x8000 ? host[0].substickX : cx));
+            sb_w8(p + PS_SUB_Y, (u8)(s8)(cy == 0x8000 ? host[0].substickY : cy));
+            int triggerLeft = -1, triggerRight = -1;
+            scripted_triggers(triggerLeft, triggerRight);
+            sb_w8(p + PS_TRIG_L,
+                  static_cast<u8>(triggerLeft < 0 ? host[0].triggerLeft : triggerLeft));
+            sb_w8(p + PS_TRIG_R,
+                  static_cast<u8>(triggerRight < 0 ? host[0].triggerRight : triggerRight));
+            sb_w8(p + PS_ANALOG_A, host[0].analogA);
+            sb_w8(p + PS_ANALOG_B, host[0].analogB);
+            sb_w8(p + PS_ERR, (u8)PAD_ERR_NONE);
         } else {
             // Ports 1-3 genuinely have nothing attached; say so rather than reporting a
             // connected pad that never presses anything.
             sb_w8(p + PS_ERR, (u8)PAD_ERR_NO_CTRLR);
         }
     }
-    cpu.gpr[3] = 0;   // no port reported a read error
+    cpu.gpr[3] = 0; // no port reported a read error
 }
 
 } // namespace
