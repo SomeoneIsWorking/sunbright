@@ -6,7 +6,7 @@ created: 2026-08-05
 tags: perf,60fps
 depends: sms-recomp/runtime/devices/dev_gxfifo.cpp, extern/aurora/lib/gx/command_processor.cpp
 reconfirmed: 2026-08-22
-verified_at: 2026-08-22 17:18:02
+verified_at: 2026-08-22 17:24:45
 ---
 
 ## Claim
@@ -37,3 +37,7 @@ work counters reported non-empty command, indexed-field, vertex, and finalized-d
 ## Re-confirmed 2026-08-22
 
 Bounded 499 Hz capture retained 10,398 samples with zero losses; ec65909 removed elapsed probes while preserving the sampled GX parse, array-scan, draw-build, and hashing paths.
+
+## Re-confirmed 2026-08-22
+
+Post-b42ecc5 bounded 499 Hz capture retained 10,398 samples with zero losses; the independent run-safe frame-22 control reported 30,431 scans, 169,169 vertices, 506,574 field visits, and classified=31,387/unclassified=0.
