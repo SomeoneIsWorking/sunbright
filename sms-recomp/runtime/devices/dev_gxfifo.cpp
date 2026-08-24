@@ -470,12 +470,19 @@ u64 g_dl_calls = 0, g_dl_bytes = 0;
 // without this almost all real drawing is invisible to the parser (it showed up as
 // "unrecognised opcode 0x48 — framing lost", which discarded the rest of the batch).
 void inline_display_list(u32 guest_addr, u32 size, int depth) {
+    const auto span = sb::gx_fifo::classify_display_list_span(guest_addr, size);
+    if (span == sb::gx_fifo::DisplayListSpan::Empty) {
+        // GXCallDisplayList emits the command even for nbytes == 0. The command processor
+        // consumes the call without reading its address, so this is an empty list rather than
+        // an invalid memory span.
+        return;
+    }
     if (depth > 4) {
         lucent::error("gxfifo", "display-list nesting deeper than 4");
         std::abort();
     }
     const auto off = sb::gx_fifo::checked_mem1_offset(guest_addr, size);
-    if (!off) {
+    if (span == sb::gx_fifo::DisplayListSpan::Invalid || !off) {
         lucent::error("gxfifo", "display list 0x{:08x} +0x{:x} is outside MEM1", guest_addr, size);
         std::abort();
     }

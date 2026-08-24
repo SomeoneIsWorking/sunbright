@@ -19,6 +19,11 @@ int main() {
     CHECK(!checked_mem1_offset(0x817FFFF0u, 17));
     CHECK(!checked_mem1_offset(0x80000000u, 0));
 
+    CHECK(classify_display_list_span(0x8157DAA0u, 0) == DisplayListSpan::Empty);
+    CHECK(classify_display_list_span(0xFFFFFFFFu, 0) == DisplayListSpan::Empty);
+    CHECK(classify_display_list_span(0x817FFFF0u, 16) == DisplayListSpan::Valid);
+    CHECK(classify_display_list_span(0x817FFFF0u, 17) == DisplayListSpan::Invalid);
+
     CHECK(texture_level_bytes(8, 8, 0) == 32);
     CHECK(texture_level_bytes(4, 4, 6) == 64);
     CHECK(texture_chain_bytes(8, 8, 0, 4) == 128);

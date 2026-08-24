@@ -11,6 +11,12 @@ namespace sb::gx_fifo {
 
 constexpr std::uint32_t kMem1Size = 0x01800000u;
 
+enum class DisplayListSpan : std::uint8_t {
+    Empty,
+    Valid,
+    Invalid,
+};
+
 inline bool is_known_opcode(std::uint8_t op) noexcept {
     return op == 0x00 || op == 0x08 || op == 0x10 || op == 0x20 || op == 0x28 || op == 0x30 ||
            op == 0x38 || op == 0x40 || op == 0x48 || op == 0x50 || op == 0x61 ||
@@ -25,6 +31,14 @@ inline std::optional<std::uint32_t> checked_mem1_offset(std::uint32_t guestAddre
     if (offset >= kMem1Size || byteCount > kMem1Size - offset)
         return std::nullopt;
     return offset;
+}
+
+inline DisplayListSpan classify_display_list_span(std::uint32_t guestAddress,
+                                                  std::size_t byteCount) noexcept {
+    if (byteCount == 0)
+        return DisplayListSpan::Empty;
+    return checked_mem1_offset(guestAddress, byteCount) ? DisplayListSpan::Valid
+                                                        : DisplayListSpan::Invalid;
 }
 
 inline std::optional<std::size_t> texture_level_bytes(std::uint32_t width, std::uint32_t height,
