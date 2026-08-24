@@ -95,7 +95,6 @@ bool SettingsStore::load(const std::filesystem::path& path) {
     m_rendererOverride.reset();
     m_frameRateOverride.reset();
     m_hazeOverride.reset();
-    m_nativeRendererApproved = false;
 
     std::ifstream input(path);
     if (input) {

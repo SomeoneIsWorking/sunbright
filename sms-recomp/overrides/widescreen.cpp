@@ -29,6 +29,7 @@
 
 #include "overrides.h"
 
+#include "../runtime/render/native_render.h"
 #include "../runtime/render/scene.h"
 
 #include <aurora/aurora.h>
@@ -207,8 +208,10 @@ struct AspectAnnounce {
         done = true;
         if (widescreen_on()) {
             aurora_set_present_aspect(16, 9);
+            sbr_render_set_present_aspect(16, 9);
             lucent::info("widescreen", "16:9 (anamorphic, squeeze {:.4f})", ws_scale());
         } else {
+            sbr_render_set_present_aspect(4, 3);
             lucent::info("widescreen", "off — 4:3");
         }
     }

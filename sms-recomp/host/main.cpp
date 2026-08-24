@@ -13,6 +13,8 @@
 #include "dol_loader.h"
 #include "guest_sched.h"
 #include "intrinsics.h"
+#include "native_render.h"
+#include "overrides/native_frame.h"
 #include "ui/runtime.h"
 #include "ui/ui.h"
 
@@ -20,6 +22,7 @@
 
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_stdinc.h>
+#include <SDL3/SDL_timer.h>
 
 #include <lucent/config.h>
 #include <lucent/log.h>
@@ -37,6 +40,37 @@ CPUState* g_cpu = nullptr;
 void call_ppc(CPUState& cpu, u32 address);
 
 namespace {
+
+class AuroraRuntimeOwner {
+  public:
+    ~AuroraRuntimeOwner() {
+        if (m_frameActive)
+            aurora_discard_frame();
+        if (m_uiInitialized)
+            sb::ui::runtime().shutdown();
+        sbr_render_shutdown();
+        aurora_shutdown();
+    }
+
+    void set_ui_initialized() noexcept { m_uiInitialized = true; }
+    void set_frame_active() noexcept { m_frameActive = true; }
+
+  private:
+    bool m_uiInitialized = false;
+    bool m_frameActive = false;
+};
+
+bool open_initial_frame() {
+    while (!aurora_begin_frame()) {
+        if (sb::ui::runtime().handle_events(aurora_update()))
+            return false;
+        // A minimized or temporarily unavailable surface is an expected WSI state. Keep the game
+        // stopped at its first frame boundary while events are pumped instead of spinning or
+        // allowing guest simulation to run without a renderer frame packet.
+        SDL_Delay(16);
+    }
+    return true;
+}
 
 std::string user_path() {
     char* raw = SDL_GetPrefPath(nullptr, "sunbright-recomp");
@@ -136,6 +170,7 @@ int main(int argc, char** argv) {
     acfg.mem1Size = 0;
     acfg.mem2Size = 0;
     AuroraInfo ainfo = aurora_initialize(argc, argv, &acfg);
+    AuroraRuntimeOwner runtimeOwner;
     lucent::info("rt", "aurora up: backend={} fb={}x{}", (int)ainfo.backend,
                  ainfo.windowSize.fb_width, ainfo.windowSize.fb_height);
     if (const char* value = std::getenv("SBR_UI_SELFTEST"); value != nullptr && value[0] != '0') {
@@ -144,26 +179,30 @@ int main(int argc, char** argv) {
         const unsigned frames =
             end != value && *end == '\0' && parsed > 0 ? static_cast<unsigned>(parsed) : 2u;
         const bool ok = sb::ui::run_escape_control(frames);
-        sb::ui::runtime().shutdown();
-        aurora_shutdown();
+        runtimeOwner.set_ui_initialized();
         return ok ? 0 : 1;
+    }
+    if (sb::app::settings().effective().renderer == sb::app::Renderer::Native) {
+        // Transfer WSI ownership before either renderer begins a frame. Aurora keeps its Dawn
+        // device and consumes the FIFO offscreen as the oracle; only Native claims the SDL window
+        // and swapchain.
+        aurora_set_presentation_enabled(false);
+        sbr_render_set_present_window(ainfo.window);
+        if (!sbr_render_init(640, 448)) {
+            lucent::error("main", "native renderer selected but could not claim presentation");
+            return 1;
+        }
     }
     // The game is the product's startup surface. RmlUi is initialized here so Escape can open the
     // persistent settings document later, but no document is shown before guest execution begins.
     if (!sb::ui::runtime().initialize()) {
         sb::ui::runtime().shutdown();
-        aurora_shutdown();
         return 1;
     }
+    runtimeOwner.set_ui_initialized();
     lucent::info("settings", "renderer={} framerate={}",
                  sb::app::display_name(sb::app::settings().effective().renderer),
                  sb::app::display_name(sb::app::settings().effective().frameRate));
-    // Arm interpolated 60fps BEFORE the first frame is recorded. sbr_lerp_enabled() configures
-    // aurora on its first call, and leaving that to whichever seam happened to ask first is how a
-    // mode ends up half-on for the opening frames.
-    sbr_lerp_enabled();
-    aurora_begin_frame();
-
     if (!rt_mem_init())
         return 1;
 
@@ -219,6 +258,18 @@ int main(int argc, char** argv) {
     // It aborts on success — see overrides/guard_arena.cpp.
     extern void sbr_arena_guard_selftest();
     sbr_arena_guard_selftest();
+
+    // Arm interpolated 60fps BEFORE the first frame is recorded. Delay the first begin until every
+    // fallible boot step is complete so an early return cannot strand an active frame. The return
+    // value is the authoritative initial state; hardcoding it caused FIFO replay with no Aurora
+    // frame packet whenever startup surface acquisition failed.
+    sbr_lerp_enabled();
+    if (!open_initial_frame()) {
+        lucent::info("main", "window closed before the first game frame");
+        return 0;
+    }
+    sbr_frame_set_initial_active(true);
+    runtimeOwner.set_frame_active();
 
     lucent::info("rt", "entering recompiled code at 0x{:08x}", dol.entry);
     // Run on the scheduler's copy, not the local one: gsched_create seeds new threads with

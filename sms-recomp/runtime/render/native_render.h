@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+struct SDL_Window;
+
 // One vertex as the backend consumes it: position already in CLIP space (the frontend applies the
 // position matrix and the projection on the CPU — the same contract the retired Path-B renderer's
 // NvkTevVertex used), plus a colour so a draw can be identified without a pipeline change.
@@ -198,12 +200,19 @@ void sbr_tev_konst(const SbrTevState& tev, unsigned stage, float out[4]);
 void sbr_gx_set_projection(const float m[16], bool is2d);
 const float* sbr_gx_current_projection(bool* is2d);
 
-// SBR_RENDERER=native selects the offscreen native parity path.
+// Startup selection is fixed for the process lifetime because a renderer switch transfers SDL
+// window/swapchain ownership. The host sets the window only when Native owns presentation.
 bool sbr_render_enabled();
+void sbr_render_set_present_window(SDL_Window* window);
+void sbr_render_set_present_aspect(unsigned width, unsigned height);
 
 // Stand up the SDL3 GPU device + an EFB-sized offscreen colour/depth target. Idempotent; false if
 // no device could be created (the caller keeps using aurora).
 bool sbr_render_init(int w, int h);
+
+// Release every resource owned by the Native SDL3-GPU renderer, relinquish its window claim, and
+// destroy its device. Safe after a partial initialization and safe to call more than once.
+void sbr_render_shutdown() noexcept;
 
 // One frame: begin (records the clear colour and drops last frame's geometry), submit triangles as
 // often as needed, then end (uploads, renders in one pass, downloads for readback).
@@ -235,6 +244,10 @@ void sbr_render_report_formats();
 int sbr_render_last_batch_count();
 void sbr_render_end();
 
+// Optional parity/diagnostic readback. This is rate-limited independently of shipping presents;
+// the visible native frame is never skipped or CPU-read back as part of normal presentation.
+bool sbr_render_capture();
+
 // How many vertices the last completed frame drew — the cheapest "is the frontend producing
 // geometry at all" signal.
 int sbr_render_last_vertex_count();
@@ -251,9 +264,9 @@ bool sbr_render_readback(uint8_t* rgba, int w, int h);
 // them applied. The result replaces g_cpu, so sbr_render_readback returns the variant.
 // GPU SAFETY. This renderer once hung the graphics ring badly enough that the driver reset the
 // card and the desktop session went down with it. sbr_render_guard_selftest
-// (SBR_GPU_GUARD_SELFTEST=1) proves the two guards that prevent it — the per-frame pass cap and the
-// bounded fence wait — actually fire; sbr_render_gpu_report says at shutdown whether the device
-// survived the run.
+// (SBR_GPU_GUARD_SELFTEST=1) proves the per-frame diagnostic pass cap fires. The bounded fence wait
+// is exercised by a separate run with SBR_GPU_FENCE_TIMEOUT=0 because its budget is cached during
+// initialization. sbr_render_gpu_report says at shutdown whether the device survived the run.
 void sbr_render_guard_selftest();
 void sbr_render_gpu_report();
 

@@ -18,9 +18,14 @@ int main() {
     require(limiter.admit(1'100'000'000));
     require(limiter.skipped_frames() == 1);
 
-    NativeGpuRateLimiter unlimited(0.0);
-    require(unlimited.admit(1));
-    require(unlimited.admit(2));
-    require(unlimited.skipped_frames() == 0);
+    require(sbr_native_gpu_parse_maximum_hz("1") == 1.0);
+    require(sbr_native_gpu_parse_maximum_hz("10") == 10.0);
+    require(!sbr_native_gpu_parse_maximum_hz(""));
+    require(!sbr_native_gpu_parse_maximum_hz("nan"));
+    require(!sbr_native_gpu_parse_maximum_hz("inf"));
+    require(!sbr_native_gpu_parse_maximum_hz("0"));
+    require(!sbr_native_gpu_parse_maximum_hz("-1"));
+    require(!sbr_native_gpu_parse_maximum_hz("11"));
+    require(!sbr_native_gpu_parse_maximum_hz("5Hz"));
     return 0;
 }

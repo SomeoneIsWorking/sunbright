@@ -82,7 +82,7 @@ logger — that is debt to convert, not a feature.
 | `SB_GENOBJ_SKIP_ALL` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp` |  |
 | `SB_GXBEGIN_TRACE` | 1 | `extern/aurora/lib/dolphin/gx/GXVert.cpp` |  |
 | `SB_H` | 2 | `sms-recomp/host/main.cpp` |  |
-| `SB_HEADLESS` | 4 | `sms-boot/runtime/jas_kernel_native.cpp` |  |
+| `SB_HEADLESS` | 5 | `sms-boot/runtime/jas_kernel_native.cpp` |  |
 | `SB_HEAP_DBG` | 2 | `decomp/sms/src/JSystem/JKernel/JKRExpHeap.cpp` | gated print |
 | `SB_HEAP_GUARD` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
 | `SB_HOST_ALLOC_CAP_MB` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
@@ -245,7 +245,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_AB_AT` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
 | `SBR_AB_EVERY` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
 | `SBR_AB_SELFTEST` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
-| `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_ALPHATEST` | 1 | `sms-recomp/runtime/render/native_tev_uniform.cpp` |  |
 | `SBR_ARENA_SELFTEST` | 1 | `sms-recomp/overrides/guard_arena.cpp` |  |
 | `SBR_AUDIO_RAW` | 1 | `sms-recomp/runtime/devices/dev_aid.cpp` |  |
 | `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
@@ -266,7 +266,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_FRAME_RATE` | 1 | `sms-recomp/app/settings.cpp` |  |
 | `SBR_GFXDB` | 1 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
 | `SBR_GFXDB_PATH` | 1 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
-| `SBR_GPU_FENCE_TIMEOUT` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_GPU_FENCE_TIMEOUT` | 1 | `sms-recomp/runtime/render/native_gpu_guard.cpp` |  |
 | `SBR_GPU_GUARD_SELFTEST` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_HAZE` | 2 | `sms-recomp/app/settings.cpp` |  |
 | `SBR_HUD_OFF` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
@@ -361,12 +361,12 @@ logger — that is debt to convert, not a feature.
 | `SBR_TEV_TRACE_ADDR` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
 | `SBR_TEV_TRACE_BLACK` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
 | `SBR_TEV_TRACE_FAR` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
-| `SBR_TEV_VIZ` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEV_VIZ` | 1 | `sms-recomp/runtime/render/native_tev_uniform.cpp` |  |
 | `SBR_TEX` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_TEXGEN` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
-| `SBR_TEXMAP_FORCE` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
-| `SBR_TEXMAP_NAMED` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
-| `SBR_TEXMAP_UNITS` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_TEXMAP_FORCE` | 1 | `sms-recomp/runtime/render/native_tev_uniform.cpp` |  |
+| `SBR_TEXMAP_NAMED` | 1 | `sms-recomp/runtime/render/native_tev_uniform.cpp` |  |
+| `SBR_TEXMAP_UNITS` | 1 | `sms-recomp/runtime/render/native_tev_uniform.cpp` |  |
 | `SBR_TEX_DUMP` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_TEX_MIRROR` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_THP` | 1 | `sms-recomp/overrides/native_thp.cpp` |  |

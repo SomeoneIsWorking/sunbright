@@ -21,6 +21,7 @@
 //   0x20/0x28/0x30/0x38     indexed XF load (one u32)
 
 #include "gx_fifo_2d.hpp"
+#include "gx_fifo_contracts.hpp"
 #include "gx_fifo_input.hpp"
 #include "gx_fifo_vertex_layout.hpp"
 #include "mmio.h"
@@ -87,11 +88,12 @@ u32 g_copy_yscale = 0x100;
 // from a GXTexObj supplied through its own extension — the same split as vertex array bases,
 // and for the same reason: a raw 32-bit value cannot be a host pointer.
 struct TexSlot {
-    u32 image0 = 0, image3 = 0;
+    u32 mode0 = 0, mode1 = 0, image0 = 0, image3 = 0;
     bool have0 = false, have3 = false;
     // Last values actually sent. The game rewrites these registers on every material bind,
     // so emitting unconditionally floods aurora with redundant texture loads — measured as a
     // severe slowdown (retrace 240 -> 180 over a much longer run).
+    u32 sentMode0 = 0xFFFFFFFF, sentMode1 = 0xFFFFFFFF;
     u32 sent0 = 0xFFFFFFFF, sent3 = 0xFFFFFFFF;
 };
 TexSlot g_tex[8];
@@ -151,6 +153,7 @@ uint32_t g_fifoTexPrevAddr[8] = {};
 // BP register shadow + the one-shot write mask (register 0xFE). See the BP handler.
 u32 g_bpCache[256] = {};
 u32 g_bpMask = 0x00FFFFFFu;
+u32 g_tlutSource = 0;
 
 // Monotonic bind counter — see SbrTexture::bindSeq.
 u32 g_bindSeq = 0;
@@ -178,7 +181,8 @@ void put_u64(std::vector<u8>& v, u64 x) {
         v.push_back((u8)(x >> (i * 8)));
 }
 
-// GX_AURORA (0x50) + subcommand, then a 64-bit host pointer, 32-bit size, 1-byte LE flag.
+// GX_AURORA (0x50) + subcommand, then a 64-bit host pointer, 32-bit upload extent, 32-bit
+// backing capacity, and 1-byte LE flag.
 void emit_arraybase(u32 attr, u32 guest_addr) {
     const u32 off = guest_addr & 0x01FFFFFFu;
     if (off >= 0x01800000u) {
@@ -195,6 +199,9 @@ void emit_arraybase(u32 attr, u32 guest_addr) {
     // true and catastrophic: every indexed array pushed megabytes into the 48 MB storage
     // buffer, which is what overflowed it.
     put_u32(g_out, 0);
+    // Safety capacity is independent from upload extent. Aurora derives how many bytes to upload
+    // from the maximum referenced index, but must still prove that derived read stays in MEM1.
+    put_u32(g_out, 0x01800000u - off);
     put_u8(g_out, 0); // big-endian, as the guest wrote it
 }
 
@@ -360,8 +367,11 @@ void emit_texobj(u32 map) {
     TexSlot& t = g_tex[map & 7];
     if (!t.have0 || !t.have3)
         return;
-    if (t.image0 == t.sent0 && t.image3 == t.sent3)
+    if (t.mode0 == t.sentMode0 && t.mode1 == t.sentMode1 && t.image0 == t.sent0 &&
+        t.image3 == t.sent3)
         return; // unchanged bind
+    t.sentMode0 = t.mode0;
+    t.sentMode1 = t.mode1;
     t.sent0 = t.image0;
     t.sent3 = t.image3;
 
@@ -369,9 +379,15 @@ void emit_texobj(u32 map) {
     const u32 h = ((t.image0 >> 10) & 0x3FF) + 1;
     const u32 fmt = (t.image0 >> 20) & 0xF;
     const u32 phys = (t.image3 & 0x00FFFFFFu) << 5; // image3 is in 32-byte units
-    if (phys >= 0x01800000u) {
-        lucent::debug("gxfifo", "texture {} address 0x{:08x} is outside MEM1", map, phys);
-        return;
+    const u32 mipCount = sb::gx_fifo::mip_count(w, h, t.mode0, t.mode1);
+    const auto byteCount = sb::gx_fifo::texture_chain_bytes(w, h, fmt, mipCount);
+    const auto checkedOffset =
+        byteCount ? sb::gx_fifo::checked_mem1_offset(phys, *byteCount) : std::nullopt;
+    if (!checkedOffset) {
+        lucent::error("gxfifo",
+                      "texture {} has invalid MEM1 span: addr=0x{:08x} {}x{} fmt={} mips={}", map,
+                      phys, w, h, fmt, mipCount);
+        std::abort();
     }
 
     { // Counterpart of the copy-destination log above: the pointer a bind presents to
@@ -421,7 +437,7 @@ void emit_texobj(u32 map) {
         }
     }
     put_u32(g_out, 0); // TLUT index; palettised formats need LOAD_TLUT too
-    put_u8(g_out, 0);  // mips are gated by the real TexMode1 register, not here
+    put_u8(g_out, static_cast<u8>(mipCount));
     // texObjId is aurora's texture cache key — a zero id makes every bind a cache miss and
     // re-upload (the known 33x perf cliff). The texel address is stable and unique per
     // texture, so it serves as the identity.
@@ -455,21 +471,27 @@ u64 g_dl_calls = 0, g_dl_bytes = 0;
 // "unrecognised opcode 0x48 — framing lost", which discarded the rest of the batch).
 void inline_display_list(u32 guest_addr, u32 size, int depth) {
     if (depth > 4) {
-        lucent::debug("gxfifo", "display-list nesting deeper than 4 — not following");
-        return;
+        lucent::error("gxfifo", "display-list nesting deeper than 4");
+        std::abort();
     }
-    const u32 off = guest_addr & 0x01FFFFFFu;
-    if (off + size > 0x01800000u || size == 0) {
-        lucent::debug("gxfifo", "display list 0x{:08x} +0x{:x} is outside MEM1", guest_addr, size);
-        return;
+    const auto off = sb::gx_fifo::checked_mem1_offset(guest_addr, size);
+    if (!off) {
+        lucent::error("gxfifo", "display list 0x{:08x} +0x{:x} is outside MEM1", guest_addr, size);
+        std::abort();
     }
     // g_need describes the OUTER stream's incomplete command; a nested list parses a
     // complete buffer and must not disturb it.
     g_dl_calls++;
     g_dl_bytes += size;
     const size_t saved_need = g_need;
-    parse(g_ram_base + off, size, depth + 1);
+    const size_t consumed = parse(g_ram_base + *off, size, depth + 1);
     g_need = saved_need;
+    if (consumed != size) {
+        lucent::error("gxfifo",
+                      "display list 0x{:08x} declared 0x{:x} bytes but parse stopped at 0x{:x}",
+                      guest_addr, size, consumed);
+        std::abort();
+    }
 }
 
 size_t parse(const u8* p, size_t n, int depth) {
@@ -757,6 +779,26 @@ size_t parse(const u8* p, size_t n, int depth) {
             g_bpMask = 0x00FFFFFFu;
             g_bpCache[reg] = val;
 
+            // LOADTLUT0 supplies the guest source in 32-byte units; LOADTLUT1 executes it and
+            // supplies the encoded entry count. Validate the complete palette before forwarding
+            // either BP command: a valid first byte is not enough when Aurora later uploads every
+            // encoded entry.
+            if (reg == 0x64) {
+                g_tlutSource = (val & 0x00FFFFFFu) << 5;
+            } else if (reg == 0x65) {
+                const u32 entryCount = ((val >> 10) & 0x3FFu) + 1u;
+                const auto bytes = sb::gx_fifo::tlut_bytes_from_entry_count(entryCount);
+                const auto checked =
+                    bytes ? sb::gx_fifo::checked_mem1_offset(g_tlutSource, *bytes) : std::nullopt;
+                if (!checked) {
+                    lucent::error(
+                        "gxfifo",
+                        "TLUT has invalid MEM1 span: addr=0x{:08x} encoded-size={} entries",
+                        g_tlutSource, entryCount);
+                    std::abort();
+                }
+            }
+
             // TEV STATE. Same reasoning as the texture binding below: J3D bakes its TEV setup into
             // per-material display lists, so the SDK entry points are not called and the BP
             // registers those lists write are the only complete source.
@@ -885,14 +927,21 @@ size_t parse(const u8* p, size_t n, int depth) {
             // TX_SETIMAGE3 (0x94+i / 0xB4+i): image base address in 32-byte units.
             // TX_SETTLUT   (0x98+i / 0xB8+i): TLUT base in 32-byte units, bits 0..9 of the entry.
             // TX_SETMODE0 (0x80+i / 0xA0+i): wrap S bits 0..1, wrap T bits 2..3, mag filter bit 4,
-            // min filter bits 5..7. The min filter's value encodes the mip mode as well; only
-            // whether it is LINEAR matters here, since this path uploads a single level.
+            // min filter bits 5..7. TX_SETMODE1 carries max LOD in Q4.4 bits 8..15; together they
+            // define exactly how many encoded mip levels Aurora can read from the guest pointer.
             if ((reg >= 0x80 && reg <= 0x83) || (reg >= 0xA0 && reg <= 0xA3)) {
-                SbrTexture& t = g_fifoTex[(reg >= 0xA0) ? (4 + reg - 0xA0) : (reg - 0x80)];
-                t.wrapS = (uint8_t)(val & 3);
-                t.wrapT = (uint8_t)((val >> 2) & 3);
-                t.magLinear = (uint8_t)((val >> 4) & 1);
-                t.minLinear = (uint8_t)(((val >> 5) & 7) != 0);
+                const unsigned map = (reg >= 0xA0) ? (4 + reg - 0xA0) : (reg - 0x80);
+                SbrTexture& fifoTexture = g_fifoTex[map];
+                fifoTexture.wrapS = (uint8_t)(val & 3);
+                fifoTexture.wrapT = (uint8_t)((val >> 2) & 3);
+                fifoTexture.magLinear = (uint8_t)((val >> 4) & 1);
+                fifoTexture.minLinear = (uint8_t)(((val >> 5) & 7) != 0);
+                g_tex[map].mode0 = val;
+                emit_texobj(map);
+            } else if ((reg >= 0x84 && reg <= 0x87) || (reg >= 0xA4 && reg <= 0xA7)) {
+                const unsigned map = (reg >= 0xA4) ? (4 + reg - 0xA4) : (reg - 0x84);
+                g_tex[map].mode1 = val;
+                emit_texobj(map);
             }
             if (reg >= 0x88 && reg <= 0x8B) {
                 SbrTexture& t = g_fifoTex[reg - 0x88];
@@ -1153,8 +1202,14 @@ size_t parse(const u8* p, size_t n, int depth) {
             const u32 verts = be16(p + i + 1);
             const u32 vsize = vertex_size(op & 7);
             const size_t len = 3 + (size_t)verts * vsize;
-            if (vsize == 0)
-                break; // VAT not seen yet
+            if (vsize == 0) {
+                const Vat& v = g_vat[op & 7];
+                lucent::error("gxfifo",
+                              "draw uses unknown vat{}: op=0x{:02x} verts={} vcd_lo=0x{:08x} "
+                              "vcd_hi=0x{:08x} fmt0=0x{:08x} fmt1=0x{:08x} fmt2=0x{:08x}",
+                              op & 7, op, verts, v.vcd_lo, v.vcd_hi, v.fmt0, v.fmt1, v.fmt2);
+                std::abort();
+            }
             if (n - i < len) {
                 g_need = len;
                 break;
@@ -1196,10 +1251,7 @@ size_t parse(const u8* p, size_t n, int depth) {
             // misleading "unsupported primitive" somewhere unrelated.
             if (i + len < n) {
                 const u8 nx = p[i + len];
-                const bool ok = nx == 0x00 || nx == 0x08 || nx == 0x10 || nx == 0x40 ||
-                                nx == 0x48 || nx == 0x50 || nx == 0x61 || nx == 0x20 ||
-                                nx == 0x28 || nx == 0x30 || nx == 0x38 ||
-                                (nx >= 0x80 && nx <= 0xBF);
+                const bool ok = sb::gx_fifo::is_known_opcode(nx);
                 if (!ok) {
                     const Vat& v = g_vat[op & 7];
                     lucent::warn("gxfifo",
@@ -1220,8 +1272,8 @@ size_t parse(const u8* p, size_t n, int depth) {
         // Anything else means the stream framing is wrong; stop rather than resync blindly
         // on data that would look like opcodes.
         g_stats.unknown++;
-        lucent::debug("gxfifo", "unrecognised opcode 0x{:02x} — framing lost", op);
-        return n; // drop the rest of this batch
+        lucent::error("gxfifo", "unrecognised opcode 0x{:02x} at stream offset 0x{:x}", op, i);
+        std::abort();
     }
     if (i == n)
         g_need = 0; // fully consumed; nothing outstanding
@@ -1262,22 +1314,23 @@ void gxfifo_build() {
     // frame's trailing commands could sit unparsed and be emitted in the NEXT frame's stream.
     while (!g_buf.empty()) {
         const size_t used = parse(g_buf.data(), g_buf.size());
-        if (used == 0)
-            break;
+        if (used == 0) {
+            lucent::error("gxfifo", "incomplete frame tail: buffered={} bytes, command needs={}",
+                          g_buf.size(), g_need);
+            std::abort();
+        }
         g_buf.consume(used);
     }
-    if (g_out.empty())
-        return;
 
-    lucent::debug("gxfifo", "frame stream {} KB ({} DL expansions, {} KB inlined)",
-                  g_out.size() >> 10, g_dl_calls, g_dl_bytes >> 10);
+    if (!g_out.empty())
+        lucent::debug("gxfifo", "frame stream {} KB ({} DL expansions, {} KB inlined)",
+                      g_out.size() >> 10, g_dl_calls, g_dl_bytes >> 10);
     g_dl_calls = 0;
     g_dl_bytes = 0;
 
     // Same frame boundary the state oracle pairs on: this is where a frame's stream is closed.
     sbr_state_oracle_mine_frame_end();
-    g_last.swap(g_out);
-    g_out.clear();
+    sb::gx_fifo::rotate_frame(g_last, g_out);
     // The new stream carries no label yet, so the next one must be written even if it repeats the
     // value the last frame ended on (see emit_draw_pop).
     sbr_gxfifo_pop_stream_reset();

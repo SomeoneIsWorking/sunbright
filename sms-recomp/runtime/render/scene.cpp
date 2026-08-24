@@ -4,6 +4,7 @@
 #include "gx_light.h"
 #include "gx_texgen.h"
 #include "gx_texture.h"
+#include "scene_geometry.h"
 #include "tev_eval.h"
 
 #include <lucent/log.h>
@@ -43,14 +44,6 @@ struct Area {
 };
 std::vector<Area> g_area;
 
-struct Geom {
-    std::vector<SbrGeomVert> verts;
-    bool multislot = false;
-};
-std::vector<Geom> g_geom{1}; // [0] unused: handle 0 = none
-std::unordered_map<uint64_t, uint32_t> g_geomIndex;
-int g_multislot = 0;
-int g_splitTris = 0;
 long g_alphaLow = 0, g_alphaTotal = 0, g_lumBlack = 0;
 double g_lumSum = 0.0;
 
@@ -131,99 +124,6 @@ void lerp_mtx(float out[12], const float a[12], const float b[12], float t) {
 
 } // namespace
 
-bool sbr_scene_has_geometry(uint64_t key) {
-    return g_geomIndex.count(key) != 0;
-}
-
-// Overwrite an already-interned geometry in place, or intern it if new. 2D geometry CHANGES every
-// frame under a stable identity (a counter digit keeps its screen slot while its glyph changes), so
-// content-keyed interning minted a fresh entry per frame — 387k of them in one run. g_geom is a
-// vector and callers hold `const Geom&` into it, so that growth reallocates and dangles those
-// references: undefined behaviour, and the reason enabling 2D capture collapsed the whole frame
-// rather than just leaking. Updating in place keeps the entry count bounded by the number of
-// distinct elements.
-uint32_t sbr_scene_update_geometry(uint64_t key, const SbrGeomVert* verts, int count) {
-    if (const auto it = g_geomIndex.find(key); it != g_geomIndex.end()) {
-        Geom& g = g_geom[it->second];
-        g.verts.assign(verts, verts + count);
-        g.multislot = false;
-        for (int i = 1; i < count; ++i)
-            if (verts[i].slot != verts[0].slot) {
-                g.multislot = true;
-                break;
-            }
-        return it->second;
-    }
-    return sbr_scene_intern_geometry(key, verts, count);
-}
-
-uint32_t sbr_scene_intern_geometry(uint64_t key, const SbrGeomVert* verts, int count) {
-    if (const auto it = g_geomIndex.find(key); it != g_geomIndex.end())
-        return it->second;
-
-    const uint32_t id = (uint32_t)g_geom.size();
-    g_geom.push_back(Geom{});
-    Geom& g = g_geom.back();
-    g.verts.assign(verts, verts + count);
-
-    // A shape whose vertices select more than one matrix slot is SKINNED. The drawable carries one
-    // matrix, so such a mesh renders with the wrong transform on every vertex outside the first
-    // slot. Count it instead of hiding it: the per-vertex matrix path is the next step, and this
-    // number is how big it is.
-    for (int i = 1; i < count; ++i)
-        if (verts[i].slot != verts[0].slot) {
-            g.multislot = true;
-            ++g_multislot;
-            break;
-        }
-
-    g_geomIndex.emplace(key, id);
-    return id;
-}
-
-uint32_t sbr_scene_geometry_for_slot(uint64_t baseKey, uint32_t baseGeom, uint32_t slot) {
-    if (baseGeom == 0 || baseGeom >= g_geom.size())
-        return 0;
-    const Geom& base = g_geom[baseGeom];
-    // Unskinned fast path: every vertex is on one slot, so the element IS the slot's geometry.
-    if (!base.multislot)
-        return baseGeom;
-
-    const uint64_t key = (baseKey << 8) | (uint64_t)slot | 0x8000000000000000ull;
-    if (const auto it = g_geomIndex.find(key); it != g_geomIndex.end())
-        return it->second;
-
-    std::vector<SbrGeomVert> sub;
-    // Whole TRIANGLES only: a triangle whose vertices span two bones cannot be drawn by a single
-    // matrix. Keeping it with the slot of its first vertex is what the hardware does per-vertex
-    // only approximately — flagged rather than hidden (see sbr_scene_split_triangles).
-    for (size_t t = 0; t + 2 < base.verts.size(); t += 3) {
-        if (base.verts[t].slot != slot && base.verts[t + 1].slot != slot &&
-            base.verts[t + 2].slot != slot)
-            continue;
-        if (base.verts[t].slot != base.verts[t + 1].slot ||
-            base.verts[t].slot != base.verts[t + 2].slot)
-            ++g_splitTris;
-        if (base.verts[t].slot != slot)
-            continue;
-        sub.push_back(base.verts[t]);
-        sub.push_back(base.verts[t + 1]);
-        sub.push_back(base.verts[t + 2]);
-    }
-    if (sub.empty())
-        return 0;
-
-    const uint32_t id = (uint32_t)g_geom.size();
-    g_geom.push_back(Geom{});
-    g_geom.back().verts = std::move(sub);
-    g_geomIndex.emplace(key, id);
-    return id;
-}
-
-int sbr_scene_split_triangles() {
-    return g_splitTris;
-}
-
 void sbr_scene_report_alpha() {
     if (g_alphaTotal == 0)
         return;
@@ -275,10 +175,6 @@ double sbr_scene_now() {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
-int sbr_scene_multislot_count() {
-    return g_multislot;
-}
-
 // How many captured drawables are 2D? The HUD (coins, lives, the water gauge) is J2D, and J2D does
 // not go through J3DShape::draw — which is the only thing this port captures. If the count is zero
 // while aurora shows a HUD, the HUD is not "rendered wrong", it is NOT CAPTURED, and no amount of
@@ -620,9 +516,10 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
     } copyClear;
     for (const auto& d : g_cur.items) {
         ++drawableIdx;
-        if (d.geom == 0 || d.geom >= g_geom.size())
+        const SbrSceneGeometry* geometry = sbr_scene_find_geometry(d.geom);
+        if (geometry == nullptr)
             continue; // no geometry decoded for this one
-        const Geom& g = g_geom[d.geom];
+        const SbrSceneGeometry& g = *geometry;
         if (g.verts.empty())
             continue;
         // SBR_RENDER_SKIP_SKINNED=1 — omit shapes whose vertices select more than one matrix slot.
@@ -1170,6 +1067,16 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
             if (w0 > 0.0f && h0 > 0.0f)
                 g_area.push_back(Area{d.key, w0 * h0 * 0.25f, (int)g.verts.size(), nearestW});
         }
+    }
+
+    // A copy after the final drawable (or after a drawable whose geometry was skipped above) has
+    // no later stream position to trigger the in-loop handoff. It still belongs at the current
+    // batch boundary; native_render drains that ordered suffix after the final render pass.
+    for (auto& pc : g_pendingCopies) {
+        if (pc.dest == 0)
+            continue;
+        sbr_render_note_copy(pc.dest, pc.sx, pc.sy, pc.sw, pc.sh, pc.dw, pc.dh);
+        pc.dest = 0;
     }
 
     return alpha;

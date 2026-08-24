@@ -3,14 +3,14 @@
 // Diagnostic-only (SB_FIFO_REPLAY). See fifo_player.h. The loader is a faithful
 // C++ port of the read side of tools/oracle/parse_fifo_dff.py.
 
-#include <sb_log.h>
 #include "fifo_player.h"
+#include <sb_log.h>
 
+#include <algorithm>
 #include <aurora/aurora.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
 
 namespace sb {
 
@@ -20,19 +20,19 @@ constexpr std::uint32_t kDffFileId = 0x0D01F1F0;
 // Opcode constants (dolphin/gx/GXCommandList.h + GXAurora.h). Defined locally
 // to keep the translator self-contained (aurora.h does not pull in the GX
 // headers). These are stable HW constants.
-constexpr std::uint8_t GX_NOP          = 0x00;
-constexpr std::uint8_t GX_LOAD_CP_REG  = 0x08;
-constexpr std::uint8_t GX_LOAD_XF_REG  = 0x10;
-constexpr std::uint8_t GX_CMD_CALL_DL  = 0x40;
-constexpr std::uint8_t GX_LOAD_BP_REG  = 0x61;
-constexpr std::uint8_t GX_AURORA       = 0x50;
-constexpr std::uint8_t GX_OPCODE_MASK  = 0xF8;
-constexpr std::uint8_t GX_VAT_MASK     = 0x07;
+constexpr std::uint8_t GX_NOP = 0x00;
+constexpr std::uint8_t GX_LOAD_CP_REG = 0x08;
+constexpr std::uint8_t GX_LOAD_XF_REG = 0x10;
+constexpr std::uint8_t GX_CMD_CALL_DL = 0x40;
+constexpr std::uint8_t GX_LOAD_BP_REG = 0x61;
+constexpr std::uint8_t GX_AURORA = 0x50;
+constexpr std::uint8_t GX_OPCODE_MASK = 0xF8;
+constexpr std::uint8_t GX_VAT_MASK = 0x07;
 constexpr std::uint16_t GX_AURORA_LOAD_ARRAYBASE = 0x0010;
-constexpr std::uint16_t GX_AURORA_LOAD_TEXOBJ    = 0x0030;
-constexpr std::uint16_t GX_AURORA_LOAD_TLUT      = 0x0031;
-constexpr std::uint16_t GX_AURORA_LOAD_COPY_SRC  = 0x0035;
-constexpr std::uint16_t GX_AURORA_LOAD_COPY_DST  = 0x0036;
+constexpr std::uint16_t GX_AURORA_LOAD_TEXOBJ = 0x0030;
+constexpr std::uint16_t GX_AURORA_LOAD_TLUT = 0x0031;
+constexpr std::uint16_t GX_AURORA_LOAD_COPY_SRC = 0x0035;
+constexpr std::uint16_t GX_AURORA_LOAD_COPY_DST = 0x0036;
 constexpr std::uint16_t GX_AURORA_LOAD_COPY_DEST = 0x0037;
 // CP array-base register addresses (aurora ignores the raw 32-bit value; the
 // translator must synthesize GX_AURORA_LOAD_ARRAYBASE with a host pointer).
@@ -41,41 +41,52 @@ constexpr std::uint8_t CP_REG_ARRAYBASE_HI = 0xAF;
 
 void fail(const char* why) {
     std::fprintf(stderr, "[fifo_player] FATAL: %s\n", why);
-    std::abort();  // fail-fast per project policy
+    std::abort(); // fail-fast per project policy
 }
 } // namespace
 
 FifoCapture load_dff(const std::string& path) {
     FifoCapture cap;
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) fail(("cannot open " + path).c_str());
+    if (!f)
+        fail(("cannot open " + path).c_str());
     std::fseek(f, 0, SEEK_END);
     long sz = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    if (sz < (long)sizeof(DffFileHeader)) fail(".dff smaller than header");
+    if (sz < (long)sizeof(DffFileHeader))
+        fail(".dff smaller than header");
     cap.fileData.resize(sz);
-    if (std::fread(cap.fileData.data(), 1, sz, f) != (size_t)sz) fail("short read");
+    if (std::fread(cap.fileData.data(), 1, sz, f) != (size_t)sz)
+        fail("short read");
     std::fclose(f);
 
     const auto* h = reinterpret_cast<const DffFileHeader*>(cap.fileData.data());
-    if (h->fileId != kDffFileId) fail("bad .dff magic");
+    if (h->fileId != kDffFileId)
+        fail("bad .dff magic");
     cap.header = h;
 
     // File-wide memory snapshots (borrowed slices; fileData outlives them).
     // bpMem/cpMem/xfMem/xfRegs are u32 arrays — their header size field is an
     // element count; the byte size is count*4. texMem is a u8 array (byte size).
     auto slice = [&](std::uint64_t off, std::uint32_t bytes) -> const std::uint8_t* {
-        if (off + bytes > cap.fileData.size()) fail("memory snapshot out of bounds");
+        if (off + bytes > cap.fileData.size())
+            fail("memory snapshot out of bounds");
         return cap.fileData.data() + off;
     };
-    cap.bpMem  = slice(h->bpMemOffset,  h->bpMemSize  * 4u); cap.bpMemCount  = h->bpMemSize;
-    cap.cpMem  = slice(h->cpMemOffset,  h->cpMemSize  * 4u); cap.cpMemCount  = h->cpMemSize;
-    cap.xfMem  = slice(h->xfMemOffset,  h->xfMemSize  * 4u); cap.xfMemCount  = h->xfMemSize;
-    cap.xfRegs = slice(h->xfRegsOffset, h->xfRegsSize * 4u); cap.xfRegsCount = h->xfRegsSize;
-    cap.texMem = slice(h->texMemOffset, h->texMemSize);      cap.texMemSize  = h->texMemSize;
+    cap.bpMem = slice(h->bpMemOffset, h->bpMemSize * 4u);
+    cap.bpMemCount = h->bpMemSize;
+    cap.cpMem = slice(h->cpMemOffset, h->cpMemSize * 4u);
+    cap.cpMemCount = h->cpMemSize;
+    cap.xfMem = slice(h->xfMemOffset, h->xfMemSize * 4u);
+    cap.xfMemCount = h->xfMemSize;
+    cap.xfRegs = slice(h->xfRegsOffset, h->xfRegsSize * 4u);
+    cap.xfRegsCount = h->xfRegsSize;
+    cap.texMem = slice(h->texMemOffset, h->texMemSize);
+    cap.texMemSize = h->texMemSize;
 
     // Frames + their memory updates.
-    if (h->frameListOffset + (std::uint64_t)h->frameCount * sizeof(DffFrameInfo) > cap.fileData.size())
+    if (h->frameListOffset + (std::uint64_t)h->frameCount * sizeof(DffFrameInfo) >
+        cap.fileData.size())
         fail("frame list out of bounds");
     cap.frames.resize(h->frameCount);
     for (std::uint32_t i = 0; i < h->frameCount; ++i) {
@@ -83,14 +94,16 @@ FifoCapture load_dff(const std::string& path) {
             cap.fileData.data() + h->frameListOffset + i * sizeof(DffFrameInfo));
         FifoFrame& frame = cap.frames[i];
         frame.fifoStart = fi->fifoStart;
-        frame.fifoEnd   = fi->fifoEnd;
-        if (fi->fifoDataOffset + fi->fifoDataSize > cap.fileData.size()) fail("fifoData out of bounds");
+        frame.fifoEnd = fi->fifoEnd;
+        if (fi->fifoDataOffset + fi->fifoDataSize > cap.fileData.size())
+            fail("fifoData out of bounds");
         frame.fifoData.assign(cap.fileData.data() + fi->fifoDataOffset,
                               cap.fileData.data() + fi->fifoDataOffset + fi->fifoDataSize);
 
         if (fi->numMemoryUpdates) {
-            if (fi->memoryUpdatesOffset + (std::uint64_t)fi->numMemoryUpdates * sizeof(DffMemoryUpdate)
-                > cap.fileData.size())
+            if (fi->memoryUpdatesOffset +
+                    (std::uint64_t)fi->numMemoryUpdates * sizeof(DffMemoryUpdate) >
+                cap.fileData.size())
                 fail("memory update list out of bounds");
             frame.memoryUpdates.reserve(fi->numMemoryUpdates);
             for (std::uint32_t j = 0; j < fi->numMemoryUpdates; ++j) {
@@ -98,9 +111,10 @@ FifoCapture load_dff(const std::string& path) {
                     cap.fileData.data() + fi->memoryUpdatesOffset + j * sizeof(DffMemoryUpdate));
                 MemoryUpdate upd;
                 upd.fifoPosition = mu->fifoPosition;
-                upd.address      = mu->address;
-                upd.type         = mu->type;
-                if (mu->dataOffset + mu->dataSize > cap.fileData.size()) fail("memupdate data oob");
+                upd.address = mu->address;
+                upd.type = mu->type;
+                if (mu->dataOffset + mu->dataSize > cap.fileData.size())
+                    fail("memupdate data oob");
                 upd.data.assign(cap.fileData.data() + mu->dataOffset,
                                 cap.fileData.data() + mu->dataOffset + mu->dataSize);
                 frame.memoryUpdates.push_back(std::move(upd));
@@ -118,17 +132,21 @@ FifoCapture load_dff(const std::string& path) {
 void print_summary(const FifoCapture& cap) {
     const auto* h = cap.header;
     std::printf("[fifo_player] frames=%u bpMem=%u cpMem=%u xfMem=%u xfRegs=%u texMem=%u\n",
-                h->frameCount, h->bpMemSize, h->cpMemSize, h->xfMemSize, h->xfRegsSize, h->texMemSize);
+                h->frameCount, h->bpMemSize, h->cpMemSize, h->xfMemSize, h->xfRegsSize,
+                h->texMemSize);
     for (std::uint32_t i = 0; i < cap.frames.size(); ++i) {
         const auto& fr = cap.frames[i];
         int nv = 0, nt = 0, nx = 0;
         for (const auto& mu : fr.memoryUpdates) {
-            if (mu.type == kMemUpdateVertexStream) ++nv;
-            else if (mu.type == kMemUpdateTextureMap) ++nt;
-            else if (mu.type == kMemUpdateXFData) ++nx;
+            if (mu.type == kMemUpdateVertexStream)
+                ++nv;
+            else if (mu.type == kMemUpdateTextureMap)
+                ++nt;
+            else if (mu.type == kMemUpdateXFData)
+                ++nx;
         }
-        std::printf("  frame %u: %u cmd bytes, %zu memupdates (vtx=%d tex=%d xf=%d)\n",
-                    i, (unsigned)fr.fifoData.size(), fr.memoryUpdates.size(), nv, nt, nx);
+        std::printf("  frame %u: %u cmd bytes, %zu memupdates (vtx=%d tex=%d xf=%d)\n", i,
+                    (unsigned)fr.fifoData.size(), fr.memoryUpdates.size(), nv, nt, nx);
     }
 }
 
@@ -147,31 +165,34 @@ namespace {
 // VideoCommon/VertexLoader_{Position,Normal,Color,TextCoord}).
 // POS_SIZE[type][format] = (size_XY, size_XYZ)
 const int POS_SIZE[4][8][2] = {
-    {},  // type 0 (NotPresent) unused
-    {{2,3},{2,3},{4,6},{4,6},{8,12},{8,12},{8,12},{8,12}},
-    {{1,1},{1,1},{1,1},{1,1},{1,1},{1,1},{1,1},{1,1}},
-    {{2,2},{2,2},{2,2},{2,2},{2,2},{2,2},{2,2},{2,2}},
+    {}, // type 0 (NotPresent) unused
+    {{2, 3}, {2, 3}, {4, 6}, {4, 6}, {8, 12}, {8, 12}, {8, 12}, {8, 12}},
+    {{1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}},
+    {{2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}},
 };
 // NORMAL_SIZE_DIRECT[index3][elements][format]
 const int NRM_DIRECT[2][2][8] = {
-  { {3,3,6,6,12,12,12,12}, {9,9,18,18,36,36,36,36} },
-  { {3,3,6,6,12,12,12,12}, {9,9,18,18,36,36,36,36} },
+    {{3, 3, 6, 6, 12, 12, 12, 12}, {9, 9, 18, 18, 36, 36, 36, 36}},
+    {{3, 3, 6, 6, 12, 12, 12, 12}, {9, 9, 18, 18, 36, 36, 36, 36}},
 };
-const int NRM_IDX8[2][2]  = {{1,1},{1,3}};
-const int NRM_IDX16[2][2] = {{2,2},{2,6}};
+const int NRM_IDX8[2][2] = {{1, 1}, {1, 3}};
+const int NRM_IDX16[2][2] = {{2, 2}, {2, 6}};
 // COLOR_SIZE[type][ColorFormat 0..5]
 const int COLOR_SIZE[4][6] = {
-    {}, {2,3,4,2,3,4}, {1,1,1,1,1,1}, {2,2,2,2,2,2},
+    {},
+    {2, 3, 4, 2, 3, 4},
+    {1, 1, 1, 1, 1, 1},
+    {2, 2, 2, 2, 2, 2},
 };
 // TEX_SIZE[type][format] = (size_S, size_ST)
 const int TEX_SIZE[4][8][2] = {
     {},
-    {{1,2},{1,2},{2,4},{2,4},{4,8},{4,8},{4,8},{4,8}},
-    {{1,1},{1,1},{1,1},{1,1},{1,1},{1,1},{1,1},{1,1}},
-    {{2,2},{2,2},{2,2},{2,2},{2,2},{2,2},{2,2},{2,2}},
+    {{1, 2}, {1, 2}, {2, 4}, {2, 4}, {4, 8}, {4, 8}, {4, 8}, {4, 8}},
+    {{1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1}},
+    {{2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}, {2, 2}},
 };
 
-inline int popcount9(std::uint32_t v) {  // low 9 bits
+inline int popcount9(std::uint32_t v) { // low 9 bits
     return __builtin_popcount(v & 0x1FF);
 }
 inline int bits(std::uint32_t v, int lo, int w) {
@@ -179,48 +200,64 @@ inline int bits(std::uint32_t v, int lo, int w) {
 }
 
 struct VAT {
-    std::uint32_t g0=0, g1=0, g2=0;
+    std::uint32_t g0 = 0, g1 = 0, g2 = 0;
     int posElements() const { return bits(g0, 0, 1); }
-    int posFormat()   const { return bits(g0, 1, 3); }
-    int normalElements() const { return bits(g0, 9, 1); }   // 0=N, 1=NTB
-    int normalFormat()   const { return bits(g0, 10, 3); }
-    int normalIndex3()   const { return bits(g0, 31, 1); }
-    int colorElements(int i) const { return bits(g0, i==0?13:17, 1); }
-    int colorFormat(int i)   const { return bits(g0, i==0?14:18, 3); }
+    int posFormat() const { return bits(g0, 1, 3); }
+    int normalElements() const { return bits(g0, 9, 1); } // 0=N, 1=NTB
+    int normalFormat() const { return bits(g0, 10, 3); }
+    int normalIndex3() const { return bits(g0, 31, 1); }
+    int colorElements(int i) const { return bits(g0, i == 0 ? 13 : 17, 1); }
+    int colorFormat(int i) const { return bits(g0, i == 0 ? 14 : 18, 3); }
     int texElements(int i) const {
         switch (i) {
-        case 0: return bits(g0, 21, 1);
-        case 1: return bits(g1, 0, 1);
-        case 2: return bits(g1, 9, 1);
-        case 3: return bits(g1, 18, 1);
-        case 4: return bits(g1, 27, 1);
-        case 5: return bits(g2, 5, 1);
-        case 6: return bits(g2, 14, 1);
-        case 7: return bits(g2, 23, 1);
+        case 0:
+            return bits(g0, 21, 1);
+        case 1:
+            return bits(g1, 0, 1);
+        case 2:
+            return bits(g1, 9, 1);
+        case 3:
+            return bits(g1, 18, 1);
+        case 4:
+            return bits(g1, 27, 1);
+        case 5:
+            return bits(g2, 5, 1);
+        case 6:
+            return bits(g2, 14, 1);
+        case 7:
+            return bits(g2, 23, 1);
         }
         return 0;
     }
     int texFormat(int i) const {
         switch (i) {
-        case 0: return bits(g0, 22, 3);
-        case 1: return bits(g1, 1, 3);
-        case 2: return bits(g1, 10, 3);
-        case 3: return bits(g1, 19, 3);
-        case 4: return bits(g1, 28, 3);
-        case 5: return bits(g2, 6, 3);
-        case 6: return bits(g2, 15, 3);
-        case 7: return bits(g2, 24, 3);
+        case 0:
+            return bits(g0, 22, 3);
+        case 1:
+            return bits(g1, 1, 3);
+        case 2:
+            return bits(g1, 10, 3);
+        case 3:
+            return bits(g1, 19, 3);
+        case 4:
+            return bits(g1, 28, 3);
+        case 5:
+            return bits(g2, 6, 3);
+        case 6:
+            return bits(g2, 15, 3);
+        case 7:
+            return bits(g2, 24, 3);
         }
         return 0;
     }
 };
 
 struct CpState {
-    std::uint32_t vcdLo=0, vcdHi=0;
+    std::uint32_t vcdLo = 0, vcdHi = 0;
     VAT vats[8];
     int vertexSize(int vatIdx) const {
         const VAT& v = vats[vatIdx];
-        int size = popcount9(vcdLo);  // PosMatIdx + up to 8 TexMatIdx bytes
+        int size = popcount9(vcdLo); // PosMatIdx + up to 8 TexMatIdx bytes
         int posType = bits(vcdLo, 9, 2);
         if (posType) {
             size += POS_SIZE[posType][v.posFormat()][v.posElements()];
@@ -230,19 +267,22 @@ struct CpState {
             int fmt = v.normalFormat();
             int elem = v.normalElements();
             int idx3 = v.normalIndex3();
-            if (nrmType == 1) size += NRM_DIRECT[idx3][elem][fmt];
-            else if (nrmType == 2) size += NRM_IDX8[idx3][elem];
-            else size += NRM_IDX16[idx3][elem];
+            if (nrmType == 1)
+                size += NRM_DIRECT[idx3][elem][fmt];
+            else if (nrmType == 2)
+                size += NRM_IDX8[idx3][elem];
+            else
+                size += NRM_IDX16[idx3][elem];
         }
         for (int i = 0; i < 2; ++i) {
-            int ct = bits(vcdLo, 13 + i*2, 2);
+            int ct = bits(vcdLo, 13 + i * 2, 2);
             if (ct) {
                 int fmt = v.colorFormat(i);
                 size += COLOR_SIZE[ct][fmt < 6 ? fmt : 5];
             }
         }
         for (int i = 0; i < 8; ++i) {
-            int tt = bits(vcdHi, i*2, 2);
+            int tt = bits(vcdHi, i * 2, 2);
             if (tt) {
                 size += TEX_SIZE[tt][v.texFormat(i)][v.texElements(i)];
             }
@@ -268,7 +308,7 @@ struct CpState {
 
 struct GcShadow {
     static constexpr std::uint32_t kMem1Base = 0x00000000u;
-    static constexpr std::uint32_t kMem1Size = 0x01800000u;  // 24 MiB
+    static constexpr std::uint32_t kMem1Size = 0x01800000u; // 24 MiB
     std::vector<std::uint8_t> buf;
     void init() { buf.assign(kMem1Size, 0); }
     void write(std::uint32_t gcAddr, const std::uint8_t* d, std::size_t n) {
@@ -278,8 +318,9 @@ struct GcShadow {
             // model) -- dropping it silently would surface later as
             // inexplicably-stale vertex/texture data.
             std::fprintf(stderr,
-                "[fifo_player] FATAL: memory update outside MEM1 shadow: "
-                "addr=0x%08X size=%zu (MEM1=%u bytes)\n", gcAddr, n, kMem1Size);
+                         "[fifo_player] FATAL: memory update outside MEM1 shadow: "
+                         "addr=0x%08X size=%zu (MEM1=%u bytes)\n",
+                         gcAddr, n, kMem1Size);
             std::abort();
         }
         std::memcpy(buf.data() + gcAddr, d, n);
@@ -308,7 +349,8 @@ std::vector<std::uint8_t> preload_state(const FifoCapture& cap) {
         out.push_back(v & 0xFF);
     };
     auto pushBE32 = [&](std::uint32_t v) {
-        for (int i = 3; i >= 0; --i) out.push_back((v >> (i*8)) & 0xFF);
+        for (int i = 3; i >= 0; --i)
+            out.push_back((v >> (i * 8)) & 0xFF);
     };
     // The snapshots are Dolphin's in-memory state arrays written raw to the
     // file — HOST-endian (little-endian) u32s, NOT GC big-endian. Verified
@@ -317,16 +359,18 @@ std::vector<std::uint8_t> preload_state(const FifoCapture& cap) {
     // (zmode) reads 0x1F as LE (enable+lequal+update) vs 0x1F000000 as BE.
     // (The command STREAM stays big-endian; only these snapshots are LE.)
     auto rdLE32 = [](const std::uint8_t* p) -> std::uint32_t {
-        return std::uint32_t(p[0]) | (std::uint32_t(p[1]) << 8) |
-               (std::uint32_t(p[2]) << 16) | (std::uint32_t(p[3]) << 24);
+        return std::uint32_t(p[0]) | (std::uint32_t(p[1]) << 8) | (std::uint32_t(p[2]) << 16) |
+               (std::uint32_t(p[3]) << 24);
     };
 
     // BP registers (0x00-0xFF). Skip 0x52/0x53 (action: EFB copy trigger).
     if (cap.bpMem && cap.bpMemCount >= 256) {
         for (std::uint32_t i = 0; i < 256; ++i) {
             std::uint32_t val = rdLE32(cap.bpMem + i * 4) & 0x00FFFFFFu;
-            if (i == 0x52 || i == 0x53) continue;  // action regs
-            if (val == 0) continue;  // skip zero (default) to keep the prefix lean
+            if (i == 0x52 || i == 0x53)
+                continue; // action regs
+            if (val == 0)
+                continue; // skip zero (default) to keep the prefix lean
             out.push_back(GX_LOAD_BP_REG);
             out.push_back(static_cast<std::uint8_t>(i));
             pushBE24(val);
@@ -339,7 +383,7 @@ std::vector<std::uint8_t> preload_state(const FifoCapture& cap) {
     if (cap.xfRegs && cap.xfRegsCount > 0) {
         std::uint32_t cnt = cap.xfRegsCount;
         out.push_back(GX_LOAD_XF_REG);
-        pushBE32(((cnt - 1) << 16) | 0x1000);  // ((count-1)<<16) | addr
+        pushBE32(((cnt - 1) << 16) | 0x1000); // ((count-1)<<16) | addr
         for (std::uint32_t i = 0; i < cnt; ++i) {
             pushBE32(rdLE32(cap.xfRegs + i * 4));
         }
@@ -355,33 +399,42 @@ std::vector<std::uint8_t> preload_state(const FifoCapture& cap) {
                 pushBE32(rdLE32(cap.xfMem + (xfAddr + i) * 4));
             }
         };
-        for (std::uint32_t a = 0x000; a + 12 <= 0x078; a += 12) emitChunk(a, 12);  // pos mtx
-        for (std::uint32_t a = 0x078; a + 12 <= 0x0F0; a += 12) emitChunk(a, 12);  // tex mtx
-        for (std::uint32_t a = 0x400; a + 9  <= 0x45A; a += 9)  emitChunk(a, 9);   // nrm mtx
-        for (std::uint32_t a = 0x500; a + 12 <= 0x5F0; a += 12) emitChunk(a, 12);  // post-tex mtx
-        for (std::uint32_t a = 0x600; a + 16 <= 0x680; a += 16) emitChunk(a, 16);  // lights
+        for (std::uint32_t a = 0x000; a + 12 <= 0x078; a += 12)
+            emitChunk(a, 12); // pos mtx
+        for (std::uint32_t a = 0x078; a + 12 <= 0x0F0; a += 12)
+            emitChunk(a, 12); // tex mtx
+        for (std::uint32_t a = 0x400; a + 9 <= 0x45A; a += 9)
+            emitChunk(a, 9); // nrm mtx
+        for (std::uint32_t a = 0x500; a + 12 <= 0x5F0; a += 12)
+            emitChunk(a, 12); // post-tex mtx
+        for (std::uint32_t a = 0x600; a + 16 <= 0x680; a += 16)
+            emitChunk(a, 16); // lights
     }
     return out;
 }
 
 // Emit a GX_AURORA_LOAD_ARRAYBASE (0x50 00 1x) into the output stream.
-// Format (command_processor.cpp:2859): u8 op=0x50, u16 sub=0x0010|cpIdx (BE),
-// u64 hostPtr (BE), u32 size (BE), u8 le-flag.
-void emitArrayBase(std::vector<std::uint8_t>& out, int cpIdx,
-                   std::uint64_t hostPtr, std::uint32_t size, bool le) {
+// Format: u8 op=0x50, u16 sub=0x0010|cpIdx (BE), u64 hostPtr (BE),
+// u32 upload size (BE), u32 backing capacity (BE), u8 le-flag.
+void emitArrayBase(std::vector<std::uint8_t>& out, int cpIdx, std::uint64_t hostPtr,
+                   std::uint32_t size, std::uint32_t capacity, bool le) {
     auto pushBE16 = [&](std::uint16_t v) {
-        out.push_back((v >> 8) & 0xFF); out.push_back(v & 0xFF);
+        out.push_back((v >> 8) & 0xFF);
+        out.push_back(v & 0xFF);
     };
     auto pushBE64 = [&](std::uint64_t v) {
-        for (int i = 7; i >= 0; --i) out.push_back((v >> (i*8)) & 0xFF);
+        for (int i = 7; i >= 0; --i)
+            out.push_back((v >> (i * 8)) & 0xFF);
     };
     auto pushBE32 = [&](std::uint32_t v) {
-        for (int i = 3; i >= 0; --i) out.push_back((v >> (i*8)) & 0xFF);
+        for (int i = 3; i >= 0; --i)
+            out.push_back((v >> (i * 8)) & 0xFF);
     };
     out.push_back(GX_AURORA);
     pushBE16(std::uint16_t(GX_AURORA_LOAD_ARRAYBASE | (cpIdx & 0x0F)));
     pushBE64(hostPtr);
     pushBE32(size);
+    pushBE32(capacity);
     out.push_back(le ? 1 : 0);
 }
 } // namespace
@@ -392,8 +445,8 @@ namespace {
 
 // Big-endian readers (the .dff command stream is GC-native big-endian).
 std::uint32_t rd_be32(const std::uint8_t* p) {
-    return (std::uint32_t(p[0]) << 24) | (std::uint32_t(p[1]) << 16) |
-           (std::uint32_t(p[2]) << 8)  | std::uint32_t(p[3]);
+    return (std::uint32_t(p[0]) << 24) | (std::uint32_t(p[1]) << 16) | (std::uint32_t(p[2]) << 8) |
+           std::uint32_t(p[3]);
 }
 
 // Build the translated command stream for one frame. Walks the .dff's command
@@ -436,13 +489,13 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
     // updates only fill the shadow (plus bump the data version so aurora's
     // texture cache re-uploads under an unchanged pointer).
     struct TexSlot {
-        std::uint32_t image0 = 0;      // raw image0 value (w/h/fmt)
-        std::uint32_t mode1  = 0;      // raw TexMode1 (min_lod/max_lod, Q4.4) — mip chain depth
-        std::uint32_t baseAddr = 0;    // byte address ((image3 & 0xFFFFFF) << 5)
+        std::uint32_t image0 = 0;   // raw image0 value (w/h/fmt)
+        std::uint32_t mode1 = 0;    // raw TexMode1 (min_lod/max_lod, Q4.4) — mip chain depth
+        std::uint32_t baseAddr = 0; // byte address ((image3 & 0xFFFFFF) << 5)
         bool haveI0 = false, haveI3 = false;
     };
-    TexSlot texSlots[8];               // 8 texture maps
-    std::uint32_t texDataVersion = 1;  // bumped on every TextureMap memupdate
+    TexSlot texSlots[8];              // 8 texture maps
+    std::uint32_t texDataVersion = 1; // bumped on every TextureMap memupdate
 
     // EFB copy state: aurora's copy_tex() sources its rect/dims/format/dest
     // exclusively from GX_AURORA_LOAD_COPY_{SRC,DST,DEST} (the native GXCopyTex
@@ -451,10 +504,10 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
     // 0x4A (src size-1), 0x4B (dest addr >> 5), and at each 0x52 trigger with
     // copy_to_xfb==0 synthesize the three aurora opcodes first. Field layout
     // per Dolphin BPMemory.h (X10Y10 + UPE_Copy).
-    std::uint32_t bpCopySrcXY = 0;     // 0x49: x=bits 0-9, y=bits 10-19
-    std::uint32_t bpCopySrcWH = 0;     // 0x4A: (w-1)=bits 0-9, (h-1)=bits 10-19
-    std::uint32_t bpCopyDest  = 0;     // 0x4B: dest phys addr >> 5
-    std::uint32_t bpCopyStride = 0;    // 0x4D: dest stride in 32-byte units
+    std::uint32_t bpCopySrcXY = 0;      // 0x49: x=bits 0-9, y=bits 10-19
+    std::uint32_t bpCopySrcWH = 0;      // 0x4A: (w-1)=bits 0-9, (h-1)=bits 10-19
+    std::uint32_t bpCopyDest = 0;       // 0x4B: dest phys addr >> 5
+    std::uint32_t bpCopyStride = 0;     // 0x4D: dest stride in 32-byte units
     std::uint32_t bpCopyYScale = 0x100; // 0x4E: vertical scale, 0x100 = unity
 
     // Seed the copy trackers from the file-wide BP snapshot (LE u32 elements,
@@ -471,13 +524,14 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         };
         bpCopySrcXY = bpSnap(0x49);
         bpCopySrcWH = bpSnap(0x4A);
-        bpCopyDest  = bpSnap(0x4B);
+        bpCopyDest = bpSnap(0x4B);
         bpCopyStride = bpSnap(0x4D);
-        if (std::uint32_t ys = bpSnap(0x4E) & 0x1FF) bpCopyYScale = ys;
+        if (std::uint32_t ys = bpSnap(0x4E) & 0x1FF)
+            bpCopyYScale = ys;
         // Seed per-texmap TexMode1 (mip min/max lod) so a bind whose mode1 write
         // precedes the capture window still gets its real mip chain depth.
         for (int t = 0; t < 4; ++t) {
-            texSlots[t].mode1     = bpSnap(0x84 + t);
+            texSlots[t].mode1 = bpSnap(0x84 + t);
             texSlots[t + 4].mode1 = bpSnap(0xA4 + t);
         }
     }
@@ -489,8 +543,10 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         std::uint32_t actual = ((height - 1) * 0x100u) / scale + 1;
         std::uint32_t s = scale;
         if (s > 0x80 && s < 0x100) {
-            while (s % 2 == 0) s /= 2;
-            if (height % s == 0) ++actual;
+            while (s % 2 == 0)
+                s /= 2;
+            if (height % s == 0)
+                ++actual;
         }
         return actual > 0x400u ? 0x400u : actual;
     };
@@ -507,28 +563,37 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
             // bind would sample garbage palettes and masquerade as a render
             // defect. Crash at the missing feature instead. (Was a one-time
             // warn -- silent-ish fallbacks banned 2026-07-14.)
-            std::fprintf(stderr,
+            std::fprintf(
+                stderr,
                 "[fifo_player] FATAL: CI-format texture bound (fmt=%u texmap=%d gcAddr=0x%06X) "
                 "but LOAD_TLUT synthesis is not implemented -- implement TLUT tracking "
                 "(BP 0x64/0x65) before replaying this capture\n",
                 fmt, id, ts.baseAddr);
             std::abort();
         }
-        std::uint64_t hostPtr = ts.baseAddr
-            ? reinterpret_cast<std::uint64_t>(shadow.host(ts.baseAddr)) : 0;
+        std::uint64_t hostPtr =
+            ts.baseAddr ? reinterpret_cast<std::uint64_t>(shadow.host(ts.baseAddr)) : 0;
         // SB_FIFO_TEXDBG=1: log the first synthesized binds (which texmap, GC
         // addr, dims/format) to sanity-check bind synthesis against the oracle.
         // SB_LOG=fifo-texbind. The old form carried its own env AND a hand-rolled line cap; the
         // logger's SB_LOG_EVERY does the capping, so both go away.
         {
             static int n = 0;
-            SB_LOGC("fifo-texbind",
-                    "n=%d texmap=%d gcAddr=0x%06X %ux%u fmt=%u ver=%u mode1=0x%06X", ++n, id,
-                    ts.baseAddr, w, h, fmt, texDataVersion, ts.mode1);
+            SB_LOGC("fifo-texbind", "n=%d texmap=%d gcAddr=0x%06X %ux%u fmt=%u ver=%u mode1=0x%06X",
+                    ++n, id, ts.baseAddr, w, h, fmt, texDataVersion, ts.mode1);
         }
-        auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
-        auto pushBE64 = [&](std::uint64_t v) { for(int i=7;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
-        auto pushBE32 = [&](std::uint32_t v) { for(int i=3;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
+        auto pushBE16 = [&](std::uint16_t v) {
+            out.push_back(v >> 8);
+            out.push_back(v & 0xFF);
+        };
+        auto pushBE64 = [&](std::uint64_t v) {
+            for (int i = 7; i >= 0; --i)
+                out.push_back((v >> (i * 8)) & 0xFF);
+        };
+        auto pushBE32 = [&](std::uint32_t v) {
+            for (int i = 3; i >= 0; --i)
+                out.push_back((v >> (i * 8)) & 0xFF);
+        };
         out.push_back(GX_AURORA);
         pushBE16(GX_AURORA_LOAD_TEXOBJ);
         out.push_back(static_cast<std::uint8_t>(id));
@@ -536,7 +601,7 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         pushBE32(w);
         pushBE32(h);
         pushBE32(fmt);
-        pushBE32(0);          // tlut (none for now; LOAD_TLUT is a separate layer)
+        pushBE32(0); // tlut (none for now; LOAD_TLUT is a separate layer)
         // Mip level count from the capture's own TexMode1 max_lod (Q4.4, bits
         // [8:15]). Hardcoding 0 here made EVERY replayed texture base-only:
         // GXTexObj_::mip_count() gates on the has_mips flag that LOAD_TEXOBJ
@@ -548,11 +613,13 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         std::uint32_t maxLodInt = ((ts.mode1 >> 8) & 0xFF) >> 4;
         std::uint32_t maxDim = w > h ? w : h;
         std::uint32_t dimLevels = 0;
-        while ((maxDim >> dimLevels) > 1) ++dimLevels;
-        if (maxLodInt > dimLevels) maxLodInt = dimLevels;
+        while ((maxDim >> dimLevels) > 1)
+            ++dimLevels;
+        if (maxLodInt > dimLevels)
+            maxLodInt = dimLevels;
         out.push_back(static_cast<std::uint8_t>(maxLodInt + 1));
-        pushBE32(ts.baseAddr);      // texObjId: GC base addr uniquely names the object
-        pushBE32(texDataVersion);   // re-binds after new data get a fresh version
+        pushBE32(ts.baseAddr);    // texObjId: GC base addr uniquely names the object
+        pushBE32(texDataVersion); // re-binds after new data get a fresh version
     };
 
     while (pos < end) {
@@ -580,7 +647,8 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 // 0x08 — TMEM preloads) means the capture depends on state this
                 // translator doesn't model. Dropping it silently would surface
                 // as inexplicable texture garbage later.
-                std::fprintf(stderr,
+                std::fprintf(
+                    stderr,
                     "[fifo_player] FATAL: unhandled memory-update type 0x%02X "
                     "(addr=0x%08X size=%zu) -- implement it before replaying this capture\n",
                     mu.type, mu.address, mu.data.size());
@@ -593,23 +661,30 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
 
         if (op == GX_NOP) {
             std::uint32_t r = 0;
-            while (pos + r < end && src[pos + r] == GX_NOP) ++r;
+            while (pos + r < end && src[pos + r] == GX_NOP)
+                ++r;
             out.insert(out.end(), src + pos, src + pos + r);
             pos += r;
             continue;
         }
         if (op == GX_LOAD_CP_REG) {
-            if (pos + 6 > end) break;
+            if (pos + 6 > end)
+                break;
             std::uint8_t addr = src[pos + 1];
             std::uint32_t val = rd_be32(src + pos + 2);
             // Mirror CP state for vertex-size computation.
             int sub = addr & 0xF0;
             int vatIdx = addr & 0x07;
-            if (sub == 0x50) cp.vcdLo = val;
-            else if (sub == 0x60) cp.vcdHi = val;
-            else if (sub == 0x70) cp.vats[vatIdx].g0 = val;
-            else if (sub == 0x80) cp.vats[vatIdx].g1 = val;
-            else if (sub == 0x90) cp.vats[vatIdx].g2 = val;
+            if (sub == 0x50)
+                cp.vcdLo = val;
+            else if (sub == 0x60)
+                cp.vcdHi = val;
+            else if (sub == 0x70)
+                cp.vats[vatIdx].g0 = val;
+            else if (sub == 0x80)
+                cp.vats[vatIdx].g1 = val;
+            else if (sub == 0x90)
+                cp.vats[vatIdx].g2 = val;
             // Array base (0xA0-0xAF): translate to GX_AURORA_LOAD_ARRAYBASE.
             if (addr >= CP_REG_ARRAYBASE_LO && addr <= CP_REG_ARRAYBASE_HI) {
                 int attrIdx = addr - CP_REG_ARRAYBASE_LO;
@@ -622,7 +697,7 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 // (le=true only applies to the NATIVE runtime, where the game
                 // computes matrix arrays host-side; a .dff replay never does.)
                 bool le = false;
-                {   // SB_LOG=fifo-arraybase is the gate; the 40-line cap is kept because
+                { // SB_LOG=fifo-arraybase is the gate; the 40-line cap is kept because
                     // SB_LOG_EVERY rate-limits rather than capping a total.
                     static int n = 0;
                     if (n < 40)
@@ -630,17 +705,25 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                                 addr, attrIdx, val);
                 }
                 if (val == 0) {
-                    emitArrayBase(out, attrIdx, 0, 0, le);  // null/empty slot
+                    emitArrayBase(out, attrIdx, 0, 0, 0, le); // null/empty slot
                 } else {
+                    if (val >= GcShadow::kMem1Size) {
+                        std::fprintf(stderr,
+                                     "[fifo_player] FATAL: array base outside MEM1 shadow: "
+                                     "attr=%d addr=0x%08X (MEM1=%u bytes)\n",
+                                     attrIdx, val, GcShadow::kMem1Size);
+                        std::abort();
+                    }
                     std::uint64_t hostPtr = reinterpret_cast<std::uint64_t>(shadow.host(val));
                     // size=0 tells aurora to use array.sizeAuto (the max referenced
                     // index, maintained during draw_prim) — this avoids uploading the
                     // entire MEM1 tail as array data. The .dff doesn't carry per-array
-                    // allocation sizes; sizeAuto is the correct extent.
-                    emitArrayBase(out, attrIdx, hostPtr, 0, le);
+                    // allocation sizes. The remaining shadow span is an independent
+                    // safety capacity, not an upload request.
+                    emitArrayBase(out, attrIdx, hostPtr, 0, GcShadow::kMem1Size - val, le);
                 }
                 pos += 6;
-                continue;  // consumed: do NOT emit the raw CP_REG (aurora ignores it)
+                continue; // consumed: do NOT emit the raw CP_REG (aurora ignores it)
             }
             // All other CP regs pass through verbatim.
             out.insert(out.end(), src + pos, src + pos + 6);
@@ -648,7 +731,8 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
             continue;
         }
         if (op == GX_LOAD_XF_REG) {
-            if (pos + 5 > end) break;
+            if (pos + 5 > end)
+                break;
             std::uint32_t cmd = rd_be32(src + pos + 1);
             std::uint32_t count = (cmd >> 16) + 1;
             std::uint32_t adv = 5 + count * 4;
@@ -670,7 +754,7 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
             pos += 9;
             continue;
         }
-        if (op == 0x44 || op == 0x48) {  // metrics / invl_vc
+        if (op == 0x44 || op == 0x48) { // metrics / invl_vc
             out.push_back(op);
             pos += 1;
             continue;
@@ -686,41 +770,60 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 std::uint8_t reg = src[pos + 1];
                 // image0 regs: 0x88-0x8B (texmap 0-3), 0xA8-0xAB (texmap 4-7)
                 // image3 regs: 0x94-0x97 (texmap 0-3), 0xB4-0xB7 (texmap 4-7)
-                std::uint32_t val = (std::uint32_t(src[pos+2]) << 16) |
-                                    (std::uint32_t(src[pos+3]) << 8) | src[pos+4];
-                int tm = -1; bool isI0 = false;
+                std::uint32_t val = (std::uint32_t(src[pos + 2]) << 16) |
+                                    (std::uint32_t(src[pos + 3]) << 8) | src[pos + 4];
+                int tm = -1;
+                bool isI0 = false;
                 // TexMode1 regs: 0x84-0x87 (texmap 0-3), 0xA4-0xA7 (texmap 4-7)
                 // — min/max lod; needed so the synthesized LOAD_TEXOBJ carries
                 // the real mip chain depth (see emitTexObj).
-                if (reg >= 0x84 && reg <= 0x87) { texSlots[reg - 0x84].mode1 = val; }
-                else if (reg >= 0xA4 && reg <= 0xA7) { texSlots[reg - 0xA4 + 4].mode1 = val; }
-                if (reg >= 0x88 && reg <= 0x8B) { tm = reg - 0x88; isI0 = true; }
-                else if (reg >= 0xA8 && reg <= 0xAB) { tm = reg - 0xA8 + 4; isI0 = true; }
-                else if (reg >= 0x94 && reg <= 0x97) { tm = reg - 0x94; }
-                else if (reg >= 0xB4 && reg <= 0xB7) { tm = reg - 0xB4 + 4; }
+                if (reg >= 0x84 && reg <= 0x87) {
+                    texSlots[reg - 0x84].mode1 = val;
+                } else if (reg >= 0xA4 && reg <= 0xA7) {
+                    texSlots[reg - 0xA4 + 4].mode1 = val;
+                }
+                if (reg >= 0x88 && reg <= 0x8B) {
+                    tm = reg - 0x88;
+                    isI0 = true;
+                } else if (reg >= 0xA8 && reg <= 0xAB) {
+                    tm = reg - 0xA8 + 4;
+                    isI0 = true;
+                } else if (reg >= 0x94 && reg <= 0x97) {
+                    tm = reg - 0x94;
+                } else if (reg >= 0xB4 && reg <= 0xB7) {
+                    tm = reg - 0xB4 + 4;
+                }
                 if (tm >= 0) {
-                    if (isI0) { texSlots[tm].image0 = val; texSlots[tm].haveI0 = true; }
-                    else      { texSlots[tm].baseAddr = (val & 0x00FFFFFFu) << 5;
-                                texSlots[tm].haveI3 = true; }
+                    if (isI0) {
+                        texSlots[tm].image0 = val;
+                        texSlots[tm].haveI0 = true;
+                    } else {
+                        texSlots[tm].baseAddr = (val & 0x00FFFFFFu) << 5;
+                        texSlots[tm].haveI3 = true;
+                    }
                     // Emit ONLY at image3 — GX writes a bind's registers in
                     // ascending order (mode, image0..image3), so image3 marks
                     // the set complete. Emitting at image0 would pair the NEW
                     // dims with the PREVIOUS bind's base address and poison
                     // aurora's (texObjId, version)-keyed cache with wrong dims.
                     if (!isI0 && texSlots[tm].haveI0) {
-                        ++texDataVersion;  // fresh version per bind: never
-                                           // trust a possibly-poisoned entry
+                        ++texDataVersion; // fresh version per bind: never
+                                          // trust a possibly-poisoned entry
                         emitTexObj(tm);
                     }
                 }
                 // EFB copy regs + trigger.
-                if (reg == 0x49) bpCopySrcXY = val;
-                else if (reg == 0x4A) bpCopySrcWH = val;
-                else if (reg == 0x4B) bpCopyDest = val;
-                else if (reg == 0x4D) bpCopyStride = val;
-                else if (reg == 0x4E) bpCopyYScale = val & 0x1FF;
-                else if (reg == 0x52 &&
-                         std::getenv("SB_FIFO_NO_COPYSYN") == nullptr) {
+                if (reg == 0x49)
+                    bpCopySrcXY = val;
+                else if (reg == 0x4A)
+                    bpCopySrcWH = val;
+                else if (reg == 0x4B)
+                    bpCopyDest = val;
+                else if (reg == 0x4D)
+                    bpCopyStride = val;
+                else if (reg == 0x4E)
+                    bpCopyYScale = val & 0x1FF;
+                else if (reg == 0x52 && std::getenv("SB_FIFO_NO_COPYSYN") == nullptr) {
                     // SB_FIFO_NO_COPYSYN=1 (diagnostic): skip EFB-copy synthesis
                     // so copy-fed texture binds fall back to decoding the
                     // recorded RAM snapshot bytes (what Dolphin's memupdates
@@ -736,9 +839,18 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                     std::uint32_t srcY = (bpCopySrcXY >> 10) & 0x3FF;
                     std::uint32_t srcW = (bpCopySrcWH & 0x3FF) + 1;
                     std::uint32_t srcH = ((bpCopySrcWH >> 10) & 0x3FF) + 1;
-                    auto pushBE16 = [&](std::uint16_t v) { out.push_back(v>>8); out.push_back(v&0xFF); };
-                    auto pushBE32 = [&](std::uint32_t v) { for(int i=3;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
-                    auto pushBE64 = [&](std::uint64_t v) { for(int i=7;i>=0;--i) out.push_back((v>>(i*8))&0xFF); };
+                    auto pushBE16 = [&](std::uint16_t v) {
+                        out.push_back(v >> 8);
+                        out.push_back(v & 0xFF);
+                    };
+                    auto pushBE32 = [&](std::uint32_t v) {
+                        for (int i = 3; i >= 0; --i)
+                            out.push_back((v >> (i * 8)) & 0xFF);
+                    };
+                    auto pushBE64 = [&](std::uint64_t v) {
+                        for (int i = 7; i >= 0; --i)
+                            out.push_back((v >> (i * 8)) & 0xFF);
+                    };
                     if (((val >> 14) & 1u) != 0) {
                         // Display copy (copy_to_xfb): the EFB rect resolved to
                         // the XFB VI scans out. Dest width from the stride reg
@@ -751,20 +863,27 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                         // scan-out format isn't a GXTexFmt; aurora presents
                         // through a plain RGBA8 render texture).
                         if (bpCopyStride == 0 || bpCopyYScale == 0) {
-                            std::fprintf(stderr,
+                            std::fprintf(
+                                stderr,
                                 "[fifo_player] FATAL: display copy with degenerate stride=%u "
                                 "yscale=%u (trigger val=0x%06X) -- capture preload or reg "
-                                "tracking is wrong\n", bpCopyStride, bpCopyYScale, val);
+                                "tracking is wrong\n",
+                                bpCopyStride, bpCopyYScale, val);
                             std::abort();
                         }
                         std::uint32_t dstW = bpCopyStride * 32u / 2u;
                         std::uint32_t dstH = numXfbLines(srcH, bpCopyYScale);
                         out.push_back(GX_AURORA);
                         pushBE16(GX_AURORA_LOAD_COPY_SRC);
-                        pushBE32(srcX); pushBE32(srcY); pushBE32(srcW); pushBE32(srcH);
+                        pushBE32(srcX);
+                        pushBE32(srcY);
+                        pushBE32(srcW);
+                        pushBE32(srcH);
                         out.push_back(GX_AURORA);
                         pushBE16(GX_AURORA_LOAD_COPY_DST);
-                        pushBE32(dstW); pushBE32(dstH); pushBE32(6 /* GX_TF_RGBA8 */);
+                        pushBE32(dstW);
+                        pushBE32(dstH);
+                        pushBE32(6 /* GX_TF_RGBA8 */);
                     } else {
                         // Texture copy (copy_to_xfb==0).
                         std::uint32_t tpf = (val >> 3) & 0xF;
@@ -776,7 +895,8 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                             // FAIL FAST: Z/exotic copy formats are not handled by
                             // the synthesis; passing them through would misresolve
                             // and pollute downstream sampling. (Was a warn.)
-                            std::fprintf(stderr,
+                            std::fprintf(
+                                stderr,
                                 "[fifo_player] FATAL: EFB copy with Z/exotic real-format %u "
                                 "(tpf=%u, trigger val=0x%06X) -- implement this format's "
                                 "synthesis before replaying this capture\n",
@@ -785,10 +905,15 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                         }
                         out.push_back(GX_AURORA);
                         pushBE16(GX_AURORA_LOAD_COPY_SRC);
-                        pushBE32(srcX); pushBE32(srcY); pushBE32(srcW); pushBE32(srcH);
+                        pushBE32(srcX);
+                        pushBE32(srcY);
+                        pushBE32(srcW);
+                        pushBE32(srcH);
                         out.push_back(GX_AURORA);
                         pushBE16(GX_AURORA_LOAD_COPY_DST);
-                        pushBE32(dstW); pushBE32(dstH); pushBE32(fmt);
+                        pushBE32(dstW);
+                        pushBE32(dstH);
+                        pushBE32(fmt);
                         std::uint32_t destAddr = (bpCopyDest & 0x00FFFFFFu) << 5;
                         out.push_back(GX_AURORA);
                         pushBE16(GX_AURORA_LOAD_COPY_DEST);
@@ -803,7 +928,7 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         if ((op & GX_OPCODE_MASK) >= 0x80) {
             // Primitive: 3-byte header + numVerts * vertexSize(vat).
             int vat = op & GX_VAT_MASK;
-            std::uint16_t nverts = (std::uint16_t)((src[pos+1] << 8) | src[pos+2]);
+            std::uint16_t nverts = (std::uint16_t)((src[pos + 1] << 8) | src[pos + 2]);
             int vsz = cp.vertexSize(vat);
             std::uint32_t adv = 3 + (std::uint32_t)nverts * vsz;
             out.insert(out.end(), src + pos, src + pos + std::min(adv, end - pos));
@@ -814,8 +939,9 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         // opcodes in audited captures) -- every byte after this point would be
         // misinterpreted. Crash at the desync, never "emit 1 byte and hope".
         std::fprintf(stderr,
-            "[fifo_player] FATAL: unknown opcode 0x%02x @ %u (frame stream desync -- "
-            "vertex-size walker or opcode table is wrong for this capture)\n", op, pos);
+                     "[fifo_player] FATAL: unknown opcode 0x%02x @ %u (frame stream desync -- "
+                     "vertex-size walker or opcode table is wrong for this capture)\n",
+                     op, pos);
         std::abort();
     }
     // Flush any trailing memory updates (their data already landed in the shadow;
@@ -837,25 +963,25 @@ int replay(const FifoCapture& cap) {
     for (const auto& frame : cap.frames) {
 
         std::vector<std::uint8_t> cmds = translate_frame(cap, rendered, shadow);
-        std::printf("[fifo_player] frame %d: translated %u -> %u bytes\n",
-                    rendered, (unsigned)frame.fifoData.size(), (unsigned)cmds.size());
+        std::printf("[fifo_player] frame %d: translated %u -> %u bytes\n", rendered,
+                    (unsigned)frame.fifoData.size(), (unsigned)cmds.size());
         std::fflush(stdout);
         if (!aurora_begin_frame()) {
             // FAIL FAST: a replay frame that can't begin means device loss or
             // an external quit -- a truncated replay must not look like a
             // successful shorter one.
             std::fprintf(stderr,
-                "[fifo_player] FATAL: aurora_begin_frame failed at frame %d of %zu\n",
-                rendered, cap.frames.size());
+                         "[fifo_player] FATAL: aurora_begin_frame failed at frame %d of %zu\n",
+                         rendered, cap.frames.size());
             std::abort();
         }
-        std::printf("[fifo_player] frame %d: aurora_fifo_replay %u bytes ...\n",
-                    rendered, (unsigned)cmds.size());
+        std::printf("[fifo_player] frame %d: aurora_fifo_replay %u bytes ...\n", rendered,
+                    (unsigned)cmds.size());
         std::fflush(stdout);
         aurora_fifo_replay(cmds.data(), (std::uint32_t)cmds.size(), 1);
         std::printf("[fifo_player] frame %d: aurora_end_frame ...\n", rendered);
         std::fflush(stdout);
-        aurora_end_frame();  // drains, renders, and captures via SB_DUMP_FRAME
+        aurora_end_frame(); // drains, renders, and captures via SB_DUMP_FRAME
         std::printf("[fifo_player] frame %d: done\n", rendered);
         std::fflush(stdout);
         ++rendered;
@@ -866,7 +992,8 @@ int replay(const FifoCapture& cap) {
     // per present, and SB_DUMP_FRAME_EVERY=1 queues one per replayed frame,
     // so pump 2 + one per replayed frame.
     for (int i = 0; i < 2 + rendered; ++i) {
-        if (!aurora_begin_frame()) break;
+        if (!aurora_begin_frame())
+            break;
         aurora_end_frame();
     }
     return rendered;
@@ -882,4 +1009,3 @@ extern "C" int sb_fifo_replay_run(const char* dffPath) {
     sb::FifoCapture cap = sb::load_dff(dffPath);
     return sb::replay(cap);
 }
-

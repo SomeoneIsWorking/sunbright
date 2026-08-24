@@ -83,3 +83,11 @@ made reuse safe. The next turbo frame could map the same upload buffer while tha
 in flight. Admission now happens before any GPU operation and is owned by the CPU-tested
 `native_gpu_admission` module. This closes another concrete reset mechanism; it does not retroactively
 prove which mechanism caused a historical reset whose submit timeline was not captured.
+
+The same audit also found lifecycle and command-contract defects outside the Native rate limiter:
+recomp could replay a FIFO while no Aurora frame packet was active; failed WebGPU initialization
+left partial global state for the next backend attempt; shutdown could destroy buffers while
+spontaneous map/depth callbacks were still outstanding; and both producer and consumer accepted
+unproven array/display-list/texture spans. Those boundaries are now authoritative, bounded, and
+covered by failing controls. This broadens the set of removed reset/crash mechanisms; it still does
+not retroactively attribute the old kernel reset to one mechanism without a surviving GPU trace.

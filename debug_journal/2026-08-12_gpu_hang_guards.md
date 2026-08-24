@@ -44,7 +44,8 @@ run had to be killed from outside.
 
 **3. Per-frame work was unbounded.** The attribution sweep re-rendered the whole frame sixteen
 times per scored frame — sixteen 179-draw passes, each with a fenced full-target readback, at turbo
-speed with no pacing. That is the burst that tripped the ring timeout.
+speed with no pacing. That burst was a concrete timeout mechanism, but the surviving evidence does
+not prove it was the historical reset's sole trigger.
 
 *Fixed:* `kMaxPassesPerFrame = 4`, refused loudly above it. The sweep already spreads one variant
 per frame; the checksum block, which used to sweep all fifteen at once on two frames, now spreads

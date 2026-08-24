@@ -8,6 +8,7 @@
 // where presenting would be wrong; it stays a pure counter plus a scheduler drain
 // (overrides/native_vi.cpp). This split is the same one the decomp runtime uses.
 
+#include "native_frame.h"
 #include "../frame_interp/effects.h"
 #include "../frame_interp/frame_interp.h"
 #include "../frame_interp/graphics_db.h"
@@ -35,6 +36,8 @@ long tick_index();
 #include <aurora/event.h>
 #include <intrinsics.h>
 #include <lucent/log.h>
+
+#include <SDL3/SDL_timer.h>
 
 #include <chrono>
 #include <cmath>
@@ -197,7 +200,7 @@ u32 g_dumpGuestTick = 0;
 // the seam has already returned by the time the copy is emitted, so it is carried across.
 bool g_presentPending = false;
 CPUState* g_pendingCpu = nullptr;
-bool s_frameActive = true; // main() opened the first frame
+bool s_frameActive = false;
 void throttle_gpu_submission();
 
 bool present_after_copy() {
@@ -275,6 +278,10 @@ void pace_native_refresh() {
 }
 
 } // namespace
+
+void sbr_frame_set_initial_active(bool active) noexcept {
+    s_frameActive = active;
+}
 
 // Called by aurora BETWEEN the two presents of an interpolated tick.
 //
@@ -635,6 +642,7 @@ void present_and_reopen(bool& frameActive) {
     } else {
         aurora_discard_frame();
     }
+    frameActive = false;
 
     // 60fps interpolation: put the guest transforms back AFTER the frame's GX stream has been
     // consumed. The restore used to sit at the next tick's first CUE_MOVE dispatch, which is too
@@ -668,16 +676,23 @@ void present_and_reopen(bool& frameActive) {
         }
     }
 
-    const AuroraEvent* event = aurora_update();
-    bool exit_requested = g_quit_requested != 0 || sb::ui::runtime().handle_events(event);
-    if (!exit_requested) {
-        const bool wasActive = frameActive;
+    bool exit_requested = false;
+    while (!exit_requested && !frameActive) {
+        const AuroraEvent* event = aurora_update();
+        exit_requested = g_quit_requested != 0 || sb::ui::runtime().handle_events(event);
+        if (exit_requested)
+            break;
         frameActive = aurora_begin_frame();
-        if (frameActive != wasActive)
-            lucent::warn("frame", "aurora_begin_frame -> {}", frameActive);
-        if (sb::ui::runtime().visible() &&
-            !sb::ui::runtime().pause_while_open(frameActive, ui_quit_requested, pace_ui_present))
-            exit_requested = true;
+        if (!frameActive) {
+            // Minimize/surface refresh is a pause at the frame seam, not permission for the guest
+            // to advance without a matching Aurora frame packet. Pump events at a bounded cadence
+            // until a frame can be opened or the user exits.
+            SDL_Delay(16);
+        }
+    }
+    if (!exit_requested && sb::ui::runtime().visible() &&
+        !sb::ui::runtime().pause_while_open(frameActive, ui_quit_requested, pace_ui_present)) {
+        exit_requested = true;
     }
     if (exit_requested) {
         // NAME THE ACTUAL CAUSE. g_quit_requested is set by the SIGINT/SIGTERM handler AND by the
@@ -697,6 +712,7 @@ void present_and_reopen(bool& frameActive) {
         // vertices. A cadence-only instrument reports whatever last happened to line up.
         final_reports();
         sb::ui::runtime().shutdown();
+        sbr_render_shutdown();
         aurora_shutdown();
         std::_Exit(0);
     }
@@ -771,10 +787,9 @@ void video_wait_for_retrace(CPUState& cpu) {
         interp_reports();
     }
 
-    // Native SDL3-GPU renderer (SBR_RENDERER=native): draw the interpolated scene from the game's
-    // own J3D geometry and its own projection. Still rendered to an OFFSCREEN target and read back
-    // — aurora continues to drive the actual picture, so it stays a valid oracle while this is
-    // scored against it.
+    // Native SDL3-GPU renderer: draw the interpolated scene from the game's own J3D geometry and
+    // present it through the swapchain Native owns. Aurora consumes the FIFO and renders offscreen
+    // in the same frame solely as the parity oracle.
     if (sbr_render_enabled() && sbr_render_init(640, 448)) {
         // Once per run, and only when asked for: proves the GPU safety guards can fire.
         static bool guardTested = false;
@@ -792,7 +807,7 @@ void video_wait_for_retrace(CPUState& cpu) {
         // readback rather than piggybacking on that one.
         if (sbr_compare_enabled()) {
             static std::vector<uint8_t> ab(640 * 448 * 4);
-            if (sbr_render_readback(ab.data(), 640, 448))
+            if (sbr_render_capture() && sbr_render_readback(ab.data(), 640, 448))
                 sbr_compare_submit_native(ab.data(), 640, 448, 26, 102, 204);
             // OPERATION ATTRIBUTION: re-render this same frame once per ablated operation and
             // submit each as a labelled variant. All of them are scored against the SAME aurora
@@ -864,6 +879,8 @@ void video_wait_for_retrace(CPUState& cpu) {
         if (++n <= 4 || n % 120 == 0) {
             std::vector<uint8_t> px(640 * 448 * 4);
             long lit = 0;
+            if (!sbr_compare_enabled())
+                (void)sbr_render_capture();
             if (sbr_render_readback(px.data(), 640, 448))
                 for (size_t i = 0; i < px.size(); i += 4)
                     if (px[i] != 26 || px[i + 1] != 102 || px[i + 2] != 204)
@@ -1021,7 +1038,6 @@ void present_tail(CPUState& cpu) {
     // Close and send THIS tick's stream. Deliberately here and not in the seam: when the present is
     // deferred past the game's EFB->XFB copy, the copy command is emitted after the seam returns,
     // so a stream closed in the seam would not contain it.
-    gxfifo_build();
     // ONE SIMULATION TICK ENDS HERE. begin_sim_tick() clears the interpolation-callback registry,
     // so it must run once per tick and before anything registers for the NEXT in-between frame.
     sb::frame_interp::begin_sim_tick();
@@ -1031,12 +1047,19 @@ void present_tail(CPUState& cpu) {
         sbr_afterimage_tick();
     if (sbr_lerp_enabled())
         sbr_gxfifo_view_matrix();
+    // Close only after the view-matrix extension is emitted. Building first put that command at
+    // the front of the next frame, so camera state and geometry came from different ticks.
+    gxfifo_build();
     // The camera cut goes through the unified API rather than straight to aurora's snap: a cut is
     // "present this tick exactly", which is a statement about the whole frame and not only about
     // the renderer's matrix rewrite. Routing it here is what lets anything else that must be exact
     // on a cut — an effect, a UI element — see the same signal instead of re-deriving it.
     if (sbr_lerp_enabled() && sbr_camera_cut_take())
         sb::frame_interp::request_presentation_sync();
+    if (!s_frameActive) {
+        lucent::error("frame", "refusing FIFO replay without an active Aurora frame packet");
+        std::abort();
+    }
     gxfifo_send_last();
 
     // Label this present for the dump series. The sub-frame below issues a SECOND present per

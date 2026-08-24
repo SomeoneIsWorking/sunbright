@@ -138,7 +138,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
-                           runtime/render/native_render.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/scene.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
+                           runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_presenter.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
                            runtime/render/render_compare.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
@@ -174,17 +174,55 @@ target_link_libraries(gx_texgen_test PRIVATE lucent::lucent)
 target_include_directories(gx_texgen_test PRIVATE runtime runtime/render runtime/devices)
 add_test(NAME gx_texgen COMMAND gx_texgen_test)
 
+add_executable(scene_geometry_test tests/scene_geometry_test.cpp
+                                   runtime/render/scene_geometry.cpp)
+target_include_directories(scene_geometry_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME scene_geometry COMMAND scene_geometry_test)
+
 add_executable(native_gpu_admission_test tests/native_gpu_admission_test.cpp
                                          runtime/render/native_gpu_admission.cpp)
 target_link_libraries(native_gpu_admission_test PRIVATE SDL3::SDL3)
+target_link_libraries(native_gpu_admission_test PRIVATE lucent::lucent)
 target_include_directories(native_gpu_admission_test PRIVATE runtime/render)
 add_test(NAME native_gpu_admission COMMAND native_gpu_admission_test)
+
+add_executable(native_gpu_frame_state_test tests/native_gpu_frame_state_test.cpp)
+target_include_directories(native_gpu_frame_state_test PRIVATE runtime/render)
+add_test(NAME native_gpu_frame_state COMMAND native_gpu_frame_state_test)
+
+add_executable(native_gpu_guard_test tests/native_gpu_guard_test.cpp
+                                     runtime/render/native_gpu_guard.cpp)
+target_link_libraries(native_gpu_guard_test PRIVATE SDL3::SDL3 lucent::lucent)
+target_include_directories(native_gpu_guard_test PRIVATE runtime/render)
+add_test(NAME native_gpu_guard COMMAND native_gpu_guard_test)
+
+add_executable(native_efb_copy_plan_test tests/native_efb_copy_plan_test.cpp
+                                         runtime/render/native_efb_copy_plan.cpp)
+target_include_directories(native_efb_copy_plan_test PRIVATE runtime/render)
+add_test(NAME native_efb_copy_plan COMMAND native_efb_copy_plan_test)
+
+add_executable(native_presenter_test tests/native_presenter_test.cpp
+                                     runtime/render/native_presenter.cpp)
+target_link_libraries(native_presenter_test PRIVATE SDL3::SDL3)
+target_include_directories(native_presenter_test PRIVATE runtime/render)
+add_test(NAME native_presenter COMMAND native_presenter_test)
+
+add_executable(native_tev_uniform_test tests/native_tev_uniform_test.cpp
+                                       runtime/render/native_tev_uniform.cpp
+                                       runtime/render/tev_eval.cpp)
+target_link_libraries(native_tev_uniform_test PRIVATE lucent::lucent)
+target_include_directories(native_tev_uniform_test PRIVATE runtime/render)
+add_test(NAME native_tev_uniform COMMAND native_tev_uniform_test)
 
 add_executable(gx_fifo_input_test tests/gx_fifo_input_test.cpp
                                   runtime/devices/gx_fifo_input.cpp
                                   runtime/devices/gx_fifo_vertex_layout.cpp)
 target_include_directories(gx_fifo_input_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME gx_fifo_input COMMAND gx_fifo_input_test)
+
+add_executable(gx_fifo_contracts_test tests/gx_fifo_contracts_test.cpp)
+target_include_directories(gx_fifo_contracts_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME gx_fifo_contracts COMMAND gx_fifo_contracts_test)
 
 add_executable(guest_address_table_test tests/guest_address_table_test.cpp)
 target_include_directories(guest_address_table_test PRIVATE runtime)

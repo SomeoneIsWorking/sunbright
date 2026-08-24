@@ -108,7 +108,12 @@ echo "[run-safe] unfiltered boot total is ${AFTER} — time-filtered queries are
 
 
 BEFORE="$(gpu_events)"
-echo "[run-safe] present ceiling ${SB_MAX_PRESENT_HZ} Hz, headless, no native renderer, cap ${SBR_QUIT_AFTER} presents."
+if [ "$SB_HEADLESS" = "1" ]; then
+    DISPLAY_MODE="headless"
+else
+    DISPLAY_MODE="windowed"
+fi
+echo "[run-safe] present ceiling ${SB_MAX_PRESENT_HZ} Hz, ${DISPLAY_MODE}, no native renderer, cap ${SBR_QUIT_AFTER} presents."
 echo "[run-safe] amdgpu timeout/reset lines in boot log before this run: ${BEFORE}"
 
 SECS="${SB_RUN_SECS:-240}"

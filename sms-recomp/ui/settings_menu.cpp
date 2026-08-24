@@ -70,11 +70,10 @@ constexpr std::array<const char*, 5> kFrameRateIds{"fps-vanilla", "fps-interpola
 
 const char* renderer_detail(app::Renderer renderer) noexcept {
     if (renderer == app::Renderer::Aurora)
-        return "Aurora translates the game's GX command stream through WebGPU. "
-               "It is the displayed renderer and the native path's parity oracle.";
-    return "Native enables the SDL3 GPU parity preview. It currently renders "
-           "offscreen beside Aurora; selecting it approves that preview for this "
-           "session.";
+        return "Aurora translates and presents the game's GX command stream through WebGPU. "
+               "It is the default renderer and Native's parity oracle. Restart required.";
+    return "Native owns the SDL3 GPU device, window swapchain, and displayed picture. Aurora "
+           "renders offscreen only as its oracle. Restart with run-render.sh to apply.";
 }
 
 const char* haze_detail(bool enabled) noexcept {
@@ -159,8 +158,6 @@ bool SettingsMenu::layout_valid() const {
 
 void SettingsMenu::choose_renderer(app::Renderer renderer) {
     app::settings().set_renderer(renderer);
-    if (renderer == app::Renderer::Native)
-        app::settings().approve_native_renderer_session();
     persist();
     refresh();
 }

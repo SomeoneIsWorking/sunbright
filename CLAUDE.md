@@ -180,8 +180,10 @@ run the thing, and own what happens.
 - **Use `./run-render.sh`, never a hand-assembled command line.** That is the actual lesson of the
   incident: the script sets the six variables that must go together, and `run-safe.sh` refuses to
   enable this path at all.
-- This path renders OFFSCREEN and is only scored against aurora. It puts nothing on screen, so
-  skipping it costs a measurement and nothing else. No measurement is worth another reset.
+- Native owns the SDL3-GPU device, Aurora's SDL window, the swapchain, and visible presentation.
+  Aurora still consumes the FIFO offscreen as the parity oracle. A Native device failure therefore
+  ends that startup session loudly; it must never fall back to an Aurora picture and disguise the
+  ownership failure.
 
 Guards, all runtime-verified: latch-off on first fault (`gpu_disable`), wall-clock-bounded fence
 waits (`SBR_GPU_FENCE_TIMEOUT`, 5s), ≤4 offscreen passes per frame, a 10 Hz sustained rate limit

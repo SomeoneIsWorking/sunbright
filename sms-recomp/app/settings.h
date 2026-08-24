@@ -36,8 +36,6 @@ class SettingsStore {
     void set_renderer(Renderer renderer) noexcept;
     void set_frame_rate(FrameRateMode mode) noexcept;
     void set_haze_enabled(bool enabled) noexcept;
-    void approve_native_renderer_session() noexcept { m_nativeRendererApproved = true; }
-    bool native_renderer_approved() const noexcept { return m_nativeRendererApproved; }
 
     const std::filesystem::path& path() const noexcept { return m_path; }
 
@@ -50,7 +48,6 @@ class SettingsStore {
     std::optional<Renderer> m_rendererOverride;
     std::optional<FrameRateMode> m_frameRateOverride;
     std::optional<bool> m_hazeOverride;
-    bool m_nativeRendererApproved = false;
 };
 
 SettingsStore& settings();

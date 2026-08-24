@@ -68,7 +68,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ENV=()
+# The shipping/default target is recomp + Aurora. Renderer choice is not an optional preference:
+# Native owns a different GPU device and swapchain and remains behind run-render.sh until that path
+# has its own complete UI and shutdown lifecycle. A stale persisted setting must not silently move
+# ./run.sh onto the development renderer.
+ENV=("SBR_RENDERER=aurora")
 
 if [[ -n "$SIZE" ]]; then
     # Refuse a malformed size rather than silently ignoring it and opening a default window, which

@@ -84,13 +84,38 @@ SDL_GPUBlendFactor gx_blend_factor(uint8_t factor) {
 } // namespace
 
 bool sbr_native_gpu_pipeline_init(SDL_GPUDevice* device) {
+    sbr_native_gpu_pipeline_shutdown();
+    if (device == nullptr)
+        return false;
     g_device = device;
     g_vertexShader =
         make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     g_fragmentShader =
         make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 8, 1);
     g_pipelines.clear();
-    return g_vertexShader != nullptr && g_fragmentShader != nullptr;
+    if (g_vertexShader == nullptr || g_fragmentShader == nullptr) {
+        sbr_native_gpu_pipeline_shutdown();
+        return false;
+    }
+    return true;
+}
+
+void sbr_native_gpu_pipeline_shutdown() noexcept {
+    if (g_device != nullptr) {
+        for (auto& [key, pipeline] : g_pipelines) {
+            (void)key;
+            if (pipeline != nullptr)
+                SDL_ReleaseGPUGraphicsPipeline(g_device, pipeline);
+        }
+        if (g_fragmentShader != nullptr)
+            SDL_ReleaseGPUShader(g_device, g_fragmentShader);
+        if (g_vertexShader != nullptr)
+            SDL_ReleaseGPUShader(g_device, g_vertexShader);
+    }
+    g_pipelines.clear();
+    g_fragmentShader = nullptr;
+    g_vertexShader = nullptr;
+    g_device = nullptr;
 }
 
 uint32_t sbr_native_gpu_pipeline_key(SbrDepthState state) {

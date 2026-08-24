@@ -9,14 +9,18 @@
 // Its BACKEND (batches -> GPU) resurrects here; its FRONTEND (GX state -> transformed verts + TEV
 // shaders) has to be driven from dev_gxfifo's FIFO parse, which is the work ahead.
 //
-// The native path is selected with SBR_RENDERER=native. It is currently an offscreen parity
-// sidecar: Aurora still consumes the FIFO and owns presentation while this path renders a second
-// target for comparison.
+// The native path is selected with SBR_RENDERER=native. It owns the SDL3-GPU device, window
+// swapchain, and displayed picture. Aurora consumes the same FIFO offscreen as the oracle until
+// this renderer reaches parity.
 
 #include "native_render.h"
 
+#include "native_efb_copy_plan.h"
 #include "native_gpu_admission.h"
+#include "native_gpu_guard.h"
 #include "native_gpu_pipeline.h"
+#include "native_presenter.h"
+#include "native_tev_uniform.h"
 
 #include "app/settings.h"
 
@@ -48,121 +52,20 @@ SDL_GPUTransferBuffer* g_dl = nullptr; // download staging (w*h*4)
 int g_w = 0, g_h = 0;
 int g_lastBatches = 0;
 bool g_tried = false, g_ok = false;
-
-// ---- GPU SAFETY LATCH ----------------------------------------------------------------------
-// This renderer hung the graphics ring hard enough that amdgpu reset the device and took the
-// desktop session with it. A GPU hang is not like a host crash: the fault is asynchronous, it
-// belongs to the whole card rather than to this process, and the loser is whoever else is drawing
-// (the compositor). So the rules here are not "report the error and carry on", which is what this
-// file used to do — it logged fifteen consecutive VK_ERROR_DEVICE_LOST submits and kept queueing
-// more work into a device the kernel was already resetting.
-//
-// Once anything goes wrong on the device, this renderer STOPS. Permanently, for the process. The
-// picture is aurora's anyway (this path renders offscreen and is only scored against it), so
-// stopping costs a measurement and nothing else, while continuing costs the user their session.
-bool g_gpuDead = false;
-
-// Latch the renderer off and say why, exactly once. Every GPU entry point checks g_gpuDead first,
-// so this is the single place that decides the path is finished.
-void gpu_disable(const char* why) {
-    if (g_gpuDead)
-        return;
-    g_gpuDead = true;
-    g_ok = false;
-    // Leave a mark the NEXT run can see. An in-process latch protects this run only, and the runs
-    // that escalated a single device loss into a session-killing sequence were the ones started
-    // afterwards — each looking exactly like the first because nothing persisted the failure.
-    // tools/render/gpu_preflight.py reads this and refuses to start until the cooldown passes.
-    if (FILE* f = std::fopen("scratch/gpu_fault.stamp", "wb")) {
-        std::fprintf(f, "%s\n", why);
-        std::fclose(f);
-    }
-    lucent::error("nrender",
-                  "NATIVE RENDERER DISABLED FOR THE REST OF THIS RUN: {}. Everything this path "
-                  "would submit from here is dropped. It renders offscreen and is only scored "
-                  "against aurora, so the frame you see is unaffected — but continuing to submit "
-                  "into a device that has faulted is how a GPU hang becomes a reset of the whole "
-                  "card, which takes the desktop session down with it.",
-                  why);
-}
-
-// Wait for a fence with a WALL-CLOCK BOUND. SDL_WaitForGPUFences blocks forever, so a hung ring
-// meant this process sat in an uninterruptible wait while the kernel reset the card underneath it,
-// and the run had to be killed from outside. A bound turns a hang into a diagnosis: if the GPU has
-// not finished a single offscreen pass in this long, it is not going to.
-//
-// The budget is generous on purpose — a heavily loaded card can legitimately take a while — but it
-// is finite, which is the entire point.
-// How many offscreen passes this path has submitted for the CURRENT frame. Each one is a full
-// re-render of every batch plus a fenced readback, and the attribution sweep used to queue sixteen
-// of them on top of the baseline — enough sustained work that the driver's ring timeout fired,
-// amdgpu reset the card, and the desktop session went with it. The cap is not a tuning knob: it is
-// the ceiling above which this renderer is known to be able to hang the machine.
-int g_passesThisFrame = 0;
-
-// g_cpu holds the last frame that read back. When a frame's pass is skipped for the rate limit,
-// that content is a PREVIOUS frame — so readback must refuse rather than hand it over. A skipped
-// measurement is a gap in the data; a stale one scored as fresh is a wrong number.
-bool g_cpuStale = true;
-constexpr int kMaxPassesPerFrame = 4; // baseline + reproducibility re-render + one sweep variant,
-                                      // with one spare. The sweep is round-robin precisely so it
-                                      // fits under this.
-
-// SBR_GPU_FENCE_TIMEOUT overrides the budget in seconds; the guard self-test sets it to 0 so the
-// timeout path can be exercised without needing an actually-hung GPU to produce one.
-double fence_timeout_secs() {
-    static const double v = [] {
-        const char* e = std::getenv("SBR_GPU_FENCE_TIMEOUT");
-        return e != nullptr ? std::strtod(e, nullptr) : 5.0;
-    }();
-    return v;
-}
-
-bool wait_fence_bounded(SDL_GPUFence* fence, const char* what) {
-    const Uint64 start = SDL_GetTicksNS();
-    for (;;) {
-        if (SDL_QueryGPUFence(g_dev, fence))
-            return true;
-        const double waited = (double)(SDL_GetTicksNS() - start) / 1e9;
-        if (waited > fence_timeout_secs()) {
-            lucent::error("nrender",
-                          "{}: the GPU has not signalled its fence in {:.1f}s. Treating the device "
-                          "as hung rather than waiting on it — an unbounded wait here just holds "
-                          "this process open while the driver resets the card.",
-                          what, waited);
-            return false;
-        }
-        SDL_DelayNS(200000); // 0.2 ms — short enough not to add latency, long enough not to spin
-    }
-}
+SDL_Window* g_presentWindow = nullptr;
 
 std::vector<uint8_t> g_cpu; // last frame read back, top-left origin RGBA8
-
-// Geometry path (milestone 1). Vertices arrive in CLIP space already (the frontend does posMtx +
-// projection on the CPU), so one pipeline serves every draw for now — no per-material state yet.
-// Mirrors the TevBlock uniform in geom.frag.glsl. std140: every member is a 16-byte vector, so the
-// selectors are stored one per component rather than packed.
-struct TevUniform {
-    int32_t cSel[16][4];
-    int32_t cOp[16][4];
-    int32_t aSel[16][4];
-    int32_t aOp[16][4];
-    int32_t dest[16][4];
-    float konst[16][4];
-    float regInit[4][4];
-    int32_t control[4];
-    float alphaRef[4];
-};
 
 struct Batch {
     SbrDepthState st;
     uint32_t first, count;
+    uint64_t copyEpoch;
     // One entry per GX texture unit. 0 = untextured (a 1x1 white texel is bound so one shader
     // serves both cases and no branch is needed in the TEV loop).
     uint64_t texKey[8];
     uint32_t texAddr[8]; // guest address, so a bind can resolve to an EFB-copy surface
     uint32_t sampKey[8]; // wrap/filter modes: part of the material, not of the texture data
-    TevUniform tev;
+    SbrNativeTevUniform tev;
 };
 
 // ---- EFB copy -> texture ----
@@ -186,13 +89,25 @@ struct CopyPoint {
     int sx, sy, sw, sh, dw, dh;
 };
 std::vector<CopyPoint> g_copyPoints;
+NativeEfbCopySequence g_copySequence;
+
+enum class CopyResult : uint8_t { Encoded, NoOp, Failed };
 
 // Resolve the current render target region into the texture for `dest`, creating it on demand.
 // Runs BETWEEN render passes — a blit is not a render-pass operation, and the pass must have ended
 // for the target's contents to be defined.
-void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
-    if (g_gpuDead)
-        return;
+CopyResult perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
+    if (sbr_native_gpu_dead())
+        return CopyResult::Failed;
+    const NativeEfbCopySource source =
+        sbr_native_efb_copy_source(cp.sx, cp.sy, cp.sw, cp.sh, g_w, g_h);
+    if (!source.valid) {
+        lucent::debug("nrender",
+                      "EFB copy 0x{:08x} has no source intersection: [{},{} {}x{}] in {}x{} — "
+                      "no GPU operation encoded",
+                      cp.dest, cp.sx, cp.sy, cp.sw, cp.sh, g_w, g_h);
+        return CopyResult::NoOp;
+    }
     const int wantW = std::max(cp.dw, 1), wantH = std::max(cp.dh, 1);
     CopyTex& slot = g_copyTex[cp.dest];
     // A cached texture that no longer fits the requested destination is REPLACED, not reused. The
@@ -221,9 +136,9 @@ void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
         ci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
         dst = SDL_CreateGPUTexture(g_dev, &ci);
         if (dst == nullptr) {
-            lucent::error("nrender", "EFB copy: CreateGPUTexture {}x{} failed: {}", wantW, wantH,
-                          SDL_GetError());
-            return;
+            sbr_native_gpu_disable(
+                std::string("EFB copy texture allocation failed: ").append(SDL_GetError()).c_str());
+            return CopyResult::Failed;
         }
         slot.w = wantW;
         slot.h = wantH;
@@ -232,10 +147,10 @@ void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
     }
     SDL_GPUBlitInfo bi{};
     bi.source.texture = g_color;
-    bi.source.x = (Uint32)std::clamp(cp.sx, 0, g_w);
-    bi.source.y = (Uint32)std::clamp(cp.sy, 0, g_h);
-    bi.source.w = (Uint32)std::clamp(cp.sw, 1, g_w - (int)bi.source.x);
-    bi.source.h = (Uint32)std::clamp(cp.sh, 1, g_h - (int)bi.source.y);
+    bi.source.x = static_cast<Uint32>(source.x);
+    bi.source.y = static_cast<Uint32>(source.y);
+    bi.source.w = static_cast<Uint32>(source.width);
+    bi.source.h = static_cast<Uint32>(source.height);
     bi.destination.texture = dst;
     // Belt and braces: the rect is clamped to the allocation that is actually bound, so even if the
     // reallocation above were ever bypassed the blit cannot address memory outside the texture.
@@ -244,6 +159,7 @@ void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
     bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
     bi.filter = SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cmd, &bi);
+    return CopyResult::Encoded;
 }
 
 // Decoded textures, keyed by the guest description. Textures are immutable for a given
@@ -294,11 +210,12 @@ SDL_GPUSampler* sampler_for(uint32_t key) {
     sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
     SDL_GPUSampler* s = SDL_CreateGPUSampler(g_dev, &sci);
     if (s == nullptr) {
-        // Falling back silently would sample every material with the wrong wrap and read as a UV
-        // bug, so say which combination failed (CLAUDE.md: no silent success-shaped stubs).
-        lucent::error("nrender", "sampler create failed for wrapS={} wrapT={} mag={} min={}: {}",
-                      key & 3, (key >> 2) & 3, (key >> 4) & 1, (key >> 5) & 1, SDL_GetError());
-        s = g_sampler;
+        sbr_native_gpu_disable(std::string("sampler creation failed for key ")
+                                   .append(std::to_string(key))
+                                   .append(": ")
+                                   .append(SDL_GetError())
+                                   .c_str());
+        return nullptr;
     }
     g_samplers.emplace(key, s);
     return s;
@@ -311,12 +228,6 @@ SDL_GPUTexture* g_white = nullptr;
 // SBR_TEX=1 opts INTO texture decode/upload. Default OFF: this path drives GPU allocations from
 // guest data, and a defect here does not fail politely — it can take the device down for the whole
 // process. It stays opt-in until it has run clean for a while.
-// GX konst selector -> colour. Values 0..7 are the constant ramp 1.0, 7/8 ... 1/8; 12..31 select a
-// component or channel of one of the four konst registers. The ramp is exact, not approximated.
-void pack_konst(const SbrTevState& tev, unsigned stage, float out[4]) {
-    sbr_tev_konst(tev, stage, out);
-}
-
 bool textures_enabled() {
     static int v = -1;
     if (v < 0) {
@@ -344,26 +255,39 @@ SDL_GPUTransferBuffer* g_vup = nullptr;
 size_t g_vcap = 0;
 std::vector<SbrVertex> g_verts; // accumulated this frame
 
-void ensure_vbuf(size_t bytes) {
+bool ensure_vbuf(size_t bytes) {
     if (bytes <= g_vcap && g_vbuf != nullptr)
-        return;
-    if (g_vbuf)
-        SDL_ReleaseGPUBuffer(g_dev, g_vbuf);
-    if (g_vup)
-        SDL_ReleaseGPUTransferBuffer(g_dev, g_vup);
-    g_vcap = bytes + (bytes / 2) + 4096;
+        return true;
+    const size_t capacity = bytes + (bytes / 2) + 4096;
     SDL_GPUBufferCreateInfo bci{};
     bci.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-    bci.size = (Uint32)g_vcap;
-    g_vbuf = SDL_CreateGPUBuffer(g_dev, &bci);
+    bci.size = (Uint32)capacity;
+    SDL_GPUBuffer* newBuffer = SDL_CreateGPUBuffer(g_dev, &bci);
     SDL_GPUTransferBufferCreateInfo tbci{};
     tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    tbci.size = (Uint32)g_vcap;
-    g_vup = SDL_CreateGPUTransferBuffer(g_dev, &tbci);
+    tbci.size = (Uint32)capacity;
+    SDL_GPUTransferBuffer* newUpload = SDL_CreateGPUTransferBuffer(g_dev, &tbci);
+    if (newBuffer == nullptr || newUpload == nullptr) {
+        if (newBuffer != nullptr)
+            SDL_ReleaseGPUBuffer(g_dev, newBuffer);
+        if (newUpload != nullptr)
+            SDL_ReleaseGPUTransferBuffer(g_dev, newUpload);
+        sbr_native_gpu_disable(
+            std::string("vertex buffer allocation failed: ").append(SDL_GetError()).c_str());
+        return false;
+    }
+    if (g_vbuf != nullptr)
+        SDL_ReleaseGPUBuffer(g_dev, g_vbuf);
+    if (g_vup != nullptr)
+        SDL_ReleaseGPUTransferBuffer(g_dev, g_vup);
+    g_vbuf = newBuffer;
+    g_vup = newUpload;
+    g_vcap = capacity;
+    return true;
 }
 
 bool enabled() {
-    return sb::app::settings().effective().renderer == sb::app::Renderer::Native;
+    return g_presentWindow != nullptr;
 }
 
 SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
@@ -377,18 +301,41 @@ SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
     ci.num_levels = 1;
     ci.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* t = SDL_CreateGPUTexture(g_dev, &ci);
-    if (t == nullptr)
+    if (t == nullptr) {
+        sbr_native_gpu_disable(
+            std::string("texture allocation failed: ").append(SDL_GetError()).c_str());
         return nullptr;
+    }
 
     SDL_GPUTransferBufferCreateInfo tbci{};
     tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     tbci.size = w * h * 4;
     SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_dev, &tbci);
-    if (void* m = SDL_MapGPUTransferBuffer(g_dev, tb, false)) {
-        std::memcpy(m, rgba, (size_t)w * h * 4);
-        SDL_UnmapGPUTransferBuffer(g_dev, tb);
+    if (tb == nullptr) {
+        sbr_native_gpu_disable(
+            std::string("texture transfer allocation failed: ").append(SDL_GetError()).c_str());
+        SDL_ReleaseGPUTexture(g_dev, t);
+        return nullptr;
     }
+    void* mapped = SDL_MapGPUTransferBuffer(g_dev, tb, false);
+    if (mapped == nullptr) {
+        sbr_native_gpu_disable(
+            std::string("texture transfer map failed: ").append(SDL_GetError()).c_str());
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        SDL_ReleaseGPUTexture(g_dev, t);
+        return nullptr;
+    }
+    std::memcpy(mapped, rgba, (size_t)w * h * 4);
+    SDL_UnmapGPUTransferBuffer(g_dev, tb);
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
+    if (cmd == nullptr) {
+        sbr_native_gpu_disable(std::string("texture upload command acquisition failed: ")
+                                   .append(SDL_GetError())
+                                   .c_str());
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        SDL_ReleaseGPUTexture(g_dev, t);
+        return nullptr;
+    }
     SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureTransferInfo src{};
     src.transfer_buffer = tb;
@@ -401,28 +348,26 @@ SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
     dst.d = 1;
     SDL_UploadToGPUTexture(cp, &src, &dst, false);
     SDL_EndGPUCopyPass(cp);
-    // WAIT before freeing the staging buffer. Releasing it straight after submit frees memory the
-    // GPU is still reading, which showed up as a VK_ERROR_DEVICE_LOST — and, because two Vulkan
-    // devices share this process, the loss surfaced on AURORA's device, pointing at the wrong
-    // subsystem entirely. Uploads are one-time per texture, so the wait costs nothing steady-state.
+    // Wait so completion is bounded and a failed upload cannot masquerade as a usable cached
+    // texture. SDL permits releasing a transfer buffer immediately after recording/submission and
+    // retires it when safe; the fence is for failure detection, not resource-lifetime correctness.
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (fence == nullptr) {
         // A failed submit is a DEAD DEVICE, not a skipped frame. This used to log and continue,
         // which is how the run got fifteen consecutive VK_ERROR_DEVICE_LOST lines while the kernel
         // was resetting the card.
-        gpu_disable(std::string("texture upload submit failed: ").append(SDL_GetError()).c_str());
+        sbr_native_gpu_disable(
+            std::string("texture upload submit failed: ").append(SDL_GetError()).c_str());
         SDL_ReleaseGPUTransferBuffer(g_dev, tb);
         SDL_ReleaseGPUTexture(g_dev, t);
         return nullptr;
     }
-    const bool signalled = wait_fence_bounded(fence, "texture upload");
+    const bool signalled = sbr_native_gpu_wait_fence(fence, "texture upload");
     SDL_ReleaseGPUFence(g_dev, fence);
     if (!signalled) {
-        gpu_disable("the GPU stopped signalling fences during a texture upload");
-        // The staging buffer is deliberately LEAKED here. Freeing memory the GPU may still be
-        // reading is what caused a device loss in this function once already, and on a device we
-        // have just declared hung there is no fence that can tell us it is safe. A few hundred KB
-        // held to the end of a process that is shutting down anyway is the cheaper mistake.
+        sbr_native_gpu_disable("the GPU stopped signalling fences during a texture upload");
+        // The device has stopped making observable progress. Avoid issuing any more API work on
+        // it; process teardown owns reclamation after the latch trips.
         return nullptr;
     }
     SDL_ReleaseGPUTransferBuffer(g_dev, tb);
@@ -527,122 +472,58 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
     return gt;
 }
 
-void pack_tev(const SbrTevState& tev, TevUniform& u, const SbrTexture* tex) {
-    const int n = (int)std::min<uint32_t>(tev.numStages, 16);
-    u.control[0] = n;
-    for (int i = 0; i < 16; ++i) {
-        const SbrTevStage& st = tev.stage[i];
-        u.cSel[i][0] = st.cA;
-        u.cSel[i][1] = st.cB;
-        u.cSel[i][2] = st.cC;
-        u.cSel[i][3] = st.cD;
-        u.cOp[i][0] = st.cBias;
-        u.cOp[i][1] = st.cSub;
-        u.cOp[i][2] = st.cClamp;
-        u.cOp[i][3] = st.cScale;
-        u.aSel[i][0] = st.aA;
-        u.aSel[i][1] = st.aB;
-        u.aSel[i][2] = st.aC;
-        u.aSel[i][3] = st.aD;
-        u.aOp[i][0] = st.aBias;
-        u.aOp[i][1] = st.aSub;
-        u.aOp[i][2] = st.aClamp;
-        u.aOp[i][3] = st.aScale;
-        u.dest[i][0] = st.cDest;
-        u.dest[i][1] = st.aDest;
-        u.dest[i][2] = st.texEnable;
-        // Which unit this stage samples and which generated coordinate it samples with — two
-        // independent selectors from RAS1_TREF, not one.
-        // Stages name units 1-3, not just 0, and routing them there is the correct mechanism —
-        // but it is still OPT-IN because six textures decode BLACK (their guest memory is zero) and
-        // five of them sit on unit 1 across the terrain, so honouring the name blacks the scene.
-        // Pinning to unit 0 is NOT a fix; it is the better-looking of two known-wrong behaviours
-        // until those buffers are filled. See
-        // debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md. Which units are routed to
-        // the unit the stage NAMES, as a bitmask, so the question "which unit blacks the frame" is
-        // one run per bit instead of one run per theory. SBR_TEXMAP_UNITS is the mask (bit m =
-        // honour stages naming unit m); SBR_TEXMAP_NAMED=1 is the shorthand for all eight. A unit
-        // not in the mask falls back to 0, which is the pinned behaviour.
-        static const uint32_t unitMask = [] {
-            if (const char* m = std::getenv("SBR_TEXMAP_UNITS"))
-                return (uint32_t)std::strtoul(m, nullptr, 0);
-            const char* e = std::getenv("SBR_TEXMAP_NAMED");
-            return (e != nullptr && e[0] != '\0' && e[0] != '0') ? 0xFFu : 0x1u;
-        }();
-        // SBR_TEXMAP_FORCE=<unit> routes EVERY stage to one unit. That asks a different question
-        // from the mask: not "which stages are wrong" but "does this SLOT sample at all". A slot
-        // whose binding or SPIR-V decoration is wrong returns the same value everywhere, so forcing
-        // the whole frame through it separates a broken slot from a wrongly-routed stage.
-        static const int32_t forceUnit = [] {
-            const char* f = std::getenv("SBR_TEXMAP_FORCE");
-            return f != nullptr ? (int32_t)std::strtol(f, nullptr, 0) : -1;
-        }();
-        const int32_t map = (int32_t)(st.texmap & 7);
-        int32_t unit = forceUnit >= 0 ? (forceUnit & 7) : (((unitMask >> map) & 1) ? map : 0);
-        u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8 | (int32_t)(st.rasChannel & 7) << 16;
-        pack_konst(tev, (unsigned)i, u.konst[i]);
-    }
-    for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 4; ++c)
-            u.regInit[r][c] = tev.reg[r][c];
-    // SBR_ALPHATEST=0 forces both comparisons to ALWAYS — the measurement switch for the cutout
-    // path, so a landed feature has a before/after number rather than an argument.
-    static const bool alphaTest = [] {
-        const char* e = std::getenv("SBR_ALPHATEST");
-        return !(e != nullptr && e[0] == '0');
-    }();
-    u.control[1] = alphaTest ? tev.alphaOp0 : 7;
-    u.control[2] = alphaTest ? tev.alphaOp1 : 7;
-    u.control[3] = tev.alphaLogic;
-    u.alphaRef[0] = (float)tev.alphaRef0;
-    u.alphaRef[1] = (float)tev.alphaRef1;
-    // SBR_TEV_VIZ replaces the shaded output with an intermediate, per pixel, so a defect can be
-    // SEEN where it happens instead of inferred from a whole-frame score. 1 = the raw sample of the
-    // unit stage 0 names; 2 = that sample's alpha as grey; 3 = the coordinate stage 0 samples with.
-    // A frame that is black under viz 1 says the SAMPLE is black; one that is black only in the
-    // shaded output says the combiner is.
-    static const float viz = [] {
-        const char* e = std::getenv("SBR_TEV_VIZ");
-        return e != nullptr ? (float)std::strtol(e, nullptr, 10) : 0.0f;
-    }();
-    u.alphaRef[2] = viz;
-}
-
 } // namespace
 
 bool sbr_render_enabled() {
     return enabled();
 }
 
+void sbr_render_set_present_window(SDL_Window* window) {
+    if (g_tried && window != g_presentWindow) {
+        lucent::error("nrender", "native presentation window cannot change after initialization");
+        std::abort();
+    }
+    g_presentWindow = window;
+}
+
+void sbr_render_set_present_aspect(unsigned width, unsigned height) {
+    sbr_native_presenter_set_aspect(width, height);
+}
+
 bool sbr_render_init(int w, int h) {
-    if (g_gpuDead)
+    if (sbr_native_gpu_dead())
         return false; // never re-arm a path that has already faulted the device
     if (g_tried)
         return g_ok && g_w == w && g_h == h;
 
-    // The device gate belongs here as well as in run-render.sh: the in-game settings UI can select
-    // Native after startup, and a launcher environment is not the only route to this function.
-    //
-    // This path renders OFFSCREEN and is scored against aurora; it puts nothing on screen. Its
-    // entire value is a measurement, and no measurement is worth another GPU reset on someone
-    // else's machine.
-    const char* environmentApproval = std::getenv("SBR_RENDER_APPROVED");
-    const bool approvedByEnvironment =
-        environmentApproval != nullptr && environmentApproval[0] == '1';
-    if (!approvedByEnvironment && !sb::app::settings().native_renderer_approved()) {
-        // A denial is not an initialization attempt. Consuming g_tried here made later approval
-        // from the settings UI ineffective for the lifetime of the process.
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            lucent::warn("nrender",
-                         "the native renderer is gated off: select it through the settings UI or "
-                         "launch with SBR_RENDER_APPROVED=1. Aurora continues to render; only the "
-                         "offscreen native comparison is absent.");
-        }
+    if (g_presentWindow == nullptr) {
+        lucent::error("nrender", "native renderer selected without a presentation window");
+        return false;
+    }
+    if (const char* approved = std::getenv("SBR_RENDER_APPROVED");
+        approved == nullptr || std::strcmp(approved, "1") != 0) {
+        g_tried = true;
+        lucent::error("nrender", "native renderer selected without SBR_RENDER_APPROVED=1; use "
+                                 "run-render.sh so its complete GPU safety policy is applied");
+        return false;
+    }
+    if (w <= 0 || h <= 0 || static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4 > UINT32_MAX) {
+        g_tried = true;
+        lucent::error("nrender", "invalid native render target extent {}x{}", w, h);
         return false;
     }
     g_tried = true;
+
+    // Initialization mutates the process-wide renderer owner one resource at a time. Any failure
+    // must unwind the entire ownership graph, including the presenter's window claim and the GPU
+    // guard's device pointer, before returning to the host.
+    struct InitializationAttempt {
+        ~InitializationAttempt() {
+            if (!committed)
+                sbr_render_shutdown();
+        }
+        bool committed = false;
+    } attempt;
 
     // Aurora has already SDL_Init'd video (it owns the window); this reuses that. SDL3 GPU runs its
     // own Vulkan instance independent of aurora's Dawn, so the two devices coexist in the process.
@@ -653,6 +534,11 @@ bool sbr_render_init(int w, int h) {
     g_dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, /*debug=*/true, nullptr);
     if (g_dev == nullptr) {
         lucent::error("nrender", "SDL_CreateGPUDevice failed: {}", SDL_GetError());
+        return false;
+    }
+    sbr_native_gpu_guard_set_device(g_dev);
+    if (!sbr_native_presenter_initialize(g_dev, g_presentWindow)) {
+        lucent::error("nrender", "native swapchain claim failed: {}", SDL_GetError());
         return false;
     }
 
@@ -682,6 +568,11 @@ bool sbr_render_init(int w, int h) {
     tbci.size = (Uint32)(w * h * 4);
     g_dl = SDL_CreateGPUTransferBuffer(g_dev, &tbci);
 
+    if (g_dl == nullptr) {
+        lucent::error("nrender", "download transfer buffer create failed: {}", SDL_GetError());
+        return false;
+    }
+
     if (!sbr_native_gpu_pipeline_init(g_dev)) {
         lucent::error("nrender", "shader create failed: {}", SDL_GetError());
         return false;
@@ -710,7 +601,8 @@ bool sbr_render_init(int w, int h) {
     g_w = w;
     g_h = h;
     g_ok = true;
-    lucent::info("nrender", "SDL3 GPU device up ({}x{}), driver={}", w, h,
+    attempt.committed = true;
+    lucent::info("nrender", "SDL3 GPU device and owned swapchain up ({}x{}), driver={}", w, h,
                  SDL_GetGPUDeviceDriver(g_dev));
     return true;
 }
@@ -723,7 +615,8 @@ int g_lastVerts = 0;
 void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh) {
     if (!g_ok)
         return;
-    g_copyPoints.push_back({g_batches.size(), dest, sx, sy, sw, sh, dw, dh});
+    const size_t boundary = g_copySequence.note_copy(g_batches.size());
+    g_copyPoints.push_back({boundary, dest, sx, sy, sw, sh, dw, dh});
 }
 
 // Dump an EFB-copy surface to a raw RGBA file. What the game samples from a copy destination has
@@ -731,6 +624,8 @@ void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw,
 // as much as its colour here — the compositing quad's TEV resolves to alpha = TEXA, so an opaque
 // copy replaces the frame while a transparent one leaves it alone.
 void sbr_render_dump_copy(uint32_t addr, const char* path) {
+    if (!g_ok || sbr_native_gpu_dead() || path == nullptr || path[0] == '\0')
+        return;
     const auto it = g_copyTex.find(addr);
     if (it == g_copyTex.end() || it->second.tex == nullptr) {
         lucent::info("nrender", "dump-copy 0x{:08x}: no copy surface registered", addr);
@@ -750,9 +645,20 @@ void sbr_render_dump_copy(uint32_t addr, const char* path) {
     tci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
     tci.size = (Uint32)(w * h * 4);
     SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_dev, &tci);
-    if (tb == nullptr)
+    if (tb == nullptr) {
+        sbr_native_gpu_disable(std::string("EFB-copy dump transfer allocation failed: ")
+                                   .append(SDL_GetError())
+                                   .c_str());
         return;
+    }
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
+    if (cmd == nullptr) {
+        sbr_native_gpu_disable(std::string("EFB-copy dump command acquisition failed: ")
+                                   .append(SDL_GetError())
+                                   .c_str());
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        return;
+    }
     SDL_GPUCopyPass* cp2 = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion reg{};
     reg.texture = it->second.tex;
@@ -767,30 +673,35 @@ void sbr_render_dump_copy(uint32_t addr, const char* path) {
     SDL_EndGPUCopyPass(cp2);
     SDL_GPUFence* f = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (f == nullptr) {
-        gpu_disable("dump-copy submit failed");
+        sbr_native_gpu_disable("dump-copy submit failed");
         SDL_ReleaseGPUTransferBuffer(g_dev, tb);
         return;
     }
-    if (!wait_fence_bounded(f, "dump-copy")) {
+    if (!sbr_native_gpu_wait_fence(f, "dump-copy")) {
         SDL_ReleaseGPUFence(g_dev, f);
-        gpu_disable("the GPU stopped signalling fences during an EFB-copy dump");
+        sbr_native_gpu_disable("the GPU stopped signalling fences during an EFB-copy dump");
         SDL_ReleaseGPUTransferBuffer(g_dev, tb);
         return;
     }
     SDL_ReleaseGPUFence(g_dev, f);
-    if (void* m = SDL_MapGPUTransferBuffer(g_dev, tb, false)) {
-        const uint8_t* px = (const uint8_t*)m;
-        double sa = 0.0;
-        for (int i = 0; i < w * h; ++i)
-            sa += px[i * 4 + 3];
-        if (FILE* fp = std::fopen(path, "wb")) {
-            std::fwrite(px, 1, (size_t)w * h * 4, fp);
-            std::fclose(fp);
-        }
-        lucent::info("nrender", "dump-copy 0x{:08x}: {}x{} -> {} (mean alpha {:.1f})", addr, w, h,
-                     path, sa / (double)(w * h));
-        SDL_UnmapGPUTransferBuffer(g_dev, tb);
+    void* mapped = SDL_MapGPUTransferBuffer(g_dev, tb, false);
+    if (mapped == nullptr) {
+        sbr_native_gpu_disable(
+            std::string("EFB-copy dump map failed: ").append(SDL_GetError()).c_str());
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        return;
     }
+    const uint8_t* px = static_cast<const uint8_t*>(mapped);
+    double alphaSum = 0.0;
+    for (int i = 0; i < w * h; ++i)
+        alphaSum += px[i * 4 + 3];
+    if (FILE* output = std::fopen(path, "wb")) {
+        std::fwrite(px, 1, (size_t)w * h * 4, output);
+        std::fclose(output);
+    }
+    lucent::info("nrender", "dump-copy 0x{:08x}: {}x{} -> {} (mean alpha {:.1f})", addr, w, h, path,
+                 alphaSum / (double)(w * h));
+    SDL_UnmapGPUTransferBuffer(g_dev, tb);
     SDL_ReleaseGPUTransferBuffer(g_dev, tb);
 }
 
@@ -800,13 +711,14 @@ bool sbr_render_is_copy_surface(uint32_t addr) {
 }
 
 void sbr_render_begin(float r, float g, float b, float a) {
-    if (!g_ok || g_gpuDead)
+    if (!g_ok || sbr_native_gpu_dead())
         return;
-    g_passesThisFrame = 0;
+    sbr_native_gpu_begin_frame();
     g_clear = SDL_FColor{r, g, b, a};
     g_verts.clear();
     g_batches.clear();
     g_copyPoints.clear();
+    g_copySequence.reset();
 }
 
 // Which textures the stages that NAME unit 1 actually bind, weighted by vertices. Vertices, not
@@ -824,7 +736,7 @@ std::map<uint32_t, long> g_unit1Use;
 
 void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
                      const SbrTexture tex[8], const SbrTevState& tevState) {
-    if (!g_ok || g_gpuDead || verts == nullptr || count < 3)
+    if (!g_ok || sbr_native_gpu_dead() || verts == nullptr || count < 3)
         return;
     for (unsigned st = 0; st < tevState.numStages && st < 16; ++st)
         if (tevState.stage[st].texEnable && (tevState.stage[st].texmap & 7) == 1) {
@@ -836,7 +748,7 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
     // Merge into the previous run when the state is unchanged, so honouring per-material depth
     // costs draws only where the state actually changes.
     const uint32_t first = (uint32_t)(g_verts.size() - (size_t)count);
-    Batch b{depth, first, (uint32_t)count, {}, {}, {}};
+    Batch b{depth, first, (uint32_t)count, g_copySequence.epoch(), {}, {}, {}};
     // SBR_TEX_MIRROR=1 binds unit 0's texture to ALL FOUR slots. Combined with SBR_TEXMAP_FORCE it
     // is the only clean test of the slots themselves: with identical content in every slot, forcing
     // the frame through slot 0 and through slot 1 must produce IDENTICAL images. Any difference is
@@ -853,11 +765,11 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
         b.texAddr[m] = t.addr;
         b.sampKey[m] = sampler_key(t);
     }
-    pack_tev(tevState, b.tev, mirror ? nullptr : tex);
+    sbr_native_pack_tev_uniform(tevState, b.tev);
     // TEV state is part of a batch's identity: two draws sharing a texture and depth state but
     // different combiners are different materials and must not merge.
     const bool same =
-        !g_batches.empty() &&
+        !g_batches.empty() && g_copySequence.may_merge(g_batches.back().copyEpoch) &&
         sbr_native_gpu_pipeline_key(g_batches.back().st) == sbr_native_gpu_pipeline_key(depth) &&
         std::memcmp(g_batches.back().st.scissor, depth.scissor, sizeof depth.scissor) == 0 &&
         std::memcmp(g_batches.back().texKey, b.texKey, sizeof b.texKey) == 0 &&
@@ -873,27 +785,18 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
     }
 }
 
-void render_pass_into_cpu(uint32_t ablation);
+bool render_pass(uint32_t ablation, bool download, bool present);
+bool render_pass_into_cpu(uint32_t ablation);
 
 // Upload the frame's geometry, render it in one pass over a cleared target, then download for
 // readback / the A/B against aurora. The whole sequence — acquire, copy pass, render pass, copy
 // pass, fence, map — is the shape every later milestone keeps; only what goes INSIDE the render
 // pass grows (per-material pipelines, textures, TEV).
 void sbr_render_end() {
-    if (!g_ok || g_gpuDead)
+    if (!g_ok || sbr_native_gpu_dead())
         return;
     g_lastVerts = (int)g_verts.size();
     g_lastBatches = (int)g_batches.size();
-
-    // Reject the frame before touching the GPU. The old placement came after the vertex upload
-    // command was submitted, so every "skipped" frame still queued work and then returned without
-    // the fenced render/readback that made reuse of g_vup safe. Under turbo that repeatedly mapped
-    // the same transfer buffer while its previous upload could still be in flight. Rate limiting is
-    // a GPU-work admission decision, so it must precede texture creation, mapping and submission.
-    if (!sbr_native_gpu_admit_frame()) {
-        g_cpuStale = true;
-        return;
-    }
 
     // Decode and upload any NEW textures FIRST, before this frame's command buffer exists.
     // texture_for acquires and submits its own command buffer and waits on a fence; doing that
@@ -901,26 +804,41 @@ void sbr_render_end() {
     // VK_ERROR_DEVICE_LOST. Uploads are one-time per texture, so this is not a per-frame cost.
     if (textures_enabled())
         for (const Batch& b : g_batches)
-            for (int m = 0; m < 8; ++m)
+            for (int m = 0; m < 8 && !sbr_native_gpu_dead(); ++m)
                 texture_for(b.texKey[m], g_pendingTex[b.texKey[m]]);
+    if (sbr_native_gpu_dead())
+        return;
     // Samplers too: creating one is not a command-buffer operation, but keeping every resource
     // creation outside the frame's command buffer is the rule that stopped the device losses.
     for (const Batch& b : g_batches)
-        for (int m = 0; m < 8; ++m)
+        for (int m = 0; m < 8 && !sbr_native_gpu_dead(); ++m)
             sampler_for(b.sampKey[m]);
+    if (sbr_native_gpu_dead())
+        return;
 
     const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
+    if (vbytes > 0) {
+        if (!ensure_vbuf(vbytes))
+            return;
+        // This upload runs every presented frame. Cycling is what makes reusing the transfer and
+        // destination buffers legal while an earlier frame may still be in flight.
+        void* mapped = SDL_MapGPUTransferBuffer(g_dev, g_vup, true);
+        if (mapped == nullptr) {
+            sbr_native_gpu_disable(
+                std::string("vertex upload map failed: ").append(SDL_GetError()).c_str());
+            return;
+        }
+        std::memcpy(mapped, g_verts.data(), vbytes);
+        SDL_UnmapGPUTransferBuffer(g_dev, g_vup);
+    }
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (cmd == nullptr) {
-        lucent::error("nrender", "AcquireGPUCommandBuffer failed: {}", SDL_GetError());
+        sbr_native_gpu_disable(std::string("vertex upload command acquisition failed: ")
+                                   .append(SDL_GetError())
+                                   .c_str());
         return;
     }
     if (vbytes > 0) {
-        ensure_vbuf(vbytes);
-        if (void* m = SDL_MapGPUTransferBuffer(g_dev, g_vup, false)) {
-            std::memcpy(m, g_verts.data(), vbytes);
-            SDL_UnmapGPUTransferBuffer(g_dev, g_vup);
-        }
         SDL_GPUCopyPass* up = SDL_BeginGPUCopyPass(cmd);
         SDL_GPUTransferBufferLocation src{};
         src.transfer_buffer = g_vup;
@@ -929,33 +847,18 @@ void sbr_render_end() {
         dst.buffer = g_vbuf;
         dst.offset = 0;
         dst.size = (Uint32)vbytes;
-        SDL_UploadToGPUBuffer(up, &src, &dst, false);
+        SDL_UploadToGPUBuffer(up, &src, &dst, true);
         SDL_EndGPUCopyPass(up);
     }
 
-    SDL_SubmitGPUCommandBuffer(cmd);
-    render_pass_into_cpu(0);
-    g_cpuStale = false;
-    // IS THE PASS REPRODUCIBLE? Render the identical pass twice and compare. This separates "the
-    // ablation changed the picture" from "re-rendering changes the picture", which the sweep's
-    // control caught but could not localise.
-    {
-        static long tell = 0;
-        if (g_verts.size() > 1000 && tell < 3) {
-            ++tell;
-            auto sum = [](const std::vector<uint8_t>& p) {
-                unsigned long long h = 1469598103934665603ULL;
-                for (size_t i = 0; i < p.size(); i += 4)
-                    h = (h ^ (p[i] + 3u * p[i + 1] + 7u * p[i + 2])) * 1099511628211ULL;
-                return h;
-            };
-            const unsigned long long a = sum(g_cpu);
-            render_pass_into_cpu(0);
-            const unsigned long long b = sum(g_cpu);
-            lucent::info("nrender", "pass reproducibility: first {:016x} second {:016x} -> {}", a,
-                         b, a == b ? "IDENTICAL" : "DIFFERENT (re-render is not reproducible)");
-        }
+    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
+        // There is no fence after a failed upload submit. Latch the owned renderer off rather than
+        // issuing more work to a device whose submission path has failed.
+        sbr_native_gpu_disable(
+            std::string("vertex upload submit failed: ").append(SDL_GetError()).c_str());
+        return;
     }
+    (void)render_pass(0, false, true);
 }
 
 // ONE render of the already-uploaded geometry into g_color, downloaded into g_cpu. `ablation`
@@ -972,22 +875,13 @@ const int g_batchLimitEnv = [] {
     return e != nullptr ? (int)std::strtol(e, nullptr, 10) : -1;
 }();
 
-void render_pass_into_cpu(uint32_t ablation) {
-    if (g_gpuDead)
-        return;
-    if (++g_passesThisFrame > kMaxPassesPerFrame) {
-        // Loud, and once per frame rather than per attempt: a silently dropped pass would show up
-        // as a stale readback scored as if it were fresh.
-        if (g_passesThisFrame == kMaxPassesPerFrame + 1)
-            lucent::error("nrender",
-                          "REFUSING a {}th offscreen pass this frame (cap {}). Each pass is a full "
-                          "re-render plus a fenced readback; queueing them without bound is what "
-                          "hung the graphics ring and cost the user their desktop session. "
-                          "Whatever asked for this pass must spread its work across frames — the "
-                          "ablation sweep does exactly that.",
-                          g_passesThisFrame, kMaxPassesPerFrame);
-        return;
+bool render_pass(uint32_t ablation, bool download, bool present) {
+    if (sbr_native_gpu_dead()) {
+        sbr_native_gpu_fail_frame();
+        return false;
     }
+    if (download && !sbr_native_gpu_admit_pass())
+        return false;
     const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
     // Is the texture cache the SAME on a re-render as it was on the first render of this frame?
     // The control ablation renders untextured, and an empty/short g_texs is the only way this pass
@@ -1006,8 +900,9 @@ void render_pass_into_cpu(uint32_t ablation) {
     }
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (cmd == nullptr) {
-        lucent::error("nrender", "AcquireGPUCommandBuffer failed: {}", SDL_GetError());
-        return;
+        sbr_native_gpu_disable(
+            std::string("render command acquisition failed: ").append(SDL_GetError()).c_str());
+        return false;
     }
 
     SDL_GPUColorTargetInfo cti{};
@@ -1020,9 +915,12 @@ void render_pass_into_cpu(uint32_t ablation) {
     dsi.texture = g_depth;
     dsi.clear_depth = 1.0f;
     dsi.load_op = SDL_GPU_LOADOP_CLEAR;
-    dsi.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    // Any ordered EFB copy can split this pass and resume drawing with LOAD. The first segment must
+    // therefore preserve depth; DONT_CARE followed by LOAD made post-copy depth undefined.
+    dsi.store_op = SDL_GPU_STOREOP_STORE;
 
     SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi);
+    size_t nextCopy = 0;
     if (vbytes > 0) {
         SDL_GPUBufferBinding vbTmp{};
         (void)vbTmp;
@@ -1033,7 +931,6 @@ void render_pass_into_cpu(uint32_t ablation) {
         int drawn = 0;
         if (g_batchLimit < 0 && g_batchLimitEnv >= 0)
             g_batchLimit = g_batchLimitEnv;
-        size_t nextCopy = 0;
         for (size_t bi = 0; bi < g_batches.size(); ++bi) {
             const Batch& b = g_batches[bi];
             if (g_batchLimit >= 0 && drawn++ >= g_batchLimit)
@@ -1053,11 +950,13 @@ void render_pass_into_cpu(uint32_t ablation) {
                     }
                 }
                 SDL_EndGPURenderPass(rp);
-                perform_copy(cmd, g_copyPoints[nextCopy]);
+                if (perform_copy(cmd, g_copyPoints[nextCopy]) == CopyResult::Failed) {
+                    SDL_CancelGPUCommandBuffer(cmd);
+                    return false;
+                }
                 ++nextCopy;
                 cti.load_op = SDL_GPU_LOADOP_LOAD;
                 dsi.load_op = SDL_GPU_LOADOP_LOAD;
-                dsi.store_op = SDL_GPU_STOREOP_STORE;
                 rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi);
             }
             SDL_BindGPUGraphicsPipeline(rp, sbr_native_gpu_pipeline_for(b.st));
@@ -1114,7 +1013,7 @@ void render_pass_into_cpu(uint32_t ablation) {
                              slotMean[2], b.count);
             }
             SDL_BindGPUFragmentSamplers(rp, 0, tsb, 8);
-            TevUniform tu = b.tev;
+            SbrNativeTevUniform tu = b.tev;
             // alphaRef.w — the only free component. control.y is alphaOp0, and alphaRef.z is
             // already the SBR_TEV_VIZ selector: writing the ablation id there turned every variant
             // into a visualisation mode that returns early, which is exactly what the
@@ -1125,19 +1024,50 @@ void render_pass_into_cpu(uint32_t ablation) {
         }
     }
     SDL_EndGPURenderPass(rp);
+    // A copy emitted after the final draw has boundary == batch count, so no loop iteration can
+    // encounter it. Drain that ordered suffix before readback instead of silently dropping it.
+    while (nextCopy < g_copyPoints.size()) {
+        if (perform_copy(cmd, g_copyPoints[nextCopy]) == CopyResult::Failed) {
+            SDL_CancelGPUCommandBuffer(cmd);
+            return false;
+        }
+        ++nextCopy;
+    }
 
-    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
-    SDL_GPUTextureRegion reg{};
-    reg.texture = g_color;
-    reg.w = (Uint32)g_w;
-    reg.h = (Uint32)g_h;
-    reg.d = 1;
-    SDL_GPUTextureTransferInfo tti{};
-    tti.transfer_buffer = g_dl;
-    tti.pixels_per_row = (Uint32)g_w;
-    tti.rows_per_layer = (Uint32)g_h;
-    SDL_DownloadFromGPUTexture(cp, &reg, &tti);
-    SDL_EndGPUCopyPass(cp);
+    if (present) {
+        const NativePresentResult result = sbr_native_presenter_encode(
+            cmd, g_color, static_cast<unsigned>(g_w), static_cast<unsigned>(g_h));
+        if (result == NativePresentResult::Failed) {
+            SDL_CancelGPUCommandBuffer(cmd);
+            sbr_native_gpu_disable(
+                std::string("native swapchain acquire failed: ").append(SDL_GetError()).c_str());
+            return false;
+        }
+    }
+
+    if (download) {
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureRegion reg{};
+        reg.texture = g_color;
+        reg.w = (Uint32)g_w;
+        reg.h = (Uint32)g_h;
+        reg.d = 1;
+        SDL_GPUTextureTransferInfo tti{};
+        tti.transfer_buffer = g_dl;
+        tti.pixels_per_row = (Uint32)g_w;
+        tti.rows_per_layer = (Uint32)g_h;
+        SDL_DownloadFromGPUTexture(cp, &reg, &tti);
+        SDL_EndGPUCopyPass(cp);
+    }
+
+    if (!download) {
+        if (!SDL_SubmitGPUCommandBuffer(cmd)) {
+            sbr_native_gpu_disable(
+                std::string("native frame submit failed: ").append(SDL_GetError()).c_str());
+            return false;
+        }
+        return true;
+    }
 
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (fence == nullptr) {
@@ -1145,19 +1075,36 @@ void render_pass_into_cpu(uint32_t ablation) {
         // skipped, g_dl was mapped anyway, and its STALE contents were copied into g_cpu, so a
         // failing submit looked exactly like a frame that legitimately rendered nothing — forever.
         // It also kept submitting, which is the part that turned a fault into a card reset.
-        gpu_disable(std::string("render pass submit failed: ").append(SDL_GetError()).c_str());
-        return;
+        sbr_native_gpu_disable(
+            std::string("render pass submit failed: ").append(SDL_GetError()).c_str());
+        return false;
     }
-    const bool signalled = wait_fence_bounded(fence, "render pass");
+    const bool signalled = sbr_native_gpu_wait_fence(fence, "render pass");
     SDL_ReleaseGPUFence(g_dev, fence);
     if (!signalled) {
-        gpu_disable("the GPU stopped signalling fences during an offscreen render pass");
-        return; // g_cpu keeps its previous contents; nothing downstream may treat them as fresh
+        sbr_native_gpu_disable("the GPU stopped signalling fences during an offscreen render pass");
+        return false; // g_cpu keeps its previous contents; nothing may treat them as fresh
     }
-    if (void* mapped = SDL_MapGPUTransferBuffer(g_dev, g_dl, false)) {
-        std::memcpy(g_cpu.data(), mapped, g_cpu.size());
-        SDL_UnmapGPUTransferBuffer(g_dev, g_dl);
+    void* mapped = SDL_MapGPUTransferBuffer(g_dev, g_dl, false);
+    if (mapped == nullptr) {
+        sbr_native_gpu_disable(
+            std::string("frame download map failed: ").append(SDL_GetError()).c_str());
+        return false;
     }
+    std::memcpy(g_cpu.data(), mapped, g_cpu.size());
+    SDL_UnmapGPUTransferBuffer(g_dev, g_dl);
+    sbr_native_gpu_complete_frame();
+    return true;
+}
+
+bool render_pass_into_cpu(uint32_t ablation) {
+    return render_pass(ablation, true, false);
+}
+
+bool sbr_render_capture() {
+    if (!g_ok || sbr_native_gpu_dead() || !sbr_native_gpu_admit_frame())
+        return false;
+    return render_pass_into_cpu(0);
 }
 
 int sbr_render_last_vertex_count() {
@@ -1453,7 +1400,7 @@ void sbr_render_report_formats() {
 // Written top-left origin RGBA8, same convention as aurora's dump, so the comparison is apples to
 // apples rather than a flip away from nonsense.
 bool sbr_render_dump(const char* path) {
-    if (!g_ok || path == nullptr || path[0] == '\0')
+    if (!g_ok || !sbr_native_gpu_frame_readable() || path == nullptr || path[0] == '\0')
         return false;
     std::FILE* f = std::fopen(path, "wb");
     if (f == nullptr) {
@@ -1467,10 +1414,11 @@ bool sbr_render_dump(const char* path) {
 }
 
 bool sbr_render_readback(uint8_t* rgba, int w, int h) {
-    // g_gpuDead matters here even though this is a plain memcpy: g_cpu holds the LAST frame that
+    // The guard matters here even though this is a plain memcpy: g_cpu holds the LAST frame that
     // read back successfully, and once the device is gone that content never refreshes. Returning
     // it would feed the A/B comparator a frozen picture scored as a live one.
-    if (!g_ok || g_gpuDead || g_cpuStale || w != g_w || h != g_h || rgba == nullptr)
+    if (!g_ok || sbr_native_gpu_dead() || !sbr_native_gpu_frame_readable() || w != g_w ||
+        h != g_h || rgba == nullptr)
         return false;
     std::memcpy(rgba, g_cpu.data(), (size_t)w * h * 4);
     return true;
@@ -1523,26 +1471,28 @@ void sbr_render_guard_selftest() {
     const char* e = std::getenv("SBR_GPU_GUARD_SELFTEST");
     if (e == nullptr || e[0] != '1')
         return;
-    if (!g_ok || g_gpuDead) {
+    if (!g_ok || sbr_native_gpu_dead()) {
         lucent::error("nrender",
                       "GUARD SELF-TEST cannot run: the renderer is not initialised "
                       "(g_ok={}, gpuDead={}). This is not a pass.",
-                      g_ok, g_gpuDead);
+                      g_ok, sbr_native_gpu_dead());
         return;
     }
 
     // The pass cap, on a live device: ask for more offscreen passes in one frame than the cap
     // allows and require the surplus to be refused.
-    g_passesThisFrame = 0;
-    for (int i = 0; i < kMaxPassesPerFrame + 2; ++i)
-        render_pass_into_cpu(0);
-    const bool capHeld = g_passesThisFrame > kMaxPassesPerFrame;
+    sbr_native_gpu_reset_passes();
+    int accepted = 0;
+    for (int i = 0; i < sbr_native_gpu_max_passes() + 2; ++i)
+        accepted += render_pass_into_cpu(0) ? 1 : 0;
+    const bool capHeld = accepted == sbr_native_gpu_max_passes();
     lucent::info("nrender",
                  "GUARD SELF-TEST passcap: asked for {} passes with a cap of {}; "
-                 "counter reached {} -> {}",
-                 kMaxPassesPerFrame + 2, kMaxPassesPerFrame, g_passesThisFrame,
+                 "counter reached {}, accepted {} -> {}",
+                 sbr_native_gpu_max_passes() + 2, sbr_native_gpu_max_passes(),
+                 sbr_native_gpu_passes_attempted(), accepted,
                  capHeld ? "REFUSED the surplus, as required" : "NO REFUSAL — THE CAP IS INERT");
-    g_passesThisFrame = 0;
+    sbr_native_gpu_reset_passes();
 
     // The fence timeout and the latch are NOT exercised from here, and this says so rather than
     // implying coverage it does not have. They cannot be: the budget is read once and cached, and
@@ -1565,7 +1515,7 @@ void sbr_render_guard_selftest() {
 void sbr_render_gpu_report() {
     if (!enabled())
         return;
-    if (g_gpuDead)
+    if (sbr_native_gpu_dead())
         lucent::warn("nrender", "the native renderer was DISABLED mid-run after a GPU fault. Every "
                                 "native measurement after that point is missing, not zero.");
     else if (g_ok)
@@ -1574,8 +1524,8 @@ void sbr_render_gpu_report() {
                      "{:.1f}s, at most {} offscreen passes per frame, rate limit "
                      "{:.1f} Hz ({} frame(s) skipped to stay under it — those are gaps "
                      "in the measurement, not zeroes).",
-                     fence_timeout_secs(), kMaxPassesPerFrame, sbr_native_gpu_maximum_hz(),
-                     sbr_native_gpu_skipped_frames());
+                     sbr_native_gpu_fence_timeout_secs(), sbr_native_gpu_max_passes(),
+                     sbr_native_gpu_maximum_hz(), sbr_native_gpu_skipped_frames());
 }
 
 int sbr_render_ablation_count() {
@@ -1588,10 +1538,9 @@ const char* sbr_render_ablation_name(int id) {
 // Re-render the frame already uploaded by sbr_render_end with one operation ablated. The result
 // lands in g_cpu, so sbr_render_readback returns it exactly as for the baseline.
 bool sbr_render_ablation_render(int id) {
-    if (!g_ok || g_gpuDead || id <= 0 || id >= sbr_render_ablation_count())
+    if (!g_ok || sbr_native_gpu_dead() || id <= 0 || id >= sbr_render_ablation_count())
         return false;
-    render_pass_into_cpu((uint32_t)id);
-    return true;
+    return render_pass_into_cpu((uint32_t)id);
 }
 
 // WHICH BATCH PAINTS THIS PIXEL BLACK? Bisect the batch list, re-rendering the already-uploaded
@@ -1612,11 +1561,17 @@ void sbr_render_report_black_owner(int px, int py) {
     const int total = (int)g_batches.size();
 
     g_batchLimit = 0;
-    render_pass_into_cpu(0);
+    if (!render_pass_into_cpu(0)) {
+        g_batchLimit = -1;
+        return;
+    }
     const bool emptyBlack = isBlack();
     const uint8_t c0 = g_cpu[off], c1 = g_cpu[off + 1], c2 = g_cpu[off + 2];
     g_batchLimit = total;
-    render_pass_into_cpu(0);
+    if (!render_pass_into_cpu(0)) {
+        g_batchLimit = -1;
+        return;
+    }
     const bool fullBlack = isBlack();
     if (emptyBlack || !fullBlack) {
         lucent::info("nrender",
@@ -1631,7 +1586,10 @@ void sbr_render_report_black_owner(int px, int py) {
     while (hi - lo > 1) {
         const int mid = (lo + hi) / 2;
         g_batchLimit = mid;
-        render_pass_into_cpu(0);
+        if (!render_pass_into_cpu(0)) {
+            g_batchLimit = -1;
+            return;
+        }
         (isBlack() ? hi : lo) = mid;
     }
     g_batchLimit = -1;
@@ -1648,4 +1606,78 @@ void sbr_render_report_black_owner(int px, int py) {
               it != g_texs.end() ? it->second.mean : -1.0f);
     }
     l.flush(lucent::Level::Info, "nrender");
+}
+
+void sbr_render_shutdown() noexcept {
+    // Mark the renderer unavailable before releasing anything. This makes repeated calls no-ops
+    // from every public rendering entry point even if shutdown is reached after a partial init.
+    g_ok = false;
+
+    if (g_dev != nullptr) {
+        for (auto& [address, copy] : g_copyTex) {
+            (void)address;
+            if (copy.tex != nullptr)
+                SDL_ReleaseGPUTexture(g_dev, copy.tex);
+        }
+        for (auto& [key, texture] : g_texs) {
+            (void)key;
+            // Failed/empty decodes intentionally alias the singleton white texture.
+            if (texture.tex != nullptr && texture.tex != g_white)
+                SDL_ReleaseGPUTexture(g_dev, texture.tex);
+        }
+        for (auto& [key, sampler] : g_samplers) {
+            (void)key;
+            if (sampler != nullptr)
+                SDL_ReleaseGPUSampler(g_dev, sampler);
+        }
+        if (g_white != nullptr)
+            SDL_ReleaseGPUTexture(g_dev, g_white);
+        if (g_sampler != nullptr)
+            SDL_ReleaseGPUSampler(g_dev, g_sampler);
+        if (g_vup != nullptr)
+            SDL_ReleaseGPUTransferBuffer(g_dev, g_vup);
+        if (g_vbuf != nullptr)
+            SDL_ReleaseGPUBuffer(g_dev, g_vbuf);
+        if (g_dl != nullptr)
+            SDL_ReleaseGPUTransferBuffer(g_dev, g_dl);
+        if (g_depth != nullptr)
+            SDL_ReleaseGPUTexture(g_dev, g_depth);
+        if (g_color != nullptr)
+            SDL_ReleaseGPUTexture(g_dev, g_color);
+    }
+
+    sbr_native_gpu_pipeline_shutdown();
+    sbr_native_presenter_shutdown();
+    sbr_native_gpu_guard_set_device(nullptr);
+    if (g_dev != nullptr)
+        SDL_DestroyGPUDevice(g_dev);
+
+    g_dev = nullptr;
+    g_color = nullptr;
+    g_depth = nullptr;
+    g_dl = nullptr;
+    g_white = nullptr;
+    g_sampler = nullptr;
+    g_vbuf = nullptr;
+    g_vup = nullptr;
+    g_vcap = 0;
+    g_w = 0;
+    g_h = 0;
+    g_lastBatches = 0;
+    g_lastVerts = 0;
+    g_batchLimit = -1;
+    g_presentWindow = nullptr;
+
+    g_copyTex.clear();
+    g_copyPoints.clear();
+    g_copySequence.reset();
+    g_texs.clear();
+    g_pendingTex.clear();
+    g_samplers.clear();
+    g_texBytes = 0;
+    g_fmtHist.clear();
+    g_batches.clear();
+    g_verts.clear();
+    g_cpu.clear();
+    g_unit1Use.clear();
 }
