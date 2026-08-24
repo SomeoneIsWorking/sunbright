@@ -137,7 +137,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # member out of a static archive — nothing strongly references sb_log.o, so from a library it is
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
-add_executable(sms-recomp host/main.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
+add_executable(sms-recomp host/main.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/gpu_incident_recorder.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
                            runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_presenter.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
                            runtime/render/render_compare.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
@@ -154,11 +154,25 @@ target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
                       aurora::main aurora::vi aurora::os aurora::mtx aurora::pad
                       SDL3::SDL3)
 
+enable_testing()
+add_executable(gpu_incident_recorder_test tests/gpu_incident_recorder_test.cpp
+                                          runtime/gpu_incident_recorder.cpp)
+target_include_directories(gpu_incident_recorder_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include")
+add_test(NAME gpu_incident_recorder_test COMMAND gpu_incident_recorder_test)
+
+# Post-mortem reader for the submit flight recorder: after a device loss kills the process, this
+# is how scratch/gpu_crash/*.flight becomes an attribution instead of an unreadable artifact.
+add_executable(gpu_flight_dump tools/gpu_flight_dump_main.cpp runtime/gpu_incident_recorder.cpp)
+target_include_directories(gpu_flight_dump PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include")
+
 # ---------------------------------------------------------------------------------------------
 # Tests. The TEV pipeline is checked against values hand-derived from the SDK, with no GPU, no
 # frame and no game — which is the whole point: before this the pixel pipeline existed only as a
 # shader and could not be asked a question except by rendering a frame and inferring backwards.
-enable_testing()
 add_executable(tev_eval_test tests/tev_eval_test.cpp runtime/render/tev_eval.cpp)
 target_link_libraries(tev_eval_test PRIVATE lucent::lucent)
 target_include_directories(tev_eval_test PRIVATE runtime)

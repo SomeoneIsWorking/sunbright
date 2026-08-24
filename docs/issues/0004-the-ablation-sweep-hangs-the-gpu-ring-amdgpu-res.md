@@ -1,11 +1,11 @@
 ---
 id: 4
 title: the ablation sweep hangs the GPU ring: amdgpu resets the device mid-run, no attribution table ever printed
-status: resolved
+status: open
 symptom: VK_ERROR_DEVICE_LOST during ./run-render.sh SBR_ABLATE=1; radv GPUVM fault at 0x800000000000; 'XIO: fatal IO error 2 on X server :0' at startup afterwards
 tags: render,gpu,ablation,environment
 created: 2026-08-12
-updated: 2026-08-24
+updated: 2026-08-25
 ---
 
 ## What happens
@@ -91,3 +91,20 @@ spontaneous map/depth callbacks were still outstanding; and both producer and co
 unproven array/display-list/texture spans. Those boundaries are now authoritative, bounded, and
 covered by failing controls. This broadens the set of removed reset/crash mechanisms; it still does
 not retroactively attribute the old kernel reset to one mechanism without a surviving GPU trace.
+
+### Reopened (2026-08-25)
+Recurred on 2026-08-25 in the default recomp + Aurora path, not Native or the ablation sweep: after roughly 4,202 PAD polls, RADV cancelled the innocent context and Dawn aborted at vkQueueSubmit with VK_ERROR_DEVICE_LOST. This falsifies the short-run crash-solidity conclusion. The promised gpu_crash_watch.py/submit-tail instrument is absent from HEAD, so this recurrence has no new incident bundle.
+
+### Instrument landed (2026-08-25, same day)
+
+The submit-tail instrument now exists as an IN-PROCESS recorder, not a watcher:
+`sms-recomp/runtime/gpu_incident_recorder.{h,cpp}` + reader `build-sms-recomp/gpu_flight_dump`.
+Aurora emits BEGIN/RETURN/COMPLETE/DEVICE_LOST through `AuroraConfig::gpuProbeCallback`; the
+recorder persists each boundary into a crash-surviving pwrite ring under
+`scratch/gpu_crash/*.flight` before returning to Aurora, armed before Aurora init. After a loss,
+`gpu_flight_dump <file>` names the in-flight submit — API-PENDING means the process died inside
+the host queue call; GPU-PENDING means the queue accepted it and the device never finished (ring
+hang). Verified both classes: fork-abort survival, corrupt/torn/truncated/stale rejection in unit
+controls, and a clean 150-present run producing 450/450 records with all submits COMPLETED.
+Full write-up: debug_journal/2026-08-25_gpu_submit_flight_recorder.md. The NEXT recurrence of
+this issue must start with gpu_flight_dump on the newest flight file.

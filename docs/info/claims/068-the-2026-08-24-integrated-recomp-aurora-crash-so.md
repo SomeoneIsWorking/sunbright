@@ -1,10 +1,11 @@
 ---
 id: C068
 kind: claim
-status: holds
+status: falsified
 created: 2026-08-24
 tags:
 depends: sms-recomp/overrides/native_frame.cpp#present_tail, sms-recomp/runtime/devices/dev_gxfifo.cpp#gxfifo_build, extern/aurora
+falsified_on: 2026-08-25
 ---
 
 ## Claim
@@ -18,3 +19,9 @@ debug_journal/2026-08-24_recomp_aurora_crash_solidity.md records the exact run m
 ## What would falsify it
 
 A guarded recomp + Aurora run increases the validated amdgpu counter, fails shutdown, or changes the frame/FIFO/Aurora lifecycle code without rerunning these controls.
+
+## FALSIFIED 2026-08-25
+
+User-observed default recomp + Aurora run reached roughly 4,202 input polls, then RADV reported a lost innocent context and Dawn aborted on vkQueueSubmit with VK_ERROR_DEVICE_LOST. The short 120-400-present controls did not cover this lifetime; their zero-delta result cannot support crash-solidity.
+
+> Anything that cited this claim as proof must be re-checked. Grep the repo for it.

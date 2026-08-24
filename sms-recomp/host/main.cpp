@@ -11,6 +11,7 @@
 #include "boot_env.h"
 #include "cpu_state.h"
 #include "dol_loader.h"
+#include "gpu_incident_recorder.h"
 #include "guest_sched.h"
 #include "intrinsics.h"
 #include "native_render.h"
@@ -58,6 +59,11 @@ class AuroraRuntimeOwner {
   private:
     bool m_uiInitialized = false;
     bool m_frameActive = false;
+};
+
+class GpuIncidentOwner {
+  public:
+    ~GpuIncidentOwner() { sbr_gpu_incident_shutdown(); }
 };
 
 bool open_initial_frame() {
@@ -169,10 +175,23 @@ int main(int argc, char** argv) {
         windowHeight != nullptr ? (u32)std::strtoul(windowHeight, nullptr, 0) : 960u;
     acfg.mem1Size = 0;
     acfg.mem2Size = 0;
+    // This is an in-process, fixed-size pwrite ring, not a watcher process. It is configured before
+    // Aurora so even initialization uploads are covered, and its owner outlives AuroraRuntimeOwner
+    // so spontaneous queue/device callbacks cannot write through a closed recorder during teardown.
+    if (!sbr_gpu_incident_configure("scratch/gpu_crash", "recomp-aurora")) {
+        lucent::error("gpu-incident", "cannot arm GPU submit recorder: {}",
+                      sbr_gpu_incident_last_error());
+        return 1;
+    }
+    GpuIncidentOwner gpuIncidentOwner;
+    acfg.gpuProbeCallback = sbr_gpu_probe_callback;
+    acfg.gpuProbeUser = nullptr;
     AuroraInfo ainfo = aurora_initialize(argc, argv, &acfg);
     AuroraRuntimeOwner runtimeOwner;
     lucent::info("rt", "aurora up: backend={} fb={}x{}", (int)ainfo.backend,
                  ainfo.windowSize.fb_width, ainfo.windowSize.fb_height);
+    lucent::info("gpu-incident", "submit flight recorder armed: {}",
+                 sb::gpu_incident::path().string());
     if (const char* value = std::getenv("SBR_UI_SELFTEST"); value != nullptr && value[0] != '0') {
         char* end = nullptr;
         const unsigned long parsed = std::strtoul(value, &end, 10);
