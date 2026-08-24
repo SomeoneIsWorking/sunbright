@@ -17,7 +17,7 @@ Run configuration used throughout (all numbers below are `mean over 8 scored fra
 
 ```
 SB_HEADLESS=1 SB_W=640 SB_H=448 SB_TURBO=1 SBR_FASTBOOT=1 SBR_STAGE=1
-SBR_J3D_CAPTURE=1 SBR_SDLGPU=1 SBR_TEX=1 SBR_AB=1 SBR_AB_EVERY=60
+SBR_J3D_CAPTURE=1 SBR_RENDERER=native SBR_TEX=1 SBR_AB=1 SBR_AB_EVERY=60
 ```
 
 `SBR_J3D_CAPTURE=1` is REQUIRED — the capture seam is opt-in, and without it the scene has zero
@@ -1018,7 +1018,7 @@ producing those buffers).
 
 ### Operator note
 
-Reproducing a plaza render needs ALL of `SBR_FASTBOOT=1 SBR_STAGE=1 SBR_SCENARIO=0 SBR_SDLGPU=1
+Reproducing a plaza render needs ALL of `SBR_FASTBOOT=1 SBR_STAGE=1 SBR_SCENARIO=0 SBR_RENDERER=native
 SBR_J3D_CAPTURE=1 SBR_TEX=1`. Plain `SBR_FASTBOOT` derives episode 5 from the save and renders
 nothing; without `SBR_J3D_CAPTURE` the scene has 0 drawables; without `SBR_TEX` the frame is
 untextured. Each of those cost a run this session.

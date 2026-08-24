@@ -11,7 +11,10 @@ namespace {
 int g_failures = 0;
 
 void check(bool ok, const char* what) {
-    if (!ok) { std::printf("FAIL: %s\n", what); ++g_failures; }
+    if (!ok) {
+        std::printf("FAIL: %s\n", what);
+        ++g_failures;
+    }
 }
 
 void check_near(float got, float want, const char* what, float eps = 1.0f / 512.0f) {
@@ -27,13 +30,17 @@ SbrXfState base() {
     for (int ch = 0; ch < 2; ++ch) {
         xf.chan[ch].matSrcVertex = 0;
         xf.chan[ch].ambSrcVertex = 0;
-        for (int i = 0; i < 4; ++i) xf.material[ch][i] = 1.0f;
-        for (int i = 0; i < 3; ++i) xf.ambient[ch][i] = 0.0f;
+        for (int i = 0; i < 4; ++i)
+            xf.material[ch][i] = 1.0f;
+        for (int i = 0; i < 3; ++i)
+            xf.ambient[ch][i] = 0.0f;
     }
     for (auto& L : xf.light) {
         L.color[0] = L.color[1] = L.color[2] = L.color[3] = 1.0f;
-        L.cosAtt[0] = 1.0f; L.cosAtt[1] = L.cosAtt[2] = 0.0f;
-        L.distAtt[0] = 1.0f; L.distAtt[1] = L.distAtt[2] = 0.0f;
+        L.cosAtt[0] = 1.0f;
+        L.cosAtt[1] = L.cosAtt[2] = 0.0f;
+        L.distAtt[0] = 1.0f;
+        L.distAtt[1] = L.distAtt[2] = 0.0f;
     }
     return xf;
 }
@@ -47,13 +54,17 @@ SbrXfState base() {
 // over-brightened Mario — so it gets asserted directly rather than assumed.
 void test_attn_fn_decode() {
     SbrChanCtrl c{};
-    c.attnEnable = 0; c.attnSpot = 0;
+    c.attnEnable = 0;
+    c.attnSpot = 0;
     check(sbr_attn_fn(c) == SbrAttnFn::None, "attnFn: bit9=0 -> GX_AF_NONE");
-    c.attnEnable = 0; c.attnSpot = 1;
+    c.attnEnable = 0;
+    c.attnSpot = 1;
     check(sbr_attn_fn(c) == SbrAttnFn::None, "attnFn: bit9=0 -> NONE regardless of bit10");
-    c.attnEnable = 1; c.attnSpot = 0;
+    c.attnEnable = 1;
+    c.attnSpot = 0;
     check(sbr_attn_fn(c) == SbrAttnFn::Spec, "attnFn: bit9=1 bit10=0 -> GX_AF_SPEC");
-    c.attnEnable = 1; c.attnSpot = 1;
+    c.attnEnable = 1;
+    c.attnSpot = 1;
     check(sbr_attn_fn(c) == SbrAttnFn::Spot, "attnFn: bit9=1 bit10=1 -> GX_AF_SPOT");
 }
 
@@ -61,8 +72,10 @@ void test_attn_fn_decode() {
 void test_lighting_disabled() {
     SbrXfState xf = base();
     xf.chan[0].enableLight = 0;
-    xf.material[0][0] = 0.25f; xf.material[0][1] = 0.5f; xf.material[0][2] = 0.75f;
-    xf.ambient[0][0] = 1.0f;   // must be ignored
+    xf.material[0][0] = 0.25f;
+    xf.material[0][1] = 0.5f;
+    xf.material[0][2] = 0.75f;
+    xf.ambient[0][0] = 1.0f; // must be ignored
     const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
     float out[4];
     sbr_light_channel(xf, 0, vpos, nrm, vc, out, nullptr);
@@ -75,7 +88,7 @@ void test_lighting_disabled() {
 void test_colour_sources() {
     SbrXfState xf = base();
     xf.chan[0].enableLight = 1;
-    xf.chan[0].lightMask = 0;              // ambient only
+    xf.chan[0].lightMask = 0; // ambient only
     xf.chan[0].matSrcVertex = 1;
     xf.chan[0].ambSrcVertex = 0;
     xf.ambient[0][0] = xf.ambient[0][1] = xf.ambient[0][2] = 0.5f;
@@ -98,10 +111,12 @@ void test_diffuse_functions() {
     SbrXfState xf = base();
     xf.chan[0].enableLight = 1;
     xf.chan[0].lightMask = 1;
-    xf.chan[0].attnEnable = 0;             // GX_AF_NONE: attenuation is 1
+    xf.chan[0].attnEnable = 0; // GX_AF_NONE: attenuation is 1
     xf.ambient[0][0] = xf.ambient[0][1] = xf.ambient[0][2] = 0.5f;
     // Surface normal points +Z; the light sits at -Z, so the dot product is -1.
-    xf.light[0].pos[0] = 0; xf.light[0].pos[1] = 0; xf.light[0].pos[2] = -100.0f;
+    xf.light[0].pos[0] = 0;
+    xf.light[0].pos[1] = 0;
+    xf.light[0].pos[2] = -100.0f;
     const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
     float out[4];
 
@@ -134,10 +149,13 @@ void test_distance_attenuation() {
     SbrXfState xf = base();
     xf.chan[0].enableLight = 1;
     xf.chan[0].lightMask = 1;
-    xf.chan[0].attnEnable = 1; xf.chan[0].attnSpot = 1;   // SPOT
+    xf.chan[0].attnEnable = 1;
+    xf.chan[0].attnSpot = 1; // SPOT
     xf.chan[0].diffuseFn = SBR_DF_NONE;
-    xf.light[0].distAtt[0] = 0.0f; xf.light[0].distAtt[1] = 0.0f; xf.light[0].distAtt[2] = 1.0f;
-    xf.light[0].pos[2] = 2.0f;                            // distance 2 -> 1/4
+    xf.light[0].distAtt[0] = 0.0f;
+    xf.light[0].distAtt[1] = 0.0f;
+    xf.light[0].distAtt[2] = 1.0f;
+    xf.light[0].pos[2] = 2.0f; // distance 2 -> 1/4
     const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
     float out[4];
     sbr_light_channel(xf, 0, vpos, nrm, vc, out, nullptr);
@@ -167,20 +185,57 @@ void test_spot_angle() {
     SbrXfState xf = base();
     xf.chan[0].enableLight = 1;
     xf.chan[0].lightMask = 1;
-    xf.chan[0].attnEnable = 1; xf.chan[0].attnSpot = 1;
+    xf.chan[0].attnEnable = 1;
+    xf.chan[0].attnSpot = 1;
     xf.chan[0].diffuseFn = SBR_DF_NONE;
     // cosAtt = (0,1,0): the contribution is exactly cos(angle).
-    xf.light[0].cosAtt[0] = 0.0f; xf.light[0].cosAtt[1] = 1.0f; xf.light[0].cosAtt[2] = 0.0f;
-    xf.light[0].pos[2] = 1.0f;                       // light on +Z, so ldir is +Z
-    xf.light[0].dir[0] = 0; xf.light[0].dir[1] = 0; xf.light[0].dir[2] = 1.0f;
+    xf.light[0].cosAtt[0] = 0.0f;
+    xf.light[0].cosAtt[1] = 1.0f;
+    xf.light[0].cosAtt[2] = 0.0f;
+    xf.light[0].pos[2] = 1.0f; // light on +Z, so ldir is +Z
+    xf.light[0].dir[0] = 0;
+    xf.light[0].dir[1] = 0;
+    xf.light[0].dir[2] = 1.0f;
     const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
     float out[4];
     sbr_light_channel(xf, 0, vpos, nrm, vc, out, nullptr);
     check_near(out[0], 1.0f, "SPOT angle: ldir aligned with the light direction gives cos = 1");
 
-    xf.light[0].dir[2] = -1.0f;                      // pointing the other way
+    xf.light[0].dir[2] = -1.0f; // pointing the other way
     sbr_light_channel(xf, 0, vpos, nrm, vc, out, nullptr);
     check_near(out[0], 0.0f, "SPOT angle: an opposed direction clamps to 0, never negative");
+}
+
+// Specular attenuation is driven by the surface normal and light direction, not by the light's
+// distance from the vertex. This is the distinction the former private scene evaluator erased by
+// treating every enabled attenuation function as SPOT. The SPOT leg is the negative control: with
+// the same coefficients it must fall off as 1/d^2, proving the test can distinguish the two modes.
+void test_specular_is_not_spotlight() {
+    SbrXfState xf = base();
+    xf.chan[0].enableLight = 1;
+    xf.chan[0].lightMask = 1;
+    xf.chan[0].attnEnable = 1;
+    xf.chan[0].attnSpot = 0; // SPEC
+    xf.chan[0].diffuseFn = SBR_DF_NONE;
+    xf.light[0].pos[2] = 100.0f;
+    xf.light[0].dir[2] = 1.0f;
+    xf.light[0].cosAtt[0] = 0.0f;
+    xf.light[0].cosAtt[1] = 0.0f;
+    xf.light[0].cosAtt[2] = 1.0f;
+    xf.light[0].distAtt[0] = 0.0f;
+    xf.light[0].distAtt[1] = 0.0f;
+    xf.light[0].distAtt[2] = 1.0f;
+    const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
+    float out[4];
+    SbrLightTrace trace{};
+    sbr_light_channel(xf, 0, vpos, nrm, vc, out, &trace);
+    check_near(out[0], 1.0f, "SPEC: aligned normal/light direction is full strength at d=100");
+    check_near(trace.light[0].cosine, 1.0f,
+               "SPEC trace reports the normal-driven attenuation coordinate");
+
+    xf.chan[0].attnSpot = 1; // negative control: same data, SPOT
+    sbr_light_channel(xf, 0, vpos, nrm, vc, out, nullptr);
+    check_near(out[0], 0.0001f, "SPOT control: the same coefficients fall off as 1/d^2");
 }
 
 // Two lights accumulate additively, which is how a pair of back-facing SIGN lights drives a
@@ -189,12 +244,15 @@ void test_two_lights_accumulate() {
     SbrXfState xf = base();
     xf.chan[0].enableLight = 1;
     xf.chan[0].lightMask = 0x3;
-    xf.chan[0].attnEnable = 0;                       // AF_NONE, attenuation 1
+    xf.chan[0].attnEnable = 0; // AF_NONE, attenuation 1
     xf.chan[0].diffuseFn = SBR_DF_SIGN;
     xf.ambient[0][0] = xf.ambient[0][1] = xf.ambient[0][2] = 0.5f;
-    xf.light[0].pos[2] = -100.0f;                    // both behind the surface
+    xf.light[0].pos[2] = -100.0f; // both behind the surface
     xf.light[1].pos[2] = -100.0f;
-    for (int i = 0; i < 3; ++i) { xf.light[0].color[i] = 0.25f; xf.light[1].color[i] = 0.25f; }
+    for (int i = 0; i < 3; ++i) {
+        xf.light[0].color[i] = 0.25f;
+        xf.light[1].color[i] = 0.25f;
+    }
     const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
     float out[4];
     SbrLightTrace tr{};
@@ -211,15 +269,47 @@ void test_channel_1_is_independent() {
     SbrXfState xf = base();
     xf.chan[0].enableLight = 1;
     xf.chan[0].lightMask = 0;
-    xf.ambient[0][0] = 0.0f;                         // channel 0: black
+    xf.ambient[0][0] = 0.0f; // channel 0: black
     xf.chan[1].enableLight = 0;
-    xf.material[1][0] = 0.75f;                       // channel 1: material colour, lighting off
+    xf.material[1][0] = 0.75f; // channel 1: material colour, lighting off
     const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
     float c0[4], c1[4];
     sbr_light_channel(xf, 0, vpos, nrm, vc, c0, nullptr);
     sbr_light_channel(xf, 1, vpos, nrm, vc, c1, nullptr);
     check_near(c0[0], 0.0f, "channel 0 is black here");
     check_near(c1[0], 0.75f, "channel 1 is NOT channel 0 — it has its own registers and control");
+}
+
+void test_accumulator_clamps_before_material() {
+    SbrXfState xf = base();
+    xf.chan[0].enableLight = 1;
+    xf.chan[0].lightMask = 1;
+    xf.chan[0].diffuseFn = SBR_DF_NONE;
+    xf.chan[0].attnEnable = 0;
+    xf.material[0][0] = 0.5f;
+    xf.ambient[0][0] = 1.0f;
+    xf.light[0].color[0] = 1.0f;
+    const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
+    float out[4];
+    sbr_light_channel(xf, 0, vpos, nrm, vc, out, nullptr);
+    check_near(out[0], 0.5f,
+               "lighting clamps 1 ambient + 1 light before multiplying by 0.5 material");
+}
+
+void test_alpha_has_its_own_control() {
+    SbrXfState xf = base();
+    xf.chan[0].enableLight = 0;
+    xf.chan[2].matSrcVertex = 0;
+    xf.chan[2].enableLight = 1;
+    xf.chan[2].lightMask = 0;
+    xf.chan[2].ambSrcVertex = 0;
+    xf.material[0][3] = 0.5f;
+    xf.ambient[0][3] = 0.25f;
+    const float vpos[3] = {0, 0, 0}, nrm[3] = {0, 0, 1}, vc[4] = {1, 1, 1, 1};
+    float out[4];
+    sbr_light_channel(xf, 0, vpos, nrm, vc, out, nullptr);
+    check_near(out[3], 0.125f,
+               "alpha0 control lights material alpha independently of colour0 control");
 }
 
 } // namespace
@@ -231,9 +321,15 @@ int main() {
     test_diffuse_functions();
     test_distance_attenuation();
     test_spot_angle();
+    test_specular_is_not_spotlight();
     test_two_lights_accumulate();
     test_channel_1_is_independent();
-    if (g_failures == 0) { std::printf("gx_light: all checks passed\n"); return 0; }
+    test_accumulator_clamps_before_material();
+    test_alpha_has_its_own_control();
+    if (g_failures == 0) {
+        std::printf("gx_light: all checks passed\n");
+        return 0;
+    }
     std::printf("gx_light: %d check(s) FAILED\n", g_failures);
     return 1;
 }

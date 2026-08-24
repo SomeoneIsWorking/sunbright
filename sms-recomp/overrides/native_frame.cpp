@@ -771,9 +771,9 @@ void video_wait_for_retrace(CPUState& cpu) {
         interp_reports();
     }
 
-    // Native SDL3-GPU renderer (SBR_SDLGPU=1): draw the interpolated scene from the game's own
-    // J3D geometry and its own projection. Still rendered to an OFFSCREEN target and read back —
-    // aurora continues to drive the actual picture, so it stays a valid oracle while this is
+    // Native SDL3-GPU renderer (SBR_RENDERER=native): draw the interpolated scene from the game's
+    // own J3D geometry and its own projection. Still rendered to an OFFSCREEN target and read back
+    // — aurora continues to drive the actual picture, so it stays a valid oracle while this is
     // scored against it.
     if (sbr_render_enabled() && sbr_render_init(640, 448)) {
         // Once per run, and only when asked for: proves the GPU safety guards can fire.
@@ -888,7 +888,6 @@ void video_wait_for_retrace(CPUState& cpu) {
             sbr_scene_report_alpha();
             sbr_render_report_formats();
             sbr_render_recheck_black();
-            sbr_state_oracle_report();
             sbr_gxfifo_report_bp_writes();
             sbr_compare_report_attribution();
             // Attribute the black background to an actual batch, at a pixel well inside it.
@@ -900,6 +899,14 @@ void video_wait_for_retrace(CPUState& cpu) {
                 sbr_render_dump(d);
         }
     }
+
+    // The state oracle compares this FIFO parser with Aurora's parser; it is useful whether or not
+    // the offscreen native GPU path initializes successfully. Keeping its reporting inside the
+    // native-render block made SBR_RENDERER=aurora silently disable the instrument that validates
+    // the shared command-stream state.
+    static long oracleReportFrame = 0;
+    if (sbr_state_diff_enabled() && (++oracleReportFrame <= 4 || (oracleReportFrame % 120) == 0))
+        sbr_state_oracle_report();
 
     // How far the GUEST's own retrace counter advances per rendered frame. Game code paces
     // animation off this, and the decomp runtime advances it once per NTSC field (twice per

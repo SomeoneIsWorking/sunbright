@@ -5,7 +5,7 @@ status: resolved
 symptom: VK_ERROR_DEVICE_LOST during ./run-render.sh SBR_ABLATE=1; radv GPUVM fault at 0x800000000000; 'XIO: fatal IO error 2 on X server :0' at startup afterwards
 tags: render,gpu,ablation,environment
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-24
 ---
 
 ## What happens
@@ -70,7 +70,16 @@ deltas, just spread over more frames), and re-run. That is the change that makes
 the GPU's timeout budget rather than working around the symptom.
 
 ### Note (2026-08-12)
-Recurred WITHOUT the sweep: a plain SBR_SDLGPU render run at 600 presents now dies the same way (radv GPUVM fault at 0x800000040000 -> VK_ERROR_DEVICE_LOST), and after each loss the next process cannot reach the display (XIO fatal IO error 2 at SDL init). The same run survived 4000 presents earlier the same day, so the card/driver state has degraded over the session rather than a code change causing it. The round-robin sweep fix (one variant per scored frame) is still correct and did let a 1500-present sweep complete; it is not sufficient on a degraded device. Recommend a session/reboot before further render runs.
+Recurred WITHOUT the sweep: a plain native-renderer run at 600 presents died the same way (radv GPUVM fault at 0x800000040000 -> VK_ERROR_DEVICE_LOST), and after each loss the next process could not reach the display (XIO fatal IO error 2 at SDL init). The same run survived 4000 presents earlier the same day, so the card/driver state had degraded over the session rather than a code change causing it. The round-robin sweep fix (one variant per scored frame) was still correct and did let a 1500-present sweep complete; it was not sufficient on a degraded device.
 
 ### Resolution (2026-08-12)
 Root-caused and guarded, 2026-08-12. Three unbounded things in the render path: a failed submit did not stop the frame loop (fifteen consecutive DEVICE_LOST submits into a resetting card), every fence wait was unbounded, and per-frame passes were unbounded (16 full re-renders per scored frame). All three are now bounded — gpu_disable() latches the renderer off permanently on first failure, wait_fence_bounded() caps the wait at 5s (SBR_GPU_FENCE_TIMEOUT), kMaxPassesPerFrame=4 refuses the surplus loudly. A fourth defect found by reading: g_copyTex cached EFB-copy targets by guest address at first-seen size, so a later larger copy blitted out of bounds — a GPU write fault, matching the reported signature; it now records the size and reallocates. Guards proven firing (scratch/logs/guard.log, guard2.log). Crucially the failure now OUTLIVES the process: gpu_disable writes scratch/gpu_fault.stamp and tools/render/gpu_preflight.py, wired into run-render.sh, refuses to start during a 15-minute cooldown after a stamp or an amdgpu reset in the kernel log. Full write-up: debug_journal/2026-08-12_gpu_hang_guards.md.
+
+### Follow-up (2026-08-24)
+
+The sustained-rate guard itself admitted too late: `sbr_render_end` submitted the reusable vertex
+upload and then returned when rate-limited, omitting the fenced render/readback that ordinarily
+made reuse safe. The next turbo frame could map the same upload buffer while that command remained
+in flight. Admission now happens before any GPU operation and is owned by the CPU-tested
+`native_gpu_admission` module. This closes another concrete reset mechanism; it does not retroactively
+prove which mechanism caused a historical reset whose submit timeline was not captured.

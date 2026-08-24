@@ -42,6 +42,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -60,10 +61,10 @@ TROUBLE = re.compile(
 
 
 def kernel_log(minutes: int) -> tuple[list[str], str | None]:
-    """Return (matching lines, error). An error means we could NOT look — not that it was clean."""
+    """Return recent matching lines without relying on journalctl's broken time windows."""
     try:
         out = subprocess.run(
-            ["journalctl", "-k", "--since", f"-{minutes}min", "--no-pager"],
+            ["journalctl", "_TRANSPORT=kernel", "--no-pager"],
             capture_output=True, text=True, timeout=30,
         )
     except FileNotFoundError:
@@ -72,7 +73,39 @@ def kernel_log(minutes: int) -> tuple[list[str], str | None]:
         return [], "journalctl timed out"
     if out.returncode != 0:
         return [], f"journalctl exited {out.returncode}: {out.stderr.strip()[:200]}"
-    return [ln for ln in out.stdout.splitlines() if TROUBLE.search(ln)], None
+
+    # The wall clock stepped backward during this boot. journalctl --since has been measured to
+    # return either the entire history or no lines against that inverted range, so fetch once and
+    # filter in-process. An unparseable timestamp is kept: uncertainty must refuse the run, not be
+    # converted into a clean result.
+    cutoff = time.time() - minutes * 60
+    months = {
+        name: index + 1
+        for index, name in enumerate(
+            ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        )
+    }
+    hits: list[str] = []
+    for line in out.stdout.splitlines():
+        if not TROUBLE.search(line):
+            continue
+        parts = line.split()
+        try:
+            hour, minute, second = map(int, parts[2].split(":"))
+            stamp = datetime(
+                datetime.now().year,
+                months[parts[0]],
+                int(parts[1]),
+                hour,
+                minute,
+                second,
+            )
+            if stamp.timestamp() < cutoff:
+                continue
+        except (IndexError, KeyError, ValueError):
+            pass
+        hits.append(line)
+    return hits, None
 
 
 def check_stamp() -> str | None:

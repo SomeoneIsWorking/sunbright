@@ -5,8 +5,8 @@
 // now it lived inline in scene.cpp with no test and no way to evaluate it outside a frame. A day
 // was spent blaming textures for a black surface whose colour CHANNEL was zero.
 //
-// GX computes, per channel:
-//     colour = material * (ambient + SUM over enabled lights of attn * diffuse * lightColour)
+// GX computes, independently for colour and alpha in each channel:
+//     output = material * clamp(ambient + SUM enabled lights * attenuation * diffuse, 0, 1)
 // with the material and ambient coming either from a register or from the vertex, per the channel
 // control. Lights are in VIEW space, which is where the draw matrix has already put the vertex.
 
@@ -27,12 +27,13 @@ SbrAttnFn sbr_attn_fn(const SbrChanCtrl& c);
 enum : uint8_t { SBR_DF_NONE = 0, SBR_DF_SIGN = 1, SBR_DF_CLAMP = 2 };
 
 struct SbrLightTrace {
-    bool  enabled = false;
+    bool enabled = false;
     float ambient[3]{};
     float material[4]{};
     struct Per {
-        int   index = -1;
+        int index = -1;
         float dist = 0, cosine = 0, atten = 0, diffuse = 0;
+        float direction[3]{};
         float acc[3]{};
     } light[8];
     unsigned lights = 0;

@@ -34,18 +34,21 @@ haze=true
 Unknown keys, malformed lines, and unsupported versions fail at the config boundary. UI changes
 save immediately. `SBR_FRAME_RATE` accepts `vanilla`, `interpolated-60`,
 `interpolated-unlocked`, `native-60`, or `native-unlocked`; the legacy `SBR_60FPS` and
-`SBR_LERP60` inputs select `interpolated-60`. `SBR_SDLGPU=1` selects the native preview for a
-diagnostic session. Environment input overrides the persisted effective value without rewriting
-the file. The persisted `*-unlocked` spellings remain for config compatibility; the UI calls those
-modes **Match Refresh**. `SBR_DISPLAY_HZ=<rate>` supplies the active display rate to windowless
-tests; normal runs query the current SDL display mode and refresh it when the window moves.
+`SBR_LERP60` inputs select `interpolated-60`. `SBR_RENDERER` is the strict renderer override and
+accepts exactly `aurora` or `native`; any other value aborts at the settings boundary instead of
+silently running the wrong path. The override is two-way: `SBR_RENDERER=aurora` forces Aurora even
+when the persisted setting selects Native, while `SBR_RENDERER=native` forces the native preview.
+Environment input overrides the persisted effective value without rewriting the file. The
+persisted `*-unlocked` spellings remain for config compatibility; the UI calls those modes **Match
+Refresh**. `SBR_DISPLAY_HZ=<rate>` supplies the active display rate to windowless tests; normal
+runs query the current SDL display mode and refresh it when the window moves.
 
 ## Renderer choices
 
 | Choice | Current behavior |
 |---|---|
 | Aurora | Displayed GX command-stream renderer and parity authority. |
-| Native | Enables the existing SDL3-GPU offscreen parity preview for the session. Selecting it is the per-session human approval required by the renderer's GPU-safety gate. Aurora remains the displayed picture. |
+| Native | Enables the existing SDL3-GPU offscreen parity preview for the session. Selecting it is the per-session explicit approval required by the renderer's GPU-safety gate. Aurora still owns presentation and remains the displayed picture. |
 
 The native choice is intentionally not presented as complete renderer switching. CPU readback or
 compositing the preview through Aurora would conceal the missing native presentation boundary and
@@ -55,6 +58,11 @@ Renderer and supported framerate selections apply at the next simulation-tick bo
 immediately. Interpolation is not a one-way startup latch: switching it off disables Aurora replay;
 switching it on forces the first new tick exact before later ticks interpolate, so stale pairing
 history is never displayed. Environment overrides remain authoritative for diagnostic sessions.
+Declining native initialization before this session's approval does not consume the one-shot device
+initialization attempt; selecting Native in the UI can still approve and initialize it later.
+The per-draw FIFO/Aurora state-oracle report is scheduled outside native renderer initialization,
+so `SBR_STATE_DIFF` remains an Aurora-parser control even when the native device is disabled or
+fails to initialize.
 
 ## Framerate choices
 

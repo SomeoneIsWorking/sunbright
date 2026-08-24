@@ -144,7 +144,6 @@ logger — that is debt to convert, not a feature.
 | `SB_PLACE_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRPlacement.cpp` | gated print |
 | `SB_PLIST_ORDER_DBG` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp` |  |
 | `SB_PLIST_ORDER_DBG_AFTER` | 1 | `decomp/sms/src/JSystem/JDrama/JDRViewObj.cpp` |  |
-| `SB_PL_DBG` | 1 | `decomp/sms/src/System/PerformList.cpp` |  |
 | `SB_POS_PROBE` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_PRESENT_COPY` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp` |  |
 | `SB_PRESENT_PASS1` | 2 | `extern/aurora/lib/dolphin/gx/GXFrameBuffer.cpp` |  |
@@ -162,7 +161,6 @@ logger — that is debt to convert, not a feature.
 | `SB_SCENARIO` | 2 | `decomp/sms/src/System/Application.cpp` |  |
 | `SB_SCENECMN_DUMP` | 1 | `decomp/sms/src/System/MarDirectorLoadResource.cpp` | gated print |
 | `SB_SCENE_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
-| `SB_SEA_DBG` | 2 | `decomp/sms/src/Map/MapStaticObject.cpp` | gated print |
 | `SB_SEL_DBG` | 10 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_SEL_DUMP` | 2 | `decomp/sms/src/GC2D/CardLoad.cpp` |  |
 | `SB_SEL_DUMP_N` | 2 | `decomp/sms/src/GC2D/CardLoad.cpp` |  |
@@ -209,7 +207,6 @@ logger — that is debt to convert, not a feature.
 | `SB_SKY_DIM_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
 | `SB_STAGE` | 3 | `sms-recomp/frame_interp/graphics_db.cpp` |  |
 | `SB_STAGE_DUMP` | 1 | `decomp/sms/src/System/Application.cpp` |  |
-| `SB_STATICOBJ_DBG` | 1 | `decomp/sms/src/Map/MapStaticObject.cpp` | gated print |
 | `SB_STRAT_DUMP` | 1 | `decomp/sms/src/Strategic/Strategy.cpp` |  |
 | `SB_SUNGLASS_DBG` | 1 | `decomp/sms/src/GC2D/SunGlass.cpp` | gated print |
 | `SB_TABLES_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
@@ -342,14 +339,14 @@ logger — that is debt to convert, not a feature.
 | `SBR_PTIME_LO` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_QUIT_AFTER` | 3 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_RASTER_SRC` | 1 | `sms-recomp/overrides/j3d_capture.cpp` |  |
+| `SBR_RENDERER` | 2 | `sms-recomp/app/settings.cpp` |  |
 | `SBR_RENDER_APPROVED` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_RENDER_DEPTHVIZ` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
 | `SBR_RENDER_DUMP` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
-| `SBR_RENDER_MAX_HZ` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_RENDER_MAX_HZ` | 1 | `sms-recomp/runtime/render/native_gpu_admission.cpp` |  |
 | `SBR_RENDER_SKIP_SKINNED` | 1 | `sms-recomp/runtime/render/scene.cpp` |  |
-| `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
+| `SBR_RENDER_WIREFRAME` | 1 | `sms-recomp/runtime/render/native_gpu_pipeline.cpp` |  |
 | `SBR_SCENARIO` | 2 | `sms-recomp/overrides/fastboot_native.cpp` |  |
-| `SBR_SDLGPU` | 2 | `sms-recomp/app/settings.cpp` |  |
 | `SBR_SHADOW_LAYOUT` | 1 | `sms-recomp/frame_interp/tag_shadow.cpp` |  |
 | `SBR_SMOOTH` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
 | `SBR_SMOOTH_EVERY` | 1 | `sms-recomp/runtime/render/frame_smoothness.cpp` |  |
@@ -379,4 +376,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**358 switches; 64 still gate a raw print.**
+**355 switches; 62 still gate a raw print.**

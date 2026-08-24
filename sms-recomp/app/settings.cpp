@@ -189,8 +189,15 @@ void SettingsStore::set_haze_enabled(bool enabled) noexcept {
 }
 
 void SettingsStore::apply_environment_overrides() {
-    if (env_enabled("SBR_SDLGPU")) {
-        m_rendererOverride = Renderer::Native;
+    if (const char* value = std::getenv("SBR_RENDERER"); value != nullptr) {
+        const auto parsed = parse_named(value, kRenderers);
+        if (!parsed) {
+            lucent::error("settings",
+                          "SBR_RENDERER has invalid value '{}' (expected 'aurora' or 'native')",
+                          value);
+            std::abort();
+        }
+        m_rendererOverride = *parsed;
         m_effective.renderer = *m_rendererOverride;
     }
 

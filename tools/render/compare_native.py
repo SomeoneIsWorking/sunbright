@@ -4,8 +4,9 @@
 The native render arc (CLAUDE.md RENDERER DOCTRINE, 2026-07-23) is built alongside aurora
 specifically so every step has a known-good to diff against. This is that diff.
 
-    SBR_SDLGPU=1 SBR_RENDER_DUMP=scratch/render/native.rgba \\
-    SB_DUMP_FRAME=scratch/render/aurora.rgba SB_DUMP_FRAME_AFTER=900 ./run-recomp.sh
+    SBR_RENDER_APPROVED=1 ./run-render.sh \\
+      SBR_RENDER_DUMP=scratch/render/native.rgba \\
+      SB_DUMP_FRAME=scratch/render/aurora.rgba SB_DUMP_FRAME_AFTER=900
     tools/render/compare_native.py scratch/render/native.rgba scratch/render/aurora.rgba
 
 Both inputs are raw RGBA8, top-left origin (aurora normalises its dump to true RGBA on output; the
@@ -48,7 +49,8 @@ def infer_size(nbytes, explicit=None):
 
 
 def load(path, explicit=None):
-    data = open(path, "rb").read()
+    with open(path, "rb") as source:
+        data = source.read()
     w, h = infer_size(len(data), explicit)
     return data, w, h
 

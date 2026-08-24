@@ -9,13 +9,14 @@
 // Its BACKEND (batches -> GPU) resurrects here; its FRONTEND (GX state -> transformed verts + TEV
 // shaders) has to be driven from dev_gxfifo's FIFO parse, which is the work ahead.
 //
-// MILESTONE LADDER (each A/B'd against aurora): [0] device + clear + readback  ->  pass-through geom
-// ->  vertex transform  ->  TEV  ->  textures  ->  EFB. This file is at milestone 0.
-//
-//   SBR_SDLGPU=1        stand the device up and, once per frame, clear the native target to the GX
-//                       copy-clear colour and read it back (proves the plumbing; nothing drawn yet).
+// The native path is selected with SBR_RENDERER=native. It is currently an offscreen parity
+// sidecar: Aurora still consumes the FIFO and owns presentation while this path renders a second
+// target for comparison.
 
 #include "native_render.h"
+
+#include "native_gpu_admission.h"
+#include "native_gpu_pipeline.h"
 
 #include "app/settings.h"
 
@@ -26,33 +27,26 @@
 #include "gx_texture.h"
 #include "intrinsics.h"
 
-#include "shaders/geom_vert_spv.h"
-#include "shaders/geom_frag_spv.h"
-
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <algorithm>
 #include <cstring>
-#include <string>
 #include <map>
+#include <string>
 #include <unordered_map>
 
 // Aurora's GPU-side copy-surface registry. See the call site in sbr_render_recheck_black.
 extern "C" int sbr_aurora_has_copy_texture(unsigned int guestAddr);
 #include <vector>
-#include <vector>
 
 namespace {
 
-constexpr SDL_GPUTextureFormat kColorFmt = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-constexpr SDL_GPUTextureFormat kDepthFmt = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
-
-SDL_GPUDevice*         g_dev   = nullptr;
-SDL_GPUTexture*        g_color = nullptr;   // offscreen EFB-sized colour target
-SDL_GPUTexture*        g_depth = nullptr;   // depth target
-SDL_GPUTransferBuffer* g_dl    = nullptr;   // download staging (w*h*4)
-int  g_w = 0, g_h = 0;
-int  g_lastBatches = 0;
+SDL_GPUDevice* g_dev = nullptr;
+SDL_GPUTexture* g_color = nullptr;     // offscreen EFB-sized colour target
+SDL_GPUTexture* g_depth = nullptr;     // depth target
+SDL_GPUTransferBuffer* g_dl = nullptr; // download staging (w*h*4)
+int g_w = 0, g_h = 0;
+int g_lastBatches = 0;
 bool g_tried = false, g_ok = false;
 
 // ---- GPU SAFETY LATCH ----------------------------------------------------------------------
@@ -71,7 +65,8 @@ bool g_gpuDead = false;
 // Latch the renderer off and say why, exactly once. Every GPU entry point checks g_gpuDead first,
 // so this is the single place that decides the path is finished.
 void gpu_disable(const char* why) {
-    if (g_gpuDead) return;
+    if (g_gpuDead)
+        return;
     g_gpuDead = true;
     g_ok = false;
     // Leave a mark the NEXT run can see. An in-process latch protects this run only, and the runs
@@ -105,43 +100,13 @@ void gpu_disable(const char* why) {
 // the ceiling above which this renderer is known to be able to hang the machine.
 int g_passesThisFrame = 0;
 
-// WALL-CLOCK RATE LIMIT on offscreen passes. The per-frame cap bounds a burst; this bounds the
-// SUSTAINED load, which is the part that starves the compositor. Under SB_TURBO the game runs
-// unpaced, so "one pass per frame" was thousands of full re-renders and fenced full-target
-// readbacks per second — the graphics ring never got a gap, and kwin's own submissions timed out.
-//
-// The A/B comparator scores one frame in sixty; the measurement never needed every frame. A few
-// passes a second collects the same data and leaves the card to the desktop in between.
-double pass_rate_limit_hz() {
-    static const double v = [] {
-        const char* e = std::getenv("SBR_RENDER_MAX_HZ");
-        return e != nullptr ? std::strtod(e, nullptr) : 10.0;
-    }();
-    return v;
-}
-
-Uint64 g_lastPassNs = 0;
-long g_passesSkippedForRate = 0;
 // g_cpu holds the last frame that read back. When a frame's pass is skipped for the rate limit,
 // that content is a PREVIOUS frame — so readback must refuse rather than hand it over. A skipped
 // measurement is a gap in the data; a stale one scored as fresh is a wrong number.
 bool g_cpuStale = true;
-
-// True when this pass must be skipped to stay under the limit. Never applies to a pass the
-// comparator is waiting on — see the force flag at the call site — because silently dropping the
-// pass that a score is about to read would report a stale frame as a fresh one.
-bool rate_limited() {
-    const double hz = pass_rate_limit_hz();
-    if (hz <= 0.0) return false;                    // 0 disables the limit, deliberately explicit
-    const Uint64 now = SDL_GetTicksNS();
-    const Uint64 minGap = (Uint64)(1e9 / hz);
-    if (g_lastPassNs != 0 && now - g_lastPassNs < minGap) { ++g_passesSkippedForRate; return true; }
-    g_lastPassNs = now;
-    return false;
-}
-constexpr int kMaxPassesPerFrame = 4;   // baseline + reproducibility re-render + one sweep variant,
-                                        // with one spare. The sweep is round-robin precisely so it
-                                        // fits under this.
+constexpr int kMaxPassesPerFrame = 4; // baseline + reproducibility re-render + one sweep variant,
+                                      // with one spare. The sweep is round-robin precisely so it
+                                      // fits under this.
 
 // SBR_GPU_FENCE_TIMEOUT overrides the budget in seconds; the guard self-test sets it to 0 so the
 // timeout path can be exercised without needing an actually-hung GPU to produce one.
@@ -156,7 +121,8 @@ double fence_timeout_secs() {
 bool wait_fence_bounded(SDL_GPUFence* fence, const char* what) {
     const Uint64 start = SDL_GetTicksNS();
     for (;;) {
-        if (SDL_QueryGPUFence(g_dev, fence)) return true;
+        if (SDL_QueryGPUFence(g_dev, fence))
+            return true;
         const double waited = (double)(SDL_GetTicksNS() - start) / 1e9;
         if (waited > fence_timeout_secs()) {
             lucent::error("nrender",
@@ -166,20 +132,14 @@ bool wait_fence_bounded(SDL_GPUFence* fence, const char* what) {
                           what, waited);
             return false;
         }
-        SDL_DelayNS(200000);   // 0.2 ms — short enough not to add latency, long enough not to spin
+        SDL_DelayNS(200000); // 0.2 ms — short enough not to add latency, long enough not to spin
     }
 }
 
-std::vector<uint8_t> g_cpu;   // last frame read back, top-left origin RGBA8
+std::vector<uint8_t> g_cpu; // last frame read back, top-left origin RGBA8
 
 // Geometry path (milestone 1). Vertices arrive in CLIP space already (the frontend does posMtx +
 // projection on the CPU), so one pipeline serves every draw for now — no per-material state yet.
-SDL_GPUShader* g_vs = nullptr;
-SDL_GPUShader* g_fs = nullptr;
-// One pipeline per distinct depth state. GX varies depth state per MATERIAL, and SDL3 GPU has no
-// dynamic depth state, so the state has to be baked into a pipeline and the scene split into runs.
-std::unordered_map<uint32_t, SDL_GPUGraphicsPipeline*> g_pipes;
-
 // Mirrors the TevBlock uniform in geom.frag.glsl. std140: every member is a 16-byte vector, so the
 // selectors are stored one per component rather than packed.
 struct TevUniform {
@@ -188,10 +148,10 @@ struct TevUniform {
     int32_t aSel[16][4];
     int32_t aOp[16][4];
     int32_t dest[16][4];
-    float   konst[16][4];
-    float   regInit[4][4];
+    float konst[16][4];
+    float regInit[4][4];
     int32_t control[4];
-    float   alphaRef[4];
+    float alphaRef[4];
 };
 
 struct Batch {
@@ -200,8 +160,8 @@ struct Batch {
     // One entry per GX texture unit. 0 = untextured (a 1x1 white texel is bound so one shader
     // serves both cases and no branch is needed in the TEV loop).
     uint64_t texKey[8];
-    uint32_t texAddr[8];   // guest address, so a bind can resolve to an EFB-copy surface
-    uint32_t sampKey[8];   // wrap/filter modes: part of the material, not of the texture data
+    uint32_t texAddr[8]; // guest address, so a bind can resolve to an EFB-copy surface
+    uint32_t sampKey[8]; // wrap/filter modes: part of the material, not of the texture data
     TevUniform tev;
 };
 
@@ -215,16 +175,24 @@ struct Batch {
 // rect grows with the viewport). Blitting a 640x448 destination rect into a texture allocated at
 // 256x256 writes past the end of that allocation — a GPU-side out-of-bounds WRITE, which is
 // precisely the fault the driver reported (GPUVM fault, RW: 1) before it reset the card.
-struct CopyTex { SDL_GPUTexture* tex = nullptr; int w = 0, h = 0; };
+struct CopyTex {
+    SDL_GPUTexture* tex = nullptr;
+    int w = 0, h = 0;
+};
 std::unordered_map<uint32_t, CopyTex> g_copyTex;
-struct CopyPoint { size_t batchIndex; uint32_t dest; int sx, sy, sw, sh, dw, dh; };
+struct CopyPoint {
+    size_t batchIndex;
+    uint32_t dest;
+    int sx, sy, sw, sh, dw, dh;
+};
 std::vector<CopyPoint> g_copyPoints;
 
 // Resolve the current render target region into the texture for `dest`, creating it on demand.
 // Runs BETWEEN render passes — a blit is not a render-pass operation, and the pass must have ended
 // for the target's contents to be defined.
 void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
-    if (g_gpuDead) return;
+    if (g_gpuDead)
+        return;
     const int wantW = std::max(cp.dw, 1), wantH = std::max(cp.dh, 1);
     CopyTex& slot = g_copyTex[cp.dest];
     // A cached texture that no longer fits the requested destination is REPLACED, not reused. The
@@ -257,9 +225,10 @@ void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
                           SDL_GetError());
             return;
         }
-        slot.w = wantW; slot.h = wantH;
-        lucent::info("nrender", "EFB copy -> texture 0x{:08x}: EFB [{},{} {}x{}] -> {}x{}",
-                     cp.dest, cp.sx, cp.sy, cp.sw, cp.sh, wantW, wantH);
+        slot.w = wantW;
+        slot.h = wantH;
+        lucent::info("nrender", "EFB copy -> texture 0x{:08x}: EFB [{},{} {}x{}] -> {}x{}", cp.dest,
+                     cp.sx, cp.sy, cp.sw, cp.sh, wantW, wantH);
     }
     SDL_GPUBlitInfo bi{};
     bi.source.texture = g_color;
@@ -277,21 +246,20 @@ void perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
     SDL_BlitGPUTexture(cmd, &bi);
 }
 
-
 // Decoded textures, keyed by the guest description. Textures are immutable for a given
 // (address, format, size), so decoding once and caching is not an optimisation but a requirement:
 // decoding a 1024-texel CMPR image per draw would dominate the frame.
 struct Tex {
     SDL_GPUTexture* tex = nullptr;
-    float mean = -1.0f;   // decoded brightness, so what is BOUND can be compared with what the
-                          // per-draw state SAYS is bound — the last unin­strumented link
-    SbrTexture desc{};    // kept so a cached-black texture can be re-decoded from guest memory
-                          // later: the cache fills on FIRST SIGHT, and a texture seen before its
-                          // data landed stays black forever with nothing to say so
+    float mean = -1.0f; // decoded brightness, so what is BOUND can be compared with what the
+                        // per-draw state SAYS is bound — the last unin­strumented link
+    SbrTexture desc{};  // kept so a cached-black texture can be re-decoded from guest memory
+                        // later: the cache fills on FIRST SIGHT, and a texture seen before its
+                        // data landed stays black forever with nothing to say so
 };
 std::unordered_map<uint64_t, Tex> g_texs;
-std::unordered_map<uint64_t, SbrTexture> g_pendingTex;   // descriptions seen this frame
-SDL_GPUSampler* g_sampler = nullptr;                     // REPEAT/LINEAR, the fallback
+std::unordered_map<uint64_t, SbrTexture> g_pendingTex; // descriptions seen this frame
+SDL_GPUSampler* g_sampler = nullptr;                   // REPEAT/LINEAR, the fallback
 // One sampler per distinct wrap/filter combination. Wrap mode is a property of the MATERIAL, not of
 // the texture data — the same image is legitimately bound clamped by one material and repeated by
 // another — so it keys the batch rather than the texture cache.
@@ -304,15 +272,19 @@ uint32_t sampler_key(const SbrTexture& t) {
 
 SDL_GPUSamplerAddressMode gx_wrap(uint32_t m) {
     switch (m & 3) {
-    case 0:  return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;   // GX_CLAMP
-    case 2:  return SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT; // GX_MIRROR
-    default: return SDL_GPU_SAMPLERADDRESSMODE_REPEAT;          // GX_REPEAT (3 is undefined; GX
-                                                                // treats it as repeat)
+    case 0:
+        return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE; // GX_CLAMP
+    case 2:
+        return SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT; // GX_MIRROR
+    default:
+        return SDL_GPU_SAMPLERADDRESSMODE_REPEAT; // GX_REPEAT (3 is undefined; GX
+                                                  // treats it as repeat)
     }
 }
 
 SDL_GPUSampler* sampler_for(uint32_t key) {
-    if (const auto it = g_samplers.find(key); it != g_samplers.end()) return it->second;
+    if (const auto it = g_samplers.find(key); it != g_samplers.end())
+        return it->second;
     SDL_GPUSamplerCreateInfo sci{};
     sci.min_filter = (key & (1u << 5)) ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
     sci.mag_filter = (key & (1u << 4)) ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
@@ -355,82 +327,30 @@ bool textures_enabled() {
 }
 
 uint64_t tex_key(const SbrTexture& t) {
-    if (!textures_enabled()) return 0;
-    if (t.addr == 0 || t.width == 0 || t.height == 0) return 0;
+    if (!textures_enabled())
+        return 0;
+    if (t.addr == 0 || t.width == 0 || t.height == 0)
+        return 0;
     return (uint64_t)t.addr << 24 ^ (uint64_t)t.format << 20 ^ (uint64_t)t.width << 10 ^ t.height;
 }
 std::vector<Batch> g_batches;
 // SBR_BIND_LOG=<n>: log the first n batch binds, then stop.
-long g_bindLog = [] { const char* e = std::getenv("SBR_BIND_LOG"); return e != nullptr ? std::strtol(e, nullptr, 10) : 0L; }();
-SDL_GPUBuffer*           g_vbuf = nullptr;
-SDL_GPUTransferBuffer*   g_vup  = nullptr;
-size_t                   g_vcap = 0;
-std::vector<SbrVertex>   g_verts;   // accumulated this frame
-
-// The resource counts are NOT optional. SDL3 GPU builds the pipeline layout from them, not by
-// reflecting the SPIR-V, so a fragment shader that declares a sampler while the create-info says
-// zero produces a descriptor-set mismatch — which manifests as VK_ERROR_DEVICE_LOST, and (with
-// aurora's Dawn device in the same process) surfaces on aurora's device, blaming the wrong
-// subsystem. This was the actual cause of the device losses, not the texture data.
-SDL_GPUShader* make_shader(const void* code, size_t bytes, SDL_GPUShaderStage stage,
-                           Uint32 numSamplers, Uint32 numUniformBuffers) {
-    SDL_GPUShaderCreateInfo ci{};
-    ci.code = (const Uint8*)code;
-    ci.code_size = bytes;
-    ci.entrypoint = "main";
-    ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
-    ci.stage = stage;
-    ci.num_samplers = numSamplers;
-    ci.num_storage_textures = 0;
-    ci.num_storage_buffers = 0;
-    ci.num_uniform_buffers = numUniformBuffers;
-    return SDL_CreateGPUShader(g_dev, &ci);
-}
-
-SDL_GPUCompareOp gx_compare(uint8_t f) {
-    // GXCompare -> backend compare. The transform in scene.cpp maps GC's [-1,0] clip depth to
-    // [0,1] PRESERVING order (nearer stays smaller), so each GX function keeps its meaning.
-    switch (f & 7) {
-    case 0: return SDL_GPU_COMPAREOP_NEVER;
-    case 1: return SDL_GPU_COMPAREOP_LESS;
-    case 2: return SDL_GPU_COMPAREOP_EQUAL;
-    case 3: return SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
-    case 4: return SDL_GPU_COMPAREOP_GREATER;
-    case 5: return SDL_GPU_COMPAREOP_NOT_EQUAL;
-    case 6: return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
-    default: return SDL_GPU_COMPAREOP_ALWAYS;
-    }
-}
-
-uint32_t depth_key(SbrDepthState d) {
-    return (uint32_t)(d.test ? 1 : 0) << 24 | (uint32_t)(d.func & 7) << 20 |
-           (uint32_t)(d.write ? 1 : 0) << 16 | (uint32_t)(d.blend & 3) << 8 |
-           (uint32_t)(d.srcFac & 7) << 4 | (uint32_t)(d.dstFac & 7) |
-           (uint32_t)(d.colorUpdate ? 1 : 0) << 28 | (uint32_t)(d.alphaUpdate ? 1 : 0) << 29 |
-           (uint32_t)(d.cull & 3) << 30;
-}
-
-// GXBlendFactor -> backend factor. GX names the factors in terms of the SOURCE and DESTINATION
-// colours exactly as the backend does, so this is a direct mapping, not an approximation.
-SDL_GPUBlendFactor gx_blend_factor(uint8_t f) {
-    switch (f & 7) {
-    case 0: return SDL_GPU_BLENDFACTOR_ZERO;
-    case 1: return SDL_GPU_BLENDFACTOR_ONE;
-    case 2: return SDL_GPU_BLENDFACTOR_SRC_COLOR;
-    case 3: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR;
-    case 4: return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-    case 5: return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    case 6: return SDL_GPU_BLENDFACTOR_DST_ALPHA;
-    default: return SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA;
-    }
-}
-
-SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d);
+long g_bindLog = [] {
+    const char* e = std::getenv("SBR_BIND_LOG");
+    return e != nullptr ? std::strtol(e, nullptr, 10) : 0L;
+}();
+SDL_GPUBuffer* g_vbuf = nullptr;
+SDL_GPUTransferBuffer* g_vup = nullptr;
+size_t g_vcap = 0;
+std::vector<SbrVertex> g_verts; // accumulated this frame
 
 void ensure_vbuf(size_t bytes) {
-    if (bytes <= g_vcap && g_vbuf != nullptr) return;
-    if (g_vbuf) SDL_ReleaseGPUBuffer(g_dev, g_vbuf);
-    if (g_vup)  SDL_ReleaseGPUTransferBuffer(g_dev, g_vup);
+    if (bytes <= g_vcap && g_vbuf != nullptr)
+        return;
+    if (g_vbuf)
+        SDL_ReleaseGPUBuffer(g_dev, g_vbuf);
+    if (g_vup)
+        SDL_ReleaseGPUTransferBuffer(g_dev, g_vup);
     g_vcap = bytes + (bytes / 2) + 4096;
     SDL_GPUBufferCreateInfo bci{};
     bci.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -449,14 +369,16 @@ bool enabled() {
 SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
     SDL_GPUTextureCreateInfo ci{};
     ci.type = SDL_GPU_TEXTURETYPE_2D;
-    ci.format = kColorFmt;
+    ci.format = kNativeColorFormat;
     ci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ci.width = w; ci.height = h;
+    ci.width = w;
+    ci.height = h;
     ci.layer_count_or_depth = 1;
     ci.num_levels = 1;
     ci.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* t = SDL_CreateGPUTexture(g_dev, &ci);
-    if (t == nullptr) return nullptr;
+    if (t == nullptr)
+        return nullptr;
 
     SDL_GPUTransferBufferCreateInfo tbci{};
     tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
@@ -473,7 +395,10 @@ SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
     src.pixels_per_row = w;
     src.rows_per_layer = h;
     SDL_GPUTextureRegion dst{};
-    dst.texture = t; dst.w = w; dst.h = h; dst.d = 1;
+    dst.texture = t;
+    dst.w = w;
+    dst.h = h;
+    dst.d = 1;
     SDL_UploadToGPUTexture(cp, &src, &dst, false);
     SDL_EndGPUCopyPass(cp);
     // WAIT before freeing the staging buffer. Releasing it straight after submit frees memory the
@@ -506,8 +431,10 @@ SDL_GPUTexture* upload_rgba(const uint8_t* rgba, uint32_t w, uint32_t h) {
 
 // Decode-and-upload on first sight of a texture description.
 SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
-    if (key == 0) return g_white;
-    if (const auto it = g_texs.find(key); it != g_texs.end()) return it->second.tex;
+    if (key == 0)
+        return g_white;
+    if (const auto it = g_texs.find(key); it != g_texs.end())
+        return it->second.tex;
 
     // Guest data is not trusted to size a GPU allocation. GX caps textures at 1024x1024, and an
     // uninitialised GXTexObj decodes to arbitrary dimensions.
@@ -528,8 +455,10 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
         static bool warned = false;
         if (!warned) {
             warned = true;
-            lucent::error("nrender", "texture budget of {} MB exhausted at {} textures — binding "
-                                     "white from here", kMaxTexBytes >> 20, g_texs.size());
+            lucent::error("nrender",
+                          "texture budget of {} MB exhausted at {} textures — binding "
+                          "white from here",
+                          kMaxTexBytes >> 20, g_texs.size());
         }
         g_texs.emplace(key, Tex{g_white});
         return g_white;
@@ -544,8 +473,9 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
         static bool warned = false;
         if (!warned) {
             warned = true;
-            lucent::error("nrender", "implausible texture {}x{} format {} at 0x{:08x} — not uploaded",
-                          t.width, t.height, t.format, t.addr);
+            lucent::error("nrender",
+                          "implausible texture {}x{} format {} at 0x{:08x} — not uploaded", t.width,
+                          t.height, t.format, t.addr);
         }
         g_texs.emplace(key, Tex{g_white});
         return g_white;
@@ -575,7 +505,8 @@ SDL_GPUTexture* texture_for(uint64_t key, const SbrTexture& t) {
         // cannot show that. This line is the only place the two can be compared.
         {
             uint64_t sum = 0;
-            for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+            for (size_t i = 0; i < rgba.size(); i += 4)
+                sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
             decodedMean = (float)((double)sum / (double)(rgba.size() / 4 * 3));
             lucent::debug("nrender", "decoded key {:016x} 0x{:08x} {} {}x{} mean {:.1f}", key,
                           t.addr, gx_texture_format_name(t.format), t.width, t.height, decodedMean);
@@ -601,22 +532,37 @@ void pack_tev(const SbrTevState& tev, TevUniform& u, const SbrTexture* tex) {
     u.control[0] = n;
     for (int i = 0; i < 16; ++i) {
         const SbrTevStage& st = tev.stage[i];
-        u.cSel[i][0] = st.cA; u.cSel[i][1] = st.cB; u.cSel[i][2] = st.cC; u.cSel[i][3] = st.cD;
-        u.cOp[i][0] = st.cBias; u.cOp[i][1] = st.cSub; u.cOp[i][2] = st.cClamp; u.cOp[i][3] = st.cScale;
-        u.aSel[i][0] = st.aA; u.aSel[i][1] = st.aB; u.aSel[i][2] = st.aC; u.aSel[i][3] = st.aD;
-        u.aOp[i][0] = st.aBias; u.aOp[i][1] = st.aSub; u.aOp[i][2] = st.aClamp; u.aOp[i][3] = st.aScale;
-        u.dest[i][0] = st.cDest; u.dest[i][1] = st.aDest; u.dest[i][2] = st.texEnable;
+        u.cSel[i][0] = st.cA;
+        u.cSel[i][1] = st.cB;
+        u.cSel[i][2] = st.cC;
+        u.cSel[i][3] = st.cD;
+        u.cOp[i][0] = st.cBias;
+        u.cOp[i][1] = st.cSub;
+        u.cOp[i][2] = st.cClamp;
+        u.cOp[i][3] = st.cScale;
+        u.aSel[i][0] = st.aA;
+        u.aSel[i][1] = st.aB;
+        u.aSel[i][2] = st.aC;
+        u.aSel[i][3] = st.aD;
+        u.aOp[i][0] = st.aBias;
+        u.aOp[i][1] = st.aSub;
+        u.aOp[i][2] = st.aClamp;
+        u.aOp[i][3] = st.aScale;
+        u.dest[i][0] = st.cDest;
+        u.dest[i][1] = st.aDest;
+        u.dest[i][2] = st.texEnable;
         // Which unit this stage samples and which generated coordinate it samples with — two
         // independent selectors from RAS1_TREF, not one.
         // Stages name units 1-3, not just 0, and routing them there is the correct mechanism —
         // but it is still OPT-IN because six textures decode BLACK (their guest memory is zero) and
         // five of them sit on unit 1 across the terrain, so honouring the name blacks the scene.
         // Pinning to unit 0 is NOT a fix; it is the better-looking of two known-wrong behaviours
-        // until those buffers are filled. See debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md.
-        // Which units are routed to the unit the stage NAMES, as a bitmask, so the question "which
-        // unit blacks the frame" is one run per bit instead of one run per theory. SBR_TEXMAP_UNITS
-        // is the mask (bit m = honour stages naming unit m); SBR_TEXMAP_NAMED=1 is the shorthand for
-        // all eight. A unit not in the mask falls back to 0, which is the pinned behaviour.
+        // until those buffers are filled. See
+        // debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md. Which units are routed to
+        // the unit the stage NAMES, as a bitmask, so the question "which unit blacks the frame" is
+        // one run per bit instead of one run per theory. SBR_TEXMAP_UNITS is the mask (bit m =
+        // honour stages naming unit m); SBR_TEXMAP_NAMED=1 is the shorthand for all eight. A unit
+        // not in the mask falls back to 0, which is the pinned behaviour.
         static const uint32_t unitMask = [] {
             if (const char* m = std::getenv("SBR_TEXMAP_UNITS"))
                 return (uint32_t)std::strtoul(m, nullptr, 0);
@@ -632,14 +578,13 @@ void pack_tev(const SbrTevState& tev, TevUniform& u, const SbrTexture* tex) {
             return f != nullptr ? (int32_t)std::strtol(f, nullptr, 0) : -1;
         }();
         const int32_t map = (int32_t)(st.texmap & 7);
-        int32_t unit = forceUnit >= 0 ? (forceUnit & 7)
-                                      : (((unitMask >> map) & 1) ? map : 0);
-        u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8 |
-                       (int32_t)(st.rasChannel & 7) << 16;
+        int32_t unit = forceUnit >= 0 ? (forceUnit & 7) : (((unitMask >> map) & 1) ? map : 0);
+        u.dest[i][3] = unit | (int32_t)(st.texcoord & 3) << 8 | (int32_t)(st.rasChannel & 7) << 16;
         pack_konst(tev, (unsigned)i, u.konst[i]);
     }
     for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 4; ++c) u.regInit[r][c] = tev.reg[r][c];
+        for (int c = 0; c < 4; ++c)
+            u.regInit[r][c] = tev.reg[r][c];
     // SBR_ALPHATEST=0 forces both comparisons to ALWAYS — the measurement switch for the cutout
     // path, so a landed feature has a before/after number rather than an argument.
     static const bool alphaTest = [] {
@@ -663,107 +608,20 @@ void pack_tev(const SbrTevState& tev, TevUniform& u, const SbrTexture* tex) {
     u.alphaRef[2] = viz;
 }
 
-SDL_GPUGraphicsPipeline* pipeline_for(SbrDepthState d) {
-    const uint32_t key = depth_key(d);
-    if (const auto it = g_pipes.find(key); it != g_pipes.end()) return it->second;
-
-    SDL_GPUVertexBufferDescription vbd{};
-    vbd.slot = 0;
-    vbd.pitch = sizeof(SbrVertex);
-    vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    // Position, colour, then the four generated coordinates as two vec4s (uv0|uv1, uv2|uv3) —
-    // packing them in pairs keeps the attribute count down without changing what the shader reads.
-    SDL_GPUVertexAttribute va[5]{};
-    va[0].location = 0; va[0].buffer_slot = 0;
-    va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
-    va[1].location = 1; va[1].buffer_slot = 0;
-    va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
-    va[2].location = 2; va[2].buffer_slot = 0;
-    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[2].offset = 32;
-    va[3].location = 3; va[3].buffer_slot = 0;
-    va[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[3].offset = 48;
-    va[4].location = 4; va[4].buffer_slot = 0;
-    va[4].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[4].offset = 64;   // colour channel 1
-
-    SDL_GPUColorTargetDescription ctd{};
-    ctd.format = kColorFmt;
-    // GX_BM_BLEND is the only blend mode the scene actually uses; LOGIC/SUBTRACT are left
-    // unblended rather than approximated, and will announce themselves if they ever appear.
-    // cmode0's colour/alpha write enables. GX runs the pipeline and then discards the write; the
-    // backend equivalent is a write mask, NOT skipping the draw (depth still updates).
-    ctd.blend_state.enable_color_write_mask = true;
-    ctd.blend_state.color_write_mask =
-        (SDL_GPUColorComponentFlags)((d.colorUpdate ? (SDL_GPU_COLORCOMPONENT_R |
-                                                       SDL_GPU_COLORCOMPONENT_G |
-                                                       SDL_GPU_COLORCOMPONENT_B) : 0) |
-                                     (d.alphaUpdate ? SDL_GPU_COLORCOMPONENT_A : 0));
-    if (d.blend == 1) {
-        ctd.blend_state.enable_blend = true;
-        ctd.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-        ctd.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-        ctd.blend_state.src_color_blendfactor = gx_blend_factor(d.srcFac);
-        ctd.blend_state.dst_color_blendfactor = gx_blend_factor(d.dstFac);
-        ctd.blend_state.src_alpha_blendfactor = gx_blend_factor(d.srcFac);
-        ctd.blend_state.dst_alpha_blendfactor = gx_blend_factor(d.dstFac);
-    }
-
-    SDL_GPUGraphicsPipelineCreateInfo pci{};
-    pci.vertex_shader = g_vs;
-    pci.fragment_shader = g_fs;
-    pci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    pci.vertex_input_state.vertex_buffer_descriptions = &vbd;
-    pci.vertex_input_state.num_vertex_buffers = 1;
-    pci.vertex_input_state.vertex_attributes = va;
-    pci.vertex_input_state.num_vertex_attributes = 5;
-    // SBR_RENDER_WIREFRAME=1 draws edges instead of filled triangles. A few large planes can
-    // occlude an entire correct scene behind them, which is indistinguishable from "the scene is
-    // missing" in a filled render — wireframe separates those two cases, so it is a diagnostic
-    // worth keeping rather than a one-off.
-    const char* wf = std::getenv("SBR_RENDER_WIREFRAME");
-    pci.rasterizer_state.fill_mode = (wf != nullptr && wf[0] != '\0' && wf[0] != '0')
-                                         ? SDL_GPU_FILLMODE_LINE : SDL_GPU_FILLMODE_FILL;
-    // GX cull, from GENMODE. CULL_ALL cannot be expressed as a rasterizer state — such draws are
-    // dropped before they reach a pipeline (see sbr_render_tris), so the mode chosen here for it is
-    // irrelevant. GX winding is CLOCKWISE (aurora: gx.cpp:720).
-    pci.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
-    pci.rasterizer_state.cull_mode = d.cull == 1   ? SDL_GPU_CULLMODE_FRONT
-                                     : d.cull == 2 ? SDL_GPU_CULLMODE_BACK
-                                     : d.cull == 3 ? SDL_GPU_CULLMODE_BACK
-                                                   : SDL_GPU_CULLMODE_NONE;
-    pci.target_info.color_target_descriptions = &ctd;
-    pci.target_info.num_color_targets = 1;
-    pci.target_info.depth_stencil_format = kDepthFmt;
-    pci.target_info.has_depth_stencil_target = true;
-    // The GAME's depth state, not an assumed one. The sky is drawn with WRITE DISABLED; honouring
-    // that is what stops it stamping depth over the whole scene.
-    pci.depth_stencil_state.enable_depth_test = d.test != 0;
-    pci.depth_stencil_state.enable_depth_write = d.write != 0;
-    pci.depth_stencil_state.compare_op = gx_compare(d.func);
-
-    SDL_GPUGraphicsPipeline* p = SDL_CreateGPUGraphicsPipeline(g_dev, &pci);
-    if (p == nullptr) {
-        // A pipeline that fails to compile must not be silently skipped: the batch would vanish and
-        // read as a render bug (CLAUDE.md FAIL FAST).
-        lucent::error("nrender", "pipeline create failed for test={} func={} write={} blend={} "
-                                 "src={} dst={}: {}",
-                      d.test, d.func, d.write, d.blend, d.srcFac, d.dstFac, SDL_GetError());
-        std::abort();
-    }
-    g_pipes.emplace(key, p);
-    return p;
-}
-
 } // namespace
 
-bool sbr_render_enabled() { return enabled(); }
+bool sbr_render_enabled() {
+    return enabled();
+}
 
 bool sbr_render_init(int w, int h) {
-    if (g_gpuDead) return false;   // never re-arm a path that has already faulted the device
-    if (g_tried) return g_ok && g_w == w && g_h == h;
+    if (g_gpuDead)
+        return false; // never re-arm a path that has already faulted the device
+    if (g_tried)
+        return g_ok && g_w == w && g_h == h;
 
-    // THE HUMAN GATE. run-render.sh enforces this too, but the script is not the only way in — the
-    // runs that hung this machine were started by setting SBR_SDLGPU=1 on run-recomp.sh directly,
-    // which walked straight past it. The gate belongs where the device is created.
+    // The device gate belongs here as well as in run-render.sh: the in-game settings UI can select
+    // Native after startup, and a launcher environment is not the only route to this function.
     //
     // This path renders OFFSCREEN and is scored against aurora; it puts nothing on screen. Its
     // entire value is a measurement, and no measurement is worth another GPU reset on someone
@@ -772,14 +630,16 @@ bool sbr_render_init(int w, int h) {
     const bool approvedByEnvironment =
         environmentApproval != nullptr && environmentApproval[0] == '1';
     if (!approvedByEnvironment && !sb::app::settings().native_renderer_approved()) {
-        g_tried = true;
-        g_ok = false;
-        lucent::warn("nrender",
-                     "the native renderer is GATED OFF: SBR_SDLGPU=1 was set, but "
-                     "SBR_RENDER_APPROVED=1 was not. This renderer has hung this machine's GPU and "
-                     "cost its owner their desktop session twice, so it starts only when a human "
-                     "at the keyboard says so. Aurora renders the frame as usual; only the native "
-                     "A/B measurement is missing from this run.");
+        // A denial is not an initialization attempt. Consuming g_tried here made later approval
+        // from the settings UI ineffective for the lifetime of the process.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            lucent::warn("nrender",
+                         "the native renderer is gated off: select it through the settings UI or "
+                         "launch with SBR_RENDER_APPROVED=1. Aurora continues to render; only the "
+                         "offscreen native comparison is absent.");
+        }
         return false;
     }
     g_tried = true;
@@ -798,7 +658,7 @@ bool sbr_render_init(int w, int h) {
 
     SDL_GPUTextureCreateInfo cci{};
     cci.type = SDL_GPU_TEXTURETYPE_2D;
-    cci.format = kColorFmt;
+    cci.format = kNativeColorFormat;
     cci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
     cci.width = (Uint32)w;
     cci.height = (Uint32)h;
@@ -808,7 +668,7 @@ bool sbr_render_init(int w, int h) {
     g_color = SDL_CreateGPUTexture(g_dev, &cci);
 
     SDL_GPUTextureCreateInfo dci = cci;
-    dci.format = kDepthFmt;
+    dci.format = kNativeDepthFormat;
     dci.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
     g_depth = SDL_CreateGPUTexture(g_dev, &dci);
 
@@ -822,37 +682,10 @@ bool sbr_render_init(int w, int h) {
     tbci.size = (Uint32)(w * h * 4);
     g_dl = SDL_CreateGPUTransferBuffer(g_dev, &tbci);
 
-    // One pipeline: pass-through clip-space verts, depth test on, alpha blending off. The per-GX
-    // z-mode and blend state become per-material state as the TEV milestone lands; the depth test
-    // itself is not optional, because without it the last drawable submitted paints over the whole
-    // scene (measured: a uniform 100%-coverage fill of one object's colour).
-    g_vs = make_shader(kGeomVertSpv, sizeof(kGeomVertSpv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
-    g_fs = make_shader(kGeomFragSpv, sizeof(kGeomFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 8, 1);
-    if (g_vs == nullptr || g_fs == nullptr) {
+    if (!sbr_native_gpu_pipeline_init(g_dev)) {
         lucent::error("nrender", "shader create failed: {}", SDL_GetError());
         return false;
     }
-    SDL_GPUVertexBufferDescription vbd{};
-    vbd.slot = 0;
-    vbd.pitch = sizeof(SbrVertex);
-    vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    // Position, colour, then the four generated coordinates as two vec4s (uv0|uv1, uv2|uv3) —
-    // packing them in pairs keeps the attribute count down without changing what the shader reads.
-    SDL_GPUVertexAttribute va[5]{};
-    va[0].location = 0; va[0].buffer_slot = 0;
-    va[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[0].offset = 0;
-    va[1].location = 1; va[1].buffer_slot = 0;
-    va[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[1].offset = 16;
-    va[2].location = 2; va[2].buffer_slot = 0;
-    va[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[2].offset = 32;
-    va[3].location = 3; va[3].buffer_slot = 0;
-    va[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[3].offset = 48;
-    va[4].location = 4; va[4].buffer_slot = 0;
-    va[4].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; va[4].offset = 64;   // colour channel 1
-
-    // Pipelines are created ON DEMAND per depth state (pipeline_for), not once here: GX varies
-    // depth state per material and the backend cannot change it dynamically.
-    g_pipes.clear();
 
     SDL_GPUSamplerCreateInfo sci{};
     sci.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -882,10 +715,14 @@ bool sbr_render_init(int w, int h) {
     return true;
 }
 
-namespace { SDL_FColor g_clear{}; int g_lastVerts = 0; }
+namespace {
+SDL_FColor g_clear{};
+int g_lastVerts = 0;
+} // namespace
 
 void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh) {
-    if (!g_ok) return;
+    if (!g_ok)
+        return;
     g_copyPoints.push_back({g_batches.size(), dest, sx, sy, sw, sh, dw, dh});
 }
 
@@ -913,17 +750,27 @@ void sbr_render_dump_copy(uint32_t addr, const char* path) {
     tci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
     tci.size = (Uint32)(w * h * 4);
     SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_dev, &tci);
-    if (tb == nullptr) return;
+    if (tb == nullptr)
+        return;
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     SDL_GPUCopyPass* cp2 = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion reg{};
-    reg.texture = it->second.tex; reg.w = (Uint32)w; reg.h = (Uint32)h; reg.d = 1;
+    reg.texture = it->second.tex;
+    reg.w = (Uint32)w;
+    reg.h = (Uint32)h;
+    reg.d = 1;
     SDL_GPUTextureTransferInfo tti{};
-    tti.transfer_buffer = tb; tti.pixels_per_row = (Uint32)w; tti.rows_per_layer = (Uint32)h;
+    tti.transfer_buffer = tb;
+    tti.pixels_per_row = (Uint32)w;
+    tti.rows_per_layer = (Uint32)h;
     SDL_DownloadFromGPUTexture(cp2, &reg, &tti);
     SDL_EndGPUCopyPass(cp2);
     SDL_GPUFence* f = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
-    if (f == nullptr) { gpu_disable("dump-copy submit failed"); SDL_ReleaseGPUTransferBuffer(g_dev, tb); return; }
+    if (f == nullptr) {
+        gpu_disable("dump-copy submit failed");
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        return;
+    }
     if (!wait_fence_bounded(f, "dump-copy")) {
         SDL_ReleaseGPUFence(g_dev, f);
         gpu_disable("the GPU stopped signalling fences during an EFB-copy dump");
@@ -934,7 +781,8 @@ void sbr_render_dump_copy(uint32_t addr, const char* path) {
     if (void* m = SDL_MapGPUTransferBuffer(g_dev, tb, false)) {
         const uint8_t* px = (const uint8_t*)m;
         double sa = 0.0;
-        for (int i = 0; i < w * h; ++i) sa += px[i * 4 + 3];
+        for (int i = 0; i < w * h; ++i)
+            sa += px[i * 4 + 3];
         if (FILE* fp = std::fopen(path, "wb")) {
             std::fwrite(px, 1, (size_t)w * h * 4, fp);
             std::fclose(fp);
@@ -952,7 +800,8 @@ bool sbr_render_is_copy_surface(uint32_t addr) {
 }
 
 void sbr_render_begin(float r, float g, float b, float a) {
-    if (!g_ok || g_gpuDead) return;
+    if (!g_ok || g_gpuDead)
+        return;
     g_passesThisFrame = 0;
     g_clear = SDL_FColor{r, g, b, a};
     g_verts.clear();
@@ -973,9 +822,10 @@ void sbr_render_begin(float r, float g, float b, float a) {
 // is not this one.
 std::map<uint32_t, long> g_unit1Use;
 
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[8],
-                     const SbrTevState& tevState) {
-    if (!g_ok || g_gpuDead || verts == nullptr || count < 3) return;
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
+                     const SbrTexture tex[8], const SbrTevState& tevState) {
+    if (!g_ok || g_gpuDead || verts == nullptr || count < 3)
+        return;
     for (unsigned st = 0; st < tevState.numStages && st < 16; ++st)
         if (tevState.stage[st].texEnable && (tevState.stage[st].texmap & 7) == 1) {
             g_unit1Use[tex[1].addr] += count;
@@ -991,33 +841,35 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, con
     // is the only clean test of the slots themselves: with identical content in every slot, forcing
     // the frame through slot 0 and through slot 1 must produce IDENTICAL images. Any difference is
     // the binding or the shader's decorations, not the material's choice of unit — which forcing
-    // alone cannot separate, because a forced unit usually holds a texture the material never wanted.
+    // alone cannot separate, because a forced unit usually holds a texture the material never
+    // wanted.
     static const bool mirror = [] {
         const char* e = std::getenv("SBR_TEX_MIRROR");
         return e != nullptr && e[0] != '\0' && e[0] != '0';
     }();
     for (int m = 0; m < 8; ++m) {
         const SbrTexture& t = mirror ? tex[0] : tex[m];
-        b.texKey[m]  = tex_key(t);
+        b.texKey[m] = tex_key(t);
         b.texAddr[m] = t.addr;
         b.sampKey[m] = sampler_key(t);
     }
     pack_tev(tevState, b.tev, mirror ? nullptr : tex);
     // TEV state is part of a batch's identity: two draws sharing a texture and depth state but
     // different combiners are different materials and must not merge.
-    const bool same = !g_batches.empty() &&
-                      depth_key(g_batches.back().st) == depth_key(depth) &&
-                      std::memcmp(g_batches.back().st.scissor, depth.scissor,
-                                  sizeof depth.scissor) == 0 &&
-                      std::memcmp(g_batches.back().texKey, b.texKey, sizeof b.texKey) == 0 &&
-                      std::memcmp(g_batches.back().sampKey, b.sampKey, sizeof b.sampKey) == 0 &&
-                      std::memcmp(&g_batches.back().tev, &b.tev, sizeof b.tev) == 0 &&
-                      g_batches.back().first + g_batches.back().count == first;
+    const bool same =
+        !g_batches.empty() &&
+        sbr_native_gpu_pipeline_key(g_batches.back().st) == sbr_native_gpu_pipeline_key(depth) &&
+        std::memcmp(g_batches.back().st.scissor, depth.scissor, sizeof depth.scissor) == 0 &&
+        std::memcmp(g_batches.back().texKey, b.texKey, sizeof b.texKey) == 0 &&
+        std::memcmp(g_batches.back().sampKey, b.sampKey, sizeof b.sampKey) == 0 &&
+        std::memcmp(&g_batches.back().tev, &b.tev, sizeof b.tev) == 0 &&
+        g_batches.back().first + g_batches.back().count == first;
     if (same) {
         g_batches.back().count += (uint32_t)count;
     } else {
         g_batches.push_back(b);
-        for (int m = 0; m < 8; ++m) g_pendingTex[b.texKey[m]] = mirror ? tex[0] : tex[m];
+        for (int m = 0; m < 8; ++m)
+            g_pendingTex[b.texKey[m]] = mirror ? tex[0] : tex[m];
     }
 }
 
@@ -1028,9 +880,20 @@ void render_pass_into_cpu(uint32_t ablation);
 // pass, fence, map — is the shape every later milestone keeps; only what goes INSIDE the render
 // pass grows (per-material pipelines, textures, TEV).
 void sbr_render_end() {
-    if (!g_ok || g_gpuDead) return;
+    if (!g_ok || g_gpuDead)
+        return;
     g_lastVerts = (int)g_verts.size();
     g_lastBatches = (int)g_batches.size();
+
+    // Reject the frame before touching the GPU. The old placement came after the vertex upload
+    // command was submitted, so every "skipped" frame still queued work and then returned without
+    // the fenced render/readback that made reuse of g_vup safe. Under turbo that repeatedly mapped
+    // the same transfer buffer while its previous upload could still be in flight. Rate limiting is
+    // a GPU-work admission decision, so it must precede texture creation, mapping and submission.
+    if (!sbr_native_gpu_admit_frame()) {
+        g_cpuStale = true;
+        return;
+    }
 
     // Decode and upload any NEW textures FIRST, before this frame's command buffer exists.
     // texture_for acquires and submits its own command buffer and waits on a fence; doing that
@@ -1038,11 +901,13 @@ void sbr_render_end() {
     // VK_ERROR_DEVICE_LOST. Uploads are one-time per texture, so this is not a per-frame cost.
     if (textures_enabled())
         for (const Batch& b : g_batches)
-            for (int m = 0; m < 8; ++m) texture_for(b.texKey[m], g_pendingTex[b.texKey[m]]);
+            for (int m = 0; m < 8; ++m)
+                texture_for(b.texKey[m], g_pendingTex[b.texKey[m]]);
     // Samplers too: creating one is not a command-buffer operation, but keeping every resource
     // creation outside the frame's command buffer is the rule that stopped the device losses.
     for (const Batch& b : g_batches)
-        for (int m = 0; m < 8; ++m) sampler_for(b.sampKey[m]);
+        for (int m = 0; m < 8; ++m)
+            sampler_for(b.sampKey[m]);
 
     const size_t vbytes = g_verts.size() * sizeof(SbrVertex);
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_dev);
@@ -1057,17 +922,18 @@ void sbr_render_end() {
             SDL_UnmapGPUTransferBuffer(g_dev, g_vup);
         }
         SDL_GPUCopyPass* up = SDL_BeginGPUCopyPass(cmd);
-        SDL_GPUTransferBufferLocation src{}; src.transfer_buffer = g_vup; src.offset = 0;
-        SDL_GPUBufferRegion dst{}; dst.buffer = g_vbuf; dst.offset = 0; dst.size = (Uint32)vbytes;
+        SDL_GPUTransferBufferLocation src{};
+        src.transfer_buffer = g_vup;
+        src.offset = 0;
+        SDL_GPUBufferRegion dst{};
+        dst.buffer = g_vbuf;
+        dst.offset = 0;
+        dst.size = (Uint32)vbytes;
         SDL_UploadToGPUBuffer(up, &src, &dst, false);
         SDL_EndGPUCopyPass(up);
     }
 
     SDL_SubmitGPUCommandBuffer(cmd);
-    if (rate_limited()) {
-        g_cpuStale = true;   // nothing rendered this frame; readback refuses until one does
-        return;
-    }
     render_pass_into_cpu(0);
     g_cpuStale = false;
     // IS THE PASS REPRODUCIBLE? Render the identical pass twice and compare. This separates "the
@@ -1086,8 +952,8 @@ void sbr_render_end() {
             const unsigned long long a = sum(g_cpu);
             render_pass_into_cpu(0);
             const unsigned long long b = sum(g_cpu);
-            lucent::info("nrender", "pass reproducibility: first {:016x} second {:016x} -> {}",
-                         a, b, a == b ? "IDENTICAL" : "DIFFERENT (re-render is not reproducible)");
+            lucent::info("nrender", "pass reproducibility: first {:016x} second {:016x} -> {}", a,
+                         b, a == b ? "IDENTICAL" : "DIFFERENT (re-render is not reproducible)");
         }
     }
 }
@@ -1106,9 +972,9 @@ const int g_batchLimitEnv = [] {
     return e != nullptr ? (int)std::strtol(e, nullptr, 10) : -1;
 }();
 
-
 void render_pass_into_cpu(uint32_t ablation) {
-    if (g_gpuDead) return;
+    if (g_gpuDead)
+        return;
     if (++g_passesThisFrame > kMaxPassesPerFrame) {
         // Loud, and once per frame rather than per attempt: a silently dropped pass would show up
         // as a stale readback scored as if it were fresh.
@@ -1132,7 +998,8 @@ void render_pass_into_cpu(uint32_t ablation) {
             ++tell;
             size_t found = 0;
             for (const Batch& b : g_batches)
-                if (g_texs.find(b.texKey[0]) != g_texs.end()) ++found;
+                if (g_texs.find(b.texKey[0]) != g_texs.end())
+                    ++found;
             lucent::info("nrender", "pass ablation={} : g_texs={} batches={} with slot0 texture={}",
                          ablation, g_texs.size(), g_batches.size(), found);
         }
@@ -1159,19 +1026,23 @@ void render_pass_into_cpu(uint32_t ablation) {
     if (vbytes > 0) {
         SDL_GPUBufferBinding vbTmp{};
         (void)vbTmp;
-        SDL_GPUBufferBinding vb{}; vb.buffer = g_vbuf; vb.offset = 0;
+        SDL_GPUBufferBinding vb{};
+        vb.buffer = g_vbuf;
+        vb.offset = 0;
         SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         int drawn = 0;
-        if (g_batchLimit < 0 && g_batchLimitEnv >= 0) g_batchLimit = g_batchLimitEnv;
+        if (g_batchLimit < 0 && g_batchLimitEnv >= 0)
+            g_batchLimit = g_batchLimitEnv;
         size_t nextCopy = 0;
         for (size_t bi = 0; bi < g_batches.size(); ++bi) {
             const Batch& b = g_batches[bi];
-            if (g_batchLimit >= 0 && drawn++ >= g_batchLimit) break;
+            if (g_batchLimit >= 0 && drawn++ >= g_batchLimit)
+                break;
             // A copy captures only what was drawn BEFORE it, and a blit is not a render-pass
             // operation — so the pass ends here, the resolve happens, and a new pass RESUMES over
             // the same target (LOAD, not CLEAR, or everything drawn so far is thrown away).
             while (nextCopy < g_copyPoints.size() && g_copyPoints[nextCopy].batchIndex <= bi) {
-                {   // WHEN is the copy taken? A copy at batch 0 of 146 captures an essentially
+                { // WHEN is the copy taken? A copy at batch 0 of 146 captures an essentially
                     // empty target, so the surface the game then samples is whatever the clear
                     // left — the composite can look plausible while the copy is meaningless.
                     static long tell = 0;
@@ -1189,7 +1060,7 @@ void render_pass_into_cpu(uint32_t ablation) {
                 dsi.store_op = SDL_GPU_STOREOP_STORE;
                 rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi);
             }
-            SDL_BindGPUGraphicsPipeline(rp, pipeline_for(b.st));
+            SDL_BindGPUGraphicsPipeline(rp, sbr_native_gpu_pipeline_for(b.st));
             // The hardware clips each draw to its own scissor rect. Clamped to the target because
             // the guest rect can legitimately extend past it and SDL rejects an out-of-bounds one.
             // SBR_NO_SCISSOR=1 (DIAGNOSTIC): ignore the per-draw scissor and clip to the full
@@ -1206,7 +1077,12 @@ void render_pass_into_cpu(uint32_t ablation) {
                 sc.y = std::clamp<int>(b.st.scissor[1], 0, g_h);
                 sc.w = std::clamp<int>(b.st.scissor[2], 0, g_w - sc.x);
                 sc.h = std::clamp<int>(b.st.scissor[3], 0, g_h - sc.y);
-                if (noScissor) { sc.x = 0; sc.y = 0; sc.w = g_w; sc.h = g_h; }
+                if (noScissor) {
+                    sc.x = 0;
+                    sc.y = 0;
+                    sc.w = g_w;
+                    sc.h = g_h;
+                }
                 SDL_SetGPUScissor(rp, &sc);
             }
             // All eight units every draw: the shader's sampler set is fixed by the pipeline
@@ -1231,10 +1107,11 @@ void render_pass_into_cpu(uint32_t ablation) {
             // resolved to. When the two disagree the defect is the cache key, not the parser.
             if (g_bindLog > 0) {
                 --g_bindLog;
-                lucent::info("nrender", "bind: slot0 key={:016x} mean={:.1f} | slot1 key={:016x} "
-                                        "mean={:.1f} | slot2 key={:016x} mean={:.1f} | verts={}",
-                             b.texKey[0], slotMean[0], b.texKey[1], slotMean[1],
-                             b.texKey[2], slotMean[2], b.count);
+                lucent::info("nrender",
+                             "bind: slot0 key={:016x} mean={:.1f} | slot1 key={:016x} "
+                             "mean={:.1f} | slot2 key={:016x} mean={:.1f} | verts={}",
+                             b.texKey[0], slotMean[0], b.texKey[1], slotMean[1], b.texKey[2],
+                             slotMean[2], b.count);
             }
             SDL_BindGPUFragmentSamplers(rp, 0, tsb, 8);
             TevUniform tu = b.tev;
@@ -1251,9 +1128,14 @@ void render_pass_into_cpu(uint32_t ablation) {
 
     SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion reg{};
-    reg.texture = g_color; reg.w = (Uint32)g_w; reg.h = (Uint32)g_h; reg.d = 1;
+    reg.texture = g_color;
+    reg.w = (Uint32)g_w;
+    reg.h = (Uint32)g_h;
+    reg.d = 1;
     SDL_GPUTextureTransferInfo tti{};
-    tti.transfer_buffer = g_dl; tti.pixels_per_row = (Uint32)g_w; tti.rows_per_layer = (Uint32)g_h;
+    tti.transfer_buffer = g_dl;
+    tti.pixels_per_row = (Uint32)g_w;
+    tti.rows_per_layer = (Uint32)g_h;
     SDL_DownloadFromGPUTexture(cp, &reg, &tti);
     SDL_EndGPUCopyPass(cp);
 
@@ -1270,7 +1152,7 @@ void render_pass_into_cpu(uint32_t ablation) {
     SDL_ReleaseGPUFence(g_dev, fence);
     if (!signalled) {
         gpu_disable("the GPU stopped signalling fences during an offscreen render pass");
-        return;   // g_cpu keeps its previous contents; nothing downstream may treat them as fresh
+        return; // g_cpu keeps its previous contents; nothing downstream may treat them as fresh
     }
     if (void* mapped = SDL_MapGPUTransferBuffer(g_dev, g_dl, false)) {
         std::memcpy(g_cpu.data(), mapped, g_cpu.size());
@@ -1278,13 +1160,18 @@ void render_pass_into_cpu(uint32_t ablation) {
     }
 }
 
-int sbr_render_last_vertex_count() { return g_lastVerts; }
-int sbr_render_last_batch_count() { return g_lastBatches; }
+int sbr_render_last_vertex_count() {
+    return g_lastVerts;
+}
+int sbr_render_last_batch_count() {
+    return g_lastBatches;
+}
 // Re-decode every texture that cached BLACK and report whether its guest bytes have since changed.
 // Distinguishes a first-sight caching race (bytes now non-zero) from memory that is genuinely zero
 // (a render target this port never writes, or a wrong address).
 void sbr_render_recheck_black() {
-    if (!textures_enabled()) return;
+    if (!textures_enabled())
+        return;
     // STALE-CACHE SCAN, all entries: the cache fills on FIRST SIGHT and is never revalidated, while
     // the CPU tev trace decodes fresh — so a texture whose guest bytes changed after first sight
     // makes the reference predict one frame and the GPU render another. Report every entry whose
@@ -1292,166 +1179,200 @@ void sbr_render_recheck_black() {
     {
         int stale = 0, scanned = 0;
         for (auto& [key, tex] : g_texs) {
-            if (tex.desc.addr == 0 || tex.mean < 0.0f) continue;
+            if (tex.desc.addr == 0 || tex.mean < 0.0f)
+                continue;
             std::vector<uint8_t> rgba((size_t)tex.desc.width * tex.desc.height * 4);
             if (!gx_decode_texture(tex.desc.addr, tex.desc.width, tex.desc.height, tex.desc.format,
                                    tex.desc.tlut, rgba.data()))
                 continue;
             ++scanned;
             uint64_t sum = 0;
-            for (size_t i = 0; i < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+            for (size_t i = 0; i < rgba.size(); i += 4)
+                sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
             const float now = (float)((double)sum / (double)(rgba.size() / 4 * 3));
             if (std::fabs(now - tex.mean) > 2.0f) {
                 ++stale;
                 if (stale <= 12)
-                    lucent::info("nrender", "STALE cache 0x{:08x} {} {}x{}: uploaded mean {:.1f}, "
-                                            "guest memory now {:.1f}",
+                    lucent::info("nrender",
+                                 "STALE cache 0x{:08x} {} {}x{}: uploaded mean {:.1f}, "
+                                 "guest memory now {:.1f}",
                                  tex.desc.addr, gx_texture_format_name(tex.desc.format),
                                  tex.desc.width, tex.desc.height, tex.mean, now);
             }
         }
-        {   // Top unit-1 bindings by vertex count, with what each decodes to.
-        std::vector<std::pair<uint32_t, long>> v(g_unit1Use.begin(), g_unit1Use.end());
-        std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
-        long total = 0;
-        for (auto& [a, n] : v) total += n;
-        for (size_t i = 0; i < v.size() && i < 8; ++i) {
-            float mean = -1.0f;
-            const char* fmt = "?";
-            int w = 0, h = 0;
-            for (auto& [key, t] : g_texs)
-                if (t.desc.addr == v[i].first) {
-                    mean = t.mean; fmt = gx_texture_format_name(t.desc.format);
-                    w = t.desc.width; h = t.desc.height; break;
-                }
-            lucent::info("nrender", "  unit1 bind 0x{:08x} {} {}x{}: {} verts ({:.1f}% of unit-1 "
-                                    "work), decoded mean {:.1f}{}",
-                         v[i].first, fmt, w, h, v[i].second,
-                         total ? 100.0 * (double)v[i].second / (double)total : 0.0, mean,
-                         (mean >= 0.0f && mean <= 1.0f) ? "   <- BLACK" : "");
-        }
-    }
-    {   // WHO OWNS a genuinely-empty texture buffer. J3D keeps its textures in a TEX1 section with
-        // a name table, and archives carry their own magics, so scanning back from the buffer for
-        // the nearest section magic and the strings around it identifies the texture BY NAME —
-        // which turns "some I4 128x128 is empty" into a specific asset that can be looked up.
-        static bool scanned = false;
-        if (!scanned)
-            for (auto& [key, tex] : g_texs) {
-                if (tex.desc.addr != 0x80cf0ac0u && tex.desc.addr != 0x80cfafa0u) continue;
-                scanned = true;
-                static const char* const kMagic[] = {"TEX1", "BMD3", "BDL4", "RARC", "Yaz0",
-                                                     "INF1", "MAT3", "SHP1", "J3D2"};
-                for (const char* m : kMagic) {
-                    uint32_t best = 0;
-                    for (uint32_t back = 4; back < 0x200000; back += 4) {
-                        const uint32_t a = tex.desc.addr - back;
-                        if (!sb_ram_fast(a)) break;
-                        if (sb_r8(a) == (uint8_t)m[0] && sb_r8(a + 1) == (uint8_t)m[1] &&
-                            sb_r8(a + 2) == (uint8_t)m[2] && sb_r8(a + 3) == (uint8_t)m[3]) {
-                            best = a; break;
-                        }
+        { // Top unit-1 bindings by vertex count, with what each decodes to.
+            std::vector<std::pair<uint32_t, long>> v(g_unit1Use.begin(), g_unit1Use.end());
+            std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
+            long total = 0;
+            for (auto& [a, n] : v)
+                total += n;
+            for (size_t i = 0; i < v.size() && i < 8; ++i) {
+                float mean = -1.0f;
+                const char* fmt = "?";
+                int w = 0, h = 0;
+                for (auto& [key, t] : g_texs)
+                    if (t.desc.addr == v[i].first) {
+                        mean = t.mean;
+                        fmt = gx_texture_format_name(t.desc.format);
+                        w = t.desc.width;
+                        h = t.desc.height;
+                        break;
                     }
-                    if (best != 0)
-                        lucent::info("nrender", "  0x{:08x}: nearest '{}' at 0x{:08x} (-0x{:x})",
-                                     tex.desc.addr, m, best, tex.desc.addr - best);
-                }
-                // Printable names in the 8 KB before the buffer — J3D texture name tables sit with
-                // the headers, so the asset's own name is usually reachable from here.
-                lucent::Line l;
-                l.add("  0x{:08x} nearby strings:", tex.desc.addr);
-                std::string cur;
-                for (uint32_t back = 0x2000; back > 0; --back) {
-                    const uint8_t c = sb_r8(tex.desc.addr - back);
-                    if (c >= 32 && c < 127) { cur.push_back((char)c); continue; }
-                    if (cur.size() >= 4) l.add(" '{}'", cur);
-                    cur.clear();
-                }
-                l.flush(lucent::Level::Info, "nrender");
-            }
-    }
-    {   // What SURROUNDS a zero texture in guest memory. These buffers sit inside live
-        // allocations (the zero run stops immediately at their edges), so the bytes on either side
-        // belong to whatever owns them — a J3D TEX1 block, an archive header, a name table. That is
-        // the cheapest available handle on WHO should have filled them.
-        static bool once = false;
-        for (auto& [key, tex] : g_texs) {
-            if (once) break;
-            if (tex.mean < 0.0f || tex.mean > 1.0f || tex.desc.addr == 0) continue;
-            if (tex.desc.addr != 0x80cf0ac0u && tex.desc.addr != 0x80cfafa0u) continue;
-            for (int side = 0; side < 2; ++side) {
-                const uint32_t base = side == 0 ? tex.desc.addr - 64
-                                                : tex.desc.addr + (uint32_t)gx_texture_data_size(
-                                                      tex.desc.width, tex.desc.height,
-                                                      tex.desc.format);
-                lucent::Line l;
-                l.add("  0x{:08x} {}: {} ", tex.desc.addr,
-                      gx_texture_format_name(tex.desc.format), side == 0 ? "BEFORE" : "AFTER ");
-                for (int i = 0; i < 48; ++i) l.add("{:02x} ", sb_r8(base + (uint32_t)i));
-                l.add(" |");
-                for (int i = 0; i < 48; ++i) {
-                    const uint8_t c = sb_r8(base + (uint32_t)i);
-                    l.add("{}", (c >= 32 && c < 127) ? (char)c : '.');
-                }
-                l.flush(lucent::Level::Info, "nrender");
-            }
-            once = true;
-        }
-    }
-    {   // Ask AURORA whether it holds a GPU-side copy surface for each empty buffer. Aurora
-        // services EFB copy destinations on the GPU and never writes guest memory, so it can
-        // sample a real rendered surface at an address whose RAM is all zeros — which is exactly
-        // what this port decodes. That difference is invisible in every state comparison.
-        static bool asked = false;
-        if (!asked) {
-            asked = true;
-            for (uint32_t a : {0x80cf0ac0u, 0x80cfafa0u, 0x80fea480u}) {
-                const int r = sbr_aurora_has_copy_texture(a);
-                lucent::info("nrender", "  aurora copy-surface for 0x{:08x}: {}", a,
-                             r == 1 ? "YES — aurora samples a rendered surface here, this port "
-                                      "decodes guest memory (zeros)"
-                                    : r == 0 ? "no" : "no copy textures registered at all");
+                lucent::info("nrender",
+                             "  unit1 bind 0x{:08x} {} {}x{}: {} verts ({:.1f}% of unit-1 "
+                             "work), decoded mean {:.1f}{}",
+                             v[i].first, fmt, w, h, v[i].second,
+                             total ? 100.0 * (double)v[i].second / (double)total : 0.0, mean,
+                             (mean >= 0.0f && mean <= 1.0f) ? "   <- BLACK" : "");
             }
         }
-    }
-    {   // The BLACK unit-1 bindings specifically. The by-volume ranking above is dominated by near
-        // geometry and showed none, yet the background is black — so the population that causes the
-        // defect has to be listed on its own terms rather than found in a top-N by vertex count.
-        std::vector<std::pair<uint32_t, long>> v(g_unit1Use.begin(), g_unit1Use.end());
-        long total = 0, blackTotal = 0;
-        for (auto& [a, n] : v) total += n;
-        std::vector<std::tuple<long, uint32_t, const SbrTexture*>> black;
-        for (auto& [addr, n] : v)
-            for (auto& [key, t] : g_texs)
-                if (t.desc.addr == addr && t.mean >= 0.0f && t.mean <= 1.0f) {
-                    black.emplace_back(n, addr, &t.desc); blackTotal += n; break;
+        { // WHO OWNS a genuinely-empty texture buffer. J3D keeps its textures in a TEX1 section
+          // with
+            // a name table, and archives carry their own magics, so scanning back from the buffer
+            // for the nearest section magic and the strings around it identifies the texture BY
+            // NAME — which turns "some I4 128x128 is empty" into a specific asset that can be
+            // looked up.
+            static bool scanned = false;
+            if (!scanned)
+                for (auto& [key, tex] : g_texs) {
+                    if (tex.desc.addr != 0x80cf0ac0u && tex.desc.addr != 0x80cfafa0u)
+                        continue;
+                    scanned = true;
+                    static const char* const kMagic[] = {"TEX1", "BMD3", "BDL4", "RARC", "Yaz0",
+                                                         "INF1", "MAT3", "SHP1", "J3D2"};
+                    for (const char* m : kMagic) {
+                        uint32_t best = 0;
+                        for (uint32_t back = 4; back < 0x200000; back += 4) {
+                            const uint32_t a = tex.desc.addr - back;
+                            if (!sb_ram_fast(a))
+                                break;
+                            if (sb_r8(a) == (uint8_t)m[0] && sb_r8(a + 1) == (uint8_t)m[1] &&
+                                sb_r8(a + 2) == (uint8_t)m[2] && sb_r8(a + 3) == (uint8_t)m[3]) {
+                                best = a;
+                                break;
+                            }
+                        }
+                        if (best != 0)
+                            lucent::info("nrender",
+                                         "  0x{:08x}: nearest '{}' at 0x{:08x} (-0x{:x})",
+                                         tex.desc.addr, m, best, tex.desc.addr - best);
+                    }
+                    // Printable names in the 8 KB before the buffer — J3D texture name tables sit
+                    // with the headers, so the asset's own name is usually reachable from here.
+                    lucent::Line l;
+                    l.add("  0x{:08x} nearby strings:", tex.desc.addr);
+                    std::string cur;
+                    for (uint32_t back = 0x2000; back > 0; --back) {
+                        const uint8_t c = sb_r8(tex.desc.addr - back);
+                        if (c >= 32 && c < 127) {
+                            cur.push_back((char)c);
+                            continue;
+                        }
+                        if (cur.size() >= 4)
+                            l.add(" '{}'", cur);
+                        cur.clear();
+                    }
+                    l.flush(lucent::Level::Info, "nrender");
                 }
-        std::sort(black.begin(), black.end(), [](auto& a, auto& b) {
-            return std::get<0>(a) > std::get<0>(b);
-        });
-        lucent::info("nrender", "  unit1 BLACK bindings: {} of {} distinct addresses, {:.2f}% of "
-                                "unit-1 vertex work", black.size(), v.size(),
-                     total ? 100.0 * (double)blackTotal / (double)total : 0.0);
-        for (size_t i = 0; i < black.size() && i < 8; ++i) {
-            const SbrTexture* d = std::get<2>(black[i]);
-            lucent::info("nrender", "    0x{:08x} {} {}x{}: {} verts", std::get<1>(black[i]),
-                         gx_texture_format_name(d->format), d->width, d->height,
-                         std::get<0>(black[i]));
         }
-    }
-    lucent::info("nrender", "stale-cache scan: {} of {} decodable cached textures no longer "
-                                "match their upload", stale, scanned);
+        { // What SURROUNDS a zero texture in guest memory. These buffers sit inside live
+            // allocations (the zero run stops immediately at their edges), so the bytes on either
+            // side belong to whatever owns them — a J3D TEX1 block, an archive header, a name
+            // table. That is the cheapest available handle on WHO should have filled them.
+            static bool once = false;
+            for (auto& [key, tex] : g_texs) {
+                if (once)
+                    break;
+                if (tex.mean < 0.0f || tex.mean > 1.0f || tex.desc.addr == 0)
+                    continue;
+                if (tex.desc.addr != 0x80cf0ac0u && tex.desc.addr != 0x80cfafa0u)
+                    continue;
+                for (int side = 0; side < 2; ++side) {
+                    const uint32_t base =
+                        side == 0 ? tex.desc.addr - 64
+                                  : tex.desc.addr + (uint32_t)gx_texture_data_size(tex.desc.width,
+                                                                                   tex.desc.height,
+                                                                                   tex.desc.format);
+                    lucent::Line l;
+                    l.add("  0x{:08x} {}: {} ", tex.desc.addr,
+                          gx_texture_format_name(tex.desc.format), side == 0 ? "BEFORE" : "AFTER ");
+                    for (int i = 0; i < 48; ++i)
+                        l.add("{:02x} ", sb_r8(base + (uint32_t)i));
+                    l.add(" |");
+                    for (int i = 0; i < 48; ++i) {
+                        const uint8_t c = sb_r8(base + (uint32_t)i);
+                        l.add("{}", (c >= 32 && c < 127) ? (char)c : '.');
+                    }
+                    l.flush(lucent::Level::Info, "nrender");
+                }
+                once = true;
+            }
+        }
+        { // Ask AURORA whether it holds a GPU-side copy surface for each empty buffer. Aurora
+            // services EFB copy destinations on the GPU and never writes guest memory, so it can
+            // sample a real rendered surface at an address whose RAM is all zeros — which is
+            // exactly what this port decodes. That difference is invisible in every state
+            // comparison.
+            static bool asked = false;
+            if (!asked) {
+                asked = true;
+                for (uint32_t a : {0x80cf0ac0u, 0x80cfafa0u, 0x80fea480u}) {
+                    const int r = sbr_aurora_has_copy_texture(a);
+                    lucent::info("nrender", "  aurora copy-surface for 0x{:08x}: {}", a,
+                                 r == 1 ? "YES — aurora samples a rendered surface here, this port "
+                                          "decodes guest memory (zeros)"
+                                 : r == 0 ? "no"
+                                          : "no copy textures registered at all");
+                }
+            }
+        }
+        { // The BLACK unit-1 bindings specifically. The by-volume ranking above is dominated by
+          // near
+            // geometry and showed none, yet the background is black — so the population that causes
+            // the defect has to be listed on its own terms rather than found in a top-N by vertex
+            // count.
+            std::vector<std::pair<uint32_t, long>> v(g_unit1Use.begin(), g_unit1Use.end());
+            long total = 0, blackTotal = 0;
+            for (auto& [a, n] : v)
+                total += n;
+            std::vector<std::tuple<long, uint32_t, const SbrTexture*>> black;
+            for (auto& [addr, n] : v)
+                for (auto& [key, t] : g_texs)
+                    if (t.desc.addr == addr && t.mean >= 0.0f && t.mean <= 1.0f) {
+                        black.emplace_back(n, addr, &t.desc);
+                        blackTotal += n;
+                        break;
+                    }
+            std::sort(black.begin(), black.end(),
+                      [](auto& a, auto& b) { return std::get<0>(a) > std::get<0>(b); });
+            lucent::info("nrender",
+                         "  unit1 BLACK bindings: {} of {} distinct addresses, {:.2f}% of "
+                         "unit-1 vertex work",
+                         black.size(), v.size(),
+                         total ? 100.0 * (double)blackTotal / (double)total : 0.0);
+            for (size_t i = 0; i < black.size() && i < 8; ++i) {
+                const SbrTexture* d = std::get<2>(black[i]);
+                lucent::info("nrender", "    0x{:08x} {} {}x{}: {} verts", std::get<1>(black[i]),
+                             gx_texture_format_name(d->format), d->width, d->height,
+                             std::get<0>(black[i]));
+            }
+        }
+        lucent::info("nrender",
+                     "stale-cache scan: {} of {} decodable cached textures no longer "
+                     "match their upload",
+                     stale, scanned);
     }
     int rechecked = 0;
     for (auto& [key, tex] : g_texs) {
-        if (tex.mean > 0.5f || tex.desc.addr == 0) continue;
+        if (tex.mean > 0.5f || tex.desc.addr == 0)
+            continue;
         std::vector<uint8_t> rgba((size_t)tex.desc.width * tex.desc.height * 4);
         if (!gx_decode_texture(tex.desc.addr, tex.desc.width, tex.desc.height, tex.desc.format,
                                tex.desc.tlut, rgba.data()))
             continue;
         uint64_t sum = 0, sumA = 0;
         for (size_t i = 0; i < rgba.size(); i += 4) {
-            sum  += rgba[i] + rgba[i + 1] + rgba[i + 2];
+            sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
             sumA += rgba[i + 3];
         }
         const double now = (double)sum / (double)(rgba.size() / 4 * 3);
@@ -1469,23 +1390,27 @@ void sbr_render_recheck_black() {
         // alpha 255 whether or not they hold data. The only format-independent answer is the RAW
         // SOURCE BYTES, which is also what texwatch samples — so the two instruments agree by
         // construction instead of contradicting each other.
-        const uint32_t needBytes = (uint32_t)gx_texture_data_size(tex.desc.width, tex.desc.height,
-                                                                  tex.desc.format);
+        const uint32_t needBytes =
+            (uint32_t)gx_texture_data_size(tex.desc.width, tex.desc.height, tex.desc.format);
         const uint32_t need = needBytes;
         bool rawEmpty = true;
         for (uint32_t o = 0; o < needBytes && rawEmpty; ++o)
-            if (sb_r8(tex.desc.addr + o) != 0) rawEmpty = false;
+            if (sb_r8(tex.desc.addr + o) != 0)
+                rawEmpty = false;
         if (!rawEmpty) {
-            lucent::info("nrender", "0x{:08x} {} {}x{}: decodes to RGB {:.1f} / alpha {:.1f} but "
-                                    "its SOURCE BYTES ARE NON-ZERO — real content (an alpha mask "
-                                    "or a dark texture), not a missing one",
+            lucent::info("nrender",
+                         "0x{:08x} {} {}x{}: decodes to RGB {:.1f} / alpha {:.1f} but "
+                         "its SOURCE BYTES ARE NON-ZERO — real content (an alpha mask "
+                         "or a dark texture), not a missing one",
                          tex.desc.addr, gx_texture_format_name(tex.desc.format), tex.desc.width,
                          tex.desc.height, now, nowA);
             continue;
         }
         uint32_t before = 0, after = 0;
-        while (before < 0x20000 && sb_r8(tex.desc.addr - before - 1) == 0) ++before;
-        while (after < 0x20000 && sb_r8(tex.desc.addr + need + after) == 0) ++after;
+        while (before < 0x20000 && sb_r8(tex.desc.addr - before - 1) == 0)
+            ++before;
+        while (after < 0x20000 && sb_r8(tex.desc.addr + need + after) == 0)
+            ++after;
         // TWO read paths, side by side. This decoder reads through sb_r8 (guest EA); aurora is
         // handed a raw host pointer g_ram_base + phys for the SAME texture. Aurora renders the
         // plaza correctly from those bytes, so if sb_r8 disagrees with the raw pointer the
@@ -1497,19 +1422,25 @@ void sbr_render_recheck_black() {
             std::snprintf(hex + i * 3, 4, "%02x ", (unsigned)sb_r8(tex.desc.addr + i));
             std::snprintf(hexRaw + i * 3, 4, "%02x ", (unsigned)g_ram_base[phys + i]);
         }
-        lucent::info("nrender", "cached-black 0x{:08x} {} {}x{}: {} bytes, zero run -{}/+{}, sb_r8 [{}] rawptr [{}] cached mean {:.1f}, "
-                                "guest memory NOW decodes to {:.1f}", tex.desc.addr,
-                     gx_texture_format_name(tex.desc.format), tex.desc.width, tex.desc.height,
-                     need, before, after, hex, hexRaw, tex.mean, now);
+        lucent::info("nrender",
+                     "cached-black 0x{:08x} {} {}x{}: {} bytes, zero run -{}/+{}, sb_r8 [{}] "
+                     "rawptr [{}] cached mean {:.1f}, "
+                     "guest memory NOW decodes to {:.1f}",
+                     tex.desc.addr, gx_texture_format_name(tex.desc.format), tex.desc.width,
+                     tex.desc.height, need, before, after, hex, hexRaw, tex.mean, now);
     }
-    if (rechecked == 0) lucent::info("nrender", "no cached-black textures to recheck");
+    if (rechecked == 0)
+        lucent::info("nrender", "no cached-black textures to recheck");
 }
 
-int sbr_render_texture_count() { return (int)g_texs.size(); }
+int sbr_render_texture_count() {
+    return (int)g_texs.size();
+}
 
 void sbr_render_report_formats() {
     static bool done = false;
-    if (done || g_fmtHist.empty()) return;
+    if (done || g_fmtHist.empty())
+        return;
     done = true;
     for (const auto& [f, n] : g_fmtHist)
         lucent::info("nrender", "  texture format {} ({}) -> {} textures", f,
@@ -1522,7 +1453,8 @@ void sbr_render_report_formats() {
 // Written top-left origin RGBA8, same convention as aurora's dump, so the comparison is apples to
 // apples rather than a flip away from nonsense.
 bool sbr_render_dump(const char* path) {
-    if (!g_ok || path == nullptr || path[0] == '\0') return false;
+    if (!g_ok || path == nullptr || path[0] == '\0')
+        return false;
     std::FILE* f = std::fopen(path, "wb");
     if (f == nullptr) {
         lucent::error("nrender", "cannot open {} for write", path);
@@ -1538,11 +1470,11 @@ bool sbr_render_readback(uint8_t* rgba, int w, int h) {
     // g_gpuDead matters here even though this is a plain memcpy: g_cpu holds the LAST frame that
     // read back successfully, and once the device is gone that content never refreshes. Returning
     // it would feed the A/B comparator a frozen picture scored as a live one.
-    if (!g_ok || g_gpuDead || g_cpuStale || w != g_w || h != g_h || rgba == nullptr) return false;
+    if (!g_ok || g_gpuDead || g_cpuStale || w != g_w || h != g_h || rgba == nullptr)
+        return false;
     std::memcpy(rgba, g_cpu.data(), (size_t)w * h * 4);
     return true;
 }
-
 
 // ---- Operation attribution -----------------------------------------------------------------
 // Each entry replaces exactly ONE GX operation with a neutral reference. The names are the
@@ -1550,29 +1482,29 @@ bool sbr_render_readback(uint8_t* rgba, int w, int h) {
 // flags. Keep in sync with the ablation switch in shaders/geom.frag.glsl.
 namespace {
 const char* const kAblationName[] = {
-    "baseline",             // 0 — the real pipeline
-    "texgen->raw uv0",      // 1 — coordinate generation
-    "texfetch->white",      // 2 — texture identity, decode, wrap and filter
-    "ras->channel0",        // 3 — rasterised colour channel selection
-    "tev->passthrough",     // 4 — the combiner chain
-    "konst->one",           // 5 — konstant selection
-    "alphatest->pass",      // 6 — the alpha test
-    "texmap->unit0",        // 7 — per-stage texmap routing
+    "baseline",         // 0 — the real pipeline
+    "texgen->raw uv0",  // 1 — coordinate generation
+    "texfetch->white",  // 2 — texture identity, decode, wrap and filter
+    "ras->channel0",    // 3 — rasterised colour channel selection
+    "tev->passthrough", // 4 — the combiner chain
+    "konst->one",       // 5 — konstant selection
+    "alphatest->pass",  // 6 — the alpha test
+    "texmap->unit0",    // 7 — per-stage texmap routing
     // INSTRUMENT CONTROL, not an operation. The shader has no branch for this id, so it renders
     // the real pipeline. It MUST score exactly the baseline; if it does not, the sweep machinery
     // (re-render, readback, pairing) is lying and no row in the table can be believed.
-    "control:no-op",        // 8
+    "control:no-op", // 8
     // PER-UNIT decomposition of the texmap-routing row. "texmap->unit0" pins ALL stages and so
     // reports one aggregate number; these pin exactly ONE unit and leave the rest named, so the
     // +5.9 can be attributed to the unit whose CONTENT is actually wrong instead of to routing as
     // a whole. Drift-free because every one is scored against the same aurora frame.
-    "pin unit1->0",         // 9
-    "pin unit2->0",         // 10
-    "pin unit3->0",         // 11
-    "pin unit4->0",         // 12
-    "pin unit5->0",         // 13
-    "pin unit6->0",         // 14
-    "pin unit7->0",         // 15
+    "pin unit1->0", // 9
+    "pin unit2->0", // 10
+    "pin unit3->0", // 11
+    "pin unit4->0", // 12
+    "pin unit5->0", // 13
+    "pin unit6->0", // 14
+    "pin unit7->0", // 15
 };
 }
 
@@ -1589,20 +1521,25 @@ const char* const kAblationName[] = {
 // that the guard is inert rather than passing quietly.
 void sbr_render_guard_selftest() {
     const char* e = std::getenv("SBR_GPU_GUARD_SELFTEST");
-    if (e == nullptr || e[0] != '1') return;
+    if (e == nullptr || e[0] != '1')
+        return;
     if (!g_ok || g_gpuDead) {
-        lucent::error("nrender", "GUARD SELF-TEST cannot run: the renderer is not initialised "
-                                 "(g_ok={}, gpuDead={}). This is not a pass.", g_ok, g_gpuDead);
+        lucent::error("nrender",
+                      "GUARD SELF-TEST cannot run: the renderer is not initialised "
+                      "(g_ok={}, gpuDead={}). This is not a pass.",
+                      g_ok, g_gpuDead);
         return;
     }
 
     // The pass cap, on a live device: ask for more offscreen passes in one frame than the cap
     // allows and require the surplus to be refused.
     g_passesThisFrame = 0;
-    for (int i = 0; i < kMaxPassesPerFrame + 2; ++i) render_pass_into_cpu(0);
+    for (int i = 0; i < kMaxPassesPerFrame + 2; ++i)
+        render_pass_into_cpu(0);
     const bool capHeld = g_passesThisFrame > kMaxPassesPerFrame;
-    lucent::info("nrender", "GUARD SELF-TEST passcap: asked for {} passes with a cap of {}; "
-                            "counter reached {} -> {}",
+    lucent::info("nrender",
+                 "GUARD SELF-TEST passcap: asked for {} passes with a cap of {}; "
+                 "counter reached {} -> {}",
                  kMaxPassesPerFrame + 2, kMaxPassesPerFrame, g_passesThisFrame,
                  capHeld ? "REFUSED the surplus, as required" : "NO REFUSAL — THE CAP IS INERT");
     g_passesThisFrame = 0;
@@ -1612,7 +1549,7 @@ void sbr_render_guard_selftest() {
     // the first thing that waits on a fence is the white-texture upload inside sbr_render_init —
     // long before this runs. Exercising them is a whole run of its own:
     //
-    //     SBR_GPU_FENCE_TIMEOUT=0 ... SBR_SDLGPU=1
+    //     SBR_GPU_FENCE_TIMEOUT=0 SBR_RENDERER=native ...
     //
     // which must print "the GPU has not signalled its fence in 0.0s" followed by "NATIVE RENDERER
     // DISABLED FOR THE REST OF THIS RUN", and must then complete normally with aurora presenting.
@@ -1626,20 +1563,24 @@ void sbr_render_guard_selftest() {
 // Reported at shutdown so a run that quietly lost its GPU is distinguishable from one that never
 // used it. Silence would otherwise read as success.
 void sbr_render_gpu_report() {
-    if (!enabled()) return;
+    if (!enabled())
+        return;
     if (g_gpuDead)
         lucent::warn("nrender", "the native renderer was DISABLED mid-run after a GPU fault. Every "
                                 "native measurement after that point is missing, not zero.");
     else if (g_ok)
-        lucent::info("nrender", "native renderer ran to the end with no GPU fault; fence budget "
-                                "{:.1f}s, at most {} offscreen passes per frame, rate limit "
-                                "{:.1f} Hz ({} frame(s) skipped to stay under it — those are gaps "
-                                "in the measurement, not zeroes).",
-                     fence_timeout_secs(), kMaxPassesPerFrame, pass_rate_limit_hz(),
-                     g_passesSkippedForRate);
+        lucent::info("nrender",
+                     "native renderer ran to the end with no GPU fault; fence budget "
+                     "{:.1f}s, at most {} offscreen passes per frame, rate limit "
+                     "{:.1f} Hz ({} frame(s) skipped to stay under it — those are gaps "
+                     "in the measurement, not zeroes).",
+                     fence_timeout_secs(), kMaxPassesPerFrame, sbr_native_gpu_maximum_hz(),
+                     sbr_native_gpu_skipped_frames());
 }
 
-int sbr_render_ablation_count() { return (int)(sizeof kAblationName / sizeof kAblationName[0]); }
+int sbr_render_ablation_count() {
+    return (int)(sizeof kAblationName / sizeof kAblationName[0]);
+}
 const char* sbr_render_ablation_name(int id) {
     return (id >= 0 && id < sbr_render_ablation_count()) ? kAblationName[id] : "?";
 }
@@ -1647,11 +1588,11 @@ const char* sbr_render_ablation_name(int id) {
 // Re-render the frame already uploaded by sbr_render_end with one operation ablated. The result
 // lands in g_cpu, so sbr_render_readback returns it exactly as for the baseline.
 bool sbr_render_ablation_render(int id) {
-    if (!g_ok || g_gpuDead || id <= 0 || id >= sbr_render_ablation_count()) return false;
+    if (!g_ok || g_gpuDead || id <= 0 || id >= sbr_render_ablation_count())
+        return false;
     render_pass_into_cpu((uint32_t)id);
     return true;
 }
-
 
 // WHICH BATCH PAINTS THIS PIXEL BLACK? Bisect the batch list, re-rendering the already-uploaded
 // frame with a prefix of it, until the first batch that turns the sample pixel black is found.
@@ -1662,7 +1603,8 @@ bool sbr_render_ablation_render(int id) {
 // attribute), and with ZERO batches it must be the clear colour. Both are asserted before the
 // bisect runs, so an instrument that is simply reporting a constant cannot pass silently.
 void sbr_render_report_black_owner(int px, int py) {
-    if (!g_ok || g_batches.empty()) return;
+    if (!g_ok || g_batches.empty())
+        return;
     const size_t off = ((size_t)py * (size_t)g_w + (size_t)px) * 4;
     const auto isBlack = [&] {
         return g_cpu[off] < 16 && g_cpu[off + 1] < 16 && g_cpu[off + 2] < 16;
@@ -1677,14 +1619,15 @@ void sbr_render_report_black_owner(int px, int py) {
     render_pass_into_cpu(0);
     const bool fullBlack = isBlack();
     if (emptyBlack || !fullBlack) {
-        lucent::info("nrender", "black-owner bisect INVALID at ({},{}): with no batches the pixel "
-                                "is [{} {} {}] (black={}), with all {} batches black={} — the "
-                                "instrument cannot attribute anything here",
+        lucent::info("nrender",
+                     "black-owner bisect INVALID at ({},{}): with no batches the pixel "
+                     "is [{} {} {}] (black={}), with all {} batches black={} — the "
+                     "instrument cannot attribute anything here",
                      px, py, c0, c1, c2, emptyBlack, total, fullBlack);
         g_batchLimit = -1;
         return;
     }
-    int lo = 0, hi = total;          // lo: not black yet, hi: black
+    int lo = 0, hi = total; // lo: not black yet, hi: black
     while (hi - lo > 1) {
         const int mid = (lo + hi) / 2;
         g_batchLimit = mid;

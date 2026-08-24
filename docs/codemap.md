@@ -7,6 +7,17 @@ Update the relevant row in the SAME commit that changes a subsystem, then run
 
 Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · 🔬 built/parsed but not wired · ⬜ missing.
 
+## Renderer/runtime matrix
+
+| Runtime | Aurora renderer | Native SDL3-GPU renderer |
+|---|---|---|
+| recomp | ✅ Default displayed path: parsed FIFO → Aurora → present | 🟡 Offscreen parity sidecar selected by `SBR_RENDERER=native`; Aurora still consumes the FIFO and presents. Native presentation and Aurora removal have not landed. |
+| decomp | ✅ Existing `sms-boot` oracle and moddable runtime | ⬜ No decomp/native consumer, launcher, or presentation path exists. Building it requires a shared parsed-FIFO interface first; it is not a hidden flag. |
+
+These are four requested lanes but only three executable combinations today, and only the two
+Aurora combinations are complete displayed paths. `run-safe.sh` owns the recomp/decomp Aurora
+smokes; `run-render.sh` owns the gated recomp native sidecar.
+
 ## Two runtimes (CLAUDE.md 🏛️ TWO RUNTIMES, 2026-07-21)
 
 1. **recomp + native overrides** (`sms-recomp/`, `run.sh` → `play.sh` → `run-recomp.sh`) — the game's real PPC statically
@@ -61,11 +72,11 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 | probe server | ✅ | `sms-recomp/runtime/probe_server.cpp` | `SBR_PROBE=1`, frame-seam dispatch; `/r /w /help` + module endpoints |
 | probe: settings menu | ✅ | `sms-recomp/overrides/ui_probe.cpp` | `/ui` pushes a real SDL Escape so an automated run can open the RmlUi menu over a live game. One-way: the game pauses inside `pause_while_open` and never reaches the seam, so the probe cannot close it |
 | J3D geometry decode | 🟡 | `sms-recomp/runtime/render/j3d_decode.cpp` (+ `sms-recomp/overrides/j3d_capture.cpp`) | shape layout + display-list -> triangles; POS/NRM/CLR0 + 4 texcoord sets; 370342/370342 elements, 0 desyncs. Gaps: TEX4-7 sets, per-vertex TEXnMTXIDX |
-| interpolated scene | 🟡 | `sms-recomp/runtime/render/scene.cpp` (native SDL3-GPU path) | wall-clock alpha, stable-key matching, never extrapolates; per-bone skinning split; evaluates the GX colour channel + texgen per vertex. Gaps: specular, channel 1, EMBOSS |
-| native renderer (SDL3 GPU) | 🟡 | `sms-recomp/runtime/render/native_render.cpp` (+ `sms-recomp/runtime/shaders/`, `gx_texture.cpp`, `scene.cpp`, `state_oracle.cpp`) | geometry, per-material depth/blend, textures, full TEV incl. COMPARE mode, alpha test, wrap modes, colour channels 0 AND 1 with the per-stage RAS selector and swap tables, all 8 texmaps, GX cull, per-draw scissor, colorUpdate/alphaUpdate write masks, and EFB copy -> texture (render-to-texture, copies ordered by FIFO stream offset). edgeIoU 32.2% / lumaCorr +0.688 vs the aurora oracle at N=59; the Delfino background renders crisp. Per-draw state matches aurora EXACTLY on textures, raster, blend, scissor, cull, channels, combiner, ksel and konst (0 disagreements of ~29400); only `tevreg` differs on 41 draws, where aurora is holding register DEFAULTS (see C012/journal). 2D/J2D geometry is captured from the FIFO vertex stream (`SBR_FIFO_2D=1`, `gxFifo2DHandleDraw` in `sms-recomp/runtime/devices/gx_fifo_2d.cpp`) — that was the fork, and hooking J2D was NOT taken. 34601 of 34615 orthographic draws decode on a 300-present plaza run; the 14 declined are degenerate lines the hardware draws nothing for either. Handles direct and indexed POS/TEX0 via the CP array registers, per-vertex PosNrmMatIdx against the full 64-row XF position-matrix memory (immediate writes AND `GX_LOAD_INDX_A`), s16/u16/f32 positions, and QUADS/TRI/STRIP/FAN/LINES. Self-checking: the gate reports a per-reason decline breakdown that must sum, a clip-space residency comparison between the indexed and non-indexed classes (5510/5510 vs a 76.3% baseline), and a no-extent count that catches the collapse a wrong matrix produces — which residency alone cannot see. REMAINING GAPS, reported by the run itself, not silent: per-vertex TexMtxIdx draws decode with the right stride but no texgen matrix applied, so their UVs may be wrong; and nothing here checks that the captured geometry is the RIGHT geometry. See `debug_journal/2026-07-23_native_texgen_and_texmap_bisect.md`. ⛔ GATED OFF: needs `SBR_RENDER_APPROVED=1` from a human as well as `SBR_SDLGPU=1` — this path hung the machine's GPU and cost its owner the desktop session twice on 2026-08-12. Guards: latch-off on first fault, 5s bounded fence waits, <=4 offscreen passes/frame, 10 Hz sustained rate limit, cross-process cooldown via `tools/render/gpu_preflight.py`. `debug_journal/2026-08-12_gpu_hang_guards.md` |
+| interpolated scene | 🟡 | `sms-recomp/runtime/render/scene.cpp`, `gx_light.{h,cpp}`, `gx_texgen.{h,cpp}` (native SDL3-GPU path) | wall-clock alpha, stable-key matching, never extrapolates; per-bone skinning split; evaluates independent GX colour/alpha channels and texgen per vertex through shared, CPU-tested shipping evaluators. Gaps: specular and EMBOSS |
+| native renderer (SDL3 GPU) | 🟡 | `sms-recomp/runtime/render/native_render.cpp`, `native_gpu_admission.{h,cpp}`, `native_gpu_pipeline.{h,cpp}`, `gx_light.{h,cpp}`, `gx_texgen.{h,cpp}`, shaders, `scene.cpp`, `state_oracle.cpp` | Offscreen parity sidecar only: Aurora remains the displayed FIFO consumer. `native_gpu_pipeline` owns shader creation, graphics-pipeline caching, and the GX depth/blend/cull/write-mask mapping; the root renderer orchestrates resources and passes. Geometry, textures, TEV compare mode, alpha test, wrap, both colour channels, eight texmaps, scissor, and ordered EFB copies are wired. `SBR_RENDERER=native` plus the per-session approval selects it through `run-render.sh`; a denied initialization can be retried after UI approval. Safety remains latch-off on first fault, bounded fences, at most four offscreen passes/frame, and a CPU-tested 10 Hz admission gate that now rejects a frame before any texture creation, transfer-buffer map, or submit. Remaining end-state work: make the native backend consume the authoritative parsed FIFO directly and own presentation, then remove Aurora only after parity. |
 | 2D / HUD overrides | 🟡 | `sms-recomp/overrides/diag_2d.cpp`, `sms-recomp/overrides/hud.cpp` | `diag_2d.cpp` is a CENSUS over the J2D draw entry points (J2DPicture::draw/drawSelf, J2DTextBox::draw/drawSelf, J2DScreen::drawSelf) — all observe-only, real body always runs. `hud.cpp` ports TGCConsole2's widescreen corner layout. NOTE for anyone adding 2D capture to the native renderer: these addresses are ALREADY claimed, so extend `diag_2d.cpp` rather than registering a second override for the same address (attempted 2026-07-30; the duplicate was silently shadowed by the existing one). |
 | GX TEV reference + tests | ✅ | `sms-recomp/runtime/tev_eval.{h,cpp}`, `sms-recomp/tests/tev_eval_test.cpp` | the TEV pipeline as testable C++ and the DEFINITION of it — the shader mirrors it. Expectations hand-derived from the SDK (`GXSetTevColorOp` packing, `GXTevOp`, konst ramp, `GXCompare`); negative-control verified. `SBR_TEV_TRACE=<tick>` + `SBR_TEV_TRACE_BLACK=1` explain one drawable's pixel stage by stage |
-| GX lighting reference + tests | 🟡 | `sms-recomp/runtime/gx_light.{h,cpp}`, `sms-recomp/tests/gx_light_test.cpp` | colour-channel evaluation as testable C++; attnFn decode asserted against `GXSetChanCtrl`, the three diffuse fns, distance/angle attenuation, dead-light NaN guard. NOT WIRED IN YET — deliberately: the first wiring attempt regressed and could not be attributed |
+| GX lighting reference + tests | ✅ | `sms-recomp/runtime/render/gx_light.{h,cpp}`, `sms-recomp/tests/gx_light_test.cpp` | the scene calls the shared evaluator for both GX colour channels; CPU controls cover attnFn decode, diffuse modes, distance/angle attenuation, accumulator clamp-before-material multiplication, independent alpha control, and dead-light NaN handling |
 | per-draw state oracle | ✅ | `sms-recomp/runtime/state_oracle.{h,cpp}` (+ weak hooks in aurora's `command_processor.cpp`) | `SBR_STATE_DIFF=<n>` compares this port's parsed GX state against aurora's live state PER DRAW, paired by stream byte offset. 99.55% agreement — the parse is not the problem |
 | render A/B harness | ✅ | `sms-recomp/runtime/render/render_compare.cpp` | in-process scoring of the native frame against the aurora oracle (geom%, edgeIoU, lumaCorr) + a running mean/best over scored frames; `SBR_AB=1`, `SBR_AB_EVERY=N`, `SBR_AB_SELFTEST=1`. Compare runs at the SAME sample count. Also the operation-attribution sweep (`SBR_ABLATE=1`): one ablated variant per scored frame, round-robin advanced by the SCORER (a call-site counter aliases against the scoring cadence), PAIRED deltas against the same frame's baseline, and a table that names the variants it has not sampled yet. Result so far: no TEV-stage ablation recovers the gap; the 7 unit pins and texmap->unit0 are byte-identical because no plaza draw samples above unit 0 (C041) |
 | screen-effect registry | ✅ | `sms-recomp/frame_interp/effects.h`, `effects_screen.cpp`, `effects_afterimage.cpp` | names the per-frame screen-sampling set; `/screenfx`; for the interpolated in-between frame |
@@ -116,8 +127,9 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 
 ## Reference decomp (`decomp/sms` — submodule, SomeoneIsWorking/sms fork)
 
-The real game source, native-platform-guarded (`SMS_NATIVE_PLATFORM`). Rebased through upstream
-`eaa222a0` with `tools/re/rebase_upstream.py`; the native Clang audit is green. The restored upstream
+The real game source, native-platform-guarded (`SMS_NATIVE_PLATFORM`). Current fork tip
+`e0a7849a` is rebased and audited with `tools/re/rebase_upstream.py`; the native Clang audit is
+green. Its standing loop is **rebase → expand remaining gaps → rename known `unk*` semantics**. The restored upstream
 `MtxUtil` implementation keeps the native-safe 4×4-to-3×4 light-projection adaptation, and the typed
 `MActorAnmData` accessors replace five known `getUnk*` names. Matching-MWCC proof remains externally
 blocked on the absent Japanese Rev-0 disc. Rendering-affecting code is always native. Screen effects
@@ -207,7 +219,7 @@ sms-recomp/  —  the recomp runtime
 ├─ ui/                         Dusklight-style RmlUi document/window/settings ownership
 ├─ runtime/                    11 files   dispatch (rt_core), guest scheduler, boot env, probe
 │  ├─ devices/                 19 files   the GC hardware model — one file per device
-│  └─ render/                  18 files   the native SDL3-GPU renderer + its oracle harnesses
+│  └─ render/                  24 files   native SDL3-GPU sidecar, GX evaluators, and parity harnesses
 ├─ overrides/      6.6k lines  27 files   native HW/OS seams + widescreen/HUD/j3d capture
 ├─ frame_interp/   8.5k lines  29 files   ALL interpolated-60fps code — one API (docs/60fps/)
 │                                        + graphics_db.* — the graphics registry (docs/graphics/)
@@ -230,8 +242,8 @@ cannot drift; `run-decomp.sh` explicitly launches the decomp oracle. `play.sh` o
 flags, `run-recomp.sh` is the raw product harness, `run-render.sh` is the guarded native-preview
 harness, and
 `run-safe.sh` (the way to run a DIAGNOSTIC — conservative GPU settings, and it asks the kernel
-afterwards whether the run disturbed the card). `run-render.sh` additionally requires `SBR_RENDER_APPROVED=1`
-from a human.
+afterwards whether the run disturbed the card). `run-render.sh` additionally requires the explicit
+per-session `SBR_RENDER_APPROVED=1` accident gate.
 
 ## Open heads (details in debug_journal/ and docs/)
 

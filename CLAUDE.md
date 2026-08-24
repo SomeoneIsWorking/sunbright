@@ -136,6 +136,11 @@ upstream while we hand-ported them). **Check upstream before hand-porting a gap.
 Use `python3 tools/re/rebase_upstream.py` — `status` → `rebase` → `audit` (loop until
 green) → `converge`. Hard-won rules:
 
+- **The decomp development loop is rebase → expand → rename known unknowns.** Rebase first so
+  upstream implementations are not hand-ported twice; expand the remaining real gaps from binary
+  evidence; then replace `unk*` names only where the field/function semantics are established by
+  use sites or RE. A green rebase is synchronization, not completion of the decomp lane.
+
 - **Resolve FILE-level, never hunk-level, and move header+cpp TOGETHER.** A class whose
   `.hpp` and `.cpp` come from different sides will not build. Hunk-merging produces
   internally-inconsistent TUs.
@@ -167,10 +172,10 @@ was being used as one — three separate turns ended by naming this variable as 
 user could set. Everything here is the agent's responsibility, including this. Set the variable,
 run the thing, and own what happens.
 
-- **`SBR_SDLGPU=1` is gated on `SBR_RENDER_APPROVED=1`**, enforced in `sbr_render_init` (not just
-  in `run-render.sh` — the runs that did the damage set `SBR_SDLGPU=1` on `run-recomp.sh` directly
+- **`SBR_RENDERER=native` is gated on `SBR_RENDER_APPROVED=1`**, enforced in `sbr_render_init` (not just
+  in `run-render.sh` — the runs that did the damage selected the native path on `run-recomp.sh` directly
   and walked past the script). The gate stays because it stops an ACCIDENTAL native-render run —
-  a stray `SBR_SDLGPU=1` in a diagnostic command line no longer reaches the GPU. It is not a
+  a stray `SBR_RENDERER=native` in a diagnostic command line no longer reaches the GPU. It is not a
   permission slip.
 - **Use `./run-render.sh`, never a hand-assembled command line.** That is the actual lesson of the
   incident: the script sets the six variables that must go together, and `run-safe.sh` refuses to

@@ -103,15 +103,16 @@ cooldown only defends against the run that comes too soon. The user's report was
 — the machine becomes unusable when this renderer runs, full stop — and that observation outranks
 our logs, which had just said "ran to the end with no GPU fault".
 
-So `SBR_SDLGPU=1` now additionally requires `SBR_RENDER_APPROVED=1`, checked inside
+So `SBR_RENDERER=native` additionally requires per-session approval, checked inside
 `sbr_render_init` before the device is created. The check lives there rather than only in
 `run-render.sh` because the runs that did the damage bypassed that script entirely: they set
-`SBR_SDLGPU=1` on `run-recomp.sh` directly. A gate in the launcher guards the launcher; a gate at
+the renderer selector on `run-recomp.sh` directly. A gate in the launcher guards the launcher; a gate at
 device creation guards the device.
 
-No agent may set the variable. It is not a formality — it is the only control in this whole entry
-that does not depend on our own judgement about whether the GPU is healthy, and our judgement about
-that was wrong five times in one session.
+The later user directive removed the former “no agent may approve it” rule: approval is an accident
+gate, not a substitute for engineering or for doing the requested work. `run-render.sh` owns the
+complete guarded invocation. A denial is not cached as an initialization attempt, so selecting and
+approving Native from the in-game settings UI can retry in the same process.
 
 ## And the load itself, not just the failure handling
 
@@ -125,3 +126,28 @@ out is the expected outcome of that, not a coincidence.
 sixty; it never needed a pass per frame. Frames whose pass is skipped mark `g_cpu` STALE and
 `sbr_render_readback` refuses until a real one lands — a gap in the measurement, never a previous
 frame handed over as a current one.
+
+## Follow-up: rate admission originally happened after a submit (2026-08-24)
+
+The first rate limiter bounded render/readback passes but made its admission decision too late.
+`sbr_render_end` had already decoded/uploaded textures, mapped the reusable vertex transfer buffer,
+submitted its copy command, and only then returned for a rate-limited frame. Because the fenced
+render/readback did not run on that branch, the next turbo frame could map and reuse the same upload
+buffer while the prior command was still in flight. Thus “skipped” meant “submitted GPU work but
+skipped the synchronization that made its resource lifetime safe.”
+
+The shipping admission rule now lives in `native_gpu_admission.{h,cpp}` and runs before every GPU
+operation in `sbr_render_end`. Its CPU control proves the 10 Hz boundary and the explicit unlimited
+mode through the same `NativeGpuRateLimiter` used by production. This is a real source-level reset
+mechanism and is fixed; it is not claimed as the historical reset’s proven cause because no command
+timeline survived that incident.
+
+Runtime check after the rewrite: a 30-present `run-render.sh` plaza run completed with no native
+GPU fault, reported 19 frames rejected by the 10 Hz admission boundary, and repeated-pass hashes
+were identical. The unfiltered amdgpu anomaly count was 42 before and 42 after (delta 0). The run
+overrode only the cooldown stamp created by the deliberate zero-timeout control 13 minutes earlier;
+the override was printed by the preflight.
+
+After extracting shader/pipeline ownership into `native_gpu_pipeline`, a second 15-present run
+passed the preflight without override, produced identical repeat-pass hashes, reported nine
+rate-rejected frames, and again left the kernel count at 42 (delta 0).

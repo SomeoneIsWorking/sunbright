@@ -27,15 +27,15 @@ struct SbrVertex {
 // `func` is a raw GXCompare (0=NEVER, 1=LESS, 2=EQUAL, 3=LEQUAL, 4=GREATER, 5=NEQUAL, 6=GEQUAL,
 // 7=ALWAYS) — kept in GX terms so the translation to the backend lives in exactly one place.
 struct SbrDepthState {
-    uint8_t test;    // depth test enabled
-    uint8_t func;    // GXCompare
-    uint8_t write;   // depth WRITE enabled — the bit the sky relies on being off
+    uint8_t test;  // depth test enabled
+    uint8_t func;  // GXCompare
+    uint8_t write; // depth WRITE enabled — the bit the sky relies on being off
     // Blend state, from GXSetBlendMode. A translucent full-screen overlay drawn with the depth test
     // DISABLED paints over the whole scene when blending is ignored, which is indistinguishable
     // from a depth bug until the blend state is actually honoured.
-    uint8_t blend;   // GXBlendMode: 0=NONE, 1=BLEND, 2=LOGIC, 3=SUBTRACT
-    uint8_t srcFac;  // GXBlendFactor
-    uint8_t dstFac;  // GXBlendFactor
+    uint8_t blend;  // GXBlendMode: 0=NONE, 1=BLEND, 2=LOGIC, 3=SUBTRACT
+    uint8_t srcFac; // GXBlendFactor
+    uint8_t dstFac; // GXBlendFactor
     // cmode0 bits 3 and 4. A draw with colorUpdate CLEAR writes no colour at all — the hardware
     // runs the whole pipeline and discards the result. Ignoring it turns such a draw into an
     // opaque black fill, which is indistinguishable from a shading bug.
@@ -55,15 +55,15 @@ struct SbrDepthState {
 
 // The texture bound to TEXMAP0, as the game described it to the hardware.
 struct SbrTexture {
-    uint32_t addr = 0;     // guest address of the tiled texture data
-    uint32_t tlut = 0;     // palette address for the colour-indexed formats
+    uint32_t addr = 0; // guest address of the tiled texture data
+    uint32_t tlut = 0; // palette address for the colour-indexed formats
     uint32_t width = 0, height = 0;
-    uint32_t format = 0;   // GXTexFmt
+    uint32_t format = 0; // GXTexFmt
     // TX_SETMODE0: how the hardware samples OUTSIDE [0,1] and between texels. A repeated ground
     // texture sampled with CLAMP smears its edge row across the whole surface, and a clamped UI
     // texture sampled with REPEAT wraps its border in — the two are not interchangeable defaults.
-    uint8_t wrapS = 1, wrapT = 1;   // GXTexWrapMode: 0 CLAMP, 1 REPEAT, 2 MIRROR
-    uint8_t magLinear = 1;          // GX_NEAR / GX_LINEAR
+    uint8_t wrapS = 1, wrapT = 1; // GXTexWrapMode: 0 CLAMP, 1 REPEAT, 2 MIRROR
+    uint8_t magLinear = 1;        // GX_NEAR / GX_LINEAR
     uint8_t minLinear = 1;
     // A global bind counter, stamped when this unit was last written. Comparing a drawable's
     // stamps across units answers the question that texture VARIETY cannot: a unit with few
@@ -81,11 +81,11 @@ SbrTexture sbr_gx_fifo_texture(unsigned texmap);
 // pre-baked approximation, so the selector values keep their hardware meaning.
 struct SbrTevStage {
     uint8_t texmap = 0, texcoord = 0, texEnable = 0, rasChannel = 0;
-    uint8_t cA = 0, cB = 0, cC = 0, cD = 0;      // GXTevColorArg
+    uint8_t cA = 0, cB = 0, cC = 0, cD = 0; // GXTevColorArg
     uint8_t cBias = 0, cSub = 0, cClamp = 1, cScale = 0, cDest = 0;
-    uint8_t aA = 0, aB = 0, aC = 0, aD = 0;      // GXTevAlphaArg
+    uint8_t aA = 0, aB = 0, aC = 0, aD = 0; // GXTevAlphaArg
     uint8_t aBias = 0, aSub = 0, aClamp = 1, aScale = 0, aDest = 0;
-    uint8_t kC = 0, kA = 0;                       // konst selectors
+    uint8_t kC = 0, kA = 0; // konst selectors
     // TEV swap-mode selectors (TEV_ALPHA_ENV bits 0..1 / 2..3): which SbrTevState::swapTable row
     // remaps the rasterised colour and the texel before this stage reads them. This is how a
     // material reads a channel's ALPHA as an RGB grey — e.g. the plaza terrain's last stage reads
@@ -97,15 +97,15 @@ struct SbrTevState {
     uint32_t numStages = 1;
     uint32_t numTexGens = 1;
     SbrTevStage stage[16];
-    float reg[4][4]{};       // TEV colour registers: prev, c0, c1, c2
-    float konstReg[4][4]{};  // KONST registers k0..k3 — a separate bank, not the same storage
+    float reg[4][4]{};      // TEV colour registers: prev, c0, c1, c2
+    float konstReg[4][4]{}; // KONST registers k0..k3 — a separate bank, not the same storage
     // TEV_ALPHAFUNC (BP 0xF3). The cutout mechanism: foliage, fences and grates are drawn as opaque
     // quads whose shape comes ENTIRELY from discarding texels that fail this test. Without it those
     // surfaces render as solid rectangles, which reads as a geometry defect rather than a missing
     // pixel-pipeline stage.
-    uint8_t alphaOp0 = 7, alphaOp1 = 7;   // GXCompare, 7 = ALWAYS (the power-on state)
+    uint8_t alphaOp0 = 7, alphaOp1 = 7; // GXCompare, 7 = ALWAYS (the power-on state)
     uint8_t alphaRef0 = 0, alphaRef1 = 0;
-    uint8_t alphaLogic = 0;               // 0 AND, 1 OR, 2 XOR, 3 XNOR
+    uint8_t alphaLogic = 0; // 0 AND, 1 OR, 2 XOR, 3 XNOR
     // The four TEV swap tables (TEV_KSEL bits 0..3, two components per register — the same
     // registers that carry the konst selectors). swapTable[t][outComp] = source channel (0 R, 1 G,
     // 2 B, 3 A): output component c reads source channel swapTable[t][c]. Power-on rows are
@@ -144,13 +144,13 @@ struct SbrLight {
 };
 
 struct SbrChanCtrl {
-    uint8_t matSrcVertex = 1;   // material colour from the vertex rather than the register
+    uint8_t matSrcVertex = 1; // material colour from the vertex rather than the register
     uint8_t enableLight = 0;
-    uint8_t lightMask = 0;      // which of the 8 lights contribute
+    uint8_t lightMask = 0; // which of the 8 lights contribute
     uint8_t ambSrcVertex = 0;
-    uint8_t diffuseFn = 0;      // 0 none, 1 sign, 2 clamp
+    uint8_t diffuseFn = 0; // 0 none, 1 sign, 2 clamp
     uint8_t attnEnable = 0;
-    uint8_t attnSpot = 0;       // 0 = specular, 1 = spotlight
+    uint8_t attnSpot = 0; // 0 = specular, 1 = spotlight
 };
 
 // One texture-coordinate generator. GX does NOT hand the vertex's raw TEX0 to the sampler: every
@@ -159,16 +159,16 @@ struct SbrChanCtrl {
 // matrix. Taking the raw TEX0 is only correct for the identity case; scrolling water, the shiny
 // reflective materials and anything with an animated texture SRT are all texgen configurations.
 struct SbrTexGen {
-    uint8_t type = 0;        // 0 REGULAR, 1 EMBOSS, 2 COLOR0, 3 COLOR1
-    uint8_t sourceRow = 5;   // 0 GEOM, 1 NORMAL, 2 COLORS, 3/4 BINORMAL, 5 TEX0 .. 12 TEX7
-    uint8_t projection = 0;  // 0 = ST (2x4), 1 = STQ (3x4, perspective divide by q)
-    uint8_t inputForm = 0;   // 0 = (a,b,1,1), 1 = (a,b,c,1)
-    uint8_t mtxSlot = 0xFF;  // texture-matrix slot 0..9, or 0xFF for GX_IDENTITY
+    uint8_t type = 0;       // 0 REGULAR, 1 EMBOSS, 2 COLOR0, 3 COLOR1
+    uint8_t sourceRow = 5;  // 0 GEOM, 1 NORMAL, 2 COLORS, 3/4 BINORMAL, 5 TEX0 .. 12 TEX7
+    uint8_t projection = 0; // 0 = ST (2x4), 1 = STQ (3x4, perspective divide by q)
+    uint8_t inputForm = 0;  // 0 = (a,b,1,1), 1 = (a,b,c,1)
+    uint8_t mtxSlot = 0xFF; // texture-matrix slot 0..9, or 0xFF for GX_IDENTITY
 };
 
 struct SbrXfState {
     SbrLight light[8];
-    SbrChanCtrl chan[4];        // colour0, colour1, alpha0, alpha1
+    SbrChanCtrl chan[4]; // colour0, colour1, alpha0, alpha1
     float ambient[2][4]{};
     float material[2][4]{};
     uint32_t numChans = 1;
@@ -198,7 +198,7 @@ void sbr_tev_konst(const SbrTevState& tev, unsigned stage, float out[4]);
 void sbr_gx_set_projection(const float m[16], bool is2d);
 const float* sbr_gx_current_projection(bool* is2d);
 
-// SBR_SDLGPU=1 selects the native path (off by default during bring-up).
+// SBR_RENDERER=native selects the offscreen native parity path.
 bool sbr_render_enabled();
 
 // Stand up the SDL3 GPU device + an EFB-sized offscreen colour/depth target. Idempotent; false if
@@ -210,8 +210,8 @@ bool sbr_render_init(int w, int h);
 void sbr_render_begin(float r, float g, float b, float a);
 // Submit triangles under a given depth state. Consecutive submissions sharing a state are merged
 // into one draw; a change of state starts a new one.
-void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth, const SbrTexture tex[8],
-                     const SbrTevState& tev);
+void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
+                     const SbrTexture tex[8], const SbrTevState& tev);
 
 // Per-BP-register write counts, so the per-unit texture BIND RATE is measurable rather than
 // inferred (TX_SETIMAGE3 is 0x94+m for units 0-3).
@@ -242,16 +242,18 @@ int sbr_render_last_vertex_count();
 // Write the last rendered frame to `path` (RGBA8, top-left origin) for the A/B against aurora.
 bool sbr_render_dump(const char* path);
 
-// Copy the last rendered frame into rgba (w*h*4, top-left origin). False on size mismatch / no device.
+// Copy the last rendered frame into rgba (w*h*4, top-left origin). False on size mismatch / no
+// device.
 bool sbr_render_readback(uint8_t* rgba, int w, int h);
 
 // ---- Operation attribution (see render_compare.h) ----
 // How many ablations exist, what each is called, and re-rendering the current frame with one of
 // them applied. The result replaces g_cpu, so sbr_render_readback returns the variant.
 // GPU SAFETY. This renderer once hung the graphics ring badly enough that the driver reset the
-// card and the desktop session went down with it. sbr_render_guard_selftest (SBR_GPU_GUARD_SELFTEST=1)
-// proves the two guards that prevent it — the per-frame pass cap and the bounded fence wait —
-// actually fire; sbr_render_gpu_report says at shutdown whether the device survived the run.
+// card and the desktop session went down with it. sbr_render_guard_selftest
+// (SBR_GPU_GUARD_SELFTEST=1) proves the two guards that prevent it — the per-frame pass cap and the
+// bounded fence wait — actually fire; sbr_render_gpu_report says at shutdown whether the device
+// survived the run.
 void sbr_render_guard_selftest();
 void sbr_render_gpu_report();
 

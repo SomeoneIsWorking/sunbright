@@ -147,6 +147,11 @@ upstream while we hand-ported them). **Check upstream before hand-porting a gap.
 Use `python3 tools/re/rebase_upstream.py` — `status` → `rebase` → `audit` (loop until
 green) → `converge`. Hard-won rules:
 
+- **The decomp development loop is rebase → expand → rename known unknowns.** Rebase first so
+  upstream implementations are not hand-ported twice; expand the remaining real gaps from binary
+  evidence; then replace `unk*` names only where the field/function semantics are established by
+  use sites or RE. A green rebase is synchronization, not completion of the decomp lane.
+
 - **Resolve FILE-level, never hunk-level, and move header+cpp TOGETHER.** A class whose
   `.hpp` and `.cpp` come from different sides will not build. Hunk-merging produces
   internally-inconsistent TUs.

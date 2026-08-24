@@ -4,7 +4,7 @@
 # WHY THIS EXISTS. The native renderer needs SIX environment variables set together, and omitting
 # any one produces a silent, plausible-looking failure rather than an error:
 #
-#   SBR_SDLGPU=1        without it the native renderer never runs (aurora renders, you see a
+#   SBR_RENDERER=native without it the native renderer never runs (aurora renders, you see a
 #                       correct frame, and every native measurement is of nothing)
 #   SBR_J3D_CAPTURE=1   without it the scene has 0 drawables — GX still streams, so the logs look
 #                       busy and the frame is empty
@@ -27,7 +27,6 @@ export SB_TURBO="${SB_TURBO:-1}"
 export SBR_FASTBOOT="${SBR_FASTBOOT:-1}"
 export SBR_STAGE="${SBR_STAGE:-1}"
 export SBR_SCENARIO="${SBR_SCENARIO:-0}"
-export SBR_SDLGPU="${SBR_SDLGPU:-1}"
 export SBR_J3D_CAPTURE="${SBR_J3D_CAPTURE:-1}"
 export SBR_TEX="${SBR_TEX:-1}"
 
@@ -42,6 +41,11 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# This launcher owns the native-preview lane. Apply the required renderer after parsing optional
+# assignments so `./run-render.sh SBR_RENDERER=aurora` cannot quietly run a different path while
+# still passing through the native renderer's approval and preflight gates.
+export SBR_RENDERER=native
+
 # THE GATE STOPS AN ACCIDENT, NOT AN AGENT.
 #
 # This script launches the native SDL3-GPU renderer, and launching it unguarded is what made this
@@ -55,7 +59,7 @@ done
 # the measurement it guards sat undone. Everything here is the agent's responsibility, this
 # included.
 #
-# The variable stays, because it still does something real: a stray SBR_SDLGPU=1 in some unrelated
+# The variable stays, because it still does something real: a stray SBR_RENDERER=native in some unrelated
 # diagnostic command line no longer reaches the GPU by accident. What actually prevents another
 # reset is the engineering — latch-off on the first device loss, wall-clock-bounded fence waits,
 # the per-frame pass cap, the sustained rate limit, the preflight below — plus the rule that this
@@ -70,7 +74,7 @@ if [ "${SBR_RENDER_APPROVED:-}" != "1" ]; then
 
       SBR_RENDER_APPROVED=1 ./run-render.sh ...
 
-  If you did NOT mean to, then something set SBR_SDLGPU=1 in a command line that had no
+  If you did NOT mean to, then something set SBR_RENDERER=native in a command line that had no
   business touching the GPU — which is exactly what this catches.
 GATE
     exit 1

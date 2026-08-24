@@ -62,48 +62,54 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# The native renderer is not something this wrapper enables. It has its own human gate
-# (SBR_RENDER_APPROVED) and its own launcher; a "safe run" that quietly turned it on would be a lie
-# in the name of the script.
-if [ "${SBR_SDLGPU:-0}" = "1" ]; then
-    echo "[run-safe] SBR_SDLGPU=1 was set. This wrapper does not run the native renderer — that" >&2
-    echo "           path is gated behind SBR_RENDER_APPROVED and ./run-render.sh. Unsetting it." >&2
-    unset SBR_SDLGPU
+# This wrapper owns the Aurora lane. Force the required renderer after parsing assignments so a
+# persisted Native setting or command-line override cannot turn a "safe" run into a native run.
+if [ "${SBR_RENDERER:-aurora}" != "aurora" ]; then
+    echo "[run-safe] native renderer input was set. This wrapper runs the Aurora lane; use" >&2
+    echo "           ./run-render.sh for the gated native preview. Forcing SBR_RENDERER=aurora." >&2
 fi
+export SBR_RENDERER=aurora
 
 gpu_events() {
-    # Count amdgpu ring timeouts / resets / faults since a given point. Prints a number, or the
-    # word UNKNOWN — never 0 for "could not look".
-    local since="$1"
+    # Snapshot the boot-wide total. This machine's wall clock stepped backward during the current
+    # boot, so journalctl time windows return either stale history or nothing. Before/after totals
+    # remain comparable because only newly appended kernel lines can increase the count.
     if ! command -v journalctl >/dev/null 2>&1; then echo UNKNOWN; return; fi
     local out
-    if ! out=$(journalctl -k --since "$since" --no-pager 2>/dev/null); then echo UNKNOWN; return; fi
-    printf '%s\n' "$out" | grep -cE 'amdgpu.*(ring .* timeout|ring reset|device wedged|GPUVM fault)' || true
+    if ! out=$(journalctl -k --no-pager 2>/dev/null); then echo UNKNOWN; return; fi
+    printf '%s\n' "$out" | awk '
+        /amdgpu/ && ($0 ~ /ring .* timeout/ || $0 ~ /ring reset/ ||
+                     $0 ~ /device wedged/ || $0 ~ /GPUVM fault/) { count++ }
+        END { print count + 0 }
+    '
 }
 
 gpu_verdict() {
-if [ "$AFTER" = "UNKNOWN" ]; then
+if [ "$AFTER" = "UNKNOWN" ] || [ "$BEFORE" = "UNKNOWN" ]; then
     echo "[run-safe] GPU HEALTH UNKNOWN — the kernel log could not be read, so this run is NOT" >&2
     echo "           certified clean. That is a different result from 'no events'." >&2
     exit 2
 fi
-if [ "$AFTER" != "0" ]; then
-    echo "[run-safe] *** THIS RUN DISTURBED THE GPU: ${AFTER} amdgpu timeout/reset line(s). ***" >&2
+if [ "$AFTER" -gt "$BEFORE" ]; then
+    echo "[run-safe] *** THIS RUN DISTURBED THE GPU: $((AFTER - BEFORE)) new amdgpu" >&2
+    echo "           timeout/reset line(s) (before=${BEFORE}, after=${AFTER}). ***" >&2
     echo "           Stop running. The first device loss ends GPU work for the session — see" >&2
     echo "           debug_journal/2026-08-12_gpu_hang_guards.md. Offending lines:" >&2
-    journalctl -k --since "$START_STAMP" --no-pager 2>/dev/null \
-        | grep -E 'amdgpu.*(ring .* timeout|ring reset|device wedged|GPUVM fault|Process )' >&2 || true
+    journalctl -k --no-pager 2>/dev/null \
+        | awk '/amdgpu/ && ($0 ~ /ring .* timeout/ || $0 ~ /ring reset/ ||
+                            $0 ~ /device wedged/ || $0 ~ /GPUVM fault/ || $0 ~ /Process /)' \
+        | tail -40 >&2
     exit 3
 fi
 
-echo "[run-safe] GPU clean: the kernel logged no ring timeout, reset or fault during this run."
+echo "[run-safe] GPU clean: no NEW ring timeout, reset or fault during this run (delta 0; the"
+echo "[run-safe] unfiltered boot total is ${AFTER} — time-filtered queries are unreliable here)."
 }
 
 
-START_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
-BEFORE="$(gpu_events '-2min')"
+BEFORE="$(gpu_events)"
 echo "[run-safe] present ceiling ${SB_MAX_PRESENT_HZ} Hz, headless, no native renderer, cap ${SBR_QUIT_AFTER} presents."
-echo "[run-safe] amdgpu events in the 2 min before this run: ${BEFORE}"
+echo "[run-safe] amdgpu timeout/reset lines in boot log before this run: ${BEFORE}"
 
 SECS="${SB_RUN_SECS:-240}"
 set +e
@@ -139,8 +145,8 @@ $(grep -c 'mips=1 ' "$MANIFEST" || true) single-level)"
         echo "           another one for issue #5. That is a broken capture, not a clean run." >&2
     fi
     set -e
-    AFTER="$(gpu_events "$START_STAMP")"
-    echo "[run-safe] game exit=${RC}; amdgpu events DURING this run: ${AFTER}"
+    AFTER="$(gpu_events)"
+    echo "[run-safe] game exit=${RC}; amdgpu timeout/reset lines now in boot log: ${AFTER} (before=${BEFORE})"
     gpu_verdict
     exit "$RC"
 fi
@@ -148,8 +154,8 @@ timeout -s KILL "$SECS" "$HERE/$RUNNER" "${ARGS[@]}"
 RC=$?
 set -e
 
-AFTER="$(gpu_events "$START_STAMP")"
-echo "[run-safe] game exit=${RC}; amdgpu events DURING this run: ${AFTER}"
+AFTER="$(gpu_events)"
+echo "[run-safe] game exit=${RC}; amdgpu timeout/reset lines now in boot log: ${AFTER} (before=${BEFORE})"
 
 gpu_verdict
 exit "$RC"

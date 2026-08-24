@@ -138,7 +138,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
-                           runtime/render/native_render.cpp runtime/render/scene.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
+                           runtime/render/native_render.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/scene.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
                            runtime/render/render_compare.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
@@ -168,6 +168,17 @@ add_executable(gx_light_test tests/gx_light_test.cpp runtime/render/gx_light.cpp
 target_link_libraries(gx_light_test PRIVATE lucent::lucent)
 target_include_directories(gx_light_test PRIVATE runtime runtime/render runtime/devices)
 add_test(NAME gx_light COMMAND gx_light_test)
+
+add_executable(gx_texgen_test tests/gx_texgen_test.cpp runtime/render/gx_texgen.cpp)
+target_link_libraries(gx_texgen_test PRIVATE lucent::lucent)
+target_include_directories(gx_texgen_test PRIVATE runtime runtime/render runtime/devices)
+add_test(NAME gx_texgen COMMAND gx_texgen_test)
+
+add_executable(native_gpu_admission_test tests/native_gpu_admission_test.cpp
+                                         runtime/render/native_gpu_admission.cpp)
+target_link_libraries(native_gpu_admission_test PRIVATE SDL3::SDL3)
+target_include_directories(native_gpu_admission_test PRIVATE runtime/render)
+add_test(NAME native_gpu_admission COMMAND native_gpu_admission_test)
 
 add_executable(gx_fifo_input_test tests/gx_fifo_input_test.cpp
                                   runtime/devices/gx_fifo_input.cpp
