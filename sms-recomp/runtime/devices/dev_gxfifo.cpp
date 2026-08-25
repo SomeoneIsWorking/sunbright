@@ -406,7 +406,10 @@ void emit_texobj(u32 map) {
     // lazily at frame end instead, so a buffer the game has since reused decodes to whatever is
     // there NOW. Measure the difference rather than assume it: decode at the bind and report the
     // brightness, so it can be compared with the late decode of the same address.
-    if (std::getenv("SBR_BIND_DECODE_LOG") != nullptr) {
+    // The switch is read once: this sits on the per-bind hot path, and an uncached getenv here
+    // measured 0.64% of a native-60 plaza profile (plus the strncmp inside it).
+    static const bool s_bindDecodeLog = std::getenv("SBR_BIND_DECODE_LOG") != nullptr;
+    if (s_bindDecodeLog) {
         const u32 gaddr = phys | 0x80000000u;
         std::vector<uint8_t> rgba((size_t)w * h * 4);
         if (gx_decode_texture(gaddr, w, h, fmt, 0, rgba.data())) {
