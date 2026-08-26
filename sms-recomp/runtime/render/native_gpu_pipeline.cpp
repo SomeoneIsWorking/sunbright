@@ -171,6 +171,9 @@ SDL_GPUGraphicsPipeline* sbr_native_gpu_pipeline_for(SbrDepthState state) {
         wireframe != nullptr && wireframe[0] != '\0' && wireframe[0] != '0' ? SDL_GPU_FILLMODE_LINE
                                                                             : SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
+    // GX_CULL_ALL has no SDL rasterizer equivalent. The submission path rejects it through
+    // sbr_native_raster_submits_triangles(), so a pipeline created while that state is cached is
+    // unreachable by a draw and may use any concrete SDL cull mode.
     info.rasterizer_state.cull_mode = state.cull == 1   ? SDL_GPU_CULLMODE_FRONT
                                       : state.cull == 2 ? SDL_GPU_CULLMODE_BACK
                                       : state.cull == 3 ? SDL_GPU_CULLMODE_BACK

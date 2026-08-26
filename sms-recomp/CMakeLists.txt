@@ -258,6 +258,10 @@ target_include_directories(hud_window_layout_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME hud_window_layout COMMAND hud_window_layout_test)
 
+add_executable(native_raster_state_test tests/native_raster_state_test.cpp)
+target_include_directories(native_raster_state_test PRIVATE runtime/render)
+add_test(NAME native_raster_state COMMAND native_raster_state_test)
+
 # The interpolation pairing self-test, reached through the main binary with SBR_INTERP_SELFTEST=1.
 # It is pure CPU work — local buffers and aurora's own pairing tables — but until now it only ran
 # from inside interpolate_recorded_frame, so proving the pairing maths required a GPU frame. It is

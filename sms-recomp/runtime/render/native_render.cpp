@@ -20,6 +20,7 @@
 #include "native_gpu_guard.h"
 #include "native_gpu_pipeline.h"
 #include "native_presenter.h"
+#include "native_raster_state.h"
 #include "native_tev_uniform.h"
 
 #include "app/settings.h"
@@ -51,6 +52,8 @@ SDL_GPUTexture* g_depth = nullptr;     // depth target
 SDL_GPUTransferBuffer* g_dl = nullptr; // download staging (w*h*4)
 int g_w = 0, g_h = 0;
 int g_lastBatches = 0;
+uint64_t g_cullAllDrawsDropped = 0;
+uint64_t g_cullAllVerticesDropped = 0;
 bool g_tried = false, g_ok = false;
 SDL_Window* g_presentWindow = nullptr;
 
@@ -738,6 +741,11 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
                      const SbrTexture tex[8], const SbrTevState& tevState) {
     if (!g_ok || sbr_native_gpu_dead() || verts == nullptr || count < 3)
         return;
+    if (!sbr_native_raster_submits_triangles(depth)) {
+        ++g_cullAllDrawsDropped;
+        g_cullAllVerticesDropped += static_cast<uint64_t>(count);
+        return;
+    }
     for (unsigned st = 0; st < tevState.numStages && st < 16; ++st)
         if (tevState.stage[st].texEnable && (tevState.stage[st].texmap & 7) == 1) {
             g_unit1Use[tex[1].addr] += count;
@@ -1515,6 +1523,10 @@ void sbr_render_guard_selftest() {
 void sbr_render_gpu_report() {
     if (!enabled())
         return;
+    lucent::info("nrender",
+                 "GX_CULL_ALL admission dropped {} draw call(s), {} vertices before GPU "
+                 "submission (zero means this run did not exercise the fix).",
+                 g_cullAllDrawsDropped, g_cullAllVerticesDropped);
     if (sbr_native_gpu_dead())
         lucent::warn("nrender", "the native renderer was DISABLED mid-run after a GPU fault. Every "
                                 "native measurement after that point is missing, not zero.");
@@ -1665,6 +1677,8 @@ void sbr_render_shutdown() noexcept {
     g_h = 0;
     g_lastBatches = 0;
     g_lastVerts = 0;
+    g_cullAllDrawsDropped = 0;
+    g_cullAllVerticesDropped = 0;
     g_batchLimit = -1;
     g_presentWindow = nullptr;
 

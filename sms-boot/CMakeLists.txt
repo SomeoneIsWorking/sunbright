@@ -266,12 +266,11 @@ endforeach()
 # ---------------------------------------------------------------------------
 file(GLOB SMS_RUNTIME_TESTS CONFIGURE_DEPENDS
      "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/*_test.cpp")
-# jaudio_release_test and gx_yscale_test need the full game-logic link set
-# (sms-native/sms-gd/sms-assets/aurora), not hx_wipe.cpp + aurora::mtx --
-# they get their own add_executable further down, gated on aurora_core like
-# sms-boot itself.
+# These tests compile or link shipping game-logic implementations rather than
+# hx_wipe.cpp + aurora::mtx. They get dedicated targets further down, gated on
+# aurora_core like sms-boot itself.
 list(FILTER SMS_RUNTIME_TESTS EXCLUDE REGEX
-     "/sms-boot/runtime/tests/(jaudio_release_test|gx_yscale_test|mapobjtree_initeach_test)\\.cpp$")
+     "/sms-boot/runtime/tests/(jaudio_release_test|gx_yscale_test|mapobjtree_initeach_test|bathtub_tumble_test)\\.cpp$")
 foreach(_test ${SMS_RUNTIME_TESTS})
     get_filename_component(_name "${_test}" NAME_WE)
     add_executable(platform-${_name} "${_test}"
@@ -466,4 +465,26 @@ if(TARGET aurora_core)
     target_link_options(platform-mapobjtree_initeach_test PRIVATE
         "-Wl,--gc-sections")
     add_test(NAME platform_mapobjtree_initeach_test COMMAND platform-mapobjtree_initeach_test)
+
+    # -----------------------------------------------------------------------
+    # bathtub_tumble_test — pins TBathtub::tumble's gated angle/strength
+    # impulse from GMSE01 0x801fb568. As above, direct compilation plus section
+    # GC keeps the test on the shipping function without pulling the actor graph.
+    # -----------------------------------------------------------------------
+    add_executable(platform-bathtub_tumble_test
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/bathtub_tumble_test.cpp"
+        "${SMS_SOURCE_STAGED}/MoveBG/MapObjCorona.cpp")
+    add_dependencies(platform-bathtub_tumble_test sms-native-sjis)
+    set_target_properties(platform-bathtub_tumble_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(platform-bathtub_tumble_test PRIVATE
+        -w -ffunction-sections -fdata-sections)
+    target_compile_definitions(platform-bathtub_tumble_test PRIVATE
+        TARGET_PC=1 SMS_NATIVE_PLATFORM=1 SMS_AURORA=1)
+    target_include_directories(platform-bathtub_tumble_test PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_INCLUDE_STAGED}")
+    target_link_options(platform-bathtub_tumble_test PRIVATE
+        "-Wl,--gc-sections")
+    add_test(NAME platform_bathtub_tumble_test COMMAND platform-bathtub_tumble_test)
 endif()
