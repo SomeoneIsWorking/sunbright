@@ -40,7 +40,7 @@ constexpr std::size_t kHeaderCommitOffset = 248;
 constexpr std::size_t kInfoOffset = 64;
 constexpr std::size_t kInfoCapacity = 1536;
 constexpr std::size_t kMessageOffset = kInfoOffset + kInfoCapacity;
-constexpr std::size_t kMessageCapacity = 432;
+constexpr std::size_t kMessageCapacity = AURORA_GPU_PROBE_MAX_MESSAGE;
 constexpr std::size_t kRecordChecksumOffset = 2032;
 
 static_assert(sizeof(AuroraGpuSubmitInfo) <= kInfoCapacity,
@@ -273,11 +273,12 @@ void write_probe_locked(AuroraGpuProbePhase phase, const AuroraGpuSubmitInfo* in
         set_error_locked("write GPU incident record");
 }
 
-void write_device_lost_report_locked(const AuroraGpuSubmitInfo* pending, const char* message,
-                                     std::size_t messageLength) noexcept {
+void write_incident_report_locked(AuroraGpuProbePhase phase, const AuroraGpuSubmitInfo* pending,
+                                  const char* message, std::size_t messageLength) noexcept {
+    const bool uncapturedError = phase == AURORA_GPU_PROBE_UNCAPTURED_ERROR;
     std::array<char, 32 * 1024> report{};
     FixedBufferWriter writer(report.data(), report.size());
-    writer.append("SUNBRIGHT GPU DEVICE LOSS\n");
+    writer.append("SUNBRIGHT GPU %s\n", uncapturedError ? "UNCAPTURED ERROR" : "DEVICE LOSS");
     writer.append("pid=%llu session=%016llx real_ns=%llu mono_ns=%llu\n",
                   static_cast<unsigned long long>(g_recorder.processId),
                   static_cast<unsigned long long>(g_recorder.sessionId),
@@ -285,27 +286,38 @@ void write_device_lost_report_locked(const AuroraGpuSubmitInfo* pending, const c
                   static_cast<unsigned long long>(monotonic_ns()));
     writer.append("flight_file=%s\n", g_recorder.path.c_str());
     if (message != nullptr && messageLength != 0) {
-        const int safeLength = static_cast<int>(std::min<std::size_t>(messageLength, 4096));
+        const int safeLength =
+            static_cast<int>(std::min<std::size_t>(messageLength, kMessageCapacity));
         writer.append("driver_message=%.*s\n", safeLength, message);
     } else {
-        writer.append("driver_message=(device callback supplied no reason)\n");
+        writer.append("driver_message=(callback supplied no message)\n");
     }
     if (pending != nullptr) {
-        writer.append("latest submission at device loss:\n");
+        writer.append("latest submission at %s (temporal context only):\n",
+                      uncapturedError ? "uncaptured error" : "device loss");
         std::array<char, 24 * 1024> submitReport{};
         const std::size_t submitReportSize = format_submit_diagnostic(
             submitReport.data(), submitReport.size(), *pending,
             g_recorder.hasLastCompleted ? &g_recorder.lastCompleted : nullptr);
         writer.append("%.*s", static_cast<int>(submitReportSize), submitReport.data());
     } else {
-        writer.append("latest submission at device loss: unavailable (no SUBMIT_BEGIN recorded)\n");
+        writer.append("latest submission at %s: unavailable (no SUBMIT_BEGIN recorded)\n",
+                      uncapturedError ? "uncaptured error" : "device loss");
     }
-    writer.append(
-        "cause: the GPU API reported device loss. The submission above is the latest queue call "
-        "observed by this process; this report does not claim that one pending submit was the "
-        "faulting command stream. DEVICE_LOST and completion callbacks can lag the kernel's first "
-        "illegal-CS, GPUVM, or ring-timeout event, so later submissions may be aftermath. Pair "
-        "this file with the first kernel event timestamp.\n");
+    if (uncapturedError) {
+        writer.append(
+            "cause: Dawn delivered an uncaptured WebGPU error before Aurora's fatal abort. The "
+            "submission above is only the latest queue call observed by this process; temporal "
+            "association is not proof that it caused the error. The bounded driver_message "
+            "preserves Dawn's error type and text.\n");
+    } else {
+        writer.append(
+            "cause: the GPU API reported device loss. The submission above is the latest queue "
+            "call observed by this process; this report does not claim that one pending submit "
+            "was the faulting command stream. DEVICE_LOST and completion callbacks can lag the "
+            "kernel's first illegal-CS, GPUVM, or ring-timeout event, so later submissions may "
+            "be aftermath. Pair this file with the first kernel event timestamp.\n");
+    }
 
     bool reportWritten = g_recorder.reportFd >= 0;
     if (reportWritten && ::ftruncate(g_recorder.reportFd, 0) != 0)
@@ -320,15 +332,16 @@ void write_device_lost_report_locked(const AuroraGpuSubmitInfo* pending, const c
     if (reportWritten)
         g_recorder.reportWritten = true;
     if (::fdatasync(g_recorder.fd) != 0)
-        set_error_locked("synchronize GPU incident flight file after device loss");
+        set_error_locked("synchronize GPU incident flight file after callback error");
     if (!reportWritten)
-        set_error_locked("write durable GPU device-loss report");
+        set_error_locked("write durable GPU callback-error report");
 
-    // LOGGER-EXEMPT: device loss may abort before the configurable logger drains. Keep stderr
-    // concise; the complete fixed diagnostic is already synchronized in the named sidecar.
+    // LOGGER-EXEMPT: a GPU callback error may abort before the configurable logger drains. Keep
+    // stderr concise; the complete fixed diagnostic is already synchronized in the named sidecar.
     std::array<char, 1024> notice{};
     FixedBufferWriter noticeWriter(notice.data(), notice.size());
-    noticeWriter.append("[gpu-incident] DEVICE LOST at submit=%llu; durable report: %s",
+    noticeWriter.append("[gpu-incident] %s at submit=%llu; durable report: %s",
+                        uncapturedError ? "UNCAPTURED ERROR" : "DEVICE LOST",
                         static_cast<unsigned long long>(pending == nullptr ? 0 : pending->submitId),
                         g_recorder.reportPath.c_str());
     if (message != nullptr && messageLength != 0) {
@@ -362,18 +375,28 @@ bool valid_header(Bytes header, std::string& error) {
     return true;
 }
 
-bool valid_record(Bytes record) noexcept {
+enum class RecordValidation : std::uint8_t {
+    Valid,
+    InvalidBounds,
+    Corrupt,
+};
+
+RecordValidation validate_record(Bytes record) noexcept {
     const std::uint64_t sequence = load<std::uint64_t>(record, 0);
     if (sequence == 0)
-        return false;
+        return RecordValidation::Corrupt;
+    if (load<std::uint32_t>(record, 48) >
+            static_cast<std::uint32_t>(AURORA_GPU_PROBE_UNCAPTURED_ERROR) ||
+        load<std::uint32_t>(record, 52) > sizeof(AuroraGpuSubmitInfo) ||
+        load<std::uint32_t>(record, 56) > kMessageCapacity) {
+        return RecordValidation::InvalidBounds;
+    }
     const std::uint64_t expected = checksum(record.first(kRecordChecksumOffset));
     return load<std::uint64_t>(record, kRecordChecksumOffset) == expected &&
-           load<std::uint64_t>(record, kRecordCommitOffset) ==
-               (sequence ^ expected ^ kRecordCommitMask) &&
-           load<std::uint32_t>(record, 48) <=
-               static_cast<std::uint32_t>(AURORA_GPU_PROBE_DEVICE_LOST) &&
-           load<std::uint32_t>(record, 52) <= sizeof(AuroraGpuSubmitInfo) &&
-           load<std::uint32_t>(record, 56) <= kMessageCapacity;
+                   load<std::uint64_t>(record, kRecordCommitOffset) ==
+                       (sequence ^ expected ^ kRecordCommitMask)
+               ? RecordValidation::Valid
+               : RecordValidation::Corrupt;
 }
 
 } // namespace
@@ -389,18 +412,20 @@ static void record_probe(AuroraGpuProbePhase phase, const AuroraGpuSubmitInfo* i
                info->status == AURORA_GPU_SUBMIT_STATUS_SUCCESS) {
         g_recorder.lastCompleted = *info;
         g_recorder.hasLastCompleted = true;
-    } else if (phase == AURORA_GPU_PROBE_DEVICE_LOST &&
+    } else if ((phase == AURORA_GPU_PROBE_DEVICE_LOST ||
+                phase == AURORA_GPU_PROBE_UNCAPTURED_ERROR) &&
                (persistedInfo == nullptr || persistedInfo->submitId == 0) &&
                g_recorder.hasLastBegan) {
-        // Dawn's device-lost callback has no queue submission payload. Associate the loss record
-        // with the latest BEGIN so the binary record and durable text retain the frame/pass/state
-        // of the queue call where loss became visible. This is not necessarily the originating
-        // command stream: the kernel fault and callback can be separated by seconds.
+        // Dawn's error callbacks have no queue submission payload. Associate the incident record
+        // with the latest BEGIN so the binary record and durable text retain temporal context.
+        // This is not causal attribution: callbacks may be delayed relative to the originating
+        // command stream or kernel event.
         persistedInfo = &g_recorder.lastBegan;
     }
     write_probe_locked(phase, persistedInfo, message, messageLength);
-    if (phase == AURORA_GPU_PROBE_DEVICE_LOST)
-        write_device_lost_report_locked(persistedInfo, message, messageLength);
+    if (phase == AURORA_GPU_PROBE_DEVICE_LOST || phase == AURORA_GPU_PROBE_UNCAPTURED_ERROR) {
+        write_incident_report_locked(phase, persistedInfo, message, messageLength);
+    }
 }
 
 bool configure_file(const ConfigureOptions& options) noexcept {
@@ -437,7 +462,7 @@ bool configure_file(const ConfigureOptions& options) noexcept {
     g_recorder.reportFd = ::open(g_recorder.reportPath.c_str(),
                                  O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR);
     if (g_recorder.reportFd < 0) {
-        set_error_locked("open GPU device-loss report");
+        set_error_locked("open GPU callback-error report");
         close_locked();
         return false;
     }
@@ -554,8 +579,11 @@ Analysis analyze_file(const std::filesystem::path& filePath,
         }
         if (all_zero(Bytes{raw}))
             continue;
-        if (!valid_record(Bytes{raw})) {
+        const RecordValidation validation = validate_record(Bytes{raw});
+        if (validation != RecordValidation::Valid) {
             ++result.corruptRecordCount;
+            if (validation == RecordValidation::InvalidBounds)
+                ++result.invalidBoundsRecordCount;
             continue;
         }
         if (load<std::uint64_t>(Bytes{raw}, 24) != result.processId ||
@@ -608,6 +636,7 @@ Analysis analyze_file(const std::filesystem::path& filePath,
             state.completeSequence = record.sequence;
             break;
         case AURORA_GPU_PROBE_DEVICE_LOST:
+        case AURORA_GPU_PROBE_UNCAPTURED_ERROR:
             break;
         }
     }

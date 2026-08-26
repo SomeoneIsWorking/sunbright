@@ -1,7 +1,7 @@
 // Post-mortem reader for sb::gpu_incident flight files. Deliberately a thin printer over
 // analyze_file: there is exactly one parser of the format, and this is not a second one.
 //
-// Usage: gpu_flight_dump <file.flight> [--tail N] [--kernel-real-ns N]
+// Usage: gpu_flight_dump <file.flight> [--tail N] [--kernel-real-ns N] [--submit N]
 //
 // Exit codes: 0 analyzable, 1 present-but-unusable (stale/corrupt header), 2 usage/IO error.
 // The interesting question after a device loss is WHICH submit was in flight:
@@ -12,6 +12,7 @@
 #include "gpu_incident_recorder.h"
 #include "gpu_incident_report.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstdio>
@@ -33,6 +34,8 @@ const char* phase_name(AuroraGpuProbePhase phase) {
         return "COMPLETE";
     case AURORA_GPU_PROBE_DEVICE_LOST:
         return "DEVICE_LOST";
+    case AURORA_GPU_PROBE_UNCAPTURED_ERROR:
+        return "UNCAPTURED_ERROR";
     }
     return "?";
 }
@@ -158,6 +161,13 @@ void print_kernel_window(const sb::gpu_incident::Analysis& analysis,
             std::printf("completion callback before event was non-success status=%u; it is not a "
                         "completed-work watermark\n",
                         complete->info.status);
+        } else if (complete != nullptr) {
+            std::printf("completion callback arrived after the kernel event: seq%llu "
+                        "real_ns=%llu status=%u; it cannot retroactively remove this submit from "
+                        "the fault window\n",
+                        static_cast<unsigned long long>(complete->sequence),
+                        static_cast<unsigned long long>(complete->realtimeNs),
+                        complete->info.status);
         }
         const sb::gpu_incident::Record* const candidateBaseline =
             latest_successful_complete_before_sequence(analysis, begin->sequence);
@@ -187,6 +197,7 @@ int main(int argc, char** argv) {
     const char* filePath = nullptr;
     std::size_t tail = 16;
     std::optional<std::uint64_t> kernelRealtimeNs;
+    std::optional<std::uint64_t> selectedSubmitId;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--tail") == 0 && i + 1 < argc) {
             tail = static_cast<std::size_t>(std::strtoul(argv[++i], nullptr, 0));
@@ -194,6 +205,12 @@ int main(int argc, char** argv) {
             kernelRealtimeNs = parse_u64(argv[++i]);
             if (!kernelRealtimeNs) {
                 std::fprintf(stderr, "invalid decimal --kernel-real-ns value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (std::strcmp(argv[i], "--submit") == 0 && i + 1 < argc) {
+            selectedSubmitId = parse_u64(argv[++i]);
+            if (!selectedSubmitId) {
+                std::fprintf(stderr, "invalid decimal --submit value: %s\n", argv[i]);
                 return 2;
             }
         } else if (argv[i][0] == '-') {
@@ -204,8 +221,8 @@ int main(int argc, char** argv) {
         }
     }
     if (filePath == nullptr || filePath[0] == '\0') {
-        std::fprintf(stderr,
-                     "usage: gpu_flight_dump <file.flight> [--tail N] [--kernel-real-ns N]\n");
+        std::fprintf(stderr, "usage: gpu_flight_dump <file.flight> [--tail N] [--kernel-real-ns N] "
+                             "[--submit N]\n");
         return 2;
     }
 
@@ -225,14 +242,60 @@ int main(int argc, char** argv) {
     std::printf("session     : label='%s' pid=%llu session=%llx\n", analysis.sessionLabel.c_str(),
                 static_cast<unsigned long long>(analysis.processId),
                 static_cast<unsigned long long>(analysis.sessionId));
-    std::printf("records     : %zu usable, %zu corrupt/torn\n", analysis.records.size(),
-                analysis.corruptRecordCount);
+    std::printf("records     : %zu usable, %zu corrupt/torn (%zu invalid bounds)\n",
+                analysis.records.size(), analysis.corruptRecordCount,
+                analysis.invalidBoundsRecordCount);
     if (analysis.records.empty()) {
         std::printf("no submits were ever recorded — the recorder saw no queue activity\n");
         return 1;
     }
     if (kernelRealtimeNs)
         print_kernel_window(analysis, *kernelRealtimeNs);
+    if (selectedSubmitId) {
+        const auto selected = std::ranges::find(analysis.submits, *selectedSubmitId,
+                                                &sb::gpu_incident::SubmitState::submitId);
+        if (selected == analysis.submits.end()) {
+            std::fprintf(stderr, "submit %llu is not retained in this flight ring\n",
+                         static_cast<unsigned long long>(*selectedSubmitId));
+            return 1;
+        }
+        std::printf("=== SELECTED SUBMIT %llu ===\n",
+                    static_cast<unsigned long long>(*selectedSubmitId));
+        const sb::gpu_incident::Record* const begin =
+            record_at_sequence(analysis, selected->beginSequence);
+        const sb::gpu_incident::Record* const returned =
+            record_at_sequence(analysis, selected->returnSequence);
+        const sb::gpu_incident::Record* const complete =
+            record_at_sequence(analysis, selected->completeSequence);
+        std::printf(
+            "boundaries: BEGIN=seq%llu real_ns=%llu RETURN=seq%llu real_ns=%llu "
+            "CALLBACK=seq%llu real_ns=%llu",
+            static_cast<unsigned long long>(selected->beginSequence),
+            static_cast<unsigned long long>(begin == nullptr ? 0 : begin->realtimeNs),
+            static_cast<unsigned long long>(selected->returnSequence),
+            static_cast<unsigned long long>(returned == nullptr ? 0 : returned->realtimeNs),
+            static_cast<unsigned long long>(selected->completeSequence),
+            static_cast<unsigned long long>(complete == nullptr ? 0 : complete->realtimeNs));
+        if (complete != nullptr)
+            std::printf(" status=%u", complete->info.status);
+        std::printf("\n");
+        if (begin == nullptr) {
+            std::printf("submit detail unavailable: BEGIN record fell outside the ring\n");
+        } else {
+            const sb::gpu_incident::Record* const baseline =
+                latest_successful_complete_before_sequence(analysis, begin->sequence);
+            print_submit_diagnostic(begin->info, baseline == nullptr ? nullptr : &baseline->info);
+        }
+        if (returned == nullptr)
+            std::printf("boundary interpretation: queue API did not return in the retained ring\n");
+        else if (complete == nullptr)
+            std::printf("boundary interpretation: completion callback was not observed\n");
+        else if (complete->info.status != AURORA_GPU_SUBMIT_STATUS_SUCCESS)
+            std::printf("boundary interpretation: callback was observed but did not establish "
+                        "successful completion\n");
+        else
+            std::printf("boundary interpretation: successful completion callback observed\n");
+    }
 
     std::size_t apiPending = 0;
     std::size_t callbackPending = 0;
@@ -268,8 +331,10 @@ int main(int argc, char** argv) {
     }
     std::printf("comparison policy: each pending submit uses the latest COMPLETE no later than "
                 "that submit's BEGIN; a later callback is never used as its baseline.\n");
-    for (const sb::gpu_incident::SubmitState& state : analysis.submits) {
-        if (state.api_pending() || state.completion_callback_pending()) {
+    if (!selectedSubmitId) {
+        for (const sb::gpu_incident::SubmitState& state : analysis.submits) {
+            if (!(state.api_pending() || state.completion_callback_pending()))
+                continue;
             std::printf(
                 "  IN-FLIGHT submit %llu: began@seq%llu returned@seq%llu completed@seq%llu\n",
                 static_cast<unsigned long long>(state.submitId),
@@ -290,12 +355,19 @@ int main(int argc, char** argv) {
     }
 
     for (const sb::gpu_incident::Record& record : analysis.records) {
-        if (record.phase == AURORA_GPU_PROBE_DEVICE_LOST) {
-            std::printf("DEVICE_LOST callback at seq%llu: %s\n",
+        if (record.phase == AURORA_GPU_PROBE_DEVICE_LOST ||
+            record.phase == AURORA_GPU_PROBE_UNCAPTURED_ERROR) {
+            const bool uncapturedError = record.phase == AURORA_GPU_PROBE_UNCAPTURED_ERROR;
+            std::printf("%s callback at seq%llu: %s\n",
+                        uncapturedError ? "UNCAPTURED_ERROR" : "DEVICE_LOST",
                         static_cast<unsigned long long>(record.sequence),
                         record.message.empty() ? "no driver message" : record.message.c_str());
+            if (uncapturedError) {
+                std::printf("Dawn reported this uncaptured WebGPU error before Aurora's fatal "
+                            "abort. The error type and bounded message are preserved above.\n");
+            }
             if (record.info.submitId != 0) {
-                std::printf("associated latest submission (association is not causal proof):\n");
+                std::printf("associated latest submission (temporal context, not causal proof):\n");
                 const sb::gpu_incident::Record* associatedBegin = nullptr;
                 for (const sb::gpu_incident::SubmitState& state : analysis.submits) {
                     if (state.submitId == record.info.submitId) {
@@ -317,10 +389,10 @@ int main(int argc, char** argv) {
     }
     if (!kernelRealtimeNs) {
         std::printf(
-            "origin warning: DEVICE_LOST can arrive seconds after the kernel's first illegal-CS, "
-            "GPUVM, or ring-timeout event. The newest pending submit may be aftermath. Re-run "
-            "with --kernel-real-ns from the first kernel fault to select the outstanding causal "
-            "window.\n");
+            "origin warning: DEVICE_LOST and UNCAPTURED_ERROR callbacks can arrive after the "
+            "originating API or kernel event. The associated latest submit is temporal context "
+            "and may be aftermath. Re-run with --kernel-real-ns from the first kernel fault to "
+            "select the outstanding causal window.\n");
     }
 
     const std::size_t first =

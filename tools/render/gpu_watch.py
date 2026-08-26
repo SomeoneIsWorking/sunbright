@@ -20,23 +20,33 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-from unittest import mock
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from gpu_events import (
+    DEFAULT_DEVCOREDUMP_ROOT,
+    DeviceCoredumpEvidence,
     atomic_durable_replace,
+    capture_new_device_coredumps,
     current_boot_id,
     current_kernel_cursor,
+    device_coredump_snapshot,
     is_gpu_fault,
     kernel_lines_after_cursor,
 )
 from gpu_preflight import COOLDOWN_SECS, preflight_reasons
-
+from radv_hang_trace import (
+    DEFAULT_RADV_DUMP_ROOT,
+    RadvDumpSnapshot,
+    RadvHangEvidence,
+    collect_radv_hang_trace,
+    configure_radv_hang_environment,
+    radv_hang_enabled,
+    snapshot_radv_dumps,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_INCIDENT_DIR = REPO / "scratch" / "gpu_crash"
@@ -53,6 +63,9 @@ KERNEL_TIMESTAMP = re.compile(
     r"(?P<zone>Z|[+-]\d{2}:?\d{2})(?:\s|$)"
 )
 SECRET_NAME = re.compile(r"(?:TOKEN|KEY|PASS(?:WORD)?|AUTH|SECRET)", re.IGNORECASE)
+PCI_DEVICE = re.compile(
+    r"\b(?:[0-9a-f]{4}:)?[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]\b", re.IGNORECASE
+)
 
 
 @dataclass
@@ -138,7 +151,9 @@ class SignalProtection:
 
     def __enter__(self) -> SignalProtection:
         if threading.current_thread() is not threading.main_thread():
-            raise RuntimeError("GPU guard must run on the main thread for signal-safe cleanup")
+            raise RuntimeError(
+                "GPU guard must run on the main thread for signal-safe cleanup"
+            )
         self._prior_mask = signal.pthread_sigmask(signal.SIG_BLOCK, self.handled)
         try:
             for handled in self.handled:
@@ -152,8 +167,11 @@ class SignalProtection:
         current_mask = signal.pthread_sigmask(signal.SIG_BLOCK, self.handled)
         try:
             process = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, bufsize=1,
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
             self.journal = process
             return process
@@ -164,8 +182,13 @@ class SignalProtection:
         current_mask = signal.pthread_sigmask(signal.SIG_BLOCK, self.handled)
         try:
             process = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, errors="replace", bufsize=1, start_new_session=True,
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                bufsize=1,
+                start_new_session=True,
             )
             self.pgid = process.pid
             return process
@@ -191,7 +214,9 @@ def _kill_exact_group(pgid: int) -> None:
         pass
 
 
-def _bounded_reap(process: subprocess.Popen[str], timeout: float = REAP_TIMEOUT_SECS) -> str | None:
+def _bounded_reap(
+    process: subprocess.Popen[str], timeout: float = REAP_TIMEOUT_SECS
+) -> str | None:
     try:
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -240,9 +265,9 @@ def kernel_realtime_ns(line: str) -> int | None:
         sign = 1 if compact[0] == "+" else -1
         offset_minutes = sign * (int(compact[1:3]) * 60 + int(compact[3:5]))
         zone = timezone(timedelta(minutes=offset_minutes))
-    local_second = datetime.strptime(match.group("second"), "%Y-%m-%dT%H:%M:%S").replace(
-        tzinfo=zone
-    )
+    local_second = datetime.strptime(
+        match.group("second"), "%Y-%m-%dT%H:%M:%S"
+    ).replace(tzinfo=zone)
     utc_second = local_second.astimezone(timezone.utc).replace(tzinfo=None)
     epoch = datetime(1970, 1, 1)
     delta = utc_second - epoch
@@ -259,10 +284,10 @@ def _flight_analysis(
 ) -> str:
     flight_files = sorted(
         (
-            path for path in incident_dir.glob(f"session_{child_pid}_*.flight")
-            if flight_snapshot.get(str(path.resolve())) != (
-                path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns
-            )
+            path
+            for path in incident_dir.glob(f"session_{child_pid}_*.flight")
+            if flight_snapshot.get(str(path.resolve()))
+            != (path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns)
         ),
         key=lambda path: path.stat().st_mtime_ns,
     )
@@ -295,8 +320,10 @@ def _flight_analysis(
     expected_session = f"session={session_token}"
     lowered = text.lower()
     if expected_pid not in text or expected_session not in lowered:
-        return ("reader output rejected: flight identity does not match guarded launch "
-                f"({expected_pid}, {expected_session})\n{text}")
+        return (
+            "reader output rejected: flight identity does not match guarded launch "
+            f"({expected_pid}, {expected_session})\n{text}"
+        )
     return text or f"gpu_flight_dump exited {result.returncode} without output"
 
 
@@ -304,7 +331,9 @@ def _redacted_command(command: list[str]) -> list[str]:
     redacted: list[str] = []
     for argument in command:
         name, separator, _value = argument.partition("=")
-        redacted.append(f"{name}=<redacted>" if separator and SECRET_NAME.search(name) else argument)
+        redacted.append(
+            f"{name}=<redacted>" if separator and SECRET_NAME.search(name) else argument
+        )
     return redacted
 
 
@@ -321,7 +350,11 @@ def _static_environment(command: list[str]) -> list[str]:
             vendor = device.joinpath("vendor").read_text().strip()
             product = device.joinpath("device").read_text().strip()
             revision_path = device / "revision"
-            revision = revision_path.read_text().strip() if revision_path.exists() else "unknown"
+            revision = (
+                revision_path.read_text().strip()
+                if revision_path.exists()
+                else "unknown"
+            )
         except OSError:
             continue
         lines.append(
@@ -359,7 +392,9 @@ def _write_minimal_fault(
 ) -> Path:
     incident_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc)
-    incident = incident_dir / f"watch_{timestamp.strftime('%Y%m%dT%H%M%S.%fZ')}_{pgid}.txt"
+    incident = (
+        incident_dir / f"watch_{timestamp.strftime('%Y%m%dT%H%M%S.%fZ')}_{pgid}.txt"
+    )
     minimal = (
         "Sunbright live GPU-fault guard STOP RECORD\n"
         f"utc: {timestamp.isoformat()}\n"
@@ -401,6 +436,9 @@ def _write_incident(
     flight_reader: Path | None = None,
     reap_note: str | None = None,
     category: str = "gpu_fault",
+    devcoredump_evidence: list[DeviceCoredumpEvidence] | None = None,
+    devcoredump_snapshot_error: str | None = None,
+    radv_hang_evidence: RadvHangEvidence | None = None,
 ) -> Path:
     timestamp = datetime.now(timezone.utc)
     sections = [
@@ -410,8 +448,11 @@ def _write_incident(
         f"command: {_redacted_command(command)!r}",
         f"STOP CATEGORY: {category}",
         f"FIRST STOP EVIDENCE: {reason}",
-        (f"first kernel real_ns: {kernel_real_ns}" if kernel_real_ns is not None
-         else "first kernel real_ns: UNAVAILABLE (timestamp did not parse)"),
+        (
+            f"first kernel real_ns: {kernel_real_ns}"
+            if kernel_real_ns is not None
+            else "first kernel real_ns: UNAVAILABLE (timestamp did not parse)"
+        ),
         "",
         "--- guarded process output tail ---",
         *(output_tail or ["<no process output captured>"]),
@@ -419,30 +460,58 @@ def _write_incident(
     if reap_note is not None:
         sections.extend(("", f"REAP STATUS: {reap_note}"))
     if live_kernel_lines:
-        sections.extend((
-            "",
-            "--- live kernel lines from the causal anchor ---",
-            *live_kernel_lines,
-        ))
+        sections.extend(
+            (
+                "",
+                "--- live kernel lines from the causal anchor ---",
+                *live_kernel_lines,
+            )
+        )
     if include_static:
-        sections.extend(("", "--- static CPU-only environment ---", *_static_environment(command)))
+        sections.extend(
+            ("", "--- static CPU-only environment ---", *_static_environment(command))
+        )
     if include_context:
         sections.extend(("", "--- current kernel tail ---", _kernel_context()))
+    if category == "gpu_fault":
+        sections.extend(("", "--- Linux device-coredump evidence ---"))
+        if devcoredump_snapshot_error is not None:
+            sections.append(
+                f"pre-launch snapshot: UNAVAILABLE ({devcoredump_snapshot_error})"
+            )
+        if devcoredump_evidence:
+            for index, evidence in enumerate(devcoredump_evidence, start=1):
+                sections.extend((f"candidate {index}:", *evidence.report))
+        else:
+            sections.append("status: UNAVAILABLE (capture produced no status record)")
+    if radv_hang_evidence is not None:
+        sections.extend(
+            (
+                "",
+                "--- RADV hang diagnostic evidence ---",
+                f"status: {radv_hang_evidence.status}",
+                *radv_hang_evidence.report,
+            )
+        )
     if include_flight and category == "gpu_fault":
-        sections.extend((
-            "",
-            "--- matching submit-flight analysis ---",
-            _flight_analysis(
-                child_pid, kernel_real_ns, flight_snapshot, incident_dir, flight_reader
-            ),
-        ))
+        sections.extend(
+            (
+                "",
+                "--- matching submit-flight analysis ---",
+                _flight_analysis(
+                    child_pid,
+                    kernel_real_ns,
+                    flight_snapshot,
+                    incident_dir,
+                    flight_reader,
+                ),
+            )
+        )
     atomic_durable_replace(incident, "\n".join(sections) + "\n")
     return incident
 
 
-def _collect_fault_context(
-    journal_pump: JournalPump, first_line: str
-) -> list[str]:
+def _collect_fault_context(journal_pump: JournalPump, first_line: str) -> list[str]:
     """Collect the ring/process attribution immediately following the first fault.
 
     The guarded process is already dead when this runs. The short bounded window exists only to
@@ -486,11 +555,27 @@ def run_guarded(
     stamp: Path = DEFAULT_STAMP,
     kernel_command: list[str] | None = None,
     include_flight: bool = True,
+    devcoredump_root: Path = DEFAULT_DEVCOREDUMP_ROOT,
+    radv_dump_root: Path = DEFAULT_RADV_DUMP_ROOT,
 ) -> GuardResult:
+    try:
+        configure_radv_hang_environment(os.environ)
+    except ValueError as exc:
+        reason = f"unsafe RADV hang diagnostic environment: {exc}"
+        print(f"[gpu-watch] REFUSING: {reason}", file=sys.stderr)
+        return GuardResult(WATCH_BROKEN_RC, reason)
     with SignalProtection() as signal_protection:
         return _run_guarded_protected(
-            command, timeout_secs, output_log, incident_dir, stamp,
-            kernel_command, include_flight, signal_protection,
+            command,
+            timeout_secs,
+            output_log,
+            incident_dir,
+            stamp,
+            kernel_command,
+            include_flight,
+            devcoredump_root,
+            radv_dump_root,
+            signal_protection,
         )
 
 
@@ -502,20 +587,26 @@ def _run_guarded_protected(
     stamp: Path,
     kernel_command: list[str] | None,
     include_flight: bool,
+    devcoredump_root: Path,
+    radv_dump_root: Path,
     signal_protection: SignalProtection,
 ) -> GuardResult:
     start_cursor: str | None = None
     if kernel_command is None:
         start_cursor, error = current_kernel_cursor()
         if error is not None or start_cursor is None:
-            print(f"[gpu-watch] REFUSING: cannot establish kernel cursor: {error}", file=sys.stderr)
+            print(
+                f"[gpu-watch] REFUSING: cannot establish kernel cursor: {error}",
+                file=sys.stderr,
+            )
             return GuardResult(WATCH_BROKEN_RC)
         reasons = preflight_reasons(COOLDOWN_SECS, stamp)
         gap_lines, gap_error = kernel_lines_after_cursor(start_cursor)
         if gap_error is not None:
             reasons.append(f"could not inspect preflight/cursor gap: {gap_error}")
         reasons.extend(
-            f"GPU fault appeared during preflight: {line}" for line in gap_lines
+            f"GPU fault appeared during preflight: {line}"
+            for line in gap_lines
             if is_gpu_fault(line)
         )
         if reasons:
@@ -530,7 +621,9 @@ def _run_guarded_protected(
     try:
         journal = signal_protection.popen_journal(kernel_command)
     except OSError as exc:
-        print(f"[gpu-watch] REFUSING: cannot start kernel watcher: {exc}", file=sys.stderr)
+        print(
+            f"[gpu-watch] REFUSING: cannot start kernel watcher: {exc}", file=sys.stderr
+        )
         return GuardResult(WATCH_BROKEN_RC)
 
     child: subprocess.Popen[str] | None = None
@@ -549,19 +642,35 @@ def _run_guarded_protected(
         # The follower is now alive. Scan from the original anchor once more before creating the
         # child; anything appended after this scan remains covered by that same follower cursor.
         barrier_lines, barrier_error = kernel_lines_after_cursor(start_cursor)
-        if barrier_error is not None or any(is_gpu_fault(line) for line in barrier_lines):
+        if barrier_error is not None or any(
+            is_gpu_fault(line) for line in barrier_lines
+        ):
             _stop_journal(journal)
             journal_pump.join(timeout=REAP_TIMEOUT_SECS)
             error_pump.join(timeout=REAP_TIMEOUT_SECS)
-            reason = barrier_error or next(line for line in barrier_lines if is_gpu_fault(line))
-            print(f"[gpu-watch] REFUSING AT PRE-LAUNCH BARRIER: {reason}", file=sys.stderr)
+            reason = barrier_error or next(
+                line for line in barrier_lines if is_gpu_fault(line)
+            )
+            print(
+                f"[gpu-watch] REFUSING AT PRE-LAUNCH BARRIER: {reason}", file=sys.stderr
+            )
             return GuardResult(WATCH_BROKEN_RC, reason)
 
     pgid: int | None = None
     flight_snapshot = {
-        str(path.resolve()): (path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns)
+        str(path.resolve()): (
+            path.stat().st_ino,
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+        )
         for path in incident_dir.glob("session_*.flight")
     }
+    devcoredump_before, devcoredump_snapshot_error = device_coredump_snapshot(
+        devcoredump_root
+    )
+    radv_snapshot: RadvDumpSnapshot | None = None
+    if radv_hang_enabled(os.environ):
+        radv_snapshot = snapshot_radv_dumps(radv_dump_root)
     try:
         if signal_protection.received:
             return GuardResult(128 + signal_protection.received)
@@ -573,7 +682,9 @@ def _run_guarded_protected(
         deadline = time.monotonic() + timeout_secs
         leader_exit_deadline: float | None = None
 
-        def fault_result(reason: str, code: int, category: str = "gpu_fault") -> GuardResult:
+        def fault_result(
+            reason: str, code: int, category: str = "gpu_fault"
+        ) -> GuardResult:
             # Stopping submissions is the first action at the fault boundary.
             _kill_exact_group(pgid)
             kernel_ns = kernel_realtime_ns(reason)
@@ -589,25 +700,81 @@ def _run_guarded_protected(
             pump.join(timeout=0.25)
             live_kernel_lines = (
                 _collect_fault_context(journal_pump, reason)
-                if category == "gpu_fault" else [reason]
+                if category == "gpu_fault"
+                else [reason]
             )
+            devcoredump_evidence: list[DeviceCoredumpEvidence] | None = None
+            if category == "gpu_fault":
+                destination_prefix = incident or (
+                    incident_dir / f"watch_unpersisted_{pgid}"
+                )
+                try:
+                    devcoredump_evidence = capture_new_device_coredumps(
+                        devcoredump_before,
+                        destination_prefix,
+                        root=devcoredump_root,
+                        creation_announced=any(
+                            "device coredump file has been created" in line.lower()
+                            for line in live_kernel_lines
+                        ),
+                        expected_device_ids={
+                            match.group(0)
+                            for line in live_kernel_lines
+                            for match in PCI_DEVICE.finditer(line)
+                        },
+                    )
+                except Exception as exc:
+                    devcoredump_evidence = [
+                        DeviceCoredumpEvidence(
+                            "capture-failed",
+                            ("status: CAPTURE-FAILED", f"detail: {exc}"),
+                        )
+                    ]
+            radv_hang_evidence: RadvHangEvidence | None = None
+            if radv_snapshot is not None:
+                destination_prefix = incident or (
+                    incident_dir / f"watch_unpersisted_{pgid}"
+                )
+                try:
+                    radv_hang_evidence = collect_radv_hang_trace(
+                        radv_snapshot, child.pid, destination_prefix
+                    )
+                except Exception as exc:
+                    radv_hang_evidence = RadvHangEvidence(
+                        "UNAVAILABLE",
+                        (f"RADV hang evidence collection failed safely: {exc}",),
+                    )
             if persist_error is not None:
                 print(f"[gpu-watch] {persist_error}", file=sys.stderr)
             if incident is not None:
                 try:
                     _write_incident(
-                        incident_dir, incident, child.pid, command, reason,
-                        pump.snapshot(), include_flight=include_flight,
+                        incident_dir,
+                        incident,
+                        child.pid,
+                        command,
+                        reason,
+                        pump.snapshot(),
+                        include_flight=include_flight,
                         flight_snapshot=flight_snapshot,
-                        live_kernel_lines=live_kernel_lines, kernel_real_ns=kernel_ns,
-                        reap_note=reap_note, category=category,
+                        live_kernel_lines=live_kernel_lines,
+                        kernel_real_ns=kernel_ns,
+                        reap_note=reap_note,
+                        category=category,
+                        devcoredump_evidence=devcoredump_evidence,
+                        devcoredump_snapshot_error=devcoredump_snapshot_error,
+                        radv_hang_evidence=radv_hang_evidence,
                     )
                 except Exception as exc:
-                    print(f"[gpu-watch] enrichment failed; minimal incident survives: {exc}",
-                          file=sys.stderr)
+                    print(
+                        f"[gpu-watch] enrichment failed; minimal incident survives: {exc}",
+                        file=sys.stderr,
+                    )
             label = str(incident) if incident is not None else "UNAVAILABLE"
-            print(f"[gpu-watch] stopped exact pid/pgid {pgid}; incident: {label}",
-                  file=sys.stderr)
+            print(
+                f"[gpu-watch] stopped exact pid/pgid {pgid}; incident: {label}",
+                file=sys.stderr,
+            )
             return GuardResult(code, reason, incident)
 
         while True:
@@ -618,8 +785,11 @@ def _run_guarded_protected(
                     print(f"[gpu-watch] {note}", file=sys.stderr)
                 return GuardResult(128 + signal_protection.received)
             if time.monotonic() >= deadline:
-                print(f"[gpu-watch] wall-clock cap {timeout_secs:g}s reached; killing pid/pgid "
-                      f"{pgid}.", file=sys.stderr)
+                print(
+                    f"[gpu-watch] wall-clock cap {timeout_secs:g}s reached; killing pid/pgid "
+                    f"{pgid}.",
+                    file=sys.stderr,
+                )
                 _kill_exact_group(pgid)
                 note = _bounded_reap(child)
                 if note:
@@ -633,7 +803,11 @@ def _run_guarded_protected(
             if line is not None and is_gpu_fault(line):
                 return fault_result(line, WATCH_FAULT_RC)
 
-            if journal.poll() is not None and journal_pump.eof.is_set() and journal_pump.lines.empty():
+            if (
+                journal.poll() is not None
+                and journal_pump.eof.is_set()
+                and journal_pump.lines.empty()
+            ):
                 details = "; ".join(error_pump.lines) or "no diagnostic output"
                 reason = f"kernel watcher exited {journal.returncode}: {details}"
                 return fault_result(reason, WATCH_BROKEN_RC, "monitor_failure")
@@ -642,16 +816,27 @@ def _run_guarded_protected(
             if leader_rc is not None:
                 if leader_exit_deadline is None:
                     leader_exit_deadline = time.monotonic() + POST_EXIT_SETTLE_SECS
-                if time.monotonic() >= leader_exit_deadline and journal_pump.lines.empty():
+                if (
+                    time.monotonic() >= leader_exit_deadline
+                    and journal_pump.lines.empty()
+                ):
                     if start_cursor is not None:
-                        final_lines, final_error = kernel_lines_after_cursor(start_cursor)
+                        final_lines, final_error = kernel_lines_after_cursor(
+                            start_cursor
+                        )
                         if final_error is not None:
                             return fault_result(
                                 f"post-exit kernel barrier failed: {final_error}",
-                                WATCH_BROKEN_RC, "monitor_failure",
+                                WATCH_BROKEN_RC,
+                                "monitor_failure",
                             )
                         first_fault = next(
-                            (candidate for candidate in final_lines if is_gpu_fault(candidate)), None
+                            (
+                                candidate
+                                for candidate in final_lines
+                                if is_gpu_fault(candidate)
+                            ),
+                            None,
                         )
                         if first_fault is not None:
                             return fault_result(first_fault, WATCH_FAULT_RC)
@@ -672,377 +857,37 @@ def _run_guarded_protected(
         error_pump.join(timeout=2)
 
 
-def _process_stopped(pid: int) -> bool:
-    status = Path(f"/proc/{pid}/status")
-    if not status.exists():
-        return True
-    for line in status.read_text(errors="replace").splitlines():
-        if line.startswith("State:"):
-            return "Z" in line
-    return False
-
-
-def _wait_for_path(path: Path, timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not path.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    if not path.exists():
-        raise AssertionError(f"timed out waiting for selftest marker {path}")
-
-
-def _wait_process_stopped(pid: int, timeout: float = 1.0) -> None:
-    """Allow SIGKILL delivery/reparenting to settle before judging the process-tree control."""
-    deadline = time.monotonic() + timeout
-    while not _process_stopped(pid) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    if not _process_stopped(pid):
-        raise AssertionError(f"guarded descendant {pid} survived process-group SIGKILL")
-
-
-def selftest() -> int:
-    module = sys.modules[__name__]
-    planted = ("2026-08-26T22:48:34.123456789+03:00 kernel: "
-               "[drm:gfx_v10_0_priv_reg_irq [amdgpu]] *ERROR* "
-               "Illegal register access in command stream")
-    planted_feed = (
-        planted + "\n"
-        "2026-08-26T22:48:34.123456790+03:00 kernel: amdgpu: ring gfx_0.0.0 timeout\n"
-        "2026-08-26T22:48:34.123456791+03:00 kernel: amdgpu: Process planted pid 123\n"
-    )
-    expected_real_ns = 1_787_773_714_123_456_789
-    assert kernel_realtime_ns(planted) == expected_real_ns
-    assert kernel_realtime_ns(planted.replace("+03:00", "+0300")) == expected_real_ns
-    assert is_gpu_fault(planted)
-    assert is_gpu_fault("amdgpu: ring gfx_0.0.0 timeout, emitted seq=2")
-    assert not is_gpu_fault("amdgpu: ring gfx_0.0.0 uses VM inv eng 0 on hub 0")
-
-    (REPO / "scratch").mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix="gpu-watch-selftest-", dir=REPO / "scratch"
-    ) as temp_text:
-        temp = Path(temp_text)
-
-        clean_fifo = temp / "clean.fifo"
-        os.mkfifo(clean_fifo)
-        clean_kernel = [
-            sys.executable, "-u", "-c",
-            f"import time; print(open({str(clean_fifo)!r}).read(), end=''); time.sleep(30)",
-        ]
-        clean_child = [sys.executable, "-u", "-c",
-                       f"open({str(clean_fifo)!r}, 'w').write('kernel: harmless control line\\n')"]
-        clean = run_guarded(
-            clean_child, 5, incident_dir=temp / "incidents", stamp=temp / "stamp",
-            kernel_command=clean_kernel, include_flight=False,
-        )
-        assert clean.returncode == 0, clean
-        assert not (temp / "stamp").exists()
-
-        fault_fifo = temp / "fault.fifo"
-        os.mkfifo(fault_fifo)
-        child_marker = temp / "child.pid"
-        fault_kernel = [
-            sys.executable, "-u", "-c",
-            f"import time; print(open({str(fault_fifo)!r}).read(), end=''); time.sleep(30)",
-        ]
-        fault_script = (
-            "import subprocess,sys,time; "
-            "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
-            f"open({str(child_marker)!r},'w').write(str(p.pid)); "
-            f"open({str(fault_fifo)!r},'w').write({planted_feed!r}); "
-            "print('planted-fault child still alive', flush=True); time.sleep(30)"
-        )
-        stop_order: list[str] = []
-        real_kill = _kill_exact_group
-        real_minimal = _write_minimal_fault
-
-        def ordered_kill(pgid: int) -> None:
-            stop_order.append("kill")
-            real_kill(pgid)
-
-        def ordered_minimal(*args, **kwargs):
-            stop_order.append("persist")
-            return real_minimal(*args, **kwargs)
-
-        with (
-            mock.patch.object(module, "_kill_exact_group", side_effect=ordered_kill),
-            mock.patch.object(module, "_write_minimal_fault", side_effect=ordered_minimal),
-        ):
-            fault = run_guarded(
-                [sys.executable, "-u", "-c", fault_script], 5,
-                incident_dir=temp / "incidents", stamp=temp / "stamp",
-                kernel_command=fault_kernel, include_flight=False,
-            )
-        assert fault.returncode == WATCH_FAULT_RC, fault
-        assert stop_order.index("kill") < stop_order.index("persist")
-        assert fault.incident_path is not None and fault.incident_path.is_file()
-        incident_text = fault.incident_path.read_text(errors="replace")
-        assert "Illegal register access" in incident_text
-        assert "2026-08-26T22:48:34.123456789+03:00" in incident_text
-        assert f"first kernel real_ns: {expected_real_ns}" in incident_text
-        assert "ring gfx_0.0.0 timeout" in incident_text
-        assert "Process planted pid 123" in incident_text
-        assert "STOP CATEGORY: gpu_fault" in incident_text
-        stamp_payload = json.loads((temp / "stamp").read_text())
-        assert stamp_payload["version"] == 1
-        assert stamp_payload["category"] == "gpu_fault"
-        assert isinstance(stamp_payload["monotonic_ns"], int)
-        grandchild_pid = int(child_marker.read_text())
-        _wait_process_stopped(grandchild_pid)
-
-        flight_dir = temp / "flight"
-        flight_dir.mkdir()
-        fake_flight = flight_dir / "session_4242_abcd_control.flight"
-        fake_flight.write_bytes(b"control")
-        fake_reader = temp / "fake_flight_dump.py"
-        fake_reader.write_text(
-            f"#!{sys.executable}\n"
-            "import sys\n"
-            f"expected = {str(expected_real_ns)!r}\n"
-            "i = sys.argv.index('--kernel-real-ns')\n"
-            "assert sys.argv[i + 1] == expected\n"
-            "print(\"session     : label='control' pid=4242 session=abcd\")\n"
-            "print('CAUSAL-WINDOW CANDIDATE fake-reader received ' + expected)\n",
-            encoding="utf-8",
-        )
-        fake_reader.chmod(0o755)
-        flight_incident = _write_minimal_fault(
-            flight_dir, temp / "flight.stamp", 4242, planted, expected_real_ns, "gpu_fault"
-        )
-        _write_incident(
-            flight_dir,
-            flight_incident,
-            4242,
-            ["fake-command"],
-            planted,
-            [],
-            include_flight=True,
-            flight_snapshot={},
-            include_context=False,
-            include_static=False,
-            kernel_real_ns=expected_real_ns,
-            flight_reader=fake_reader,
-            category="gpu_fault",
-        )
-        flight_text = flight_incident.read_text(errors="replace")
-        assert "CAUSAL-WINDOW CANDIDATE fake-reader" in flight_text
-        assert str(expected_real_ns) in flight_text
-
-        durable_control = temp / "durable" / "control.txt"
-        with mock.patch.object(os, "fsync", wraps=os.fsync) as fsync_control:
-            atomic_durable_replace(durable_control, "durable-control\n")
-        assert fsync_control.call_count >= 2, "file and new directory entry were not both fsynced"
-        assert durable_control.read_text() == "durable-control\n"
-        with mock.patch.object(os, "replace", side_effect=OSError("planted replace failure")):
-            try:
-                atomic_durable_replace(durable_control, "must-not-truncate\n")
-            except OSError:
-                pass
-            else:
-                raise AssertionError("planted atomic replacement failure was swallowed")
-        assert durable_control.read_text() == "durable-control\n"
-
-        exact_snapshot = {
-            str(fake_flight.resolve()): (
-                fake_flight.stat().st_ino, fake_flight.stat().st_size,
-                fake_flight.stat().st_mtime_ns,
-            )
-        }
-        assert "no new/changed" in _flight_analysis(
-            4242, expected_real_ns, exact_snapshot, flight_dir, fake_reader
-        )
-        with mock.patch.object(
-            subprocess, "run", side_effect=subprocess.TimeoutExpired(["fake-reader"], 15)
-        ):
-            assert "failed safely" in _flight_analysis(
-                4242, expected_real_ns, {}, flight_dir, fake_reader
-            )
-
-        with mock.patch.dict(os.environ, {"SBR_AUTH_TOKEN": "must-not-leak"}, clear=True):
-            static = "\n".join(_static_environment([
-                "control", "SBR_AUTH_TOKEN=argv-must-not-leak", "--password=also-secret",
-            ]))
-        assert "env SBR_AUTH_TOKEN=<redacted>" in static
-        assert "must-not-leak" not in static
-        assert "argv-must-not-leak" not in static
-        assert "also-secret" not in static
-        assert "SBR_AUTH_TOKEN=<redacted>" in static
-        assert "--password=<redacted>" in static
-
-        with (
-            mock.patch.object(module, "current_kernel_cursor", return_value=("anchor", None)),
-            mock.patch.object(module, "preflight_reasons", return_value=[]),
-            mock.patch.object(module, "kernel_lines_after_cursor", return_value=([planted], None)),
-            mock.patch.object(subprocess, "Popen") as forbidden_launch,
-        ):
-            gap = run_guarded(["must-not-launch"], 1, stamp=temp / "gap.stamp")
-        assert gap.returncode == WATCH_BROKEN_RC
-        forbidden_launch.assert_not_called()
-
-        class NeverReaps:
-            pid = 99
-
-            @staticmethod
-            def wait(timeout):
-                raise subprocess.TimeoutExpired("never", timeout)
-
-        assert "did not reap" in (_bounded_reap(NeverReaps(), timeout=0.001) or "")
-
-        fast_fifo = temp / "fast.fifo"
-        os.mkfifo(fast_fifo)
-        fast_kernel = [
-            sys.executable, "-u", "-c",
-            f"import time; print(open({str(fast_fifo)!r}).read(), end=''); time.sleep(30)",
-        ]
-        fast_child = [
-            sys.executable, "-c", f"open({str(fast_fifo)!r},'w').write({planted_feed!r})",
-        ]
-        fast = run_guarded(
-            fast_child, 5, incident_dir=temp / "fast", stamp=temp / "fast.stamp",
-            kernel_command=fast_kernel, include_flight=False,
-        )
-        assert fast.returncode == WATCH_FAULT_RC, fast
-
-        orphan_fifo = temp / "orphan.fifo"
-        os.mkfifo(orphan_fifo)
-        orphan_marker = temp / "orphan.pid"
-        orphan_kernel = [
-            sys.executable, "-u", "-c",
-            f"import time; print(open({str(orphan_fifo)!r}).read(), end=''); time.sleep(30)",
-        ]
-        orphan_script = (
-            "import subprocess,sys; "
-            "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
-            f"open({str(orphan_marker)!r},'w').write(str(p.pid)); "
-            f"open({str(orphan_fifo)!r},'w').write('kernel: harmless control\\n')"
-        )
-        orphan = run_guarded(
-            [sys.executable, "-c", orphan_script], 5,
-            incident_dir=temp / "orphan", stamp=temp / "orphan.stamp",
-            kernel_command=orphan_kernel, include_flight=False,
-        )
-        assert orphan.returncode == 0, orphan
-        _wait_process_stopped(int(orphan_marker.read_text()))
-
-        failed_fifo = temp / "failed-orphan.fifo"
-        os.mkfifo(failed_fifo)
-        failed_marker = temp / "failed-orphan.pid"
-        failed_kernel = [
-            sys.executable, "-u", "-c",
-            f"print(open({str(failed_fifo)!r}).read(), end='')",
-        ]
-        failed_script = (
-            "import subprocess,sys; "
-            "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
-            f"open({str(failed_marker)!r},'w').write(str(p.pid)); "
-            f"open({str(failed_fifo)!r},'w').write('kernel: harmless then watcher EOF\\n')"
-        )
-        failed = run_guarded(
-            [sys.executable, "-c", failed_script], 5,
-            incident_dir=temp / "failed-orphan", stamp=temp / "failed-orphan.stamp",
-            kernel_command=failed_kernel, include_flight=False,
-        )
-        assert failed.returncode == WATCH_BROKEN_RC, failed
-        _wait_process_stopped(int(failed_marker.read_text()))
-
-        broken_kernel = [sys.executable, "-c", "raise SystemExit(7)"]
-        broken = run_guarded(
-            [sys.executable, "-c", "import time; time.sleep(30)"], 5,
-            incident_dir=temp / "broken", stamp=temp / "broken.stamp",
-            kernel_command=broken_kernel, include_flight=False,
-        )
-        assert broken.returncode == WATCH_BROKEN_RC, broken
-        assert (temp / "broken.stamp").is_file()
-
-        early_child_marker = temp / "early-signal-child"
-        early_signal_kernel = [
-            sys.executable, "-c",
-            "import os,signal,time; os.kill(os.getppid(), signal.SIGTERM); "
-            "print('signal-sent', flush=True); time.sleep(30)",
-        ]
-        real_journal_start = JournalPump.start
-
-        def synchronized_journal_start(pump: JournalPump) -> None:
-            real_journal_start(pump)
-            signal_line = pump.lines.get(timeout=1)
-            assert signal_line == "signal-sent"
-            pump.lines.put(signal_line)
-
-        with mock.patch.object(JournalPump, "start", synchronized_journal_start):
-            early_signal = run_guarded(
-                [sys.executable, "-c",
-                 f"open({str(early_child_marker)!r},'w').write('launched')"],
-                5, incident_dir=temp / "early-signal", stamp=temp / "early-signal.stamp",
-                kernel_command=early_signal_kernel, include_flight=False,
-            )
-        assert early_signal.returncode == 143
-        assert not early_child_marker.exists(), "signal before child creation still launched child"
-
-        signal_child_marker = temp / "signal-child.pids"
-        signal_journal_marker = temp / "signal-journal.pid"
-        guard_pid = os.fork()
-        if guard_pid == 0:
-            signal_kernel = [
-                sys.executable, "-c",
-                f"import os,time; open({str(signal_journal_marker)!r},'w').write(str(os.getpid())); "
-                "time.sleep(30)",
-            ]
-            signal_script = (
-                "import os,subprocess,sys,time; time.sleep(.1); "
-                "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
-                f"open({str(signal_child_marker)!r},'w').write(str(os.getpid())+' '+str(p.pid)); "
-                "time.sleep(30)"
-            )
-            result = run_guarded(
-                [sys.executable, "-c", signal_script], 5,
-                incident_dir=temp / "signal", stamp=temp / "signal.stamp",
-                kernel_command=signal_kernel, include_flight=False,
-            )
-            os._exit(result.returncode)
-        _wait_for_path(signal_child_marker)
-        _wait_for_path(signal_journal_marker)
-        leader_pid, signal_descendant = map(int, signal_child_marker.read_text().split())
-        signal_journal_pid = int(signal_journal_marker.read_text())
-        os.kill(guard_pid, signal.SIGTERM)
-        _waited, guard_status = os.waitpid(guard_pid, 0)
-        assert os.waitstatus_to_exitcode(guard_status) == 143
-        _wait_process_stopped(leader_pid)
-        _wait_process_stopped(signal_descendant)
-        _wait_process_stopped(signal_journal_pid)
-
-    print("gpu-watch selftest PASS")
-    print("  known-negative harmless journal line: command exits normally, no cooldown stamp")
-    print("  known-positive illegal-register line: exact group killed before durable incident writes")
-    print("  nanosecond timestamp reaches fake flight reader and emits CAUSAL-WINDOW output")
-    print("  durable-write control observes file and parent-directory fsync")
-    print("  interrupted atomic enrichment preserves the prior minimal incident")
-    print("  stale-flight, reader-timeout, secret-redaction and preflight-gap controls pass")
-    print("  bounded-reap control reports timeout without blocking")
-    print("  fast-exit fault drains; clean leader exit kills its surviving descendant")
-    print("  watcher-loss controls kill live leader and post-leader descendant")
-    print("  early SIGTERM forbids child launch; live SIGTERM kills leader, descendant and follower")
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timeout", type=float, default=240.0, help="wall-clock cap in seconds")
-    parser.add_argument("--output-log", type=Path, help="tee guarded process output to this file")
+    parser.add_argument(
+        "--timeout", type=float, default=240.0, help="wall-clock cap in seconds"
+    )
+    parser.add_argument(
+        "--output-log", type=Path, help="tee guarded process output to this file"
+    )
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.selftest:
+        from gpu_watch_selftest import selftest
+
         return selftest()
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
     if not command:
         parser.error("a command is required after --")
-    if not math.isfinite(args.timeout) or not 0 < args.timeout <= MAX_GUARD_TIMEOUT_SECS:
+    if (
+        not math.isfinite(args.timeout)
+        or not 0 < args.timeout <= MAX_GUARD_TIMEOUT_SECS
+    ):
         parser.error(f"--timeout must be finite and in (0,{MAX_GUARD_TIMEOUT_SECS:g}]")
     result = run_guarded(command, args.timeout, output_log=args.output_log)
     if result.returncode == 0:
-        print("[gpu-watch] no kernel GPU fault observed through the final post-exit cursor scan; "
-              "the next preflight still checks for delayed kernel evidence.")
+        print(
+            "[gpu-watch] no kernel GPU fault observed through the final post-exit cursor scan; "
+            "the next preflight still checks for delayed kernel evidence."
+        )
     return result.returncode
 
 

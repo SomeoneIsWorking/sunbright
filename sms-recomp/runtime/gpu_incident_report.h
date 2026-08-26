@@ -6,7 +6,7 @@
 
 namespace sb::gpu_incident {
 
-// Allocation-free writer used by both the device-loss callback and the post-mortem reporter.
+// Allocation-free writer used by GPU callback-error sidecars and the post-mortem reporter.
 // Output is always NUL-terminated when capacity is nonzero and truncates at capacity - 1.
 class FixedBufferWriter {
   public:
@@ -23,7 +23,7 @@ class FixedBufferWriter {
 
 // Formats every field Aurora recorded for one queue submission. `reference` is normally the
 // latest completed submit and makes the report name every recorded field that changed before the
-// device loss. The returned size excludes the trailing NUL and may equal capacity - 1 when the
+// callback error. The returned size excludes the trailing NUL and may equal capacity - 1 when the
 // output was truncated.
 std::size_t format_submit_diagnostic(char* destination, std::size_t capacity,
                                      const AuroraGpuSubmitInfo& info,

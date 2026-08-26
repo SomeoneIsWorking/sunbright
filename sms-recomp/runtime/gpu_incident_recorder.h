@@ -80,6 +80,7 @@ struct Analysis {
     std::uint64_t sessionId = 0;
     std::string sessionLabel;
     std::size_t corruptRecordCount = 0;
+    std::size_t invalidBoundsRecordCount = 0;
     std::vector<Record> records;
     std::vector<SubmitState> submits;
 

@@ -163,8 +163,8 @@ target_include_directories(gpu_incident_recorder_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include")
 add_test(NAME gpu_incident_recorder_test COMMAND gpu_incident_recorder_test)
 
-# Post-mortem reader for the submit flight recorder: after a device loss kills the process, this
-# is how scratch/gpu_crash/*.flight becomes an attribution instead of an unreadable artifact.
+# Post-mortem reader for the submit flight recorder: after a device loss or uncaptured WebGPU error
+# kills the process, this turns scratch/gpu_crash/*.flight into bounded evidence.
 add_executable(gpu_flight_dump tools/gpu_flight_dump_main.cpp runtime/gpu_incident_recorder.cpp
                                runtime/gpu_incident_report.cpp)
 target_include_directories(gpu_flight_dump PRIVATE

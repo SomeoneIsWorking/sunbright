@@ -1,11 +1,11 @@
 ---
 id: 16
 title: Persistent indexed-array uploads bypass the render worker
-status: open
+status: resolved
 symptom: a next-tick Queue::WriteBuffer can overtake an older asynchronous replay Submit that reads the same persistent storage buffer
 tags: recomp,aurora,gpu,ordering,interpolation,indexed-geometry
 created: 2026-08-26
-updated: 2026-08-26
+updated: 2026-08-27
 ---
 
 ## Root cause
@@ -38,5 +38,10 @@ thread. The current direct call must fail this control before the ownership chan
 
 - `extern/aurora/lib/aurora.cpp`: game-thread FIFO drain
 - `extern/aurora/lib/gx/command_processor.cpp`: indexed-array persistent upload
-- `extern/aurora/lib/gfx/common.cpp`: direct `Queue::WriteBuffer` and asynchronous worker submission
+- `extern/aurora/lib/gfx/common.cpp`: persistent-array allocation and worker-only Dawn write sink
+- `extern/aurora/lib/gfx/persistent_upload.{hpp,cpp}`: owned-byte upload scheduling seam
+- `extern/aurora/lib/gfx/render_worker.{hpp,cpp}`: typed FIFO ordering shared with submission
 - `debug_journal/2026-08-26_gpu_illegal_command_stream_incident.md`: causal crash window and exclusions
+
+### Resolution (2026-08-27)
+Persistent uploads now copy producer bytes into the render-worker FIFO and assert worker ownership at the Dawn WriteBuffer sink, preserving older submit -> upload -> current submit without a GPU wait. Shipping scheduling controls and Clang Aurora builds pass. This corrects the proven ordering defect but is not claimed as the cause of the 2026-08-26 reset.

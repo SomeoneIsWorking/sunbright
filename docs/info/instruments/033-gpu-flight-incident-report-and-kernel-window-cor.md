@@ -33,5 +33,22 @@ so missing COMPLETE means callback not observed, not necessarily GPU-incomplete.
 bounded and fingerprints semantic GX/Rml/Clear gfx-pass draws, not decoded driver commands. It
 excludes later end-frame readback-copy, present-blit, ImGui, and profiler commands; readback fields
 are aggregate lifecycle evidence. A driver coredump or finer GPU marker trace is still required to
-prove the exact illegal packet. Without a readable kernel journal, the live guard fails closed and
-the reader must not call the newest pending submit causal.
+prove the exact illegal packet. The live guard now attempts to preserve a newly-created Linux
+device-coredump after killing the submitting process group, but the generic sysfs `data` attribute
+is normally mode `0600`. Its incident therefore distinguishes a captured artifact from
+`PERMISSION-DENIED`, `EXPIRED-OR-CONSUMED`, `EMPTY`, `TRUNCATED`, `TIMEOUT`, `DISABLED`, and
+`UNAVAILABLE`. The sysfs read is isolated in an exact killable child, so even a driver callback
+blocked in `open()` cannot exceed the parent-owned capture deadline; none of those negative states
+is GPU-packet evidence. Without a readable kernel journal, the live
+guard fails closed and the reader must not call the newest pending submit causal.
+
+Aurora also persists `UNCAPTURED_ERROR` before its fatal abort, with Dawn's bounded error type/text
+and the latest submit explicitly labeled as temporal context. This is API-side explanation, not a
+hardware-progress breadcrumb. The independent opt-in RADV collector (I034) supplies the latter when
+the driver emits a readable exact-child trace; its synchronization means that absence or changed
+behavior cannot be treated as a normal-run result.
+
+The integrated 2026-08-27 negative control ran 100 headless stage-1 Interpolated 60 FPS presents:
+the v2 flight decoded 100 successful callbacks, zero pending submissions, and zero corrupt/bounds
+records, while the external post-run preflight remained kernel-clean. This proves the live recorder
+can produce the non-fault answer; it does not prove the earlier nondeterministic reset is resolved.

@@ -32,6 +32,12 @@ Submits 1609–1614 were submitted after the first fault and are aftermath, not 
 `VK_ERROR_DEVICE_LOST` arrived 4.279 seconds after the kernel event, so selecting the newest pending
 submit at the device-loss callback blamed the wrong frame.
 
+Post-mortem `--submit 1608` inspection also found a Dawn `QueueWorkDoneStatus::Success` callback at
+`22:48:38.955430`, 4.265 seconds after the first kernel event. That callback was not present at the
+event-time boundary and cannot retroactively remove submit 1608 from the causal window. Conversely,
+it does not prove that one of submit 1608's draws emitted the illegal packet: a delayed success
+callback and the kernel's command-stream rejection are different observations.
+
 Submit 1608 was interpolated replay emission `frameId=1608`, `frameIndex=1607`: five EFB passes,
 1,483 draws, pass draw counts `0 / 4 / 71 / 1255 / 153`, and vertex/uniform/index byte totals
 `1,240,532 / 3,167,552 / 764,916`. Its pipeline topology and hashes exactly match both the preceding
@@ -69,9 +75,22 @@ The wider static replay audit found one real but non-causal ordering defect: per
 uploads call `Queue::WriteBuffer` on the game thread while submits are owned asynchronously by the
 render worker, so a next-tick write can overtake an older replay submit. No persistent write occurs
 between causal replay 1608 and its completed paired real emission, so that defect cannot explain this
-incident. It is tracked separately as issue 16. The audit found no indirect draw/dispatch arguments,
+incident. Issue 16 is now corrected: producer bytes are copied into the render-worker FIFO and the
+Dawn `WriteBuffer` sink asserts worker ownership, preserving `older submit → upload → current
+submit` without a GPU wait. The audit found no indirect draw/dispatch arguments,
 encoder reuse, mapped staging-slot reuse, out-of-range replay staging range, or asynchronous resource
 destruction in the causal pair.
+
+The audit also excluded WSI acquire/present, present blit, ImGui, profiler queries, texture uploads,
+texture copies, and persistent-arena changes from the headless causal submit. No static Aurora or
+WebGPU contract violation has been proven for submit 1608. The strongest remaining application-side
+gap is narrower: replay `DrawData` carries individual vertex, index, uniform, and storage references,
+while the old encode seam checked only aggregate high-water marks. That is issue 17, a validation
+coverage defect rather than evidence that the historical v1 flight contained an out-of-range draw.
+The shipping encode seam now rejects every provable GX/RML vertex, index, uniform, alignment,
+count/byte, replay-prefix, high-water, and interpolation-span violation. The retained metadata still
+lacks GX indexed-array byte extents/used masks and RML dynamic binding sizes; a monotonic
+`observed_unchecked()` mask names those gaps instead of pretending they were validated.
 
 ## Reporting changes
 
@@ -86,6 +105,11 @@ The bounded tail covers Aurora's semantic GX/Rml/Clear gfx-pass draws. It does n
 commands encoded later by the host end-frame path: framebuffer readback copies, present blit, ImGui,
 or profiler commands. Readback count/bytes and callback lifetime are aggregate evidence only.
 
+Aurora's uncaptured-error callback now appends a distinct, crash-surviving phase before `FATAL` and
+synchronizes Dawn's bounded error type/text into the human-readable sidecar. The latest submit is
+labeled temporal context rather than cause. All Dawn callback strings resolve `WGPU_STRLEN` before
+copying, so a sentinel length cannot turn crash reporting into an over-read.
+
 The external diagnostic guard now follows the kernel journal live from an end cursor. The first new
 illegal-command-stream, GPUVM, timeout, or reset event writes the durable fault stamp and incident
 bundle, preserves the exact first line and subsequent ring/process context, and terminates only the
@@ -93,10 +117,37 @@ guarded process group. A dead watcher fails closed. CPU-only controls inject bot
 fault lines, including the exact 2026-08-26 illegal-register shape; no GPU workload was used to
 verify these reporting changes.
 
+After that immediate kill, the watcher now snapshots and preserves a newly created Linux device
+coredump when it can correlate the dump's `failing_device` PCI identity with the kernel fault. It
+never writes to sysfs and bounds the read by time, bytes, and node count. Because sysfs open/read can
+block inside the kernel, those calls run in an exact child process which the watcher kills and reaps
+at the deadline; only a completed, schema-checked staging file is published. A captured artifact records
+its SHA-256 and metadata; stale, unrelated, empty, truncated, permission-denied, disabled,
+unavailable, and expired-or-consumed states remain distinct. The generic sysfs payload is normally
+mode `0600`, so an unprivileged watcher cannot promise the bytes. This corrects the old binary
+"captured or nothing" assumption without weakening the immediate stop.
+
 ## Remaining frontier
 
 The old v1 flight cannot identify the exact draw inside submit 1608. The AMD device coredump was
 root-only, was not captured, and expired. A future recurrence will preserve the v2 draw/readback
-tail and kernel-time-correlated incident automatically. That evidence can distinguish dynamic draw
-state and resource-lifetime pressure; it still cannot prove which draw the GPU executed without a
-driver coredump or finer GPU debug-marker evidence.
+tail, kernel-time-correlated incident, and an explicit device-coredump disposition automatically.
+That evidence can distinguish dynamic draw state and resource-lifetime pressure; it still cannot
+prove which draw the GPU executed. Pinned Dawn exposes neither the Vulkan device/queue/command
+buffer nor AMD device-fault/checkpoint extensions, and Release builds compile out GX debug groups.
+Issue 18 now has a separate opt-in `SBR_RADV_HANG_DIAG=1` lane, which activates
+`RADV_DEBUG=hang`, snapshots pre-launch dumps, and accepts only a new exact-child-PID trace after the
+watcher stops the process. I034 validates byte preservation, last-reached/not-reached parsing, and
+the absent/stale/wrong-PID/partial/denied answers on CPU fixtures. Real driver activation remains
+unverified. RADV adds synchronization, so it may mask an ordering/lifetime defect and must never be
+treated as normal-run equivalence.
+
+## Integrated bounded runtime control (2026-08-27)
+
+After the CPU controls and Clang build passed, `run-safe.sh` completed a headless stage-1
+Interpolated 60 FPS run capped at 100 presents. Its v2 flight retained exactly 100 submits and 300
+boundaries: all 100 received successful completion callbacks, none remained API- or callback-
+pending, and no record was corrupt or out of bounds. The external post-run preflight found no new
+illegal-command-stream, timeout, reset, or fault line. This verifies that the combined queue-owner,
+replay-validator, recorder, and watcher path can run the live workload without disturbing the card.
+It is a bounded negative control, not proof that the nondeterministic reset is resolved.

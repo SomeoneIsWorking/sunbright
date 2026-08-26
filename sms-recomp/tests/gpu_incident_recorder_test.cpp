@@ -3,13 +3,16 @@
 #include <array>
 #include <cerrno>
 #include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <fcntl.h>
@@ -20,6 +23,11 @@
 namespace {
 
 int g_failures = 0;
+
+static_assert(AURORA_GPU_PROBE_DEVICE_LOST == 3,
+              "append incident phases; persisted DEVICE_LOST must remain phase 3");
+static_assert(sb::gpu_incident::kFormatVersion == 1,
+              "the append-only probe phase does not rewrite the flight-file format");
 
 void check(bool condition, const char* message) {
     std::printf("  %s  %s\n", condition ? "PASS" : "FAIL", message);
@@ -117,13 +125,19 @@ void device_lost(const char* message) {
                            nullptr);
 }
 
+void uncaptured_error(std::string_view message) {
+    sbr_gpu_probe_callback(AURORA_GPU_PROBE_UNCAPTURED_ERROR, nullptr, message.data(),
+                           message.size(), nullptr);
+}
+
 void clean_file(const std::filesystem::path& path) {
     std::error_code error;
     std::filesystem::remove(path, error);
 }
 
-std::pair<int, std::string> run_flight_dump(const std::filesystem::path& file,
-                                            std::uint64_t kernelRealtimeNs) {
+std::pair<int, std::string>
+run_flight_dump(const std::filesystem::path& file, std::uint64_t kernelRealtimeNs,
+                std::optional<std::uint64_t> selectedSubmit = std::nullopt) {
     int descriptors[2]{};
     if (::pipe(descriptors) != 0)
         return {-1, {}};
@@ -133,9 +147,10 @@ std::pair<int, std::string> run_flight_dump(const std::filesystem::path& file,
         ::dup2(descriptors[1], STDOUT_FILENO);
         ::dup2(descriptors[1], STDERR_FILENO);
         ::close(descriptors[1]);
-        const std::string timestamp = std::to_string(kernelRealtimeNs);
-        ::execl(SBR_GPU_FLIGHT_DUMP_PATH, SBR_GPU_FLIGHT_DUMP_PATH, file.c_str(),
-                "--kernel-real-ns", timestamp.c_str(), "--tail", "0", nullptr);
+        const std::string value = std::to_string(selectedSubmit.value_or(kernelRealtimeNs));
+        const char* const option = selectedSubmit ? "--submit" : "--kernel-real-ns";
+        ::execl(SBR_GPU_FLIGHT_DUMP_PATH, SBR_GPU_FLIGHT_DUMP_PATH, file.c_str(), option,
+                value.c_str(), "--tail", "0", nullptr);
         _exit(127);
     }
     ::close(descriptors[1]);
@@ -201,6 +216,51 @@ void test_completed(const std::filesystem::path& directory) {
               result.submits.front().completed && !result.submits.front().api_pending() &&
               !result.submits.front().completion_callback_pending(),
           "RETURN and COMPLETE are distinct and both observed");
+    const auto [selectedStatus, selected] = run_flight_dump(file, 0, info.submitId);
+    check(selectedStatus == 0 && selected.find("=== SELECTED SUBMIT 23 ===") != std::string::npos &&
+              selected.find("status=1") != std::string::npos &&
+              selected.find("successful completion callback observed") != std::string::npos,
+          "submit selector prints one retained submit and decodes its completion status");
+    const auto [missingStatus, missing] = run_flight_dump(file, 0, 9999);
+    check(missingStatus == 1 && missing.find("submit 9999 is not retained") != std::string::npos,
+          "submit selector rejects an absent submit instead of printing empty evidence");
+}
+
+void test_v1_v2_submit_read_compatibility(const std::filesystem::path& directory) {
+    std::puts("v1/v2 submit payload read compatibility");
+    const auto file = directory / "v1_v2.flight";
+    clean_file(file);
+    constexpr std::uint64_t session = 0x56315632ULL;
+    check(configure(file, session), "configured mixed submit-version fixture");
+
+    AuroraGpuSubmitInfo legacy = submit(24);
+    legacy.version = 1;
+    legacy.structSize = offsetof(AuroraGpuSubmitInfo, recordedDrawCount);
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, legacy);
+    const AuroraGpuSubmitInfo modern = submit(25);
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, modern);
+    sb::gpu_incident::shutdown();
+
+    const auto result = sb::gpu_incident::analyze_file(file, ::getpid(), session);
+    check(result.ok() && result.records.size() == 2,
+          "new reader accepts both legacy v1 and bounded v2 submit payloads");
+    if (result.ok() && result.records.size() == 2) {
+        check(result.records[0].info.version == 1 &&
+                  result.records[0].info.structSize ==
+                      offsetof(AuroraGpuSubmitInfo, recordedDrawCount) &&
+                  result.records[0].info.recordedDrawCount == 0,
+              "v1 core fields decode without reading the absent v2 tail");
+        check(result.records[1].info.version == 2 &&
+                  result.records[1].info.structSize == sizeof(AuroraGpuSubmitInfo) &&
+                  result.records[1].info.recordedDrawCount == 1,
+              "v2 tail fields remain available after the phase append");
+    }
+    const auto [dumpStatus, dump] = run_flight_dump(file, 0);
+    check(dumpStatus == 0 &&
+              dump.find("historical v1 submit record without the append-only v2 fields") !=
+                  std::string::npos &&
+              dump.find("drawTail[0]") != std::string::npos,
+          "reader reports absent v1 tails while decoding retained v2 draw evidence");
 }
 
 void test_device_lost_report(const std::filesystem::path& directory) {
@@ -252,6 +312,54 @@ void test_device_lost_report(const std::filesystem::path& directory) {
           "report compares the pending submit and states the attribution limit");
 }
 
+void test_uncaptured_error_report(const std::filesystem::path& directory) {
+    std::puts("uncaptured-error association and pre-fatal durable report");
+    const auto file = directory / "uncaptured_error.flight";
+    clean_file(file);
+    clean_file(file.string() + ".report.txt");
+    constexpr std::uint64_t session = 0x554E434150ULL;
+    check(configure(file, session), "configured uncaptured-error fixture");
+    const AuroraGpuSubmitInfo pending = submit(47);
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, pending);
+    const auto reportFile = sb::gpu_incident::report_path();
+    const std::string message =
+        "type=1(Validation) message=BindGroup resource range exceeds buffer size" +
+        std::string(600, 'x');
+    uncaptured_error(message);
+
+    // Read before shutdown: the real callback enters FATAL immediately after returning, so a
+    // report that exists only after orderly teardown would not survive the failure it diagnoses.
+    std::ifstream liveStream(reportFile);
+    const std::string liveReport{std::istreambuf_iterator<char>{liveStream},
+                                 std::istreambuf_iterator<char>{}};
+    check(liveReport.find("SUNBRIGHT GPU UNCAPTURED ERROR") != std::string::npos &&
+              liveReport.find("type=1(Validation) message=BindGroup resource range exceeds buffer "
+                              "size") != std::string::npos,
+          "uncaptured-error sidecar is synchronized before orderly shutdown");
+    check(liveReport.find("submit=47") != std::string::npos &&
+              liveReport.find("temporal context only") != std::string::npos &&
+              liveReport.find("not proof that it caused") != std::string::npos,
+          "sidecar associates the latest submit only as temporal context");
+
+    sb::gpu_incident::shutdown();
+    const auto result = sb::gpu_incident::analyze_file(file, ::getpid(), session);
+    check(result.ok() && result.records.size() == 2,
+          "uncaptured error and preceding submit survived in the flight ring");
+    if (result.ok() && result.records.size() == 2) {
+        const auto& error = result.records.back();
+        check(error.phase == AURORA_GPU_PROBE_UNCAPTURED_ERROR &&
+                  error.info.submitId == pending.submitId &&
+                  error.message.size() == AURORA_GPU_PROBE_MAX_MESSAGE &&
+                  error.message == message.substr(0, AURORA_GPU_PROBE_MAX_MESSAGE),
+              "persisted phase, bounded Dawn type/message and temporal association decode exactly");
+    }
+    const auto [dumpStatus, dump] = run_flight_dump(file, 0);
+    check(dumpStatus == 0 && dump.find("UNCAPTURED_ERROR callback") != std::string::npos &&
+              dump.find("Dawn reported this uncaptured WebGPU error") != std::string::npos &&
+              dump.find("temporal context, not causal proof") != std::string::npos,
+          "post-mortem reader distinguishes UNCAPTURED_ERROR from DEVICE_LOST");
+}
+
 void test_failed_completion_is_not_a_baseline(const std::filesystem::path& directory) {
     std::puts("failed completion callback is not a completed-work baseline");
     const auto file = directory / "failed_completion.flight";
@@ -300,11 +408,12 @@ void test_kernel_timestamp_window(const std::filesystem::path& directory) {
     probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, laterCompleted);
     probe(AURORA_GPU_PROBE_SUBMIT_RETURN, laterCompleted);
     complete(laterCompleted);
+    complete(pending);
     sb::gpu_incident::shutdown();
     const auto analysis = sb::gpu_incident::analyze_file(file);
-    check(analysis.ok() && analysis.records.size() == 8,
-          "kernel-window fixture retained earlier/later completed and callback-pending submits");
-    if (!analysis.ok() || analysis.records.size() != 8)
+    check(analysis.ok() && analysis.records.size() == 9,
+          "kernel-window fixture retained callbacks sequenced before and after the event");
+    if (!analysis.ok() || analysis.records.size() != 9)
         return;
     const std::uint64_t pendingBeginNs = analysis.records[3].realtimeNs;
     const std::uint64_t pendingReturnNs = analysis.records[4].realtimeNs;
@@ -315,6 +424,8 @@ void test_kernel_timestamp_window(const std::filesystem::path& directory) {
               atBegin.find("last COMPLETE before kernel event: submit 50") != std::string::npos &&
               atBegin.find("changed since completed submit 50") != std::string::npos &&
               atBegin.find("changed since completed submit 52") == std::string::npos &&
+              atBegin.find("completion callback arrived after the kernel event") !=
+                  std::string::npos &&
               atBegin.find("drawTail[0]") != std::string::npos,
           "BEGIN timestamp uses only earlier evidence and does not claim its later RETURN");
     const auto [returnStatus, atReturn] = run_flight_dump(file, pendingReturnNs);
@@ -365,6 +476,29 @@ void test_corrupt_and_torn(const std::filesystem::path& directory) {
     result = sb::gpu_incident::analyze_file(tornFile);
     check(result.ok() && result.records.empty() && result.corruptRecordCount == 1,
           "missing commit marker rejects a torn record");
+
+    const auto invalidBoundsFile = directory / "invalid_bounds.flight";
+    clean_file(invalidBoundsFile);
+    check(configure(invalidBoundsFile, 0xB0A4D5), "configured invalid-bounds fixture");
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, info);
+    probe(AURORA_GPU_PROBE_SUBMIT_RETURN, info);
+    sb::gpu_incident::shutdown();
+    fd = ::open(invalidBoundsFile.c_str(), O_RDWR | O_CLOEXEC);
+    const std::uint32_t impossibleSize = UINT32_MAX;
+    const off_t firstRecord = static_cast<off_t>(sb::gpu_incident::kFileHeaderBytes);
+    check(fd >= 0 &&
+              ::pwrite(fd, &impossibleSize, sizeof(impossibleSize), firstRecord + 52) ==
+                  static_cast<ssize_t>(sizeof(impossibleSize)) &&
+              ::pwrite(fd, &impossibleSize, sizeof(impossibleSize),
+                       firstRecord + static_cast<off_t>(sb::gpu_incident::kFileRecordBytes) + 56) ==
+                  static_cast<ssize_t>(sizeof(impossibleSize)),
+          "injected impossible submit-info and message bounds");
+    if (fd >= 0)
+        ::close(fd);
+    result = sb::gpu_incident::analyze_file(invalidBoundsFile);
+    check(result.ok() && result.records.empty() && result.corruptRecordCount == 2 &&
+              result.invalidBoundsRecordCount == 2,
+          "reader rejects both corrupt bounds before copying either payload");
 
     const auto shortFile = directory / "short.flight";
     clean_file(shortFile);
@@ -419,7 +553,9 @@ int main() {
 
     test_abort_pending(directory);
     test_completed(directory);
+    test_v1_v2_submit_read_compatibility(directory);
     test_device_lost_report(directory);
+    test_uncaptured_error_report(directory);
     test_failed_completion_is_not_a_baseline(directory);
     test_kernel_timestamp_window(directory);
     test_corrupt_and_torn(directory);

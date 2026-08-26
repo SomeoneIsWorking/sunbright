@@ -1,11 +1,11 @@
 ---
 id: 4
 title: the ablation sweep hangs the GPU ring: amdgpu resets the device mid-run, no attribution table ever printed
-status: open
+status: investigating
 symptom: VK_ERROR_DEVICE_LOST during ./run-render.sh SBR_ABLATE=1; radv GPUVM fault at 0x800000000000; 'XIO: fatal IO error 2 on X server :0' at startup afterwards
 tags: render,gpu,ablation,environment
 created: 2026-08-12
-updated: 2026-08-25
+updated: 2026-08-27
 ---
 
 ## What happens
@@ -140,3 +140,9 @@ draw and coherent readback-callback detail, the reader correlates against the fi
 and the external guard stops the exact process group at that first fault instead of waiting for
 process exit. Full analysis: `debug_journal/2026-08-26_gpu_illegal_command_stream_incident.md`;
 instrument controls: I033.
+
+### Note (2026-08-27)
+Historical --submit inspection shows causal-window submit 1608 received Dawn QueueWorkDoneStatus::Success at real_ns 1787773718955430225, 4.265 s after the first kernel illegal-register event. This late callback cannot retroactively remove submit 1608 from the event-time window and is not proof that one of its draws caused the illegal packet; kernel-time correlation remains authoritative.
+
+### Note (2026-08-27)
+Guarded runtime control 2026-08-27: a headless stage-1 Interpolated 60 FPS run completed 100/100 submits with successful Dawn callbacks, zero pending callbacks, zero corrupt records, and the post-run kernel preflight remained clean. This validates the integrated reporter/validator/queue path on a bounded run; it does not reproduce or resolve the nondeterministic 2026-08-26 illegal-command-stream reset.
