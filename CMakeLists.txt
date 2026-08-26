@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(sunbright CXX)
 
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  message(FATAL_ERROR "Sunbright requires clang++; configure with -DCMAKE_CXX_COMPILER=clang++")
-endif()
-
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
