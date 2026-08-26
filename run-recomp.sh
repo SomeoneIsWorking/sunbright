@@ -84,11 +84,12 @@ fi
 # The launcher is a shipping interface: never run a stale executable merely because one exists.
 # Configure once, then ask the build system to prove the target is current on every launch; an
 # up-to-date incremental build is cheap and a changed source file can no longer be ignored.
-if [[ ! -f "$HERE/build-sms-recomp/CMakeCache.txt" ]]; then
-    echo "[run-recomp] configuring sms-recomp with clang++ ..." >&2
-    cmake -S "$HERE/sms-recomp" -B "$HERE/build-sms-recomp" -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CXX_COMPILER=clang++ >&2
-fi
+# Debug is intentionally optimized by cmake/SunbrightBuildPolicy.cmake. It retains assertions,
+# symbols, Dawn validation/robustness, and GPU labels without making the game an -O0 workload.
+# Reconfigure every launch so an older Release cache cannot silently keep those diagnostics off.
+echo "[run-recomp] configuring optimized Debug with clang++ ..." >&2
+cmake -S "$HERE/sms-recomp" -B "$HERE/build-sms-recomp" -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_CXX_COMPILER=clang++ >&2
 echo "[run-recomp] ensuring sms-recomp is current ..." >&2
 cmake --build "$HERE/build-sms-recomp" --target sms-recomp -j"$NCPU" >&2
 

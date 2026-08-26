@@ -48,6 +48,12 @@ CODE_DIRS = [
     "tools/render",
 ]
 CODE_SCRIPTS = ["run.sh", "run-decomp.sh", "run-recomp.sh", "run-safe.sh", "play.sh"]
+BUILD_DEFINITION_PATHS = [
+    "CMakeLists.txt",
+    "cmake",
+    "extern/aurora/CMakeLists.txt",
+    "extern/aurora/cmake",
+]
 # Where switches are TALKED ABOUT. A name here with no reader is a phantom.
 DOC_PATHS = [
     "AGENTS.md",
@@ -222,6 +228,19 @@ def macro_names():
             re.M,
         ):
             names.add(m.group(1))
+    # Build-time options use the same project prefixes, but they are consumed by
+    # CMake rather than getenv. A documented cache option declared by set(...
+    # CACHE ...) or option(...) is therefore real even though it must not appear
+    # in the generated runtime-environment table.
+    for path in tracked_files(BUILD_DEFINITION_PATHS):
+        if not path.endswith(("CMakeLists.txt", ".cmake")):
+            continue
+        for m in re.finditer(
+            r"\b(?:option|set)\s*\(\s*((?:SB|SBR|AURORA)_[A-Z0-9_]+)\b",
+            read_text(path),
+            re.I,
+        ):
+            names.add(m.group(1).upper())
     return names
 
 

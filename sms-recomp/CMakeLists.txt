@@ -3,12 +3,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(sms_recomp CXX)
 
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  message(FATAL_ERROR "sms-recomp requires clang++; configure with -DCMAKE_CXX_COMPILER=clang++")
-endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SunbrightBuildPolicy.cmake")
+sunbright_enable_fast_debug_builds()
 
 # lucent is THE C++20 logger for this project (global directive) — never hand-roll another.
 include(FetchContent)
@@ -25,8 +24,13 @@ endif()
 
 add_library(sms-recomp-guest STATIC ${GEN_SOURCES})
 target_include_directories(sms-recomp-guest PUBLIC "${GEN}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime")
-# Generated code is machine-emitted: its warnings are noise, not signal.
-target_compile_options(sms-recomp-guest PRIVATE -w)
+# Generated code is machine-emitted: its warnings are noise, not signal. Its 2.8 million lines also
+# contain no hand-authored locals worth materializing into full debug records. Keep line tables and
+# function symbols for guest stack attribution while avoiding pathological compiler memory use.
+target_compile_options(sms-recomp-guest PRIVATE
+    -w
+    "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang>>:-gline-tables-only>"
+    "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANG_AND_ID:CXX,GNU>>:-g1>")
 
 # Overrides are part of the runtime, not the guest: they REPLACE recompiled bodies, so
 # they must not be compiled with the generated code's relaxed warning settings.
@@ -75,6 +79,7 @@ set(AURORA_ENABLE_GX ON CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_DVD OFF CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_RMLUI ON CACHE BOOL "Enable the Dusklight-style Sunbright settings UI" FORCE)
 set(AURORA_BUILD_TESTS OFF CACHE BOOL "Do not register Aurora's standalone tests when embedded" FORCE)
+set(AURORA_GPU_DIAGNOSTICS standard CACHE STRING "" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora" aurora-build EXCLUDE_FROM_ALL)
 
 set(AURORA_NOD_PROVIDER "auto" CACHE STRING "")
@@ -137,7 +142,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # member out of a static archive — nothing strongly references sb_log.o, so from a library it is
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
-add_executable(sms-recomp host/main.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/gpu_incident_recorder.cpp runtime/gpu_incident_report.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
+add_executable(sms-recomp host/main.cpp host/aurora_config.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/gpu_incident_recorder.cpp runtime/gpu_incident_report.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
                            runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_presenter.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
                            runtime/render/render_compare.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
@@ -162,6 +167,12 @@ target_include_directories(gpu_incident_recorder_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
     "${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include")
 add_test(NAME gpu_incident_recorder_test COMMAND gpu_incident_recorder_test)
+
+add_executable(aurora_config_test tests/aurora_config_test.cpp host/aurora_config.cpp)
+target_include_directories(aurora_config_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include")
+add_test(NAME aurora_config COMMAND aurora_config_test)
 
 # Post-mortem reader for the submit flight recorder: after a device loss or uncaptured WebGPU error
 # kills the process, this turns scratch/gpu_crash/*.flight into bounded evidence.

@@ -39,11 +39,11 @@ ROM="${1:-${SUNBRIGHT_ROM:-$HERE/rom.rvz}}"
 }
 
 # The launcher is a shipping interface: an executable merely existing does not prove that it was
-# built from the current decomp, Aurora, or host sources. Configure with the required compiler and
-# ask CMake to prove the real sms-boot target current on every launch. The top-level CMake project
-# independently rejects any compiler whose detected ID is not Clang.
-echo "[run-decomp] configuring sms-boot with clang++ ..." >&2
-cmake -S "$HERE" -B "$HERE/build" -DCMAKE_BUILD_TYPE=Release \
+# built from the current decomp, Aurora, or host sources. Debug is deliberately optimized by the
+# shared build policy, so assertions, symbols, Dawn validation/robustness, and GPU labels stay live
+# without turning the game into an -O0 workload.
+echo "[run-decomp] configuring optimized Debug with clang++ ..." >&2
+cmake -S "$HERE" -B "$HERE/build" -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_COMPILER=clang++ >&2
 echo "[run-decomp] ensuring sms-boot is current ..." >&2
 cmake --build "$HERE/build" --target sms-boot -j"$NCPU" >&2

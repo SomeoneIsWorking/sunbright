@@ -8,6 +8,7 @@
 #include "../frame_interp/stream_interp.h"
 #include "app/frame_rate.h"
 #include "app/settings.h"
+#include "aurora_config.h"
 #include "boot_env.h"
 #include "cpu_state.h"
 #include "dol_loader.h"
@@ -141,12 +142,6 @@ int main(int argc, char** argv) {
     // Aurora provides the GX implementation. mem1Size/mem2Size are 0: this runtime owns its
     // guest memory (rt_mem_init), and aurora is handed real host pointers for anything it
     // needs to read out of it.
-    AuroraConfig acfg = {};
-    acfg.appName = "sunbright-recomp";
-    acfg.userPath = userPath.c_str();
-    acfg.resourcesPath = resourcesPath.c_str();
-    acfg.desiredBackend = BACKEND_VULKAN;
-    acfg.msaa = 1;
     // PRESENT MODE, and why interpolated 60fps REQUIRES vsync on.
     //
     // aurora maps vsync=false to Mailbox (or Immediate). Mailbox's defining behaviour is that the
@@ -167,14 +162,15 @@ int main(int argc, char** argv) {
     // the latency trade goes the other way.
     // Strict FIFO works for every mode and is REQUIRED for interpolation, so initialize once with
     // the invariant policy. Settings remain live through the in-game Escape menu.
-    acfg.vsync = true;
     const char* windowWidth = std::getenv("SB_W");
     const char* windowHeight = std::getenv("SB_H");
-    acfg.windowWidth = windowWidth != nullptr ? (u32)std::strtoul(windowWidth, nullptr, 0) : 1280u;
-    acfg.windowHeight =
-        windowHeight != nullptr ? (u32)std::strtoul(windowHeight, nullptr, 0) : 960u;
-    acfg.mem1Size = 0;
-    acfg.mem2Size = 0;
+    AuroraConfig acfg = sb::host::make_aurora_config({
+        .userPath = userPath.c_str(),
+        .resourcesPath = resourcesPath.c_str(),
+        .windowWidth = windowWidth != nullptr ? (u32)std::strtoul(windowWidth, nullptr, 0) : 1280u,
+        .windowHeight =
+            windowHeight != nullptr ? (u32)std::strtoul(windowHeight, nullptr, 0) : 960u,
+    });
     // This is an in-process, fixed-size pwrite ring, not a watcher process. It is configured before
     // Aurora so even initialization uploads are covered, and its owner outlives AuroraRuntimeOwner
     // so spontaneous queue/device callbacks cannot write through a closed recorder during teardown.

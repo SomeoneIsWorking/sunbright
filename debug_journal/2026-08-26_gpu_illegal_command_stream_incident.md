@@ -134,7 +134,9 @@ root-only, was not captured, and expired. A future recurrence will preserve the 
 tail, kernel-time-correlated incident, and an explicit device-coredump disposition automatically.
 That evidence can distinguish dynamic draw state and resource-lifetime pressure; it still cannot
 prove which draw the GPU executed. Pinned Dawn exposes neither the Vulkan device/queue/command
-buffer nor AMD device-fault/checkpoint extensions, and Release builds compile out GX debug groups.
+buffer nor AMD device-fault/checkpoint extensions. Issue 19 removed the build-mode coupling:
+optimized Debug and Release now both retain GX debug groups, API validation, and robustness, while
+the packaged Dawn explicitly reports that Vulkan backend-validation layers were not built in.
 Issue 18 now has a separate opt-in `SBR_RADV_HANG_DIAG=1` lane, which activates
 `RADV_DEBUG=hang`, snapshots pre-launch dumps, and accepts only a new exact-child-PID trace after the
 watcher stops the process. I034 validates byte preservation, last-reached/not-reached parsing, and

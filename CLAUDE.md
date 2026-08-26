@@ -281,11 +281,18 @@ the decomp source, not your own header comment.
 ## Build, run, environment
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --target sms-boot -j$(nproc)
 ./run.sh [--rom rom.rvz]  # ROM via $SUNBRIGHT_ROM / .env / rom.rvz drop-in
 ./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=400   # PREFER THIS for any automated/diagnostic run
 ```
+
+**Debug is a playable configuration, not an `-O0` diagnostic mode.**
+`cmake/SunbrightBuildPolicy.cmake` keeps assertions and symbols while compiling Debug at `-O2`;
+the generated guest retains line tables and function symbols without materializing debug records
+for millions of machine-generated locals. Both launchers configure Debug by default. Aurora GPU
+validation, robustness, and labels are selected explicitly by `AURORA_GPU_DIAGNOSTICS`, never by
+`NDEBUG`, so Release remains an optional packaging profile rather than the only fast path.
 
 **Use `./run-safe.sh` rather than assembling a command line.** Every run that made this machine
 unusable was hand-assembled, and the common ingredient was `SB_TURBO=1` with nothing bounding the

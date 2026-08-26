@@ -2,7 +2,7 @@
 id: 18
 title: No hardware-progress breadcrumb survives an Aurora GPU hang
 status: open
-symptom: The flight recorder narrows the faulting submit but Release Dawn exposes no last-executed GPU command or PM4 breadcrumb
+symptom: The flight recorder narrows the faulting submit but packaged Dawn exposes no last-executed GPU command or PM4 breadcrumb
 tags: gpu,aurora,radv,diagnostics,hang,reporting
 created: 2026-08-27
 updated: 2026-08-27
@@ -10,11 +10,14 @@ updated: 2026-08-27
 
 ## Root cause
 
-Aurora's Release build disables Dawn backend validation and robustness and compiles out GX debug
-groups. Pinned Dawn exposes its Vulkan instance but not the device, queue, or command buffer needed
-for `VK_EXT_device_fault`, AMD buffer markers, or diagnostic checkpoints; the packaged Dawn also
-contains no implementation of those extensions. The existing flight recorder therefore establishes
-submission time and CPU-side semantics, not the last command processor trace point.
+Aurora used to disable API validation and robustness and compile out GX debug groups in Release;
+backend validation was disabled in every configuration. That coupling is removed by issue 19:
+standard diagnostics now request Dawn's partial backend validation, retain API validation and
+robustness, and encode GX debug groups independent of `NDEBUG`. The packaged Dawn immediately
+reports that it was built without Vulkan validation layers, however, and exposes its Vulkan
+instance but not the device, queue, or command buffer needed for `VK_EXT_device_fault`, AMD buffer
+markers, or diagnostic checkpoints. The existing flight recorder therefore establishes submission
+time and CPU-side semantics, not the last command processor trace point.
 
 ## What was tried / dead ends
 

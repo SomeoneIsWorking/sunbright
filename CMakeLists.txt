@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
+include(cmake/SunbrightBuildPolicy.cmake)
+sunbright_enable_fast_debug_builds()
 
 # The sole shipping binary: sms-boot — decomp/sms decomp compiled native,
 # with Aurora (encounter/aurora, SDL3 + WebGPU/Dawn) providing the whole GC
@@ -14,6 +16,7 @@ enable_testing()
 set(AURORA_ENABLE_GX   ON  CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_CARD ON  CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_DVD  ON  CACHE BOOL "" FORCE)
+set(AURORA_GPU_DIAGNOSTICS standard CACHE STRING "" FORCE)
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 
 set(SMS_BUILD_BOOT ON CACHE BOOL "" FORCE)
