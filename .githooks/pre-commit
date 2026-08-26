@@ -13,12 +13,16 @@
 set -eo pipefail
 REPO="$(git rev-parse --show-toplevel)"
 
-if ! python3 "$REPO/tools/diag_registry.py" check; then
+run_locked_python() {
+    uv run --frozen --project "$REPO" python "$@"
+}
+
+if ! run_locked_python "$REPO/tools/diag_registry.py" check; then
     cat >&2 <<'MSG'
 
 pre-commit: the diagnostic-switch registry is stale or names a switch no code reads.
-  fix:   python3 tools/diag_registry.py write     # regenerate docs/diagnostics.md
-  or:    python3 tools/diag_registry.py phantoms  # see which names have no reader
+  fix:   uv run --frozen python tools/diag_registry.py write
+  or:    uv run --frozen python tools/diag_registry.py phantoms
   Deliberate always-loud stderr writes are marked with a LOGGER-EXEMPT comment beside the
   print (inside the scanner's window, not above the enclosing block).
 MSG
@@ -35,7 +39,7 @@ fi
 # switch and source were both absent, and how tools/oracle/capture.sh spent months looking for its
 # Dolphin binary in an uninitialised submodule and silently using a stock build instead.
 # A path that is genuinely gone is exempted by marking it (DELETED) on the same line.
-if ! python3 "$REPO/tools/docs/doc_paths.py"; then
+if ! run_locked_python "$REPO/tools/docs/doc_paths.py"; then
   cat >&2 <<'EOM'
 
 A live document names a source path that does not exist. A reader follows it, finds nothing,
@@ -45,23 +49,23 @@ and cannot tell whether the file moved or was deleted.
         symbol it defines, never by guessing at a plausible rename
   or:   if it is genuinely gone and the history is the point, mark it (DELETED) on the same
         line, which exempts it
-  see:  python3 tools/docs/doc_paths.py
+  see:  uv run --frozen python tools/docs/doc_paths.py
 EOM
   exit 1
 fi
 
-if ! python3 "$REPO/tools/selftest_all.py"; then
+if ! run_locked_python "$REPO/tools/selftest_all.py"; then
     cat >&2 <<'MSG'
 
 pre-commit: a diagnostic tool's own self-test failed, so that tool cannot be trusted to show the
   answer it is about to be used for. Run it directly to see which case broke:
-    python3 tools/selftest_all.py
-    python3 tools/selftest_all.py --list    # what is covered at all
+    uv run --frozen python tools/selftest_all.py
+    uv run --frozen python tools/selftest_all.py --list    # what is covered at all
 MSG
     exit 1
 fi
 
-if ! python3 "$REPO/tools/structure_check.py"; then
+if ! run_locked_python "$REPO/tools/structure_check.py"; then
     cat >&2 <<'MSG'
 
 pre-commit: the host application structure ratchet failed. Split the named file at its cohesive

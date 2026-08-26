@@ -102,9 +102,41 @@ The submit-tail instrument now exists as an IN-PROCESS recorder, not a watcher:
 Aurora emits BEGIN/RETURN/COMPLETE/DEVICE_LOST through `AuroraConfig::gpuProbeCallback`; the
 recorder persists each boundary into a crash-surviving pwrite ring under
 `scratch/gpu_crash/*.flight` before returning to Aurora, armed before Aurora init. After a loss,
-`gpu_flight_dump <file>` names the in-flight submit — API-PENDING means the process died inside
-the host queue call; GPU-PENDING means the queue accepted it and the device never finished (ring
-hang). Verified both classes: fork-abort survival, corrupt/torn/truncated/stale rejection in unit
-controls, and a clean 150-present run producing 450/450 records with all submits COMPLETED.
+`gpu_flight_dump <file>` reconstructs the submission timeline. API-PENDING means no queue return was
+recorded; BEGIN+RETURN without COMPLETE means only that Dawn's `OnSubmittedWorkDone` callback was
+not observed, not that GPU execution necessarily remained incomplete. Verified controls include
+fork-abort survival, corrupt/torn/truncated/stale rejection, and a clean 150-present run producing
+450/450 records with every completion callback observed.
 Full write-up: debug_journal/2026-08-25_gpu_submit_flight_recorder.md. The NEXT recurrence of
 this issue must start with gpu_flight_dump on the newest flight file.
+
+### Recurrence captured (2026-08-26)
+
+The recorder captured the next reset in
+`scratch/gpu_crash/session_1759510_18ce5cd3829e5b1b_recomp-aurora.flight`. Kernel evidence names
+`sms-recomp` PID 1759510 and reports an illegal register access in the command stream, followed by a
+`gfx_0.0.0` timeout, GPU reset, and VRAM loss. The flight contains 167 completion callbacks, then
+five queue-accepted submits without a recorded completion callback (1609–1613), followed by submit
+1614 entering the queue API without returning; Dawn then reported
+`vkQueueSubmit failed with VK_ERROR_DEVICE_LOST`. A missing callback is not itself proof that the
+GPU had not completed that submit: Dawn's spontaneous work-done and framebuffer-map callbacks can
+share callback-delivery capacity, and the map callback synchronously converts and writes 4.9 MiB.
+
+Correlation against the first kernel-fault timestamp corrects the initially misleading pending tail:
+submit 1608 returned at 22:48:34.686865, the illegal-command-stream fault fired at
+22:48:34.689976, and submit 1609 did not begin until 22:48:34.699069. Submit 1608 was therefore the
+only Aurora submit in flight when the kernel detected the fault; submits 1609–1614 are aftermath,
+and Dawn did not report device loss until 4.279 seconds later. Submit 1608's pass/draw topology and
+pipeline hashes exactly match both its completed predecessor and a completed submit from an earlier
+clean run, so a uniquely new pipeline is ruled out. The remaining attribution frontier is a dynamic
+command or resource-lifetime failure within submit 1608; the old aggregate probe cannot name its
+draw.
+
+Dense framebuffer dumping was active, but submit 1607 completed before causal submit 1608 and the six
+queued writes accumulated only after the first fault. Submit 1608's single readback has valid
+refcounted lifetime, aligned row pitch, and exact extent; an earlier equivalent capture completed,
+so dumping remains correlation rather than attribution. The v2 probe now records bounded semantic
+draw and coherent readback-callback detail, the reader correlates against the first kernel timestamp,
+and the external guard stops the exact process group at that first fault instead of waiting for
+process exit. Full analysis: `debug_journal/2026-08-26_gpu_illegal_command_stream_incident.md`;
+instrument controls: I033.

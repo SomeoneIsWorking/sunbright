@@ -1,4 +1,5 @@
 #include "gpu_incident_recorder.h"
+#include "gpu_incident_report.h"
 
 #include <algorithm>
 #include <array>
@@ -50,12 +51,19 @@ static_assert(kRecordCommitOffset + sizeof(std::uint64_t) == kFileRecordBytes);
 struct RecorderState {
     std::mutex mutex;
     int fd = -1;
+    int reportFd = -1;
+    bool reportWritten = false;
     bool healthy = false;
     bool errorReported = false;
     std::uint64_t nextSequence = 1;
     std::uint64_t processId = 0;
     std::uint64_t sessionId = 0;
     std::filesystem::path path;
+    std::filesystem::path reportPath;
+    AuroraGpuSubmitInfo lastBegan{};
+    AuroraGpuSubmitInfo lastCompleted{};
+    bool hasLastBegan = false;
+    bool hasLastCompleted = false;
     std::array<char, 256> lastError{};
 };
 
@@ -127,6 +135,18 @@ bool pwrite_all(int fd, Bytes bytes, off_t offset) noexcept {
     return true;
 }
 
+void write_best_effort(int fd, Bytes bytes) noexcept {
+    std::size_t written = 0;
+    while (written < bytes.size()) {
+        const ssize_t count = ::write(fd, bytes.data() + written, bytes.size() - written);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0)
+            return;
+        written += static_cast<std::size_t>(count);
+    }
+}
+
 void set_error_locked(const char* operation) noexcept {
     const int error = errno;
     std::snprintf(g_recorder.lastError.data(), g_recorder.lastError.size(), "%s: %s", operation,
@@ -156,12 +176,23 @@ std::string clean_label(std::string_view label) {
 void close_locked() noexcept {
     if (g_recorder.fd >= 0)
         ::close(g_recorder.fd);
+    if (g_recorder.reportFd >= 0)
+        ::close(g_recorder.reportFd);
+    if (!g_recorder.reportWritten && !g_recorder.reportPath.empty())
+        ::unlink(g_recorder.reportPath.c_str());
     g_recorder.fd = -1;
+    g_recorder.reportFd = -1;
+    g_recorder.reportWritten = false;
     g_recorder.healthy = false;
     g_recorder.nextSequence = 1;
     g_recorder.processId = 0;
     g_recorder.sessionId = 0;
     g_recorder.path.clear();
+    g_recorder.reportPath.clear();
+    g_recorder.lastBegan = {};
+    g_recorder.lastCompleted = {};
+    g_recorder.hasLastBegan = false;
+    g_recorder.hasLastCompleted = false;
 }
 
 bool write_header_locked(std::string_view sessionLabel) noexcept {
@@ -242,6 +273,73 @@ void write_probe_locked(AuroraGpuProbePhase phase, const AuroraGpuSubmitInfo* in
         set_error_locked("write GPU incident record");
 }
 
+void write_device_lost_report_locked(const AuroraGpuSubmitInfo* pending, const char* message,
+                                     std::size_t messageLength) noexcept {
+    std::array<char, 32 * 1024> report{};
+    FixedBufferWriter writer(report.data(), report.size());
+    writer.append("SUNBRIGHT GPU DEVICE LOSS\n");
+    writer.append("pid=%llu session=%016llx real_ns=%llu mono_ns=%llu\n",
+                  static_cast<unsigned long long>(g_recorder.processId),
+                  static_cast<unsigned long long>(g_recorder.sessionId),
+                  static_cast<unsigned long long>(realtime_ns()),
+                  static_cast<unsigned long long>(monotonic_ns()));
+    writer.append("flight_file=%s\n", g_recorder.path.c_str());
+    if (message != nullptr && messageLength != 0) {
+        const int safeLength = static_cast<int>(std::min<std::size_t>(messageLength, 4096));
+        writer.append("driver_message=%.*s\n", safeLength, message);
+    } else {
+        writer.append("driver_message=(device callback supplied no reason)\n");
+    }
+    if (pending != nullptr) {
+        writer.append("latest submission at device loss:\n");
+        std::array<char, 24 * 1024> submitReport{};
+        const std::size_t submitReportSize = format_submit_diagnostic(
+            submitReport.data(), submitReport.size(), *pending,
+            g_recorder.hasLastCompleted ? &g_recorder.lastCompleted : nullptr);
+        writer.append("%.*s", static_cast<int>(submitReportSize), submitReport.data());
+    } else {
+        writer.append("latest submission at device loss: unavailable (no SUBMIT_BEGIN recorded)\n");
+    }
+    writer.append(
+        "cause: the GPU API reported device loss. The submission above is the latest queue call "
+        "observed by this process; this report does not claim that one pending submit was the "
+        "faulting command stream. DEVICE_LOST and completion callbacks can lag the kernel's first "
+        "illegal-CS, GPUVM, or ring-timeout event, so later submissions may be aftermath. Pair "
+        "this file with the first kernel event timestamp.\n");
+
+    bool reportWritten = g_recorder.reportFd >= 0;
+    if (reportWritten && ::ftruncate(g_recorder.reportFd, 0) != 0)
+        reportWritten = false;
+    if (reportWritten &&
+        !pwrite_all(g_recorder.reportFd,
+                    Bytes{reinterpret_cast<const std::byte*>(report.data()), writer.size()}, 0)) {
+        reportWritten = false;
+    }
+    if (reportWritten && ::fdatasync(g_recorder.reportFd) != 0)
+        reportWritten = false;
+    if (reportWritten)
+        g_recorder.reportWritten = true;
+    if (::fdatasync(g_recorder.fd) != 0)
+        set_error_locked("synchronize GPU incident flight file after device loss");
+    if (!reportWritten)
+        set_error_locked("write durable GPU device-loss report");
+
+    // LOGGER-EXEMPT: device loss may abort before the configurable logger drains. Keep stderr
+    // concise; the complete fixed diagnostic is already synchronized in the named sidecar.
+    std::array<char, 1024> notice{};
+    FixedBufferWriter noticeWriter(notice.data(), notice.size());
+    noticeWriter.append("[gpu-incident] DEVICE LOST at submit=%llu; durable report: %s",
+                        static_cast<unsigned long long>(pending == nullptr ? 0 : pending->submitId),
+                        g_recorder.reportPath.c_str());
+    if (message != nullptr && messageLength != 0) {
+        noticeWriter.append("; driver: %.*s",
+                            static_cast<int>(std::min<std::size_t>(messageLength, 256)), message);
+    }
+    noticeWriter.append("\n");
+    write_best_effort(STDERR_FILENO, Bytes{reinterpret_cast<const std::byte*>(notice.data()),
+                                           noticeWriter.size()});
+}
+
 bool valid_header(Bytes header, std::string& error) {
     if (header.size() != kFileHeaderBytes ||
         !std::equal(kHeaderMagic.begin(), kHeaderMagic.end(), header.begin())) {
@@ -283,7 +381,26 @@ bool valid_record(Bytes record) noexcept {
 static void record_probe(AuroraGpuProbePhase phase, const AuroraGpuSubmitInfo* info,
                          const char* message, std::size_t messageLength) noexcept {
     std::lock_guard lock(g_recorder.mutex);
-    write_probe_locked(phase, info, message, messageLength);
+    const AuroraGpuSubmitInfo* persistedInfo = info;
+    if (phase == AURORA_GPU_PROBE_SUBMIT_BEGIN && info != nullptr) {
+        g_recorder.lastBegan = *info;
+        g_recorder.hasLastBegan = true;
+    } else if (phase == AURORA_GPU_PROBE_SUBMIT_COMPLETE && info != nullptr &&
+               info->status == AURORA_GPU_SUBMIT_STATUS_SUCCESS) {
+        g_recorder.lastCompleted = *info;
+        g_recorder.hasLastCompleted = true;
+    } else if (phase == AURORA_GPU_PROBE_DEVICE_LOST &&
+               (persistedInfo == nullptr || persistedInfo->submitId == 0) &&
+               g_recorder.hasLastBegan) {
+        // Dawn's device-lost callback has no queue submission payload. Associate the loss record
+        // with the latest BEGIN so the binary record and durable text retain the frame/pass/state
+        // of the queue call where loss became visible. This is not necessarily the originating
+        // command stream: the kernel fault and callback can be separated by seconds.
+        persistedInfo = &g_recorder.lastBegan;
+    }
+    write_probe_locked(phase, persistedInfo, message, messageLength);
+    if (phase == AURORA_GPU_PROBE_DEVICE_LOST)
+        write_device_lost_report_locked(persistedInfo, message, messageLength);
 }
 
 bool configure_file(const ConfigureOptions& options) noexcept {
@@ -312,6 +429,15 @@ bool configure_file(const ConfigureOptions& options) noexcept {
         static_cast<off_t>(kFileHeaderBytes + kRecordCapacity * kFileRecordBytes);
     if (::ftruncate(g_recorder.fd, fileSize) != 0) {
         set_error_locked("size GPU incident file");
+        close_locked();
+        return false;
+    }
+    g_recorder.reportPath = options.path;
+    g_recorder.reportPath += ".report.txt";
+    g_recorder.reportFd = ::open(g_recorder.reportPath.c_str(),
+                                 O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (g_recorder.reportFd < 0) {
+        set_error_locked("open GPU device-loss report");
         close_locked();
         return false;
     }
@@ -364,6 +490,11 @@ std::uint64_t session_id() noexcept {
 std::filesystem::path path() {
     std::lock_guard lock(g_recorder.mutex);
     return g_recorder.path;
+}
+
+std::filesystem::path report_path() {
+    std::lock_guard lock(g_recorder.mutex);
+    return g_recorder.reportPath;
 }
 
 const char* last_error() noexcept {
@@ -442,8 +573,12 @@ Analysis analyze_file(const std::filesystem::path& filePath,
         record.sessionId = load<std::uint64_t>(Bytes{raw}, 40);
         record.phase = static_cast<AuroraGpuProbePhase>(load<std::uint32_t>(Bytes{raw}, 48));
         const std::uint32_t infoSize = load<std::uint32_t>(Bytes{raw}, 52);
-        if (infoSize != 0)
+        if (infoSize != 0) {
             std::memcpy(&record.info, raw.data() + kInfoOffset, infoSize);
+            // The persisted byte count is authoritative. A corrupt or future producer must not
+            // make the formatter read tail fields that were not actually present in this record.
+            record.info.structSize = std::min<std::uint32_t>(record.info.structSize, infoSize);
+        }
         const std::uint32_t messageSize = load<std::uint32_t>(Bytes{raw}, 56);
         record.message.assign(reinterpret_cast<const char*>(raw.data() + kMessageOffset),
                               messageSize);
@@ -468,7 +603,8 @@ Analysis analyze_file(const std::filesystem::path& filePath,
             state.returnSequence = record.sequence;
             break;
         case AURORA_GPU_PROBE_SUBMIT_COMPLETE:
-            state.completed = true;
+            state.completionCallbackObserved = true;
+            state.completed = record.info.status == AURORA_GPU_SUBMIT_STATUS_SUCCESS;
             state.completeSequence = record.sequence;
             break;
         case AURORA_GPU_PROBE_DEVICE_LOST:

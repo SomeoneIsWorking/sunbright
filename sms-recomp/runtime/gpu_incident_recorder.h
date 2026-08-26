@@ -61,10 +61,16 @@ struct SubmitState {
     std::uint64_t completeSequence = 0;
     bool began = false;
     bool returned = false;
+    bool completionCallbackObserved = false;
     bool completed = false;
 
     [[nodiscard]] bool api_pending() const noexcept { return began && !returned; }
-    [[nodiscard]] bool gpu_pending() const noexcept { return began && returned && !completed; }
+    [[nodiscard]] bool completion_callback_pending() const noexcept {
+        return began && returned && !completionCallbackObserved;
+    }
+    [[nodiscard]] bool completion_failed() const noexcept {
+        return completionCallbackObserved && !completed;
+    }
 };
 
 struct Analysis {
@@ -92,6 +98,7 @@ void shutdown() noexcept;
 [[nodiscard]] bool healthy() noexcept;
 [[nodiscard]] std::uint64_t session_id() noexcept;
 [[nodiscard]] std::filesystem::path path();
+[[nodiscard]] std::filesystem::path report_path();
 [[nodiscard]] const char* last_error() noexcept;
 
 // Pure post-mortem seam. Expected values make a stale process/session an explicit result instead
@@ -112,7 +119,9 @@ std::uint64_t sbr_gpu_incident_session_id() noexcept;
 const char* sbr_gpu_incident_last_error() noexcept;
 
 // Exact AuroraConfig::gpuProbeCallback signature. `SUBMIT_RETURN` means only that the host queue
-// API returned; `SUBMIT_COMPLETE` is the independent GPU-completion watermark.
+// API returned; `SUBMIT_COMPLETE` means Dawn delivered OnSubmittedWorkDone. Only status SUCCESS is
+// a completed-work watermark. A missing callback is callback-pending, not proof that the GPU itself
+// never completed the command buffer; ERROR/CANCELLED also cannot establish successful completion.
 void sbr_gpu_probe_callback(AuroraGpuProbePhase phase, const AuroraGpuSubmitInfo* info,
                             const char* message, std::size_t messageLen, void* user) noexcept;
 }
