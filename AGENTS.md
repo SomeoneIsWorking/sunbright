@@ -88,6 +88,13 @@ HW/OS APIs (GX, DVD, PAD, VI, audio). That is the N64Recomp / Zelda64Recompiled 
 - It said native-only is "REQUIRED for interpolated 60fps". Overstated: the recomp era
   interpolated via `runtime/interp60.h` (DELETED; recoverable from git at `9283f44^`) by capturing `J3DModel::viewCalc` matrices.
 
+**Any recomp work that relies on guest code must also go through the decomp path.** A recomp-only
+result is not complete when it depends on game-owned guest behavior: carry the corresponding
+behavior, naming, evidence, or implementation through `decomp/sms` in the same work. Recomp-only
+ownership remains appropriate for the recompiler, guest runtime substrate, host application,
+hardware/OS seams, and renderer machinery that does not reimplement game logic. This does not
+permit recomp↔decomp object interop; the two runtimes keep their layouts separate.
+
 **Resurrect, do not rebuild.** In git at `9283f44^`: `tools/recompiler/` (188 `case PPCOp::`
 emitter cases, 41 `ps_*` mnemonics, `PSQ_L/LU/ST/LX/STX` with GQR dequantization),
 `runtime/native_threads.cpp` (DELETED; recoverable from git at `9283f44^`) (431 lines; interrupt delivery already fully PC-native, a behaviour
@@ -147,10 +154,11 @@ upstream while we hand-ported them). **Check upstream before hand-porting a gap.
 Use `python3 tools/re/rebase_upstream.py` — `status` → `rebase` → `audit` (loop until
 green) → `converge`. Hard-won rules:
 
-- **The decomp development loop is rebase → expand → rename known unknowns.** Rebase first so
-  upstream implementations are not hand-ported twice; expand the remaining real gaps from binary
-  evidence; then replace `unk*` names only where the field/function semantics are established by
-  use sites or RE. A green rebase is synchronization, not completion of the decomp lane.
+- **The decomp development loop is rebase → rename known unknowns → expand.** Rebase first so
+  upstream implementations are not hand-ported twice; then replace `unk*` names where the
+  field/function semantics are already established by use sites or binary evidence; then extend
+  the remaining real gaps from binary evidence. A green rebase is synchronization, not completion
+  of the decomp lane.
 
 - **Resolve FILE-level, never hunk-level, and move header+cpp TOGETHER.** A class whose
   `.hpp` and `.cpp` come from different sides will not build. Hunk-merging produces

@@ -130,7 +130,7 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 
 The real game source, native-platform-guarded (`SMS_NATIVE_PLATFORM`). Current fork tip
 `e0a7849a` is rebased and audited with `tools/re/rebase_upstream.py`; the native Clang audit is
-green. Its standing loop is **rebase → expand remaining gaps → rename known `unk*` semantics**. The restored upstream
+green. Its standing loop is **rebase → rename known `unk*` semantics → expand remaining gaps**. The restored upstream
 `MtxUtil` implementation keeps the native-safe 4×4-to-3×4 light-projection adaptation, and the typed
 `MActorAnmData` accessors replace five known `getUnk*` names. Matching-MWCC proof remains externally
 blocked on the absent Japanese Rev-0 disc. Rendering-affecting code is always native. Screen effects
