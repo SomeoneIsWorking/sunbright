@@ -19,67 +19,15 @@
 // Deleted rather than kept alongside: a stub that shadows a real body is a silent downgrade, and
 // two definitions of the same symbol is a link error waiting for whichever order the build picks.
 
-// TGCConsole2 static data members (JUTPoint — default-init to 0).
-JUTPoint TGCConsole2::cDownMidPoint;
-JUTPoint TGCConsole2::cDownTopPoint;
-JUTPoint TGCConsole2::cUpMidPoint;
-JUTPoint TGCConsole2::cUpTopPoint;
-
 // TGuide — inherits JDrama::TViewObj; non-virtual methods only in bucket.
 TGuide::TGuide(const char* name)
-    : JDrama::TViewObj(name)
-	, unk10(8)
-	, unk14{}
-	, unk7C{}
-	, unkBC(nullptr)
-	, unkC0(nullptr)
-	, unkC4(0)
-	, unkC5(0)
-	, unkC6{}
-	, unkC8{}
-	, unkF0{}
-	, unkF4(nullptr)
-	, unkF8{}
-	, unk100(nullptr)
-	, unk104{}
-	, unk10C{}
-	, unk118(nullptr)
-	, unk11C{}
-	, unk124(nullptr)
-	, unk128{}
-	, unk130(nullptr)
-	, unk134{}
-	, unk15C{}
-	, unk164(0)
-	, unk165{}
-	, unk168{}
-	, unk1A0(nullptr)
-	, unk1A4{}
-	, unk1C0{}
-	, unk1F4(nullptr)
-	, unk1F8{}
-	, unk218{}
-	, unk2E8{}
-	, unk2F8{}
-	, unk378{}
-	, unk3AC(nullptr)
-	, unk3B0{}
-	, unk3D0{}
-	, unk3F8{}
-	, unk424(nullptr)
-	, unk428(nullptr)
-	, unk42C(0)
-	, unk42E{}
-	, unk430(nullptr)
-	, unk434{}
-	, unk444(nullptr)
-	, unk448(nullptr)
-	, unk44c{}
-	, unk474(nullptr)
-	, unk478(nullptr)
-	, unk47C(0)
-{
-}
+    : JDrama::TViewObj(name), unk10(8), unk14{}, unk7C{}, unkBC(nullptr), unkC0(nullptr), unkC4(0),
+      unkC5(0), unkC6{}, unkC8{}, unkF0{}, unkF4(nullptr), unkF8{}, unk100(nullptr), unk104{},
+      unk10C{}, unk118(nullptr), unk11C{}, unk124(nullptr), unk128{}, unk130(nullptr), unk134{},
+      unk15C{}, unk164(0), unk165{}, unk168{}, unk1A0(nullptr), unk1A4{}, unk1C0{}, unk1F4(nullptr),
+      unk1F8{}, unk218{}, unk2E8{}, unk2F8{}, unk378{}, unk3AC(nullptr), unk3B0{}, unk3D0{},
+      unk3F8{}, unk424(nullptr), unk428(nullptr), unk42C(0), unk42E{}, unk430(nullptr), unk434{},
+      unk444(nullptr), unk448(nullptr), unk44c{}, unk474(nullptr), unk478(nullptr), unk47C(0) {}
 // TGuide::setup and TGuide::startMoveCursor are now PORTED, from the US disassembly, in
 // decomp/sms/src/GC2D/Guide.cpp. Both were complete functions; setup's stub silently skipped the
 // archive mount it exists to perform.
@@ -90,19 +38,25 @@ TGuide::TGuide(const char* name)
 // decomp/sms/src/GC2D/SunGlass.cpp — no stubs needed here.
 
 // TTalk2D2 — inherits JDrama::TViewObj; 3 pure non-virtuals + 3 overrides.
-TTalk2D2::TTalk2D2(const char* name)
-    : JDrama::TViewObj(name)
-{
+TTalk2D2::TTalk2D2(const char* name) : JDrama::TViewObj(name) {}
+void TTalk2D2::load(JSUMemoryInputStream& stream) {
+    JDrama::TViewObj::load(stream); // read NameRef header so search() finds it
 }
-void TTalk2D2::load(JSUMemoryInputStream& stream)
-{
-	JDrama::TViewObj::load(stream); // read NameRef header so search() finds it
+void TTalk2D2::loadAfter() {
+    SB_STUB_HIT("TTalk2D2::loadAfter");
 }
-void TTalk2D2::loadAfter() { SB_STUB_HIT("TTalk2D2::loadAfter"); }
-void TTalk2D2::perform(u32, JDrama::TGraphics*) { SB_STUB_HIT("TTalk2D2::perform"); }
-void TTalk2D2::forceCloseTalk() { SB_STUB_HIT("TTalk2D2::forceCloseTalk"); }
-void TTalk2D2::openTalkWindow(TBaseNPC*) { SB_STUB_HIT("TTalk2D2::openTalkWindow"); }
-void TTalk2D2::setMessageID(u32, u32) { SB_STUB_HIT("TTalk2D2::setMessageID"); }
+void TTalk2D2::perform(u32, JDrama::TGraphics*) {
+    SB_STUB_HIT("TTalk2D2::perform");
+}
+void TTalk2D2::forceCloseTalk() {
+    SB_STUB_HIT("TTalk2D2::forceCloseTalk");
+}
+void TTalk2D2::openTalkWindow(TBaseNPC*) {
+    SB_STUB_HIT("TTalk2D2::openTalkWindow");
+}
+void TTalk2D2::setMessageID(u32, u32) {
+    SB_STUB_HIT("TTalk2D2::setMessageID");
+}
 
 void* TTalk2D2::cColorTable = nullptr;
 
@@ -116,19 +70,8 @@ void* TTalk2D2::cColorTable = nullptr;
 // TBathWaterManager — inherits JDrama::TViewObj; has load/loadAfter/perform.
 // unk10 is JMath::TRandom_fast_ which has no default ctor; seed with 0.
 TBathWaterManager::TBathWaterManager()
-    : JDrama::TViewObj("<バスタブの水>")
-    , unk10(0u)
-    , unk14(nullptr)
-    , unk18(nullptr)
-    , unk1C(0)
-    , unk20(nullptr)
-    , unk24(0)
-    , unk28(nullptr)
-    , unk2C(nullptr)
-    , unk30(nullptr)
-    , unk34(this)
-{
-}
+    : JDrama::TViewObj("<バスタブの水>"), unk10(0u), unk14(nullptr), unk18(nullptr), unk1C(0),
+      unk20(nullptr), unk24(0), unk28(nullptr), unk2C(nullptr), unk30(nullptr), unk34(this) {}
 
 // setMtx / TMapWireActor statics / TPollutionLayer methods now live natively
 // in decomp/sms (upstream 2026-07 sync).
@@ -139,7 +82,10 @@ TBathWaterManager::TBathWaterManager()
 
 // TTakeActor::getRadiusAtY — non-inline virtual declared in TakeActor.hpp.
 // typeinfo for TTakeActor is emitted when its first non-inline virtual is defined.
-f32 TTakeActor::getRadiusAtY(f32) const { SB_STUB_HIT("TTakeActor::getRadiusAtY"); return 0.0f; }
+f32 TTakeActor::getRadiusAtY(f32) const {
+    SB_STUB_HIT("TTakeActor::getRadiusAtY");
+    return 0.0f;
+}
 
 // ─── System ───────────────────────────────────────────────────────────────────
 
@@ -166,7 +112,10 @@ TMarioGamePad::~TMarioGamePad() {}
 
 // TWaterHitActor — inherits THitActor; has one non-inline virtual.
 // vtable + typeinfo emitted by defining receiveMessage.
-BOOL TWaterHitActor::receiveMessage(THitActor*, u32) { SB_STUB_HIT("TWaterHitActor::receiveMessage"); return 0; }
+BOOL TWaterHitActor::receiveMessage(THitActor*, u32) {
+    SB_STUB_HIT("TWaterHitActor::receiveMessage");
+    return 0;
+}
 
 // ─── JSystem / JKernel ────────────────────────────────────────────────────────
 
@@ -174,18 +123,13 @@ BOOL TWaterHitActor::receiveMessage(THitActor*, u32) { SB_STUB_HIT("TWaterHitAct
 
 // JKRDvdFinder — inherits JKRFileFinder; needs findNextFile (pure virtual) defined
 // to make the vtable non-abstract.
-JKRDvdFinder::JKRDvdFinder(const char*)
-    : mIsDvdOpen(false)
-{
+JKRDvdFinder::JKRDvdFinder(const char*) : mIsDvdOpen(false) {}
+bool JKRDvdFinder::findNextFile() {
+    SB_STUB_HIT("JKRDvdFinder::findNextFile");
+    return false;
 }
-bool JKRDvdFinder::findNextFile() { SB_STUB_HIT("JKRDvdFinder::findNextFile"); return false; }
 
 // ─── JSystem / JParticle ──────────────────────────────────────────────────────
-
-#include <JSystem/JParticle/JPATexture.hpp>
-
-// JPADefaultTexture::~JPADefaultTexture — non-inline dtor; emits vtable/typeinfo.
-JPADefaultTexture::~JPADefaultTexture() {}
 
 // ─── M3DUtil ──────────────────────────────────────────────────────────────────
 
@@ -193,14 +137,8 @@ JPADefaultTexture::~JPADefaultTexture() {}
 
 // M3UMtxCalcSIAnmBlendQuat — default ctor (the bool-param ctor is in M3UJoint.cpp).
 M3UMtxCalcSIAnmBlendQuat::M3UMtxCalcSIAnmBlendQuat()
-    : J3DMtxCalcSoftimage()
-    , unk50(0.0f)
-    , mAnmTransformNew(nullptr)
-    , mAnmTransformOld(nullptr)
-    , unk5C(false)
-    , unk60(0.0f)
-{
-}
+    : J3DMtxCalcSoftimage(), unk50(0.0f), mAnmTransformNew(nullptr), mAnmTransformOld(nullptr),
+      unk5C(false), unk60(0.0f) {}
 
 // ─── JSystem / JAudio ─────────────────────────────────────────────────────────
 

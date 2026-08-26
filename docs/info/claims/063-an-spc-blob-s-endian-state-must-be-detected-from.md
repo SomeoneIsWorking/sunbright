@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-22
 tags: decomp,endian
-depends: sms-boot/assets/spc_swap.cpp, decomp/sms/src/JSystem/JAudio/JALibrary/JASystemHeap.cpp
+depends: sms-boot/assets/spc_swap.cpp, decomp/sms/src/Strategic/spcinterp.cpp
 ---
 
 ## Claim
