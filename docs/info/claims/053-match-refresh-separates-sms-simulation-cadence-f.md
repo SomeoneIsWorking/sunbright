@@ -5,6 +5,8 @@ status: holds
 created: 2026-08-20
 tags: interpolation
 depends: sms-recomp/app/frame_rate.cpp#presentation_count_for_tick, sms-recomp/frame_interp/frame_interp.cpp#present_interpolated_frame, extern/aurora
+reconfirmed: 2026-08-27
+verified_at: 2026-08-27 22:45:05
 ---
 
 ## Claim
@@ -18,3 +20,7 @@ Match Refresh separates SMS simulation cadence from display presentation cadence
 ## What would falsify it
 
 A repeat 120 Hz run does not report a 1:3 simulation-to-in-between count, the .25/.75 self-test advances tick/history counters, or cadence/replay code changes.
+
+## Re-confirmed 2026-08-27
+
+2026-08-27 ./run.sh diagnostic Match Refresh control at forced 120 Hz exited 0 after 120 presentations and reported exactly 30 simulation ticks plus 90 in-between frames; the v3 GPU flight retained 120/120 successful completion callbacks with zero corrupt/torn/bounds records. Aurora ReplayLineage retained-sample and read-only-resampling controls passed in the 247-test Clang ctest run.

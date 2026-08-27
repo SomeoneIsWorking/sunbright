@@ -62,8 +62,10 @@ struct RecorderState {
     std::filesystem::path reportPath;
     AuroraGpuSubmitInfo lastBegan{};
     AuroraGpuSubmitInfo lastCompleted{};
+    AuroraGpuSubmitInfo lastRealFrameBegan{};
     bool hasLastBegan = false;
     bool hasLastCompleted = false;
+    bool hasLastRealFrameBegan = false;
     std::array<char, 256> lastError{};
 };
 
@@ -191,8 +193,10 @@ void close_locked() noexcept {
     g_recorder.reportPath.clear();
     g_recorder.lastBegan = {};
     g_recorder.lastCompleted = {};
+    g_recorder.lastRealFrameBegan = {};
     g_recorder.hasLastBegan = false;
     g_recorder.hasLastCompleted = false;
+    g_recorder.hasLastRealFrameBegan = false;
 }
 
 bool write_header_locked(std::string_view sessionLabel) noexcept {
@@ -296,9 +300,16 @@ void write_incident_report_locked(AuroraGpuProbePhase phase, const AuroraGpuSubm
         writer.append("latest submission at %s (temporal context only):\n",
                       uncapturedError ? "uncaptured error" : "device loss");
         std::array<char, 24 * 1024> submitReport{};
+        const AuroraGpuSubmitInfo* replaySource = nullptr;
+        if (pending->replayEmission != 0 && has_replay_source_lineage(*pending) &&
+            g_recorder.hasLastRealFrameBegan &&
+            has_replay_source_lineage(g_recorder.lastRealFrameBegan) &&
+            g_recorder.lastRealFrameBegan.frameId == pending->replaySourceFrameId) {
+            replaySource = &g_recorder.lastRealFrameBegan;
+        }
         const std::size_t submitReportSize = format_submit_diagnostic(
             submitReport.data(), submitReport.size(), *pending,
-            g_recorder.hasLastCompleted ? &g_recorder.lastCompleted : nullptr);
+            g_recorder.hasLastCompleted ? &g_recorder.lastCompleted : nullptr, replaySource);
         writer.append("%.*s", static_cast<int>(submitReportSize), submitReport.data());
     } else {
         writer.append("latest submission at %s: unavailable (no SUBMIT_BEGIN recorded)\n",
@@ -408,6 +419,11 @@ static void record_probe(AuroraGpuProbePhase phase, const AuroraGpuSubmitInfo* i
     if (phase == AURORA_GPU_PROBE_SUBMIT_BEGIN && info != nullptr) {
         g_recorder.lastBegan = *info;
         g_recorder.hasLastBegan = true;
+        if (info->kind == AURORA_GPU_SUBMIT_FRAME && info->replayEmission == 0 &&
+            has_replay_source_lineage(*info)) {
+            g_recorder.lastRealFrameBegan = *info;
+            g_recorder.hasLastRealFrameBegan = true;
+        }
     } else if (phase == AURORA_GPU_PROBE_SUBMIT_COMPLETE && info != nullptr &&
                info->status == AURORA_GPU_SUBMIT_STATUS_SUCCESS) {
         g_recorder.lastCompleted = *info;

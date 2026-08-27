@@ -130,6 +130,20 @@ void append_draw(FixedBufferWriter& writer, std::uint32_t tailIndex,
 
 } // namespace
 
+namespace {
+
+bool has_replay_source_fields(const AuroraGpuSubmitInfo& info) noexcept {
+    constexpr std::size_t requiredSize =
+        offsetof(AuroraGpuSubmitInfo, replaySourceUniformHash) + sizeof(std::uint64_t);
+    return info.version >= 3 && info.structSize >= requiredSize;
+}
+
+} // namespace
+
+bool has_replay_source_lineage(const AuroraGpuSubmitInfo& info) noexcept {
+    return has_replay_source_fields(info) && info.replaySourceFrameId != 0;
+}
+
 FixedBufferWriter::FixedBufferWriter(char* destination, std::size_t capacity) noexcept
     : destination_(destination), capacity_(capacity) {
     if (capacity_ != 0)
@@ -156,7 +170,8 @@ std::size_t FixedBufferWriter::size() const noexcept {
 
 std::size_t format_submit_diagnostic(char* destination, std::size_t capacity,
                                      const AuroraGpuSubmitInfo& info,
-                                     const AuroraGpuSubmitInfo* reference) noexcept {
+                                     const AuroraGpuSubmitInfo* completedReference,
+                                     const AuroraGpuSubmitInfo* replaySourceReference) noexcept {
     FixedBufferWriter writer(destination, capacity);
     writer.append("submit=%llu kind=%s frameId=%llu frameIndex=%u replay=%u present=%u headless=%u "
                   "status=%u(%s)\n",
@@ -218,17 +233,74 @@ std::size_t format_submit_diagnostic(char* destination, std::size_t capacity,
             info.version);
     }
 
-    if (reference != nullptr) {
+    if (info.kind == AURORA_GPU_SUBMIT_FRAME) {
+        const bool hasReplaySourceFields = has_replay_source_fields(info);
+        const bool hasReplaySource = has_replay_source_lineage(info);
+        if (hasReplaySource) {
+            writer.append("  replay source lineage: frameId=%llu commandHash=0x%016llx "
+                          "uniformHash=0x%016llx\n",
+                          static_cast<unsigned long long>(info.replaySourceFrameId),
+                          static_cast<unsigned long long>(info.replaySourceCommandHash),
+                          static_cast<unsigned long long>(info.replaySourceUniformHash));
+            if (info.replayEmission == 0) {
+                writer.append(
+                    "  replay source record: this real emission owns the source lineage\n");
+            } else if (replaySourceReference != nullptr &&
+                       has_replay_source_lineage(*replaySourceReference) &&
+                       replaySourceReference->replayEmission == 0 &&
+                       replaySourceReference->frameId == info.replaySourceFrameId) {
+                writer.append("  replay source record: submit=%llu frameId=%llu (explicit real "
+                              "emission BEGIN)\n",
+                              static_cast<unsigned long long>(replaySourceReference->submitId),
+                              static_cast<unsigned long long>(replaySourceReference->frameId));
+                writer.append(
+                    "    source lineage comparison: frameId=%s commandHash=%s uniformHash=%s\n",
+                    replaySourceReference->replaySourceFrameId == info.replaySourceFrameId
+                        ? "SAME"
+                        : "CHANGED",
+                    replaySourceReference->replaySourceCommandHash == info.replaySourceCommandHash
+                        ? "SAME"
+                        : "CHANGED",
+                    replaySourceReference->replaySourceUniformHash == info.replaySourceUniformHash
+                        ? "SAME"
+                        : "CHANGED");
+            } else {
+                writer.append(
+                    "  replay source record: unavailable; no retained real-emission BEGIN "
+                    "matches frameId=%llu. The latest completed submit is not substituted as "
+                    "source.\n",
+                    static_cast<unsigned long long>(info.replaySourceFrameId));
+            }
+            writer.append(
+                "  source lineage semantics: these hashes identify the validated "
+                "pre-interpolation selected pass metadata, commands, palette conversions and "
+                "resolves plus the full uniform block; ordinary commandHash may differ after "
+                "interpolation. Standalone texture-copy FrameOps, attachment load/store and clear "
+                "values, stencil clear and vertex/index/storage bytes are not hashed.\n");
+        } else if (hasReplaySourceFields) {
+            writer.append("  replay source lineage: not populated for this frame\n");
+        } else {
+            writer.append("  replay source lineage: unavailable; this is a historical v%u "
+                          "submit record without the append-only v3 fields\n",
+                          info.version);
+        }
+    } else {
+        writer.append("  replay source lineage: not applicable to this %s submit\n",
+                      submit_kind_name(info.kind));
+    }
+
+    if (completedReference != nullptr) {
         writer.append("  changed since completed submit %llu:\n",
-                      static_cast<unsigned long long>(reference->submitId));
+                      static_cast<unsigned long long>(completedReference->submitId));
         const std::uint32_t comparedPasses =
-            std::min({reference->recordedPassCount, info.recordedPassCount,
+            std::min({completedReference->recordedPassCount, info.recordedPassCount,
                       static_cast<std::uint32_t>(AURORA_GPU_PROBE_MAX_PASSES)});
-        bool passPipelineTopologySame = reference->recordedPassCount == info.recordedPassCount;
-        bool passShapeSame = reference->passCount == info.passCount &&
-                             reference->recordedPassCount == info.recordedPassCount;
+        bool passPipelineTopologySame =
+            completedReference->recordedPassCount == info.recordedPassCount;
+        bool passShapeSame = completedReference->passCount == info.passCount &&
+                             completedReference->recordedPassCount == info.recordedPassCount;
         for (std::uint32_t index = 0; index < comparedPasses; ++index) {
-            const auto& before = reference->passes[index];
+            const auto& before = completedReference->passes[index];
             const auto& after = info.passes[index];
             passPipelineTopologySame &= before.pipelineHash == after.pipelineHash;
             passShapeSame &=
@@ -238,18 +310,18 @@ std::size_t format_submit_diagnostic(char* destination, std::size_t capacity,
         }
         writer.append("    topology summary: framePipeline=%s passPipelines=%s passShape=%s "
                       "commandHash=%s\n",
-                      reference->pipelineHash == info.pipelineHash ? "SAME" : "CHANGED",
+                      completedReference->pipelineHash == info.pipelineHash ? "SAME" : "CHANGED",
                       passPipelineTopologySame ? "SAME" : "CHANGED",
                       passShapeSame ? "SAME" : "CHANGED",
-                      reference->commandHash == info.commandHash ? "SAME" : "CHANGED");
-        if (reference->pipelineHash == info.pipelineHash && passPipelineTopologySame) {
+                      completedReference->commandHash == info.commandHash ? "SAME" : "CHANGED");
+        if (completedReference->pipelineHash == info.pipelineHash && passPipelineTopologySame) {
             writer.append(
                 "    interpretation: no unique pipeline topology is exposed versus the completed "
                 "baseline; dynamic command data, resource lifetime/ranges, callback pressure, "
                 "and nondeterministic driver behavior remain possible.\n");
         }
 #define SB_GPU_SUBMIT_CHANGE(member, hex)                                                          \
-    append_changed(writer, #member, reference->member, info.member, hex)
+    append_changed(writer, #member, completedReference->member, info.member, hex)
         SB_GPU_SUBMIT_CHANGE(kind, false);
         SB_GPU_SUBMIT_CHANGE(replayEmission, false);
         SB_GPU_SUBMIT_CHANGE(submitId, false);
@@ -278,8 +350,9 @@ std::size_t format_submit_diagnostic(char* destination, std::size_t capacity,
         SB_GPU_SUBMIT_CHANGE(commandHash, true);
         SB_GPU_SUBMIT_CHANGE(pipelineHash, true);
         for (std::uint32_t index = 0; index < comparedPasses; ++index)
-            append_pass_changes(writer, index, reference->passes[index], info.passes[index]);
-        if (hasDrawProbe && has_draw_probe_v2(*reference)) {
+            append_pass_changes(writer, index, completedReference->passes[index],
+                                info.passes[index]);
+        if (hasDrawProbe && has_draw_probe_v2(*completedReference)) {
             SB_GPU_SUBMIT_CHANGE(recordedDrawCount, false);
             SB_GPU_SUBMIT_CHANGE(firstRecordedDraw, false);
             SB_GPU_SUBMIT_CHANGE(readbackQueuedThisSubmit, false);
@@ -304,15 +377,16 @@ std::size_t format_submit_diagnostic(char* destination, std::size_t capacity,
             "  attribution limit: the semantic gfx-pass draw tail retains only the final %u draw "
             "fingerprints, "
             "ordinals and staging ranges; it does not retain decoded GPU commands or prove that "
-            "one tail draw executed at the fault. Hashes show recorded topology, not semantics "
-            "or causality, and equal label hashes need not distinguish passes.\n",
+            "one tail draw executed at the fault. Hashes cover selected recorded semantics but "
+            "not the excluded operations and bytes declared above, shader/resource validity or "
+            "causality; equal label hashes need not distinguish passes.\n",
             AURORA_GPU_PROBE_MAX_DRAWS);
     } else {
         writer.append(
-            "  attribution limit: hashes show only whether recorded command/pipeline topology "
-            "changed; they do not identify semantics or causality, and equal label hashes need "
-            "not distinguish passes. This historical probe does not retain individual draw "
-            "fingerprints, resource ranges, or decoded GPU commands.\n");
+            "  attribution limit: historical hashes show only whether recorded command/pipeline "
+            "topology changed; they do not identify semantics or causality, and equal label "
+            "hashes need not distinguish passes. This historical probe does not retain individual "
+            "draw fingerprints, resource ranges, or decoded GPU commands.\n");
     }
     return writer.size();
 }

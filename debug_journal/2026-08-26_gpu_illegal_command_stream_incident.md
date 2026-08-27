@@ -82,8 +82,10 @@ encoder reuse, mapped staging-slot reuse, out-of-range replay staging range, or 
 destruction in the causal pair.
 
 The audit also excluded WSI acquire/present, present blit, ImGui, profiler queries, texture uploads,
-texture copies, and persistent-arena changes from the headless causal submit. No static Aurora or
-WebGPU contract violation has been proven for submit 1608. The strongest remaining application-side
+standalone `TextureCopy` FrameOps, and persistent-arena changes from the headless causal submit.
+The submit did contain post-pass EFB resolve operations on passes 0 through 3; the old
+`textureCopies=0` aggregate did not count those and therefore never excluded them. No static Aurora
+or WebGPU contract violation has been proven for submit 1608. The strongest remaining application-side
 gap is narrower: replay `DrawData` carries individual vertex, index, uniform, and storage references,
 while the old encode seam checked only aggregate high-water marks. That is issue 17, a validation
 coverage defect rather than evidence that the historical v1 flight contained an out-of-range draw.
@@ -133,7 +135,8 @@ mode `0600`, so an unprivileged watcher cannot promise the bytes. This corrects 
 
 The old v1 flight cannot identify the exact draw inside submit 1608. The AMD device coredump was
 root-only, was not captured, and expired. A future recurrence will preserve the v2 draw/readback
-tail, kernel-time-correlated incident, and an explicit device-coredump disposition automatically.
+tail plus v3 replay-source lineage, kernel-time-correlated incident, and an explicit
+device-coredump disposition automatically.
 That evidence can distinguish dynamic draw state and resource-lifetime pressure; it still cannot
 prove which draw the GPU executed. Pinned Dawn exposes neither the Vulkan device/queue/command
 buffer nor AMD device-fault/checkpoint extensions. Issue 19 removed the build-mode coupling:
@@ -204,3 +207,52 @@ UNKNOWN`, zero eligible exact-child dumps, and no artifact. That is the correct 
 where no hang occurred. It validates activation plus the absent real-driver terminal path, not real
 hang report production. The two wall-capped submit totals do not measure throughput because launcher
 and build time are included; the synchronized lane is timing-incomparable by construction.
+
+## Replay-source lineage and current Aurora race audit (2026-08-27)
+
+The historical comparison between completed submit 1607 and causal replay submit 1608 was not
+source lineage: 1607 was the interpolated first emission, while 1608 replayed the untouched
+pre-interpolation packet. Probe v3 now carries the source frame ID, source selected-pass-stream
+hash, and source full-uniform hash explicitly. The recorder resolves that frame's real-emission
+BEGIN independently of the latest successful completion baseline. A four-present-per-tick live
+control retained 40 successful submits and 30 intermediate samples; a replay record resolved its
+real source and reported all three lineage fields `SAME`.
+
+Installation is the protected boundary. Aurora deep-copies the source passes and uniforms, checks
+their hashes immediately, then the render worker independently re-observes that installed packet
+before encoding any copied pass. Non-final retained samples may then interpolate their own packet;
+immediately before unmap and submission the worker re-hashes the final selected command stream and
+expected uniform prefix and proves the
+global vertex/index/storage prefix writer epochs still belong to the source frame. This distinction is
+required for display-refresh ratios above two presentations per 30 Hz simulation tick; validating
+the intentionally interpolated packet against the untouched hash would deterministically abort
+every intermediate.
+
+The audit also found a concrete current lifetime race. `DebugMarker` commands stored an index into
+a global marker-string vector; end-of-frame cleanup could repopulate that vector before the serial
+render worker encoded the older packet or its replay. Marker labels are now owned by each
+`RenderPass`, and replay copies that storage with the command. A deep-copy control preserves the
+original long label after later marker repopulation; the live multi-presentation control exercises
+the shipping worker ordering. This race is not assigned as the
+historical fault because the old Release configuration did not enable debug groups.
+
+The selected pass-stream hash now covers marker label bytes, palette conversions, resolve source
+and destination resource generations, actual source sample count, and resolve path. It still does
+not cover standalone texture-copy FrameOp ordering, attachment load/store and clear values, stencil
+clear, vertex/index/storage bytes, or host-added present/readback/ImGui commands. The report names
+those limits rather than turning hash equality into a whole-command-buffer claim.
+
+The worker gate demonstrated the other answer during integration: its first live version applied
+the replay-only final-uniform check to the real source emission, whose expected replay hash was
+deliberately unset, and aborted with the observed nonzero hash. Restricting that gate to replay
+emissions made the same 120 Hz path pass. This was a scope defect in the new instrument, not a GPU
+fault, but it proves the shipping failure branch is reachable rather than decorative.
+
+A normal-paced headless Interpolated 60 FPS control then ran for the complete 600-second reported
+failure window. It rendered 4,650 simulation ticks plus 4,650 retained presentations and reached
+submit 9,311. The fixed ring held 512 valid records: 171 retained submits had successful completion
+callbacks and the final returned submit alone lacked its callback because the wall-cap terminated
+the process. No record was corrupt, torn, or out of bounds. The watcher's final kernel barrier and
+an independent 15-minute preflight both found no illegal-command-stream event, timeout, reset, or
+fault stamp. The control processed about 5.5 million audited draws. It is a high-work negative
+sample, not evidence that a random fault observed over the same interval cannot recur.

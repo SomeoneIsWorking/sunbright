@@ -21,12 +21,18 @@ class FixedBufferWriter {
     std::size_t size_ = 0;
 };
 
-// Formats every field Aurora recorded for one queue submission. `reference` is normally the
-// latest completed submit and makes the report name every recorded field that changed before the
-// callback error. The returned size excludes the trailing NUL and may equal capacity - 1 when the
-// output was truncated.
-std::size_t format_submit_diagnostic(char* destination, std::size_t capacity,
-                                     const AuroraGpuSubmitInfo& info,
-                                     const AuroraGpuSubmitInfo* reference = nullptr) noexcept;
+// The persisted byte count, producer version and nonzero source frame jointly gate lineage.
+// This keeps historical, truncated and ordinary zero-lineage v3 records from becoming evidence.
+[[nodiscard]] bool has_replay_source_lineage(const AuroraGpuSubmitInfo& info) noexcept;
+
+// Formats every field Aurora recorded for one queue submission. `completedReference` is normally
+// the latest successfully completed submit and names ordinary workload changes.
+// `replaySourceReference` is a distinct, explicitly resolved real-emission BEGIN whose v3 lineage
+// matches info.replaySourceFrameId; a completed baseline must never be substituted for it. The
+// returned size excludes the trailing NUL and may equal capacity - 1 when output was truncated.
+std::size_t
+format_submit_diagnostic(char* destination, std::size_t capacity, const AuroraGpuSubmitInfo& info,
+                         const AuroraGpuSubmitInfo* completedReference = nullptr,
+                         const AuroraGpuSubmitInfo* replaySourceReference = nullptr) noexcept;
 
 } // namespace sb::gpu_incident

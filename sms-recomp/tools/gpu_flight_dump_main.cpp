@@ -106,6 +106,25 @@ latest_successful_complete_before_sequence(const sb::gpu_incident::Analysis& ana
     return latest;
 }
 
+const sb::gpu_incident::Record*
+replay_source_before_sequence(const sb::gpu_incident::Analysis& analysis,
+                              const AuroraGpuSubmitInfo& replay, std::uint64_t beforeSequence) {
+    if (!sb::gpu_incident::has_replay_source_lineage(replay) || replay.replayEmission == 0)
+        return nullptr;
+    const sb::gpu_incident::Record* source = nullptr;
+    for (const sb::gpu_incident::Record& record : analysis.records) {
+        if (record.sequence >= beforeSequence || record.phase != AURORA_GPU_PROBE_SUBMIT_BEGIN ||
+            record.info.replayEmission != 0 ||
+            !sb::gpu_incident::has_replay_source_lineage(record.info) ||
+            record.info.frameId != replay.replaySourceFrameId) {
+            continue;
+        }
+        if (source == nullptr || source->sequence < record.sequence)
+            source = &record;
+    }
+    return source;
+}
+
 std::optional<std::uint64_t> parse_u64(const char* text) {
     if (text == nullptr || text[0] == '\0')
         return std::nullopt;
@@ -117,7 +136,9 @@ std::optional<std::uint64_t> parse_u64(const char* text) {
     return value;
 }
 
-void print_submit_diagnostic(const AuroraGpuSubmitInfo& info, const AuroraGpuSubmitInfo* reference);
+void print_submit_diagnostic(const AuroraGpuSubmitInfo& info,
+                             const AuroraGpuSubmitInfo* completedReference,
+                             const AuroraGpuSubmitInfo* replaySourceReference);
 
 void print_kernel_window(const sb::gpu_incident::Analysis& analysis,
                          std::uint64_t kernelRealtimeNs) {
@@ -171,8 +192,11 @@ void print_kernel_window(const sb::gpu_incident::Analysis& analysis,
         }
         const sb::gpu_incident::Record* const candidateBaseline =
             latest_successful_complete_before_sequence(analysis, begin->sequence);
+        const sb::gpu_incident::Record* const replaySource =
+            replay_source_before_sequence(analysis, begin->info, begin->sequence);
         print_submit_diagnostic(begin->info,
-                                candidateBaseline == nullptr ? nullptr : &candidateBaseline->info);
+                                candidateBaseline == nullptr ? nullptr : &candidateBaseline->info,
+                                replaySource == nullptr ? nullptr : &replaySource->info);
     }
     if (candidates == 0) {
         std::printf("no submit in the retained ring was outstanding at the supplied event time\n");
@@ -184,10 +208,11 @@ void print_kernel_window(const sb::gpu_incident::Analysis& analysis,
 }
 
 void print_submit_diagnostic(const AuroraGpuSubmitInfo& info,
-                             const AuroraGpuSubmitInfo* reference) {
+                             const AuroraGpuSubmitInfo* completedReference,
+                             const AuroraGpuSubmitInfo* replaySourceReference) {
     std::array<char, 32 * 1024> diagnostic{};
     const std::size_t size = sb::gpu_incident::format_submit_diagnostic(
-        diagnostic.data(), diagnostic.size(), info, reference);
+        diagnostic.data(), diagnostic.size(), info, completedReference, replaySourceReference);
     std::printf("%.*s", static_cast<int>(size), diagnostic.data());
 }
 
@@ -284,7 +309,10 @@ int main(int argc, char** argv) {
         } else {
             const sb::gpu_incident::Record* const baseline =
                 latest_successful_complete_before_sequence(analysis, begin->sequence);
-            print_submit_diagnostic(begin->info, baseline == nullptr ? nullptr : &baseline->info);
+            const sb::gpu_incident::Record* const replaySource =
+                replay_source_before_sequence(analysis, begin->info, begin->sequence);
+            print_submit_diagnostic(begin->info, baseline == nullptr ? nullptr : &baseline->info,
+                                    replaySource == nullptr ? nullptr : &replaySource->info);
         }
         if (returned == nullptr)
             std::printf("boundary interpretation: queue API did not return in the retained ring\n");
@@ -346,8 +374,11 @@ int main(int argc, char** argv) {
             if (begin != nullptr) {
                 const sb::gpu_incident::Record* const candidateBaseline =
                     latest_successful_complete_before_sequence(analysis, begin->sequence);
+                const sb::gpu_incident::Record* const replaySource =
+                    replay_source_before_sequence(analysis, begin->info, begin->sequence);
                 print_submit_diagnostic(
-                    begin->info, candidateBaseline == nullptr ? nullptr : &candidateBaseline->info);
+                    begin->info, candidateBaseline == nullptr ? nullptr : &candidateBaseline->info,
+                    replaySource == nullptr ? nullptr : &replaySource->info);
             } else {
                 std::printf("  submit detail unavailable: BEGIN record fell outside the ring\n");
             }
@@ -379,9 +410,15 @@ int main(int argc, char** argv) {
                     associatedBegin == nullptr ? nullptr
                                                : latest_successful_complete_before_sequence(
                                                      analysis, associatedBegin->sequence);
-                print_submit_diagnostic(record.info, associatedBaseline == nullptr
-                                                         ? nullptr
-                                                         : &associatedBaseline->info);
+                const sb::gpu_incident::Record* const replaySource =
+                    associatedBegin == nullptr
+                        ? nullptr
+                        : replay_source_before_sequence(analysis, record.info,
+                                                        associatedBegin->sequence);
+                print_submit_diagnostic(record.info,
+                                        associatedBaseline == nullptr ? nullptr
+                                                                      : &associatedBaseline->info,
+                                        replaySource == nullptr ? nullptr : &replaySource->info);
             } else {
                 std::printf("associated submission unavailable in this historical record\n");
             }

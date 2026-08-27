@@ -26,6 +26,11 @@ int g_failures = 0;
 
 static_assert(AURORA_GPU_PROBE_DEVICE_LOST == 3,
               "append incident phases; persisted DEVICE_LOST must remain phase 3");
+static_assert(AURORA_GPU_PROBE_VERSION == 3, "recorder tests require the append-only v3 probe");
+static_assert(offsetof(AuroraGpuSubmitInfo, replaySourceFrameId) == 1512,
+              "v3 replay lineage must follow the complete historical v2 payload");
+static_assert(sizeof(AuroraGpuSubmitInfo) == 1536,
+              "v3 must exactly fill the recorder's bounded submit-info slot");
 static_assert(sb::gpu_incident::kFormatVersion == 1,
               "the append-only probe phase does not rewrite the flight-file format");
 
@@ -43,7 +48,7 @@ std::filesystem::path fixture_directory() {
 AuroraGpuSubmitInfo submit(std::uint64_t id) {
     AuroraGpuSubmitInfo info{};
     info.structSize = sizeof(info);
-    info.version = 2;
+    info.version = AURORA_GPU_PROBE_VERSION;
     info.kind = AURORA_GPU_SUBMIT_FRAME;
     info.submitId = id;
     info.frameId = id + 100;
@@ -99,6 +104,9 @@ AuroraGpuSubmitInfo submit(std::uint64_t id) {
         .flags = static_cast<std::uint8_t>(AURORA_GPU_DRAW_FLAG_DEFORMING |
                                            AURORA_GPU_DRAW_FLAG_CAMERA_TEX_MATRIX),
     };
+    info.replaySourceFrameId = info.frameId;
+    info.replaySourceCommandHash = 0x50A4CEC000000000ULL + id;
+    info.replaySourceUniformHash = 0x50A4CEF000000000ULL + id;
     return info;
 }
 
@@ -226,9 +234,9 @@ void test_completed(const std::filesystem::path& directory) {
           "submit selector rejects an absent submit instead of printing empty evidence");
 }
 
-void test_v1_v2_submit_read_compatibility(const std::filesystem::path& directory) {
-    std::puts("v1/v2 submit payload read compatibility");
-    const auto file = directory / "v1_v2.flight";
+void test_v1_v2_v3_submit_read_compatibility(const std::filesystem::path& directory) {
+    std::puts("v1/v2/v3 submit payload read compatibility");
+    const auto file = directory / "v1_v2_v3.flight";
     clean_file(file);
     constexpr std::uint64_t session = 0x56315632ULL;
     check(configure(file, session), "configured mixed submit-version fixture");
@@ -237,30 +245,119 @@ void test_v1_v2_submit_read_compatibility(const std::filesystem::path& directory
     legacy.version = 1;
     legacy.structSize = offsetof(AuroraGpuSubmitInfo, recordedDrawCount);
     probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, legacy);
-    const AuroraGpuSubmitInfo modern = submit(25);
+    AuroraGpuSubmitInfo v2 = submit(25);
+    v2.version = 2;
+    v2.structSize = offsetof(AuroraGpuSubmitInfo, replaySourceFrameId);
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, v2);
+    const AuroraGpuSubmitInfo modern = submit(26);
     probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, modern);
     sb::gpu_incident::shutdown();
 
     const auto result = sb::gpu_incident::analyze_file(file, ::getpid(), session);
-    check(result.ok() && result.records.size() == 2,
-          "new reader accepts both legacy v1 and bounded v2 submit payloads");
-    if (result.ok() && result.records.size() == 2) {
+    check(result.ok() && result.records.size() == 3,
+          "new reader accepts legacy v1/v2 and bounded v3 submit payloads");
+    if (result.ok() && result.records.size() == 3) {
         check(result.records[0].info.version == 1 &&
                   result.records[0].info.structSize ==
                       offsetof(AuroraGpuSubmitInfo, recordedDrawCount) &&
                   result.records[0].info.recordedDrawCount == 0,
               "v1 core fields decode without reading the absent v2 tail");
         check(result.records[1].info.version == 2 &&
-                  result.records[1].info.structSize == sizeof(AuroraGpuSubmitInfo) &&
-                  result.records[1].info.recordedDrawCount == 1,
-              "v2 tail fields remain available after the phase append");
+                  result.records[1].info.structSize ==
+                      offsetof(AuroraGpuSubmitInfo, replaySourceFrameId) &&
+                  result.records[1].info.recordedDrawCount == 1 &&
+                  result.records[1].info.replaySourceFrameId == 0 &&
+                  result.records[1].info.replaySourceCommandHash == 0 &&
+                  result.records[1].info.replaySourceUniformHash == 0,
+              "v2 draw tail decodes without reading the absent v3 lineage tail");
+        check(result.records[2].info.version == 3 &&
+                  result.records[2].info.structSize == sizeof(AuroraGpuSubmitInfo) &&
+                  result.records[2].info.recordedDrawCount == 1 &&
+                  result.records[2].info.replaySourceFrameId == modern.frameId,
+              "v3 lineage remains available without changing the flight-file format");
     }
     const auto [dumpStatus, dump] = run_flight_dump(file, 0);
     check(dumpStatus == 0 &&
               dump.find("historical v1 submit record without the append-only v2 fields") !=
                   std::string::npos &&
-              dump.find("drawTail[0]") != std::string::npos,
-          "reader reports absent v1 tails while decoding retained v2 draw evidence");
+              dump.find("historical v2 submit record without the append-only v3 fields") !=
+                  std::string::npos &&
+              dump.find("drawTail[0]") != std::string::npos &&
+              dump.find("replay source lineage: frameId=126") != std::string::npos,
+          "reader reports unavailable legacy tails while decoding retained v2/v3 evidence");
+}
+
+void test_v3_replay_source_lineage(const std::filesystem::path& directory) {
+    std::puts("v3 replay source lineage uses an explicit real emission");
+    const auto file = directory / "v3_replay_source.flight";
+    clean_file(file);
+    check(configure(file, 0x50A4CEULL), "configured v3 replay-source fixture");
+
+    AuroraGpuSubmitInfo source = submit(70);
+    source.frameId = 7000;
+    source.replaySourceFrameId = source.frameId;
+    source.replaySourceCommandHash = 0x7000C011A4DULL;
+    source.replaySourceUniformHash = 0x700051F04DULL;
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, source);
+    probe(AURORA_GPU_PROBE_SUBMIT_RETURN, source);
+    complete(source);
+
+    AuroraGpuSubmitInfo unrelatedCompleted = submit(71);
+    unrelatedCompleted.kind = AURORA_GPU_SUBMIT_IMGUI_UPLOAD;
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, unrelatedCompleted);
+    probe(AURORA_GPU_PROBE_SUBMIT_RETURN, unrelatedCompleted);
+    complete(unrelatedCompleted);
+
+    AuroraGpuSubmitInfo replay = source;
+    replay.submitId = 72;
+    replay.frameId = 7001;
+    replay.frameIndex = 71;
+    replay.replayEmission = 1;
+    replay.commandHash ^= 0x1111ULL;
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, replay);
+
+    AuroraGpuSubmitInfo mismatch = replay;
+    mismatch.submitId = 73;
+    mismatch.frameId = 7002;
+    mismatch.replaySourceUniformHash ^= 1ULL;
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, mismatch);
+    sb::gpu_incident::shutdown();
+
+    const auto [sameStatus, same] = run_flight_dump(file, 0, replay.submitId);
+    check(sameStatus == 0 && same.find("changed since completed submit 71") != std::string::npos &&
+              same.find("replay source record: submit=70 frameId=7000") != std::string::npos &&
+              same.find("source lineage comparison: frameId=SAME commandHash=SAME "
+                        "uniformHash=SAME") != std::string::npos &&
+              same.find("replay source record: submit=71") == std::string::npos,
+          "reader keeps completed baseline and explicit replay source as separate records");
+
+    const auto [changedStatus, changed] = run_flight_dump(file, 0, mismatch.submitId);
+    check(changedStatus == 0 &&
+              changed.find("source lineage comparison: frameId=SAME commandHash=SAME "
+                           "uniformHash=CHANGED") != std::string::npos,
+          "known-different lineage fixture visibly changes only the falsified source hash");
+}
+
+void test_v3_zero_lineage_is_not_a_replay_source(const std::filesystem::path& directory) {
+    std::puts("v3 zero lineage remains explicitly unpopulated");
+    const auto file = directory / "v3_zero_lineage.flight";
+    clean_file(file);
+    check(configure(file, 0x503E20ULL), "configured v3 zero-lineage fixture");
+
+    AuroraGpuSubmitInfo ordinary = submit(74);
+    ordinary.frameId = 7400;
+    ordinary.replaySourceFrameId = 0;
+    ordinary.replaySourceCommandHash = 0;
+    ordinary.replaySourceUniformHash = 0;
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, ordinary);
+    sb::gpu_incident::shutdown();
+
+    const auto [status, dump] = run_flight_dump(file, 0, ordinary.submitId);
+    check(status == 0 &&
+              dump.find("replay source lineage: not populated for this frame") !=
+                  std::string::npos &&
+              dump.find("owns the source lineage") == std::string::npos,
+          "ordinary v3 frame is not falsely reported or cached as replay lineage");
 }
 
 void test_device_lost_report(const std::filesystem::path& directory) {
@@ -274,7 +371,16 @@ void test_device_lost_report(const std::filesystem::path& directory) {
     probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, completed);
     probe(AURORA_GPU_PROBE_SUBMIT_RETURN, completed);
     complete(completed);
+    AuroraGpuSubmitInfo unrelatedCompleted = submit(42);
+    unrelatedCompleted.kind = AURORA_GPU_SUBMIT_IMGUI_UPLOAD;
+    probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, unrelatedCompleted);
+    probe(AURORA_GPU_PROBE_SUBMIT_RETURN, unrelatedCompleted);
+    complete(unrelatedCompleted);
     AuroraGpuSubmitInfo pending = submit(41);
+    pending.replayEmission = 1;
+    pending.replaySourceFrameId = completed.replaySourceFrameId;
+    pending.replaySourceCommandHash = completed.replaySourceCommandHash;
+    pending.replaySourceUniformHash = completed.replaySourceUniformHash;
     pending.drawCount = 213;
     pending.passes[0].drawCount = 109;
     probe(AURORA_GPU_PROBE_SUBMIT_BEGIN, pending);
@@ -283,7 +389,7 @@ void test_device_lost_report(const std::filesystem::path& directory) {
     sb::gpu_incident::shutdown();
 
     const auto result = sb::gpu_incident::analyze_file(file, ::getpid(), session);
-    check(result.ok() && result.records.size() == 5,
+    check(result.ok() && result.records.size() == 8,
           "device loss and its associated submit survived in the flight ring");
     const auto& loss = result.records.back();
     check(loss.phase == AURORA_GPU_PROBE_DEVICE_LOST && loss.info.submitId == pending.submitId &&
@@ -304,12 +410,16 @@ void test_device_lost_report(const std::filesystem::path& directory) {
               report.find("drawTail[0]") != std::string::npos &&
               report.find("mapsPending=2") != std::string::npos,
           "durable report preserves frame, draw, pass, pipeline and state fields");
-    check(report.find("changed since completed submit 40") != std::string::npos &&
+    check(report.find("changed since completed submit 42") != std::string::npos &&
+              report.find("replay source record: submit=40 frameId=140") != std::string::npos &&
+              report.find("source lineage comparison: frameId=SAME commandHash=SAME "
+                          "uniformHash=SAME") != std::string::npos &&
+              report.find("replay source record: submit=42") == std::string::npos &&
               report.find("drawCount: 179 -> 213") != std::string::npos &&
               report.find("draw-tail delta intentionally not position-joined") !=
                   std::string::npos &&
               report.find("does not claim") != std::string::npos,
-          "report compares the pending submit and states the attribution limit");
+          "report separates replay source lineage, completed baseline and attribution limit");
 }
 
 void test_uncaptured_error_report(const std::filesystem::path& directory) {
@@ -553,7 +663,9 @@ int main() {
 
     test_abort_pending(directory);
     test_completed(directory);
-    test_v1_v2_submit_read_compatibility(directory);
+    test_v1_v2_v3_submit_read_compatibility(directory);
+    test_v3_replay_source_lineage(directory);
+    test_v3_zero_lineage_is_not_a_replay_source(directory);
     test_device_lost_report(directory);
     test_uncaptured_error_report(directory);
     test_failed_completion_is_not_a_baseline(directory);
