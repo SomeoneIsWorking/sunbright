@@ -133,6 +133,89 @@ def selftest() -> int:
         assert clean.returncode == 0, clean
         assert not (temp / "stamp").exists()
 
+        radv_exit_fifo = temp / "radv-exit.fifo"
+        os.mkfifo(radv_exit_fifo)
+        radv_exit_root = temp / "radv-exit-root"
+        radv_exit_root.mkdir()
+        radv_exit_incidents = temp / "radv-exit-incidents"
+        radv_exit_kernel = [
+            sys.executable,
+            "-u",
+            "-c",
+            f"import time; print(open({str(radv_exit_fifo)!r}).read(), end=''); time.sleep(30)",
+        ]
+        radv_exit_script = (
+            "import os,pathlib; "
+            f"root=pathlib.Path({str(radv_exit_root)!r}); "
+            "dump=root/f'radv_dumps_{os.getpid()}_clean-exit'; dump.mkdir(); "
+            "(dump/'trace.log').write_text('Trace ID: a\\nThis trace point was reached by the CP.\\n'"
+            "+'Trace ID: b\\nThis trace point was NOT reached by the CP.\\n'); "
+            f"open({str(radv_exit_fifo)!r},'w').write('kernel: harmless RADV exit control\\n')"
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"RADV_DEBUG": "hang", "SBR_RADV_HANG_DIAG": "1"},
+            clear=True,
+        ):
+            radv_exit = run_guarded(
+                [sys.executable, "-c", radv_exit_script],
+                5,
+                incident_dir=radv_exit_incidents,
+                stamp=temp / "radv-exit.stamp",
+                kernel_command=radv_exit_kernel,
+                include_flight=False,
+                devcoredump_root=no_dump_root,
+                radv_dump_root=radv_exit_root,
+            )
+        assert radv_exit.returncode == 0, radv_exit
+        radv_exit_reports = list(radv_exit_incidents.glob("radv_*.txt"))
+        radv_exit_artifacts = list(radv_exit_incidents.glob("*.radv"))
+        assert len(radv_exit_reports) == 1
+        assert len(radv_exit_artifacts) == 1
+        radv_exit_text = radv_exit_reports[0].read_text(errors="replace")
+        assert "terminal outcome: child exit; returncode 0" in radv_exit_text
+        assert "status: CAPTURED" in radv_exit_text
+        assert f"artifact: {radv_exit_artifacts[0]}" in radv_exit_text
+
+        radv_nonzero_fifo = temp / "radv-nonzero.fifo"
+        os.mkfifo(radv_nonzero_fifo)
+        radv_nonzero_root = temp / "radv-nonzero-root"
+        radv_nonzero_root.mkdir()
+        radv_nonzero_incidents = temp / "radv-nonzero-incidents"
+        radv_nonzero_kernel = [
+            sys.executable,
+            "-u",
+            "-c",
+            f"import time; print(open({str(radv_nonzero_fifo)!r}).read(), end=''); time.sleep(30)",
+        ]
+        radv_nonzero_script = (
+            f"open({str(radv_nonzero_fifo)!r},'w').write('kernel: harmless nonzero control\\n'); "
+            "raise SystemExit(7)"
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"RADV_DEBUG": "hang", "SBR_RADV_HANG_DIAG": "1"},
+            clear=True,
+        ):
+            radv_nonzero = run_guarded(
+                [sys.executable, "-c", radv_nonzero_script],
+                5,
+                incident_dir=radv_nonzero_incidents,
+                stamp=temp / "radv-nonzero.stamp",
+                kernel_command=radv_nonzero_kernel,
+                include_flight=False,
+                devcoredump_root=no_dump_root,
+                radv_dump_root=radv_nonzero_root,
+            )
+        assert radv_nonzero.returncode == 7, radv_nonzero
+        radv_nonzero_reports = list(radv_nonzero_incidents.glob("radv_*.txt"))
+        assert len(radv_nonzero_reports) == 1
+        radv_nonzero_text = radv_nonzero_reports[0].read_text(errors="replace")
+        assert "terminal outcome: child exit; returncode 7" in radv_nonzero_text
+        assert "status: UNKNOWN" in radv_nonzero_text
+        assert "artifact: NONE" in radv_nonzero_text
+        assert not list(radv_nonzero_incidents.glob("*.radv"))
+
         fault_fifo = temp / "fault.fifo"
         os.mkfifo(fault_fifo)
         child_marker = temp / "child.pid"
@@ -354,6 +437,94 @@ def selftest() -> int:
 
         assert "did not reap" in (_bounded_reap(NeverReaps(), timeout=0.001) or "")
 
+        radv_timeout_root = temp / "radv-timeout-root"
+        radv_timeout_root.mkdir()
+        radv_timeout_incidents = temp / "radv-timeout-incidents"
+        radv_timeout_journal = [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {"RADV_DEBUG": "hang", "SBR_RADV_HANG_DIAG": "1"},
+            clear=True,
+        ):
+            radv_timeout = run_guarded(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                0.05,
+                incident_dir=radv_timeout_incidents,
+                stamp=temp / "radv-timeout.stamp",
+                kernel_command=radv_timeout_journal,
+                include_flight=False,
+                devcoredump_root=no_dump_root,
+                radv_dump_root=radv_timeout_root,
+            )
+        assert radv_timeout.returncode == 124, radv_timeout
+        radv_timeout_reports = list(radv_timeout_incidents.glob("radv_*.txt"))
+        assert len(radv_timeout_reports) == 1
+        radv_timeout_text = radv_timeout_reports[0].read_text(errors="replace")
+        assert "terminal outcome: wall-clock timeout; returncode 124" in radv_timeout_text
+        assert "status: UNKNOWN" in radv_timeout_text
+
+        timeout_journal = [sys.executable, "-c", "import time; time.sleep(30)"]
+        timeout_order: list[str] = []
+        timeout_scans = iter((([], None), ([], None), ([planted], None)))
+        real_kill_exact_group = module._kill_exact_group
+        real_bounded_reap = module._bounded_reap
+
+        def ordered_timeout_scan(_cursor: str) -> tuple[list[str], str | None]:
+            result = next(timeout_scans)
+            if result[0] == [planted]:
+                timeout_order.append("final-barrier")
+            return result
+
+        def ordered_kill(pgid: int) -> None:
+            timeout_order.append("kill")
+            real_kill_exact_group(pgid)
+
+        def ordered_reap(
+            process: subprocess.Popen[str], timeout: float = module.REAP_TIMEOUT_SECS
+        ) -> str | None:
+            timeout_order.append("reap-attempt")
+            return real_bounded_reap(process, timeout)
+
+        with (
+            mock.patch.object(
+                module, "current_kernel_cursor", return_value=("timeout-anchor", None)
+            ),
+            mock.patch.object(module, "preflight_reasons", return_value=[]),
+            mock.patch.object(
+                module,
+                "kernel_lines_after_cursor",
+                side_effect=ordered_timeout_scan,
+            ) as timeout_barriers,
+            mock.patch.object(module, "_kill_exact_group", side_effect=ordered_kill),
+            mock.patch.object(module, "_bounded_reap", side_effect=ordered_reap),
+            mock.patch.object(
+                module, "_journal_command", return_value=timeout_journal
+            ),
+            mock.patch.object(
+                module, "_collect_fault_context", return_value=[planted]
+            ),
+        ):
+            timeout_fault = run_guarded(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                0.05,
+                incident_dir=temp / "timeout-fault",
+                stamp=temp / "timeout-fault.stamp",
+                include_flight=False,
+                devcoredump_root=no_dump_root,
+            )
+        assert timeout_fault.returncode == WATCH_FAULT_RC, timeout_fault
+        assert timeout_fault.incident_path is not None
+        assert timeout_fault.incident_path.is_file()
+        assert timeout_barriers.call_count == 3
+        assert timeout_order[:3] == ["kill", "reap-attempt", "final-barrier"]
+        timeout_fault_text = timeout_fault.incident_path.read_text(errors="replace")
+        assert "Illegal register access" in timeout_fault_text
+        assert (temp / "timeout-fault.stamp").is_file()
+
         fast_fifo = temp / "fast.fifo"
         os.mkfifo(fast_fifo)
         fast_kernel = [
@@ -541,6 +712,10 @@ def selftest() -> int:
     print("  live fault incident preserves its fixture-backed device coredump")
     print("  ambient RADV_DEBUG=hang without the explicit opt-in refuses before launch")
     print("  bounded-reap control reports timeout without blocking")
+    print("  timeout final barrier converts a late kernel fault into a durable incident")
+    print(
+        "  clean, nonzero and timeout RADV terminals persist CAPTURED/UNKNOWN reports"
+    )
     print("  fast-exit fault drains; clean leader exit kills its surviving descendant")
     print("  watcher-loss controls kill live leader and post-leader descendant")
     print(

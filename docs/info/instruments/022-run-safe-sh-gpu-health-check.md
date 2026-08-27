@@ -68,13 +68,17 @@ reported as `EXPIRED-OR-CONSUMED`, never as "no dump."
 
 `SBR_RADV_HANG_DIAG=1` is a separate explicit diagnostic lane. The launcher then preserves the
 effective `RADV_DEBUG=hang` value across `.env`, and the watcher snapshots RADV dump identities
-immediately before launch. After stopping the exact process group it accepts only a new
-`radv_dumps_<exact-child-pid>_*` directory, copies it under bounded file/byte/time limits, and reports
-the last reached plus first not-reached command-processor trace IDs when `trace.log` contains them.
+immediately before launch. It accepts only a new `radv_dumps_<exact-child-pid>_*` directory, copies
+it under bounded file/byte/time limits, and reports the last reached plus first not-reached
+command-processor trace IDs when `trace.log` contains them. Collection runs on fault, clean/nonzero
+exit, signal, and wall-cap paths; even an absent dump produces a durable `UNKNOWN` terminal report.
+The wall-cap path repeats the final kernel cursor barrier after killing the child and making a
+bounded reap attempt, so a fault arriving at the timeout boundary becomes an incident instead of an
+apparently clean timeout. Cleanup retries the reap if the bounded attempt expires.
 Without the explicit opt-in, a caller-supplied `RADV_DEBUG=hang` is rejected. I034 validates the
-collector/parser's positive and negative CPU fixtures; real driver activation remains unverified.
-RADV's inserted synchronization can mask a lifetime/order defect, so this lane is independent
-diagnostic evidence and never normal-run equivalence.
+collector/parser's positive and negative CPU fixtures and real RADV 26.1.8 activation. RADV's
+inserted synchronization can mask a lifetime/order defect, so this lane is independent diagnostic
+evidence and never normal-run equivalence.
 
 The unified default-launch control on 2026-08-27 ran `run.sh --diagnostic --stage 1 --quit-after
 60 --run-secs 90`. The optimized-Debug game exited 0 after 60 presents, the flight reader decoded

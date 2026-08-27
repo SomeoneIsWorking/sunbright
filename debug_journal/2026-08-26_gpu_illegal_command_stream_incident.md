@@ -172,3 +172,35 @@ The integrated control used that exact entry point with `--diagnostic --stage 1 
 0 corrupt/bounds records, exited 0, and crossed the watcher's final kernel barrier without a GPU
 fault. This is a clean-path control for the unified launcher, not evidence that the nondeterministic
 fault cannot recur.
+
+## Random-window and RADV activation controls (2026-08-27)
+
+The user clarified that the reset is random over roughly one to ten minutes. A 30-present
+`SBR_RADV_HANG_DIAG=1` control is therefore only an activation test: Mesa RADV 26.1.8 printed its
+own costly-mode warning and `Enabled debug options: syncshaders, hang`, proving the flag reached the
+real driver. It exited with 30 successful submit callbacks and no kernel fault, so it did not test
+hang-only trace production.
+
+A separate normal-timing run kept the synchronized diagnostic disabled and used the guarded default
+launcher for the full 600-second reported window. It reached submit 4,859, then the launcher killed
+the process at its wall cap. Post-run kernel preflight was clean. The flight ring retained 170 recent
+successful completions plus the final returned submit and final API-pending submit cut off by the
+forced termination; those two are expected wall-cap teardown, not a fault signature. This is one
+clean random-window sample, not crash-solidity evidence.
+
+Auditing the hang lane exposed a remaining preservation boundary: the watcher kills the exact game
+process at the first kernel fault, while RADV writes `radv_dumps_*` inside that process after it
+detects the hang. The safety kill can therefore win the race and leave no complete `trace.log`.
+Collecting on every terminal path closes missed-exit reporting, but cannot remove this fundamental
+in-process writer race. Pinned Dawn exposes only the Vulkan instance, not its device/queue/command
+buffer, so obtaining crash-surviving `VK_EXT_device_fault` vendor data requires extending the Dawn
+backend boundary or an equivalent driver-owned facility, not merely an Aurora-side call.
+
+After the every-terminal and timeout-final-barrier controls passed, the real synchronized lane ran
+for the full 600 seconds. RADV again printed `syncshaders, hang`; the workload reached submit 5,403
+before the wall cap killed it. The final kernel barrier and subsequent preflight were clean. The
+watcher persisted `scratch/gpu_crash/radv_20260827T182601.995468Z_2940588.txt` with `status:
+UNKNOWN`, zero eligible exact-child dumps, and no artifact. That is the correct answer for a run
+where no hang occurred. It validates activation plus the absent real-driver terminal path, not real
+hang report production. The two wall-capped submit totals do not measure throughput because launcher
+and build time are included; the synchronized lane is timing-incomparable by construction.

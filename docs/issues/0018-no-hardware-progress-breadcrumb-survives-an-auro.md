@@ -2,7 +2,7 @@
 id: 18
 title: No hardware-progress breadcrumb survives an Aurora GPU hang
 status: open
-symptom: The flight recorder narrows the faulting submit but packaged Dawn exposes no last-executed GPU command or PM4 breadcrumb
+symptom: The flight recorder narrows the causal-window submit but packaged Dawn exposes no last-executed GPU command or PM4 breadcrumb
 tags: gpu,aurora,radv,diagnostics,hang,reporting
 created: 2026-08-27
 updated: 2026-08-27
@@ -27,7 +27,7 @@ capture, so it is not a crash-surviving hang trace. Debug labels alone are insuf
 forwards them through Vulkan debug utils in validation/RenderDoc configurations and does not retain
 command-buffer label stacks in the device-loss callback.
 
-## Resolution
+## Current approach
 
 Proper next diagnostic: an explicit guarded RADV hang lane using `RADV_DEBUG=hang`, never the
 default. [Mesa's RADV hang-debugging documentation](https://docs.mesa3d.org/drivers/amd/hang-debugging.html)
@@ -44,8 +44,11 @@ detail.
 Partial implementation 2026-08-27: guarded launchers accept only explicit
 `SBR_RADV_HANG_DIAG=1`, preserve the effective `RADV_DEBUG` across `.env`, and the watcher snapshots
 before launch then captures only a new exact-child-PID dump after stopping the process. I034
-validates positive/negative collection and trace parsing. Real `RADV_DEBUG=hang` activation and
-hardware trace production remain unverified, so this issue is not resolved.
+validates positive/negative collection and trace parsing. A real guarded stage-1 launch subsequently
+proved that Mesa RADV 26.1.8 consumed the flag: the driver itself printed its costly-mode warning
+and `Enabled debug options: syncshaders, hang`. That 30-present activation control completed cleanly,
+so it could not prove hang-only trace production. The issue remains open until a real fault produces
+and preserves a hardware-progress report.
 
 The default `run.sh` path now owns the live watcher too. Normal windowed play has no diagnostic
 time or present-count cap, but it still preflights the kernel journal, watches through the final
@@ -53,3 +56,26 @@ post-exit barrier, stops the exact game process group on the first GPU fault, an
 incident evidence. `run.sh --diagnostic` adds the former conservative headless, muted, 60 Hz,
 present-count, and wall-clock defaults. This closes the launcher-coverage gap; it does not close the
 missing hardware-progress breadcrumb described by this issue.
+
+The audit after that activation found a real preservation race: the external watcher kills the game
+at the first kernel fault, while RADV writes its report inside that same process only after detecting
+the hang. Immediate termination can therefore leave the exact-child report absent or partial. The
+watcher must keep stopping the process group immediately for machine safety and report this limit
+honestly; eliminating it requires a driver/device-fault path that survives the game process, or a
+coordinated in-process quiesce path. The pinned Dawn package exposes the Vulkan instance but not its
+device, queue, or command buffer, so an Aurora-only change cannot retrieve
+`VK_EXT_device_fault` vendor data through the current backend boundary.
+
+The watcher now attempts bounded exact-child RADV collection on every terminal path, not only a
+matched fault, and writes a durable terminal report even when the answer is `UNKNOWN`. Its wall-cap
+path also performs the same final kernel cursor barrier as a normal child exit after killing the
+child and making a bounded reap attempt. CPU controls plant a dump on clean exit, omit it on
+nonzero/timeout exits, and place a fault only in the final timeout barrier; all four answers disagree
+as required. This closes missed-exit reporting but deliberately does not claim to solve the
+in-process writer race above.
+
+The first real every-terminal integration ran the synchronized stage-1 workload for 600 seconds.
+RADV confirmed the diagnostic flags, the game reached submit 5,403 without a kernel event, and the
+wall cap produced a durable terminal report with `status: UNKNOWN`, `eligible=0`, and no artifact.
+Post-run kernel preflight was clean. This validates the real absent-dump answer and terminal wiring;
+only a future real fault can validate hardware trace production.

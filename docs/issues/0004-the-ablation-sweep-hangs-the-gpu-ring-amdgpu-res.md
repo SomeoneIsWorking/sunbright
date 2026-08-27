@@ -1,7 +1,7 @@
 ---
 id: 4
 title: the ablation sweep hangs the GPU ring: amdgpu resets the device mid-run, no attribution table ever printed
-status: investigating
+status: resolved
 symptom: VK_ERROR_DEVICE_LOST during ./run-render.sh SBR_ABLATE=1; radv GPUVM fault at 0x800000000000; 'XIO: fatal IO error 2 on X server :0' at startup afterwards
 tags: render,gpu,ablation,environment
 created: 2026-08-12
@@ -92,10 +92,16 @@ unproven array/display-list/texture spans. Those boundaries are now authoritativ
 covered by failing controls. This broadens the set of removed reset/crash mechanisms; it still does
 not retroactively attribute the old kernel reset to one mechanism without a surviving GPU trace.
 
-### Reopened (2026-08-25)
-Recurred on 2026-08-25 in the default recomp + Aurora path, not Native or the ablation sweep: after roughly 4,202 PAD polls, RADV cancelled the innocent context and Dawn aborted at vkQueueSubmit with VK_ERROR_DEVICE_LOST. This falsifies the short-run crash-solidity conclusion. The promised gpu_crash_watch.py/submit-tail instrument is absent from HEAD, so this recurrence has no new incident bundle.
+### Transferred default-Aurora recurrence (2026-08-25)
 
-### Instrument landed (2026-08-25, same day)
+This later recurrence is retained here only as historical transfer context for issue #20; it did not
+reopen the ablation-specific work. In the default recomp + Aurora path, after roughly 4,202 PAD
+polls, RADV cancelled the innocent context and Dawn aborted at `vkQueueSubmit` with
+`VK_ERROR_DEVICE_LOST`. This falsified the short-run crash-solidity conclusion. The promised
+`gpu_crash_watch.py`/submit-tail instrument was absent from HEAD, so this recurrence had no new
+incident bundle.
+
+### Transferred instrument context (2026-08-25, same day)
 
 The submit-tail instrument now exists as an IN-PROCESS recorder, not a watcher:
 `sms-recomp/runtime/gpu_incident_recorder.{h,cpp}` + reader `build-sms-recomp/gpu_flight_dump`.
@@ -107,10 +113,10 @@ recorded; BEGIN+RETURN without COMPLETE means only that Dawn's `OnSubmittedWorkD
 not observed, not that GPU execution necessarily remained incomplete. Verified controls include
 fork-abort survival, corrupt/torn/truncated/stale rejection, and a clean 150-present run producing
 450/450 records with every completion callback observed.
-Full write-up: debug_journal/2026-08-25_gpu_submit_flight_recorder.md. The NEXT recurrence of
-this issue must start with gpu_flight_dump on the newest flight file.
+Full write-up: debug_journal/2026-08-25_gpu_submit_flight_recorder.md. The next recurrence of issue
+#20 must start with `gpu_flight_dump` on the newest flight file.
 
-### Recurrence captured (2026-08-26)
+### Transferred default-Aurora capture (2026-08-26)
 
 The recorder captured the next reset in
 `scratch/gpu_crash/session_1759510_18ce5cd3829e5b1b_recomp-aurora.flight`. Kernel evidence names
@@ -141,8 +147,16 @@ and the external guard stops the exact process group at that first fault instead
 process exit. Full analysis: `debug_journal/2026-08-26_gpu_illegal_command_stream_incident.md`;
 instrument controls: I033.
 
-### Note (2026-08-27)
+### Transferred issue #20 note (2026-08-27)
 Historical --submit inspection shows causal-window submit 1608 received Dawn QueueWorkDoneStatus::Success at real_ns 1787773718955430225, 4.265 s after the first kernel illegal-register event. This late callback cannot retroactively remove submit 1608 from the event-time window and is not proof that one of its draws caused the illegal packet; kernel-time correlation remains authoritative.
 
-### Note (2026-08-27)
+### Transferred issue #20 control (2026-08-27)
 Guarded runtime control 2026-08-27: a headless stage-1 Interpolated 60 FPS run completed 100/100 submits with successful Dawn callbacks, zero pending callbacks, zero corrupt records, and the post-run kernel preflight remained clean. This validates the integrated reporter/validator/queue path on a bounded run; it does not reproduce or resolve the nondeterministic 2026-08-26 illegal-command-stream reset.
+
+### Resolution (2026-08-27)
+
+The original ablation-sweep failure was resolved by bounding per-frame passes and fence waits,
+latching the renderer off after the first submit failure, reallocating EFB-copy targets when their
+extent grows, and moving rate admission before GPU work. Later default Aurora recurrences are not
+attributed to those ablation-specific mechanisms and are tracked separately in issue #20; issue #18
+owns the missing hardware-progress evidence. Their relationship to the historical reset is unknown.

@@ -511,6 +511,56 @@ def _write_incident(
     return incident
 
 
+def _collect_radv_evidence(
+    snapshot: RadvDumpSnapshot,
+    child_pid: int,
+    destination_prefix: Path,
+) -> RadvHangEvidence:
+    """Collect one exact-child RADV result without letting diagnostics hide the exit."""
+    try:
+        return collect_radv_hang_trace(snapshot, child_pid, destination_prefix)
+    except Exception as exc:
+        return RadvHangEvidence(
+            "UNAVAILABLE",
+            (f"RADV hang evidence collection failed safely: {exc}",),
+        )
+
+
+def _radv_artifact_label(evidence: RadvHangEvidence) -> str:
+    return str(evidence.artifact) if evidence.artifact is not None else "NONE"
+
+
+def _write_radv_terminal_report(
+    report_path: Path,
+    child_pid: int,
+    outcome: str,
+    evidence: RadvHangEvidence,
+) -> Path:
+    """Persist the diagnostic lane's answer even when no kernel incident exists."""
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc)
+    artifact = _radv_artifact_label(evidence)
+    text = "\n".join(
+        (
+            "Sunbright RADV hang diagnostic terminal report",
+            f"utc: {timestamp.isoformat()}",
+            f"guarded pid/pgid: {child_pid}",
+            f"terminal outcome: {outcome}",
+            f"status: {evidence.status}",
+            f"artifact: {artifact}",
+            *evidence.report,
+            "",
+        )
+    )
+    atomic_durable_replace(report_path, text)
+    print(
+        f"[gpu-watch] RADV hang evidence: status={evidence.status}; "
+        f"artifact={artifact}; report={report_path}",
+        file=sys.stderr,
+    )
+    return report_path
+
+
 def _collect_fault_context(journal_pump: JournalPump, first_line: str) -> list[str]:
     """Collect the ring/process attribution immediately following the first fault.
 
@@ -735,15 +785,15 @@ def _run_guarded_protected(
                 destination_prefix = incident or (
                     incident_dir / f"watch_unpersisted_{pgid}"
                 )
-                try:
-                    radv_hang_evidence = collect_radv_hang_trace(
-                        radv_snapshot, child.pid, destination_prefix
-                    )
-                except Exception as exc:
-                    radv_hang_evidence = RadvHangEvidence(
-                        "UNAVAILABLE",
-                        (f"RADV hang evidence collection failed safely: {exc}",),
-                    )
+                radv_hang_evidence = _collect_radv_evidence(
+                    radv_snapshot, child.pid, destination_prefix
+                )
+                print(
+                    f"[gpu-watch] RADV hang evidence: status={radv_hang_evidence.status}; "
+                    f"artifact={_radv_artifact_label(radv_hang_evidence)}; "
+                    f"incident={incident if incident is not None else 'UNAVAILABLE'}",
+                    file=sys.stderr,
+                )
             if persist_error is not None:
                 print(f"[gpu-watch] {persist_error}", file=sys.stderr)
             if incident is not None:
@@ -777,12 +827,55 @@ def _run_guarded_protected(
             )
             return GuardResult(code, reason, incident)
 
+        def report_radv_terminal(outcome: str) -> None:
+            if radv_snapshot is None:
+                return
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+            prefix = incident_dir / f"radv_{timestamp}_{child.pid}"
+            evidence = _collect_radv_evidence(radv_snapshot, child.pid, prefix)
+            report_path = prefix.with_suffix(".txt")
+            try:
+                _write_radv_terminal_report(
+                    report_path, child.pid, outcome, evidence
+                )
+            except Exception as exc:
+                print(
+                    "[gpu-watch] RADV terminal report persistence failed: "
+                    f"status={evidence.status}; "
+                    f"artifact={_radv_artifact_label(evidence)}; error={exc}",
+                    file=sys.stderr,
+                )
+
+        def final_kernel_result() -> GuardResult | None:
+            if start_cursor is None:
+                return None
+            final_lines, final_error = kernel_lines_after_cursor(start_cursor)
+            if final_error is not None:
+                return fault_result(
+                    f"post-exit kernel barrier failed: {final_error}",
+                    WATCH_BROKEN_RC,
+                    "monitor_failure",
+                )
+            first_fault = next(
+                (candidate for candidate in final_lines if is_gpu_fault(candidate)),
+                None,
+            )
+            return (
+                fault_result(first_fault, WATCH_FAULT_RC)
+                if first_fault is not None
+                else None
+            )
+
         while True:
             if signal_protection.received:
                 _kill_exact_group(pgid)
                 note = _bounded_reap(child)
                 if note:
                     print(f"[gpu-watch] {note}", file=sys.stderr)
+                report_radv_terminal(
+                    f"signal {signal_protection.received}; returncode "
+                    f"{128 + signal_protection.received}"
+                )
                 return GuardResult(128 + signal_protection.received)
             if deadline is not None and time.monotonic() >= deadline:
                 assert timeout_secs is not None
@@ -795,6 +888,10 @@ def _run_guarded_protected(
                 note = _bounded_reap(child)
                 if note:
                     print(f"[gpu-watch] {note}", file=sys.stderr)
+                barrier_result = final_kernel_result()
+                if barrier_result is not None:
+                    return barrier_result
+                report_radv_terminal(f"wall-clock timeout; returncode 124")
                 return GuardResult(124)
 
             try:
@@ -821,28 +918,17 @@ def _run_guarded_protected(
                     time.monotonic() >= leader_exit_deadline
                     and journal_pump.lines.empty()
                 ):
-                    if start_cursor is not None:
-                        final_lines, final_error = kernel_lines_after_cursor(
-                            start_cursor
-                        )
-                        if final_error is not None:
-                            return fault_result(
-                                f"post-exit kernel barrier failed: {final_error}",
-                                WATCH_BROKEN_RC,
-                                "monitor_failure",
-                            )
-                        first_fault = next(
-                            (
-                                candidate
-                                for candidate in final_lines
-                                if is_gpu_fault(candidate)
-                            ),
-                            None,
-                        )
-                        if first_fault is not None:
-                            return fault_result(first_fault, WATCH_FAULT_RC)
                     # The leader may have exited while descendants retained the process group.
                     _kill_exact_group(pgid)
+                    reap_note = _bounded_reap(child)
+                    if reap_note:
+                        print(f"[gpu-watch] {reap_note}", file=sys.stderr)
+                    barrier_result = final_kernel_result()
+                    if barrier_result is not None:
+                        return barrier_result
+                    report_radv_terminal(
+                        f"child exit; returncode {leader_rc}"
+                    )
                     return GuardResult(leader_rc)
     finally:
         if pgid is not None:
