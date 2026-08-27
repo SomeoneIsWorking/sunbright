@@ -38,6 +38,7 @@
 #include "hud_window_layout.h"
 #include "overrides.h"
 
+#include "../frame_interp/tag_2d.h"
 #include "../runtime/probe_server.h"
 
 #include <intrinsics.h>
@@ -208,6 +209,8 @@ const bool g_pane_probe = [] {
 }();
 
 void ov_quad(CPUState& cpu) {
+    sb::frame_interp::two_d::PaneScope identity(cpu.gpr[3],
+                                                sb::frame_interp::two_d::DrawPath::QuadEmitter);
     const u32 self = cpu.gpr[3];
     const int pillar = sbr_ws_pillar();
     char nm[5];

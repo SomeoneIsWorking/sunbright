@@ -254,6 +254,16 @@ add_executable(gx_fifo_contracts_test tests/gx_fifo_contracts_test.cpp)
 target_include_directories(gx_fifo_contracts_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME gx_fifo_contracts COMMAND gx_fifo_contracts_test)
 
+add_executable(tag_2d_test tests/tag_2d_test.cpp frame_interp/tag_2d.cpp)
+target_include_directories(tag_2d_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime")
+add_test(NAME tag_2d COMMAND tag_2d_test)
+
+add_executable(native_pad_policy_test tests/native_pad_policy_test.cpp)
+target_include_directories(native_pad_policy_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME native_pad_policy COMMAND native_pad_policy_test)
+
 add_executable(guest_address_table_test tests/guest_address_table_test.cpp)
 target_include_directories(guest_address_table_test PRIVATE runtime)
 add_test(NAME guest_address_table COMMAND guest_address_table_test)

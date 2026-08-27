@@ -29,6 +29,7 @@
 // control for water-particle rendering. Like the stick axes, a later step that omits a trigger
 // leaves the last scripted value in force.
 
+#include "native_pad_policy.h"
 #include "overrides.h"
 
 #include <intrinsics.h>
@@ -91,6 +92,17 @@ struct Step {
 std::vector<Step> g_script;
 long g_reads = 0;
 
+bool script_only() {
+    static const bool value = [] {
+        const char* env = std::getenv("SBR_PAD_SCRIPT_ONLY");
+        const bool enabled = env != nullptr && env[0] != '\0' && env[0] != '0';
+        lucent::info("pad", "scripted input is {}; live PAD state {}",
+                     enabled ? "exclusive" : "mixed", enabled ? "ignored" : "included");
+        return enabled;
+    }();
+    return value;
+}
+
 u16 button_bit(const std::string& name) {
     if (name == "LEFT")
         return 0x0001;
@@ -126,6 +138,7 @@ void parse_script() {
     const char* env = std::getenv("SBR_PAD_SCRIPT");
     if (!env || !*env)
         return;
+    lucent::info("pad", "scripted input source: {}", env);
     std::string s(env), item;
     size_t pos = 0;
     while (pos <= s.size()) {
@@ -296,9 +309,12 @@ void pad_read(CPUState& cpu) {
     // runtime; without this the recomp could only ever replay SBR_PAD_SCRIPT and a window was
     // useless to a person.
     PADStatus host[4] = {};
-    ::PADRead(host);
+    const bool scriptOnly = script_only();
+    if (!scriptOnly)
+        ::PADRead(host);
 
-    const u16 buttons = (u16)(scripted_buttons() | host[0].button);
+    const u16 buttons =
+        sunbright::pad::combine_buttons(scripted_buttons(), host[0].button, scriptOnly);
     static u16 last = 0xFFFF;
     if (buttons != last) {
         last = buttons;
@@ -315,20 +331,24 @@ void pad_read(CPUState& cpu) {
             // keyboard still drives, so a scripted run can be nudged by hand.
             int sx = 0x8000, sy = 0x8000;
             scripted_stick(sx, sy);
-            sb_w8(p + PS_STICK_X, (u8)(s8)(sx == 0x8000 ? host[0].stickX : sx));
-            sb_w8(p + PS_STICK_Y, (u8)(s8)(sy == 0x8000 ? host[0].stickY : sy));
+            sb_w8(p + PS_STICK_X,
+                  (u8)(s8)sunbright::pad::select_axis(sx, host[0].stickX, scriptOnly));
+            sb_w8(p + PS_STICK_Y,
+                  (u8)(s8)sunbright::pad::select_axis(sy, host[0].stickY, scriptOnly));
             int cx = 0x8000, cy = 0x8000;
             scripted_substick(cx, cy);
-            sb_w8(p + PS_SUB_X, (u8)(s8)(cx == 0x8000 ? host[0].substickX : cx));
-            sb_w8(p + PS_SUB_Y, (u8)(s8)(cy == 0x8000 ? host[0].substickY : cy));
+            sb_w8(p + PS_SUB_X,
+                  (u8)(s8)sunbright::pad::select_axis(cx, host[0].substickX, scriptOnly));
+            sb_w8(p + PS_SUB_Y,
+                  (u8)(s8)sunbright::pad::select_axis(cy, host[0].substickY, scriptOnly));
             int triggerLeft = -1, triggerRight = -1;
             scripted_triggers(triggerLeft, triggerRight);
             sb_w8(p + PS_TRIG_L,
-                  static_cast<u8>(triggerLeft < 0 ? host[0].triggerLeft : triggerLeft));
+                  sunbright::pad::select_trigger(triggerLeft, host[0].triggerLeft, scriptOnly));
             sb_w8(p + PS_TRIG_R,
-                  static_cast<u8>(triggerRight < 0 ? host[0].triggerRight : triggerRight));
-            sb_w8(p + PS_ANALOG_A, host[0].analogA);
-            sb_w8(p + PS_ANALOG_B, host[0].analogB);
+                  sunbright::pad::select_trigger(triggerRight, host[0].triggerRight, scriptOnly));
+            sb_w8(p + PS_ANALOG_A, scriptOnly ? 0 : host[0].analogA);
+            sb_w8(p + PS_ANALOG_B, scriptOnly ? 0 : host[0].analogB);
             sb_w8(p + PS_ERR, (u8)PAD_ERR_NONE);
         } else {
             // Ports 1-3 genuinely have nothing attached; say so rather than reporting a

@@ -59,6 +59,7 @@ void sbr_pop_register_names() {
     aurora::gfx::interp::name_population(SB_POP_COGWHEEL, "balance scale (deforming)");
     aurora::gfx::interp::name_population(SB_POP_WIPE, "screen wipe (deforming)");
     aurora::gfx::interp::name_population(SB_POP_TDL_QUAD, "TDL indexed quad (deforming)");
+    aurora::gfx::interp::name_population(SB_POP_HUD_GAUGE, "HUD water gauge (animated 2D)");
 }
 
 namespace sb::frame_interp {

@@ -12,8 +12,9 @@
 //
 //   curl 127.0.0.1:17654/2dclass
 
-#include "overrides.h"
 #include "../frame_interp/populations.h"
+#include "../frame_interp/tag_2d.h"
+#include "overrides.h"
 
 #include "../runtime/probe_server.h"
 #include "../runtime/render/scene.h"
@@ -25,15 +26,15 @@
 #include <map>
 #include <string>
 
-extern "C" void func_802cc758(CPUState&);   // J2DPicture::drawSelf(int, int)
+extern "C" void func_802cc758(CPUState&); // J2DPicture::drawSelf(int, int)
 // J2DPicture::drawSelf(int, int, f32 (*)[3][4]) — the overload that RECEIVES the transform as an
 // argument. The (int, int) overload above is registered but never fires, so this is the path that
 // actually reaches the hardware, and its r6 is the matrix a 2D capture needs.
 extern "C" void func_802cc7c0(CPUState&);
-extern "C" void func_802ccef4(CPUState&);   // J2DPicture::draw
-extern "C" void func_802d0b28(CPUState&);   // J2DTextBox::draw
-extern "C" void func_802d0d70(CPUState&);   // J2DTextBox::drawSelf
-extern "C" void func_802d01c8(CPUState&);   // J2DScreen::drawSelf
+extern "C" void func_802ccef4(CPUState&); // J2DPicture::draw
+extern "C" void func_802d0b28(CPUState&); // J2DTextBox::draw
+extern "C" void func_802d0d70(CPUState&); // J2DTextBox::drawSelf
+extern "C" void func_802d01c8(CPUState&); // J2DScreen::drawSelf
 
 namespace {
 
@@ -64,7 +65,9 @@ struct Seen {
 };
 std::map<std::string, Seen> g_seen;
 
-bool guest_obj(u32 p) { return p >= 0x80000000u && p < 0x81800000u; }
+bool guest_obj(u32 p) {
+    return p >= 0x80000000u && p < 0x81800000u;
+}
 
 f32 guest_f32(u32 ea) {
     const u32 bits = sb_r32(ea);
@@ -75,7 +78,8 @@ f32 guest_f32(u32 ea) {
 
 // J2DPane: .blo name fourcc at +0x10, transform at +0x84 (X translation at +0x0C).
 void note(const char* cls, u32 self) {
-    if (!guest_obj(self)) return;
+    if (!guest_obj(self))
+        return;
     const u32 t = sb_r32(self + 0x10);
     char nm[5];
     for (int i = 0; i < 4; i++) {
@@ -93,14 +97,15 @@ void note(const char* cls, u32 self) {
     e.gy1 = (int)sb_r32(self + 0x28);
     e.gx2 = (int)sb_r32(self + 0x2C);
     e.gy2 = (int)sb_r32(self + 0x30);
-    e.visible    = (int)sb_r8(self + 0x0C);
-    e.alpha      = (int)sb_r8(self + 0xCC);
+    e.visible = (int)sb_r8(self + 0x0C);
+    e.alpha = (int)sb_r8(self + 0xCC);
     e.colorAlpha = (int)sb_r8(self + 0xCD);
 }
 
 void note_rect(const char* cls, u32 self, u32 rect) {
     note(cls, self);
-    if (!guest_obj(self) || !guest_obj(rect)) return;
+    if (!guest_obj(self) || !guest_obj(rect))
+        return;
     const u32 t = sb_r32(self + 0x10);
     char nm[5];
     for (int i = 0; i < 4; ++i) {
@@ -120,7 +125,8 @@ void note_rect(const char* cls, u32 self, u32 rect) {
 const bool g_probe = [] {
     sb_probe_register("/2dclass", "which J2D class drew each pane (needs SBR_DIAG_2D=1)",
                       [](const ProbeArgs&) {
-                          if (!diag_on()) return std::string("set SBR_DIAG_2D=1 to record\n");
+                          if (!diag_on())
+                              return std::string("set SBR_DIAG_2D=1 to record\n");
                           std::string out;
                           char buf[128];
                           for (const auto& [k, e] : g_seen) {
@@ -134,34 +140,36 @@ const bool g_probe = [] {
                                   char b2[160];
                                   std::snprintf(b2, sizeof b2,
                                                 "%-26s   argMtx: sx=%7.3f tx=%8.2f sy=%7.3f "
-                                                "ty=%8.2f\n", k.c_str(), (double)e.argM00,
-                                                (double)e.argM03, (double)e.argM11,
-                                                (double)e.argM13);
+                                                "ty=%8.2f\n",
+                                                k.c_str(), (double)e.argM00, (double)e.argM03,
+                                                (double)e.argM11, (double)e.argM13);
                                   out += b2;
                               }
                               out += buf;
                           }
-                          if (out.empty()) out = "nothing recorded yet\n";
+                          if (out.empty())
+                              out = "nothing recorded yet\n";
                           return out;
                       });
     return true;
 }();
 
 void ov_pic_drawself(CPUState& cpu) {
-    if (diag_on()) note("J2DPicture::drawSelf", cpu.gpr[3]);
+    if (diag_on())
+        note("J2DPicture::drawSelf", cpu.gpr[3]);
     func_802cc758(cpu);
 }
 // SBR_J2D_CAPTURE=1 — emit each visible 2D pane to the native renderer as an orthographic quad.
 //
 // This is the 2D half of the frontend. The native renderer taps J3DShape::draw only, so it draws no
-// HUD at all (a projection census reports 0 orthographic drawables of ~885, every frame). Everything
-// needed is available HERE and nowhere earlier: mGlobalBounds (J2DPane+0x24) is the screen-space rect
-// with all parent transforms applied, and mColorAlpha (+0xCD) is live — both read 0 at
-// J2DPicture::draw entry, which is why the capture point is this overload and not that one.
+// HUD at all (a projection census reports 0 orthographic drawables of ~885, every frame).
+// Everything needed is available HERE and nowhere earlier: mGlobalBounds (J2DPane+0x24) is the
+// screen-space rect with all parent transforms applied, and mColorAlpha (+0xCD) is live — both read
+// 0 at J2DPicture::draw entry, which is why the capture point is this overload and not that one.
 //
 // The quad is emitted in the SAME 600x480 2D space the game composes in (J2DScreen's own root pane
-// reports exactly that), and handed an orthographic projection, so the existing batching, TEV, blend
-// and scissor paths draw it unchanged rather than needing a second pipeline.
+// reports exactly that), and handed an orthographic projection, so the existing batching, TEV,
+// blend and scissor paths draw it unchanged rather than needing a second pipeline.
 bool j2d_capture_on() {
     static int v = -1;
     if (v < 0) {
@@ -175,16 +183,25 @@ bool j2d_capture_on() {
 // populated at this overload, unlike at J2DPicture::draw). The MATERIAL is deliberately NOT read
 // here: J2D binds its texture and sets its TEV inside the body, so the FIFO state at entry belongs
 // to the previous material. That mismatch is what made the captured quads invisible.
-struct PaneQuad { bool valid = false; int x1, y1, x2, y2; u8 alpha; u32 self; };
+struct PaneQuad {
+    bool valid = false;
+    int x1, y1, x2, y2;
+    u8 alpha;
+    u32 self;
+};
 
 PaneQuad read_pane(CPUState& cpu) {
     PaneQuad q;
     const u32 self = cpu.gpr[3];
-    if (sb_r8(self + 0x0C) == 0) return q;            // mVisible
-    q.x1 = (int)sb_r32(self + 0x24); q.y1 = (int)sb_r32(self + 0x28);
-    q.x2 = (int)sb_r32(self + 0x2C); q.y2 = (int)sb_r32(self + 0x30);
-    if (q.x2 <= q.x1 || q.y2 <= q.y1) return q;       // degenerate: nothing to rasterise
-    q.alpha = sb_r8(self + 0xCD);                     // mColorAlpha
+    if (sb_r8(self + 0x0C) == 0)
+        return q; // mVisible
+    q.x1 = (int)sb_r32(self + 0x24);
+    q.y1 = (int)sb_r32(self + 0x28);
+    q.x2 = (int)sb_r32(self + 0x2C);
+    q.y2 = (int)sb_r32(self + 0x30);
+    if (q.x2 <= q.x1 || q.y2 <= q.y1)
+        return q;                 // degenerate: nothing to rasterise
+    q.alpha = sb_r8(self + 0xCD); // mColorAlpha
     q.self = self;
     q.valid = true;
     return q;
@@ -208,21 +225,28 @@ void emit_pane_quad(const PaneQuad& q) {
     const float su[6] = {0, 1, 1, 0, 1, 0};
     const float sv[6] = {0, 0, 1, 0, 1, 1};
     for (int i = 0; i < 6; ++i) {
-        v[i].x = px[i]; v[i].y = py[i]; v[i].z = 0.0f;
+        v[i].x = px[i];
+        v[i].y = py[i];
+        v[i].z = 0.0f;
         v[i].nz = 1.0f;
         v[i].rgba = rgba;
-        for (int t = 0; t < 4; ++t) { v[i].uv[t][0] = su[i]; v[i].uv[t][1] = sv[i]; }
+        for (int t = 0; t < 4; ++t) {
+            v[i].uv[t][0] = su[i];
+            v[i].uv[t][1] = sv[i];
+        }
     }
 
     SbrDrawable dr{};
     dr.streamPos = sbr_gxfifo_stream_pos();
-    dr.key = ((uint64_t)self << 8) | 0xFFu;           // stable per pane, distinct from J3D keys
+    dr.key = ((uint64_t)self << 8) | 0xFFu; // stable per pane, distinct from J3D keys
     dr.geom = sbr_scene_intern_geometry(dr.key, v, 6);
-    if (dr.geom == 0) return;
+    if (dr.geom == 0)
+        return;
     dr.depth = sbr_gx_fifo_zmode();
-    for (unsigned m = 0; m < 8; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
+    for (unsigned m = 0; m < 8; ++m)
+        dr.tex[m] = sbr_gx_fifo_texture(m);
     dr.tev = sbr_gx_fifo_tev();
-    dr.xf  = sbr_gx_fifo_xf();
+    dr.xf = sbr_gx_fifo_xf();
     // SBR_J2D_SOLID=1 (DIAGNOSTIC): draw the pane as an opaque vertex-coloured quad with the depth
     // test OFF and blending off. That is a KNOWN-VISIBLE configuration which depends on none of the
     // three suspects — material snapshot, z-mode, or projection convention — so it separates "the
@@ -239,26 +263,33 @@ void emit_pane_quad(const PaneQuad& q) {
         dr.depth.cull = 0;
         dr.depth.colorUpdate = 1;
         dr.depth.alphaUpdate = 1;
-        dr.tev = SbrTevState{};          // defaults: 1 stage, texture disabled
+        dr.tev = SbrTevState{}; // defaults: 1 stage, texture disabled
         dr.tev.numStages = 1;
         dr.tev.stage[0].texEnable = 0;
         dr.tev.stage[0].rasChannel = 0;
         // out = RASC (the vertex colour), alpha = RASA: c = mix(ZERO, ZERO, ZERO) + RASC
-        dr.tev.stage[0].cA = 0; dr.tev.stage[0].cB = 0; dr.tev.stage[0].cC = 0;
-        dr.tev.stage[0].cD = 10;         // RASC
-        dr.tev.stage[0].aA = 0; dr.tev.stage[0].aB = 0; dr.tev.stage[0].aC = 0;
-        dr.tev.stage[0].aD = 5;          // RASA
-        dr.tev.alphaOp0 = 7;             // ALWAYS
+        dr.tev.stage[0].cA = 0;
+        dr.tev.stage[0].cB = 0;
+        dr.tev.stage[0].cC = 0;
+        dr.tev.stage[0].cD = 10; // RASC
+        dr.tev.stage[0].aA = 0;
+        dr.tev.stage[0].aB = 0;
+        dr.tev.stage[0].aC = 0;
+        dr.tev.stage[0].aD = 5; // RASA
+        dr.tev.alphaOp0 = 7;    // ALWAYS
         dr.tev.alphaOp1 = 7;
-        for (int i = 0; i < 6; ++i) v[i].rgba = 0xFF00FFFFu;   // opaque magenta: unmistakable
+        for (int i = 0; i < 6; ++i)
+            v[i].rgba = 0xFF00FFFFu; // opaque magenta: unmistakable
         dr.geom = sbr_scene_intern_geometry(dr.key ^ 0x5011Du, v, 6);
-        if (dr.geom == 0) return;
+        if (dr.geom == 0)
+            return;
     }
     // Identity model-view: the quad is already in clip space. IDENTITY PROJECTION for the same
     // reason — projecting a 2D element with the 3D matrix makes it cover the screen, which is the
     // documented failure mode in scene.h.
     dr.mtx[0] = dr.mtx[5] = dr.mtx[10] = 1.0f;
-    for (int i = 0; i < 16; ++i) dr.proj[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    for (int i = 0; i < 16; ++i)
+        dr.proj[i] = (i % 5 == 0) ? 1.0f : 0.0f;
     sbr_scene_add(dr);
 }
 
@@ -290,27 +321,29 @@ void ov_pic_drawself_mtx(CPUState& cpu) {
     func_802cc7c0(cpu);
     // AFTER the body: the FIFO now holds the material this pane bound, so the snapshot describes
     // the right texture and TEV. Emitting before the call captured the previous material.
-    if (pane.valid) emit_pane_quad(pane);
+    if (pane.valid)
+        emit_pane_quad(pane);
 }
 void ov_pic_draw(CPUState& cpu) {
-    // AUDIT LABEL, shared with the 60fps interpolation report. This address already had an override
-    // and the registry refuses a second, so the label is applied from here rather than from
-    // frame_interp/populations.cpp. It gives no identity and changes no rendering.
-    sbr_gxfifo_draw_pop(SB_POP_J2D);
-    struct Clear { ~Clear() { sbr_gxfifo_draw_pop(SB_POP_UNLABELLED); } } clear;
-    if (diag_on()) note("J2DPicture::draw", cpu.gpr[3]);
+    sb::frame_interp::two_d::PaneScope identity(cpu.gpr[3],
+                                                sb::frame_interp::two_d::DrawPath::Picture);
+    if (diag_on())
+        note("J2DPicture::draw", cpu.gpr[3]);
     func_802ccef4(cpu);
 }
 void ov_text_draw(CPUState& cpu) {
-    if (diag_on()) note("J2DTextBox::draw", cpu.gpr[3]);
+    if (diag_on())
+        note("J2DTextBox::draw", cpu.gpr[3]);
     func_802d0b28(cpu);
 }
 void ov_text_drawself(CPUState& cpu) {
-    if (diag_on()) note("J2DTextBox::drawSelf", cpu.gpr[3]);
+    if (diag_on())
+        note("J2DTextBox::drawSelf", cpu.gpr[3]);
     func_802d0d70(cpu);
 }
 void ov_screen_drawself(CPUState& cpu) {
-    if (diag_on()) note("J2DScreen::drawSelf", cpu.gpr[3]);
+    if (diag_on())
+        note("J2DScreen::drawSelf", cpu.gpr[3]);
     func_802d01c8(cpu);
 }
 } // namespace
@@ -318,13 +351,14 @@ void ov_screen_drawself(CPUState& cpu) {
 // The window override lives in hud.cpp because it also performs the widescreen correction. Keep
 // the census here so the diagnostic and shipping path observe the exact same draw and rect.
 void sbr_diag_2d_note_window(u32 self, u32 rect) {
-    if (diag_on()) note_rect("J2DWindow::rect", self, rect);
+    if (diag_on())
+        note_rect("J2DWindow::rect", self, rect);
 }
 
-SB_OVERRIDE(0x802cc758u, ov_pic_drawself,    "J2DPicture::drawSelf", "diagnostic: 2D class census")
+SB_OVERRIDE(0x802cc758u, ov_pic_drawself, "J2DPicture::drawSelf", "diagnostic: 2D class census")
 SB_OVERRIDE(0x802cc7c0u, ov_pic_drawself_mtx, "J2DPicture::drawSelf(Mtx)",
             "diagnostic: 2D class census — the overload that receives the transform")
-SB_OVERRIDE(0x802ccef4u, ov_pic_draw,        "J2DPicture::draw",     "diagnostic: 2D class census")
-SB_OVERRIDE(0x802d0b28u, ov_text_draw,       "J2DTextBox::draw",     "diagnostic: 2D class census")
-SB_OVERRIDE(0x802d0d70u, ov_text_drawself,   "J2DTextBox::drawSelf", "diagnostic: 2D class census")
-SB_OVERRIDE(0x802d01c8u, ov_screen_drawself, "J2DScreen::drawSelf",  "diagnostic: 2D class census")
+SB_OVERRIDE(0x802ccef4u, ov_pic_draw, "J2DPicture::draw", "diagnostic: 2D class census")
+SB_OVERRIDE(0x802d0b28u, ov_text_draw, "J2DTextBox::draw", "diagnostic: 2D class census")
+SB_OVERRIDE(0x802d0d70u, ov_text_drawself, "J2DTextBox::drawSelf", "diagnostic: 2D class census")
+SB_OVERRIDE(0x802d01c8u, ov_screen_drawself, "J2DScreen::drawSelf", "diagnostic: 2D class census")

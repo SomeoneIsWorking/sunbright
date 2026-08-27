@@ -535,7 +535,12 @@ u64 tb_get() {
     // dependent game logic behaves as it does under the real clock.
     //
     // Off by default: it decouples guest time from real time, which is wrong for playing.
-    static const bool deterministic = std::getenv("SBR_DETERMINISTIC") != nullptr;
+    static const bool deterministic = [] {
+        const bool enabled = std::getenv("SBR_DETERMINISTIC") != nullptr;
+        lucent::info("rt", "guest time base: {}",
+                     enabled ? "deterministic virtual" : "host monotonic");
+        return enabled;
+    }();
     if (deterministic) {
         static unsigned last_frame = 0xFFFFFFFFu;
         static u64 calls = 0;

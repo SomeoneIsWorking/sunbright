@@ -29,7 +29,6 @@ bool sbr_lerp_enabled();
 void sbr_gxfifo_draw_tag(uint64_t tag);
 void sbr_gxfifo_indexed_quad_keys(const uint64_t* keys, uint16_t count);
 uint64_t sbr_gxfifo_pending_tag();
-u8 sbr_gxfifo_pending_pop();
 
 namespace {
 constexpr uint64_t kColorKind = 0x54444c43u; // "TDLC"
@@ -169,7 +168,7 @@ void draw_indexed_quad(CPUState& cpu, void (*retail)(CPUState&), uint64_t kind) 
     }
 
     const uint64_t previousTag = sbr_gxfifo_pending_tag();
-    const u8 previousPopulation = sbr_gxfifo_pending_pop();
+    const auto previousPopulation = sb::frame_interp::capture_population();
     const uint64_t tag = static_cast<uint64_t>(self) << 32 | kind;
     sbr_gxfifo_draw_pop(SB_POP_TDL_QUAD);
     if (const auto found = g_batchKeys.find(self);
@@ -188,7 +187,7 @@ void draw_indexed_quad(CPUState& cpu, void (*retail)(CPUState&), uint64_t kind) 
     sbr_gxfifo_draw_tag(tag);
     retail(cpu);
     sbr_gxfifo_draw_tag(previousTag);
-    sbr_gxfifo_draw_pop(previousPopulation);
+    sb::frame_interp::restore_population(previousPopulation);
 }
 
 void ov_color(CPUState& cpu) {

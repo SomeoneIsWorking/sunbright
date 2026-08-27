@@ -24,22 +24,46 @@ enum SbPopulation : u8 {
     // cross-tick identity — some cannot have one — but naming them is what turns the audit's
     // "(unlabelled)" bucket from an unknown into a statement. A population that snaps and is NAMED
     // is a decision; the same draws unnamed are an oversight that looks identical in the totals.
-    SB_POP_FLAG = 6,      // TMapObjFlag::draw — deforming cloth, immediate mode
-    SB_POP_WAVE = 7,      // TMapObjWave::draw — the sea ripple grid, rebuilt per tick
-    SB_POP_DRAW_CUBE = 8, // SMS_DrawCube — the shadow pass's alpha-restore cube
-    SB_POP_TEXT = 9,      // JUTResFont::drawChar_scale — glyphs
-    SB_POP_J2D = 10,      // J2DPicture — 2D panes
-    SB_POP_WIRE = 11,     // TMapWire::drawUpper/drawLower — the rope, deforming per tick
-    SB_POP_MIRROR = 12,   // TModelWaterManager::drawMirror — the water-mirror mask fans
-    SB_POP_STRIPE = 13,   // JPADrawExecStripe/StripeCross — a particle CHAIN as one strip
-    SB_POP_CONEBEAM = 14, // TConeBeam::drawConeBeam — the light-shaft cone, rebuilt per tick
-    SB_POP_ROPE = 15,     // TSwingBoard::drawOneRope — the swinging platform's ropes
-    SB_POP_GRASS = 16,    // TMapObjGrassGroup::drawNear — swaying grass blades
-    SB_POP_BRIDGE = 17,   // THangingBridge::perform — the rope bridge's ropes, all of them
-    SB_POP_COGWHEEL = 18, // TCogwheel::draw — Noki Bay's 天秤 scale, its beam built per tick
-    SB_POP_WIPE = 19,     // hx_wiper — the screen-transition wipes, immediate-mode 2D
-    SB_POP_TDL_QUAD = 20, // TDLTexQuad/TDLColorTexQuad — indexed eye-space quads
+    SB_POP_FLAG = 6,       // TMapObjFlag::draw — deforming cloth, immediate mode
+    SB_POP_WAVE = 7,       // TMapObjWave::draw — the sea ripple grid, rebuilt per tick
+    SB_POP_DRAW_CUBE = 8,  // SMS_DrawCube — the shadow pass's alpha-restore cube
+    SB_POP_TEXT = 9,       // JUTResFont::drawChar_scale — glyphs
+    SB_POP_J2D = 10,       // J2DPicture — 2D panes
+    SB_POP_WIRE = 11,      // TMapWire::drawUpper/drawLower — the rope, deforming per tick
+    SB_POP_MIRROR = 12,    // TModelWaterManager::drawMirror — the water-mirror mask fans
+    SB_POP_STRIPE = 13,    // JPADrawExecStripe/StripeCross — a particle CHAIN as one strip
+    SB_POP_CONEBEAM = 14,  // TConeBeam::drawConeBeam — the light-shaft cone, rebuilt per tick
+    SB_POP_ROPE = 15,      // TSwingBoard::drawOneRope — the swinging platform's ropes
+    SB_POP_GRASS = 16,     // TMapObjGrassGroup::drawNear — swaying grass blades
+    SB_POP_BRIDGE = 17,    // THangingBridge::perform — the rope bridge's ropes, all of them
+    SB_POP_COGWHEEL = 18,  // TCogwheel::draw — Noki Bay's 天秤 scale, its beam built per tick
+    SB_POP_WIPE = 19,      // hx_wiper — the screen-transition wipes, immediate-mode 2D
+    SB_POP_TDL_QUAD = 20,  // TDLTexQuad/TDLColorTexQuad — indexed eye-space quads
+    SB_POP_HUD_GAUGE = 21, // TGCConsole2 water/juice gauge — animated immediate-mode 2D
 };
 
 void sbr_gxfifo_draw_pop(u8 pop);
+void sbr_gxfifo_draw_pop_auto(u8 pop);
+u8 sbr_gxfifo_pending_pop();
+bool sbr_gxfifo_pending_pop_auto();
 void sbr_pop_register_names();
+
+namespace sb::frame_interp {
+
+struct PopulationState {
+    u8 value = SB_POP_UNLABELLED;
+    bool automatic = false;
+};
+
+inline PopulationState capture_population() {
+    return {sbr_gxfifo_pending_pop(), sbr_gxfifo_pending_pop_auto()};
+}
+
+inline void restore_population(PopulationState state) {
+    if (state.automatic)
+        sbr_gxfifo_draw_pop_auto(state.value);
+    else
+        sbr_gxfifo_draw_pop(state.value);
+}
+
+} // namespace sb::frame_interp

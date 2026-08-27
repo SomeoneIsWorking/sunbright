@@ -292,6 +292,7 @@ constexpr Curated kCurated[] = {
     {SB_POP_COGWHEEL, "pop.cogwheel", "deforming"},
     {SB_POP_WIPE, "pop.screen-wipe", "deforming"},
     {SB_POP_TDL_QUAD, "pop.tdl-indexed-quad", "deforming"},
+    {SB_POP_HUD_GAUGE, "pop.hud-water-gauge", "2d"},
 };
 
 // ── THE FILE ────────────────────────────────────────────────────────────────────────────────────

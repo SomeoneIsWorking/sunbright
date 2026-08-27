@@ -330,6 +330,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_NO_SCISSOR` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
 | `SBR_PAD_SCRIPT` | 1 | `sms-recomp/overrides/native_pad.cpp` |  |
+| `SBR_PAD_SCRIPT_ONLY` | 1 | `sms-recomp/overrides/native_pad.cpp` |  |
 | `SBR_PHASE_COUNT` | 1 | `sms-recomp/overrides/diag_phases.cpp` |  |
 | `SBR_PRESENT_AFTER_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_PRESENT_TIMING` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
@@ -377,4 +378,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**356 switches; 62 still gate a raw print.**
+**357 switches; 62 still gate a raw print.**

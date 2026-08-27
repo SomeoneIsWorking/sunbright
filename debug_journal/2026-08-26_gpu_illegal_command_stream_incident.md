@@ -87,10 +87,12 @@ WebGPU contract violation has been proven for submit 1608. The strongest remaini
 gap is narrower: replay `DrawData` carries individual vertex, index, uniform, and storage references,
 while the old encode seam checked only aggregate high-water marks. That is issue 17, a validation
 coverage defect rather than evidence that the historical v1 flight contained an out-of-range draw.
-The shipping encode seam now rejects every provable GX/RML vertex, index, uniform, alignment,
-count/byte, replay-prefix, high-water, and interpolation-span violation. The retained metadata still
-lacks GX indexed-array byte extents/used masks and RML dynamic binding sizes; a monotonic
-`observed_unchecked()` mask names those gaps instead of pretending they were validated.
+The shipping encode seam now rejects GX/RML vertex, index, uniform, alignment, count/byte,
+replay-prefix, high-water, and interpolation-span violations. Issue 17 subsequently closed the last
+metadata gaps: GX draw records retain indexed-array byte extents and used slots, while RmlUi records
+retain dynamic binding sizes. Their range ends are validated before Dawn encoding and included in
+the durable submit fingerprint. Historical v1 submit 1608 did not record these fields, so this
+closes future diagnostic coverage without retroactively attributing that incident.
 
 ## Reporting changes
 

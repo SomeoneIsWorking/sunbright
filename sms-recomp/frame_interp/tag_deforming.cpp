@@ -4,18 +4,18 @@
 // because they are the same problem: TMapWire (the rope Mario swings on) and
 // TModelWaterManager::drawMirror (the water-mirror mask fan around Mario).
 //
-// WHAT THEY ARE. TMapWire is the rope Mario hangs from and swings on. Its geometry is a triangle strip
-// built by the CPU every tick from `mMapWirePoints[i].mPosition` (decomp/sms src/Map/MapWire.cpp),
-// with the whole rope sagging and swinging while he moves along it — so this is DEFORMING
-// immediate-mode geometry, in exactly the sense that flags and the sea ripple are. No matrix
-// carries its motion, which is why it took the camera delta alone and snapped in object space
-// inside an otherwise smooth frame. The vertex path is the only thing that reaches it.
+// WHAT THEY ARE. TMapWire is the rope Mario hangs from and swings on. Its geometry is a triangle
+// strip built by the CPU every tick from `mMapWirePoints[i].mPosition` (decomp/sms
+// src/Map/MapWire.cpp), with the whole rope sagging and swinging while he moves along it — so this
+// is DEFORMING immediate-mode geometry, in exactly the sense that flags and the sea ripple are. No
+// matrix carries its motion, which is why it took the camera delta alone and snapped in object
+// space inside an otherwise smooth frame. The vertex path is the only thing that reaches it.
 //
 // THREE STRIPS, NOT ONE, and this is the part that needed care. The wire draws through two
 // functions: drawUpper emits ONE strip, drawLower emits TWO (the rope's under-face and its far
 // face). All three have the same vertex count, (mNumActiveMapWirePoints + 2) * 2, so a tag keyed on
-// the wire object alone would let this tick's strip pair against the PREVIOUS tick's *other* strip —
-// same count, so the count gate would not catch it — and smear the rope between two of its own
+// the wire object alone would let this tick's strip pair against the PREVIOUS tick's *other* strip
+// — same count, so the count gate would not catch it — and smear the rope between two of its own
 // faces. That is the marukage teleport again, and it is worse than snapping.
 //
 // TWO COUNTERS, TWO POPULATIONS — read the report with this in mind. The counts below are GUEST
@@ -32,10 +32,11 @@
 //
 // So the tag carries a STRIP INDEX as well as the object. The index is an ordinal, which this
 // project has had to withdraw twice, and the difference here is what makes it sound rather than
-// convenient: both of drawLower's strips are UNCONDITIONAL and emitted in a fixed order in straight-
-// line code with no branch between them (MapWire.cpp:47-85). The ordinal is over a population of
-// exactly two, fixed by the compiler, not over a set that varies with what the scene is doing. The
-// ordinals that failed before were over draw counts and shadow slots, which vary per frame.
+// convenient: both of drawLower's strips are UNCONDITIONAL and emitted in a fixed order in
+// straight- line code with no branch between them (MapWire.cpp:47-85). The ordinal is over a
+// population of exactly two, fixed by the compiler, not over a set that varies with what the scene
+// is doing. The ordinals that failed before were over draw counts and shadow slots, which vary per
+// frame.
 //
 // drawLower is ABSENT from reference/sms_gmse01_funcs.txt (it is a weak const method and the list
 // omits those). Its address comes from the recompiler's own function table, which is what the
@@ -96,10 +97,10 @@
 //                              0x801e9880, which the symbol list carries only as an offset into
 //                              __ct__17TMapObjGrassGroupFv. Disassembly confirms the identification
 //                              — same `unk78 == 1` gate and same GXBegin(GX_TRIANGLES, unk68*3) as
-//                              drawNear, then `lha` loads and `sth` into the FIFO where drawNear has
-//                              `lfs`/`stfs`. The generic vertex path now preserves the direct s16
-//                              VAT fraction and writes an interpolated big-endian s16 stream, so
-//                              this uses the same object identity and merge guard as drawNear.
+//                              drawNear, then `lha` loads and `sth` into the FIFO where drawNear
+//                              has `lfs`/`stfs`. The generic vertex path now preserves the direct
+//                              s16 VAT fraction and writes an interpolated big-endian s16 stream,
+//                              so this uses the same object identity and merge guard as drawNear.
 //
 //                              The LOD switch needs no special handling: a group that goes far
 //                              stops being tagged, and patch_vertices refuses a pair whose ticks
@@ -123,27 +124,27 @@
 //                              THangingBridgeBoard::drawOneRope (camera-only, 292 draws) and SIX
 //                              GXBegin sites inside THangingBridge::drawRopeBetweenBoards, all six
 //                              filed `no-primitives` — the audit was live and classified draws for
-//                              other populations, and these produced none of their own. They did not
-//                              fail to draw: they drew with the same render state as the ropes right
-//                              before them and aurora merged the lot into ONE draw per tick, which
-//                              carried the first tag it saw. Seven emitters, one draw.
+//                              other populations, and these produced none of their own. They did
+//                              not fail to draw: they drew with the same render state as the ropes
+//                              right before them and aurora merged the lot into ONE draw per tick,
+//                              which carried the first tag it saw. Seven emitters, one draw.
 //
-//                              perform (0x801f3ff8) drives all of it in one place: for each board it
-//                              copies two TVec3s (board+0x1a4 and +0x1b0) to the stack and calls
+//                              perform (0x801f3ff8) drives all of it in one place: for each board
+//                              it copies two TVec3s (board+0x1a4 and +0x1b0) to the stack and calls
 //                              drawOneRope on each, then calls drawRopeBetweenBoards three times
 //                              (two mutually exclusive on the director state at gpMarDirector+0x7c,
 //                              plus one). So the bridge's ropes are ONE piece of geometry as far as
-//                              the GPU is concerned, and one owner-level scope gives them one honest
-//                              identity — the bridge instance — instead of seven per-call keys that
-//                              the merge would erase anyway.
+//                              the GPU is concerned, and one owner-level scope gives them one
+//                              honest identity — the bridge instance — instead of seven per-call
+//                              keys that the merge would erase anyway.
 //
 //                              The rope vertices are f32 and rebuilt every tick from the boards'
 //                              swaying positions (drawOneRope emits 8 verts around its argument;
-//                              drawRopeBetweenBoards emits (boardCount+2)*n*2), so this is the vertex
-//                              path, and the count is stable while the bridge is. The scope opens
-//                              only for the DRAW phase (perform's flags bit 0x10, the same bit the
-//                              guest tests at 0x801f4000) so a movement-phase perform cannot label
-//                              anything.
+//                              drawRopeBetweenBoards emits (boardCount+2)*n*2), so this is the
+//                              vertex path, and the count is stable while the bridge is. The scope
+//                              opens only for the DRAW phase (perform's flags bit 0x10, the same
+//                              bit the guest tests at 0x801f4000) so a movement-phase perform
+//                              cannot label anything.
 //
 //   SBR_TAGWIRE=0   disable all of them (they revert to the camera delta alone)
 
@@ -158,27 +159,32 @@
 #include <cstdlib>
 #include <unordered_map>
 
-namespace aurora::gfx::interp { long tick_index(); }
+namespace aurora::gfx::interp {
+long tick_index();
+}
 
-extern "C" void func_801813d4(CPUState&);   // Hxs2_Circle  (hx_wiper)
-extern "C" void func_801817a4(CPUState&);   // Hxs1_Circle  (hx_wiper)
-extern "C" void func_801824b4(CPUState&);   // __Hx_FrBufferMorf (hx_wiper)
-extern "C" void func_8017df74(CPUState&);   // Hx_Test5 (guide wave wipe)
-extern "C" void func_801da308(CPUState&);   // TCogwheel::draw() const
-extern "C" void func_80198278(CPUState&);   // TMapWire::drawUpper() const
-extern "C" void func_801983a8(CPUState&);   // TMapWire::drawLower() const — unnamed in funcs.txt
-extern "C" void func_8027cc2c(CPUState&);   // TModelWaterManager::drawMirror(MtxPtr)
-extern "C" void func_80332c34(CPUState&);   // JPADrawExecStripe::exec(const JPADrawContext*)
-extern "C" void func_803330a4(CPUState&);   // JPADrawExecStripeCross::exec(const JPADrawContext*)
-extern "C" void func_800def6c(CPUState&);   // TConeBeam::drawConeBeam(const GXColor&)
-extern "C" void func_801f383c(CPUState&);   // TSwingBoard::drawOneRope(const TVec3&, const TVec3&)
-extern "C" void func_801e9880(CPUState&);   // TMapObjGrassGroup::drawFar() const — unnamed
-extern "C" void func_801e99a8(CPUState&);   // TMapObjGrassGroup::drawNear() const — unnamed in funcs.txt
-extern "C" void func_801f3ff8(CPUState&);   // THangingBridge::perform(u32, JDrama::TGraphics*)
+extern "C" void func_801813d4(CPUState&); // Hxs2_Circle  (hx_wiper)
+extern "C" void func_801817a4(CPUState&); // Hxs1_Circle  (hx_wiper)
+extern "C" void func_801824b4(CPUState&); // __Hx_FrBufferMorf (hx_wiper)
+extern "C" void func_8017df74(CPUState&); // Hx_Test5 (guide wave wipe)
+extern "C" void func_801da308(CPUState&); // TCogwheel::draw() const
+extern "C" void func_80198278(CPUState&); // TMapWire::drawUpper() const
+extern "C" void func_801983a8(CPUState&); // TMapWire::drawLower() const — unnamed in funcs.txt
+extern "C" void func_8027cc2c(CPUState&); // TModelWaterManager::drawMirror(MtxPtr)
+extern "C" void func_80332c34(CPUState&); // JPADrawExecStripe::exec(const JPADrawContext*)
+extern "C" void func_803330a4(CPUState&); // JPADrawExecStripeCross::exec(const JPADrawContext*)
+extern "C" void func_800def6c(CPUState&); // TConeBeam::drawConeBeam(const GXColor&)
+extern "C" void func_801f383c(CPUState&); // TSwingBoard::drawOneRope(const TVec3&, const TVec3&)
+extern "C" void func_801e9880(CPUState&); // TMapObjGrassGroup::drawFar() const — unnamed
+extern "C" void
+func_801e99a8(CPUState&); // TMapObjGrassGroup::drawNear() const — unnamed in funcs.txt
+extern "C" void func_801f3ff8(CPUState&); // THangingBridge::perform(u32, JDrama::TGraphics*)
+extern "C" void func_801441e0(CPUState&); // TGCConsole2::drawWater(J2DOrthoGraph&)
+extern "C" void func_80144840(CPUState&); // TGCConsole2::drawJuice(J2DOrthoGraph&, u32)
+extern "C" void func_801492a4(CPUState&); // TGCConsole2::drawWaterBack()
 
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
-void sbr_gxfifo_draw_pop(u8 pop);
 bool sbr_lerp_enabled();
 void (*sbr_gxbegin_set_hook(void (*fn)()))();
 
@@ -192,10 +198,11 @@ bool enabled() {
     return v;
 }
 
-u32 g_self = 0;        // the object being drawn, 0 when no such draw is in progress
-unsigned g_strip = 0;  // which primitive of that object is about to be emitted
+u32 g_self = 0;       // the object being drawn, 0 when no such draw is in progress
+unsigned g_strip = 0; // which primitive of that object is about to be emitted
 unsigned long g_strips = 0, g_upperCalls = 0, g_lowerCalls = 0, g_mirrorCalls = 0;
 unsigned long g_cogCalls = 0, g_cogStrips = 0;
+unsigned long g_gaugeCalls = 0, g_gaugePrims = 0;
 unsigned long g_wipeCalls = 0, g_wipeStrips = 0;
 unsigned long g_test5Calls = 0, g_test5Strips = 0;
 long g_test5FirstTick = -1, g_test5LastTick = -1;
@@ -213,11 +220,12 @@ unsigned long g_beamCalls = 0, g_beamFans = 0;
 unsigned long g_grassNearCalls = 0, g_grassFarCalls = 0, g_grassPrims = 0;
 unsigned long g_ropeTagged = 0, g_ropeWithdrawn = 0;
 unsigned long g_bridgeCalls = 0, g_bridgePrims = 0, g_bridgeSkipped = 0;
+u32 g_tagLowBase = 0;
 
 uint64_t tag_for(u32 self, unsigned strip) {
     // Strip index in the low bits, object in the high: the same shape the flag and the sea ripple
     // use, extended by the one thing they do not need.
-    return ((uint64_t)self << 32) | (uint64_t)(strip + 1);
+    return ((uint64_t)self << 32) | (uint64_t)(g_tagLowBase + strip + 1);
 }
 
 // Called by the GXBegin seam (tag_gap.cpp) for every immediate-mode primitive while a wire draw is
@@ -226,28 +234,53 @@ uint64_t tag_for(u32 self, unsigned strip) {
 void (*g_stripCount)() = nullptr;
 
 void on_gx_begin() {
-    if (g_self == 0) return;
+    if (g_self == 0)
+        return;
     sbr_gxfifo_draw_tag(tag_for(g_self, g_strip));
     ++g_strip;
-    if (g_stripCount != nullptr) g_stripCount();
+    if (g_stripCount != nullptr)
+        g_stripCount();
 }
 
-void count_wire() { ++g_strips; }
-void count_cog() { ++g_cogStrips; }
-void count_wipe() { ++g_wipeStrips; }
-void count_test5() { ++g_wipeStrips; ++g_test5Strips; }
-void count_mirror() { ++g_mirrorStrips; }
-void count_stripe() { ++g_stripeStrips; }
-void count_beam() { ++g_beamFans; }
-void count_grass() { ++g_grassPrims; }
-void count_bridge() { ++g_bridgePrims; }
+void count_wire() {
+    ++g_strips;
+}
+void count_cog() {
+    ++g_cogStrips;
+}
+void count_wipe() {
+    ++g_wipeStrips;
+}
+void count_test5() {
+    ++g_wipeStrips;
+    ++g_test5Strips;
+}
+void count_mirror() {
+    ++g_mirrorStrips;
+}
+void count_stripe() {
+    ++g_stripeStrips;
+}
+void count_beam() {
+    ++g_beamFans;
+}
+void count_grass() {
+    ++g_grassPrims;
+}
+void count_bridge() {
+    ++g_bridgePrims;
+}
+void count_gauge() {
+    ++g_gaugePrims;
+}
 
 // JPADrawContext::mBaseEmitter is the first member (JPADrawVisitor.hpp:30 — `pcb` is static and
 // takes no space). r4 is the context: these are virtual methods, so r3 is the visitor singleton,
 // which is the same object for every emitter and would key every stripe in the scene alike.
 u32 emitter_of(const CPUState& cpu) {
     const u32 dc = (u32)cpu.gpr[4];
-    if (dc == 0 || !sb_ram_fast(dc)) return 0;
+    if (dc == 0 || !sb_ram_fast(dc))
+        return 0;
     return sb_r32(dc);
 }
 
@@ -255,13 +288,17 @@ u32 emitter_of(const CPUState& cpu) {
 // index) and labels them all with the caller's population.
 struct Scope {
     bool on;
+    sb::frame_interp::PopulationState previousPopulation;
     void (*prevHook)() = nullptr;
-    Scope(u8 pop, u32 self, unsigned long& calls, void (*counter)())
-        : on(enabled() && sbr_lerp_enabled() && self != 0 && sbr_gxfifo_pending_tag() == 0) {
+    Scope(u8 pop, u32 self, unsigned long& calls, void (*counter)(), u32 tagLowBase = 0)
+        : on(enabled() && sbr_lerp_enabled() && self != 0 && g_self == 0 &&
+             sbr_gxfifo_pending_tag() == 0),
+          previousPopulation(sb::frame_interp::capture_population()) {
         if (on) {
             ++calls;
             g_self = self;
             g_strip = 0;
+            g_tagLowBase = tagLowBase;
             g_stripCount = counter;
             sbr_gxfifo_draw_pop(pop);
             prevHook = sbr_gxbegin_set_hook(&on_gx_begin);
@@ -272,8 +309,9 @@ struct Scope {
             sbr_gxbegin_set_hook(prevHook);
             g_stripCount = nullptr;
             g_self = 0;
+            g_tagLowBase = 0;
             sbr_gxfifo_draw_tag(0);
-            sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+            sb::frame_interp::restore_population(previousPopulation);
         }
     }
 };
@@ -291,14 +329,14 @@ void ov_draw_lower(CPUState& cpu) {
 // TCogwheel::draw — Noki Bay's 天秤, the balance scale whose beam and pans hang on the cliff.
 //
 // The registry found it, not a person: the row for 0x801da3a4 (draw__9TCogwheelCFv+0x9c, the return
-// of its first GXBegin) appeared the moment stage 9 became bootable, reading `camera-only` — the one
-// verdict that means "this geometry follows the camera and not its own motion". It only draws in
-// Noki Bay, which is why it went unseen while that stage aborted at boot.
+// of its first GXBegin) appeared the moment stage 9 became bootable, reading `camera-only` — the
+// one verdict that means "this geometry follows the camera and not its own motion". It only draws
+// in Noki Bay, which is why it went unseen while that stage aborted at boot.
 //
-// It is IMMEDIATE MODE with direct f32 positions: the disassembly writes vertex floats straight into
-// the FIFO at 0xCC008000, computed as a centre plus and minus half-extents held in the object's own
-// fields, with two GXBegin calls per draw. So the motion is entirely in the vertices and no matrix
-// carries it — the vertex path is what reaches this, and all it needs is an identity.
+// It is IMMEDIATE MODE with direct f32 positions: the disassembly writes vertex floats straight
+// into the FIFO at 0xCC008000, computed as a centre plus and minus half-extents held in the
+// object's own fields, with two GXBegin calls per draw. So the motion is entirely in the vertices
+// and no matrix carries it — the vertex path is what reaches this, and all it needs is an identity.
 //
 // The identity is (this, strip index within the call), which is what Scope's GXBegin hook already
 // supplies. Two strips of the same vertex count in one call MUST get separate tags: sharing one
@@ -328,7 +366,8 @@ u32 wipe_self(u32 site) {
         g_wipeNth.clear();
     }
     const u32 nth = g_wipeNth[site]++;
-    if (nth + 1 > g_wipeNthMax) g_wipeNthMax = nth + 1;
+    if (nth + 1 > g_wipeNthMax)
+        g_wipeNthMax = nth + 1;
     // The site is a code address, so its low bits are the ones that vary; fold the occurrence into
     // the top so two sites can never alias by it.
     return site ^ (nth << 28);
@@ -359,7 +398,8 @@ void ov_wipe_test5(CPUState& cpu) {
     if (willTag) {
         ++g_test5Calls;
         const long tick = aurora::gfx::interp::tick_index();
-        if (g_test5FirstTick < 0) g_test5FirstTick = tick;
+        if (g_test5FirstTick < 0)
+            g_test5FirstTick = tick;
         g_test5LastTick = tick;
     }
     func_8017df74(cpu);
@@ -385,13 +425,42 @@ void ov_grass_far(CPUState& cpu) {
     func_801e9880(cpu);
 }
 
+// TGCConsole2's water/juice meter is screen-space ANIMATION, not a static HUD image. Its fill edge
+// and the background texture coordinates are rebuilt as direct f32 vertices every game tick. The
+// old orthographic policy repeated those vertices on the in-between presentation. This makes the
+// gauge a concrete missing-lerp candidate; the failed 2026-08-26 pixel capture did not establish it
+// as the source of the user's visible lower-right judder (issue 15).
+//
+// Ghidra's GMSE01 functions containing the three GXLoadPosMtxImm return sites are 0x801441e0,
+// 0x80144840 and 0x801492a4. They align with decomp/sms/src/GC2D/GCConsole2.cpp's drawWater,
+// drawJuice and drawWaterBack bodies. Each persistent TGCConsole2 is the owner; the path and
+// primitive index distinguish the several quads it can emit in one tick.
+constexpr u32 kGaugeWaterTagBase = 0x10000000u;
+constexpr u32 kGaugeJuiceTagBase = 0x20000000u;
+constexpr u32 kGaugeBackTagBase = 0x30000000u;
+
+void ov_gauge_water(CPUState& cpu) {
+    Scope s(SB_POP_HUD_GAUGE, (u32)cpu.gpr[3], g_gaugeCalls, &count_gauge, kGaugeWaterTagBase);
+    func_801441e0(cpu);
+}
+
+void ov_gauge_juice(CPUState& cpu) {
+    Scope s(SB_POP_HUD_GAUGE, (u32)cpu.gpr[3], g_gaugeCalls, &count_gauge, kGaugeJuiceTagBase);
+    func_80144840(cpu);
+}
+
+void ov_gauge_back(CPUState& cpu) {
+    Scope s(SB_POP_HUD_GAUGE, (u32)cpu.gpr[3], g_gaugeCalls, &count_gauge, kGaugeBackTagBase);
+    func_801492a4(cpu);
+}
+
 // The bridge's flags bit for the draw phase, read straight off the guest's own test at 0x801f4000:
 // `rlwinm. r0, r4, 0, 28, 28` keeps PPC bit 28, and PPC numbers bits from the MSB, so that is
 // 1 << (31-28) = 0x8. (Read as an x86-style bit index it looks like 0x10, and the first version of
-// this seam said 0x10 — the report then read "0 draw-phase perform(s)" while the registry showed the
-// ropes drawing 292 times, which is exactly the contradiction a counted negative exists to expose.)
-// Opening the scope on a movement-phase perform would put a label on the stream for a call that
-// emits nothing, and any draw that happened to follow would wear it.
+// this seam said 0x10 — the report then read "0 draw-phase perform(s)" while the registry showed
+// the ropes drawing 292 times, which is exactly the contradiction a counted negative exists to
+// expose.) Opening the scope on a movement-phase perform would put a label on the stream for a call
+// that emits nothing, and any draw that happened to follow would wear it.
 constexpr u32 kPerformDraw = 0x8;
 
 void ov_hanging_bridge(CPUState& cpu) {
@@ -423,8 +492,8 @@ void ov_one_rope(CPUState& cpu) {
     const u32 self = (u32)cpu.gpr[3];
     const u32 site = (u32)cpu.lr;
     uint64_t tag = 0;
-    const bool eligible = enabled() && sbr_lerp_enabled() && self != 0 &&
-                          sbr_gxfifo_pending_tag() == 0;
+    const bool eligible =
+        enabled() && sbr_lerp_enabled() && self != 0 && sbr_gxfifo_pending_tag() == 0;
     if (eligible) {
         // Both halves are structural: the board instance and the site in TSwingBoard::draw that
         // draws this particular rope. Folded rather than concatenated because both are 32-bit and
@@ -440,10 +509,11 @@ void ov_one_rope(CPUState& cpu) {
         if (++rk.drawsThisTick > 1 && rk.trusted) {
             rk.trusted = false;
             ++g_ropeWithdrawn;
-            lucent::warn("taggap", "TSwingBoard rope key (board 0x{:08x}, site 0x{:08x}) drew twice "
-                                   "in one tick, so it is not the one-rope-per-site identity it "
-                                   "assumed. Withdrawn for the rest of the run — those ropes take "
-                                   "the camera delta rather than pairing with each other.",
+            lucent::warn("taggap",
+                         "TSwingBoard rope key (board 0x{:08x}, site 0x{:08x}) drew twice "
+                         "in one tick, so it is not the one-rope-per-site identity it "
+                         "assumed. Withdrawn for the rest of the run — those ropes take "
+                         "the camera delta rather than pairing with each other.",
                          self, site);
         }
         if (rk.trusted) {
@@ -462,14 +532,16 @@ void ov_one_rope(CPUState& cpu) {
 
 void ov_stripe(CPUState& cpu) {
     const u32 emitter = emitter_of(cpu);
-    if (emitter == 0) ++g_stripeNoEmitter;
+    if (emitter == 0)
+        ++g_stripeNoEmitter;
     Scope s(SB_POP_STRIPE, emitter, g_stripeCalls, &count_stripe);
     func_80332c34(cpu);
 }
 
 void ov_stripe_cross(CPUState& cpu) {
     const u32 emitter = emitter_of(cpu);
-    if (emitter == 0) ++g_stripeNoEmitter;
+    if (emitter == 0)
+        ++g_stripeNoEmitter;
     Scope s(SB_POP_STRIPE, emitter, g_stripeCalls, &count_stripe);
     func_803330a4(cpu);
 }
@@ -477,7 +549,8 @@ void ov_stripe_cross(CPUState& cpu) {
 } // namespace
 
 void sbr_tag_wire_report() {
-    if (!enabled() || !sbr_lerp_enabled()) return;
+    if (!enabled() || !sbr_lerp_enabled())
+        return;
     // THE INVARIANT, stated exactly rather than approximately. drawUpper emits ONE strip and
     // drawLower emits TWO, both unconditionally, so the strip count is determined by the call
     // counts — and a mismatch means the GXBegin hook missed a primitive, which would leave strips
@@ -488,16 +561,17 @@ void sbr_tag_wire_report() {
     // upper + 293 lower gives exactly 879). A check that flags correct behaviour trains its reader
     // to ignore it, so it is worth more than a comment to get it right.
     const unsigned long expect = g_upperCalls + g_lowerCalls * 2;
-    lucent::info("taggap", "wires: {} strip(s) tagged over {} drawUpper + {} drawLower call(s){}",
-                 g_strips, g_upperCalls, g_lowerCalls,
-                 (g_upperCalls + g_lowerCalls) == 0
-                     ? "   <-- NONE. No wire drew in this scene, or the hook never fired; this line "
-                       "cannot tell those apart, so do not read it as 'the plaza has no wires'."
-                 : g_strips != expect
-                     ? "   <-- MISMATCH: the calls imply exactly that many strips. A shortfall means "
-                       "the GXBegin hook did not see every primitive, and the strips it missed are "
-                       "carrying another strip's tag."
-                     : "");
+    lucent::info(
+        "taggap", "wires: {} strip(s) tagged over {} drawUpper + {} drawLower call(s){}", g_strips,
+        g_upperCalls, g_lowerCalls,
+        (g_upperCalls + g_lowerCalls) == 0
+            ? "   <-- NONE. No wire drew in this scene, or the hook never fired; this line "
+              "cannot tell those apart, so do not read it as 'the plaza has no wires'."
+        : g_strips != expect
+            ? "   <-- MISMATCH: the calls imply exactly that many strips. A shortfall means "
+              "the GXBegin hook did not see every primitive, and the strips it missed are "
+              "carrying another strip's tag."
+            : "");
     lucent::info("taggap", "water mirror: {} fan(s) tagged over {} drawMirror call(s){}",
                  g_mirrorStrips, g_mirrorCalls,
                  g_mirrorCalls == 0
@@ -508,25 +582,26 @@ void sbr_tag_wire_report() {
                        "means the hook missed primitives (or the function took an early return "
                        "this build does not know about)."
                      : "");
-    lucent::info("taggap",
-                 "grass: {} primitive(s) tagged over {} drawNear + {} drawFar call(s){}",
-                 g_grassPrims, g_grassNearCalls, g_grassFarCalls,
-                 g_grassNearCalls + g_grassFarCalls == 0
-                     ? " (no grass drew — stage-dependent; a nonzero far count proves the direct-s16 "
-                       "vertex path was reached)"
-                     : "");
-    lucent::info("taggap",
-                 "hanging bridge: {} rope primitive(s) tagged over {} draw-phase perform(s) ({} "
-                 "non-draw perform(s) correctly left unlabelled){}",
-                 g_bridgePrims, g_bridgeCalls, g_bridgeSkipped,
-                 g_bridgeCalls == 0
-                     ? "   <-- no bridge drew this run. Stage-dependent (Pianta Village), so this is "
-                       "not evidence the seam works; it is evidence it was never exercised."
-                     : g_bridgePrims == 0
-                         ? "   <-- the scope opened on a DRAW-phase perform and saw no primitive at "
-                           "all, which the draw-phase bit says should be impossible. The bit or the "
-                           "GXBegin seam is wrong."
-                         : "");
+    lucent::info(
+        "taggap", "grass: {} primitive(s) tagged over {} drawNear + {} drawFar call(s){}",
+        g_grassPrims, g_grassNearCalls, g_grassFarCalls,
+        g_grassNearCalls + g_grassFarCalls == 0
+            ? " (no grass drew — stage-dependent; a nonzero far count proves the direct-s16 "
+              "vertex path was reached)"
+            : "");
+    lucent::info(
+        "taggap",
+        "hanging bridge: {} rope primitive(s) tagged over {} draw-phase perform(s) ({} "
+        "non-draw perform(s) correctly left unlabelled){}",
+        g_bridgePrims, g_bridgeCalls, g_bridgeSkipped,
+        g_bridgeCalls == 0
+            ? "   <-- no bridge drew this run. Stage-dependent (Pianta Village), so this is "
+              "not evidence the seam works; it is evidence it was never exercised."
+        : g_bridgePrims == 0
+            ? "   <-- the scope opened on a DRAW-phase perform and saw no primitive at "
+              "all, which the draw-phase bit says should be impossible. The bit or the "
+              "GXBegin seam is wrong."
+            : "");
     lucent::info("taggap",
                  "cone beams: {} fan(s) tagged over {} drawConeBeam call(s){}; swing-board ropes: "
                  "{} tagged, {} key(s) withdrawn for drawing twice in a tick",
@@ -552,28 +627,35 @@ void sbr_tag_wire_report() {
                  g_test5Calls == 0
                      ? "   <-- NONE. This run never entered the guide wave transition; it does "
                        "not exercise the missing-lerp fix."
-                     : g_test5Strips != g_test5Calls * 80
-                         ? "   <-- MISMATCH: retail emits exactly 10 columns x 8 rows per call. "
-                           "A shortfall means some moving grid primitives have no identity."
-                         : "");
-    lucent::info("taggap",
-                 "balance scale (TCogwheel::draw): {} draw call(s), {} strip(s) tagged{}",
-                 g_cogCalls, g_cogStrips,
-                 g_cogCalls == 0
-                     ? "   <-- NONE. The scale only exists in Noki Bay, so this is expected "
-                       "everywhere else; it is NOT evidence the seam works. Check it in stage 9."
-                 : g_cogStrips == 0
-                     ? "   <-- the draw ran but emitted no primitive, so nothing was tagged. Either "
-                       "the GXBegin hook is not installed or the draw returned early."
+                 : g_test5Strips != g_test5Calls * 80
+                     ? "   <-- MISMATCH: retail emits exactly 10 columns x 8 rows per call. "
+                       "A shortfall means some moving grid primitives have no identity."
                      : "");
-    lucent::info("taggap",
-                 "particle stripes: {} strip(s) tagged over {} chain draw(s); {} call(s) had no "
-                 "readable emitter and were left alone{}",
-                 g_stripeStrips, g_stripeCalls, g_stripeNoEmitter,
-                 g_stripeCalls == 0
-                     ? "   <-- NONE drew this run, which is scene-dependent (stripes are trails and "
-                       "chains); it is not evidence the seam works."
-                     : "");
+    lucent::info(
+        "taggap", "balance scale (TCogwheel::draw): {} draw call(s), {} strip(s) tagged{}",
+        g_cogCalls, g_cogStrips,
+        g_cogCalls == 0 ? "   <-- NONE. The scale only exists in Noki Bay, so this is expected "
+                          "everywhere else; it is NOT evidence the seam works. Check it in stage 9."
+        : g_cogStrips == 0
+            ? "   <-- the draw ran but emitted no primitive, so nothing was tagged. Either "
+              "the GXBegin hook is not installed or the draw returned early."
+            : "");
+    lucent::info(
+        "taggap",
+        "particle stripes: {} strip(s) tagged over {} chain draw(s); {} call(s) had no "
+        "readable emitter and were left alone{}",
+        g_stripeStrips, g_stripeCalls, g_stripeNoEmitter,
+        g_stripeCalls == 0
+            ? "   <-- NONE drew this run, which is scene-dependent (stripes are trails and "
+              "chains); it is not evidence the seam works."
+            : "");
+    lucent::info(
+        "taggap", "HUD water gauge: {} primitive(s) tagged over {} draw call(s){}", g_gaugePrims,
+        g_gaugeCalls,
+        g_gaugeCalls == 0 ? "   <-- NONE. This run did not display the FLUDD gauge, so it does not "
+                            "exercise the lower-right 2D interpolation seam."
+        : g_gaugePrims == 0 ? "   <-- the gauge draw ran but its GXBegin seam saw no primitive."
+                            : "");
 }
 
 SB_OVERRIDE(0x80198278u, ov_draw_upper, "TMapWire::drawUpper",
@@ -591,9 +673,10 @@ SB_OVERRIDE(0x801e9880u, ov_grass_far, "TMapObjGrassGroup::drawFar",
 SB_OVERRIDE(0x801f3ff8u, ov_hanging_bridge, "THangingBridge::perform",
             "60fps: one identity for the whole rope bridge, whose rope strips are rebuilt every "
             "tick from the swaying boards and merge into a single draw")
-SB_OVERRIDE(0x800def6cu, ov_cone_beam, "TConeBeam::drawConeBeam",
-            "60fps: identity per fan for the light-shaft cone, whose vertices calcVertices rebuilds "
-            "every tick")
+SB_OVERRIDE(
+    0x800def6cu, ov_cone_beam, "TConeBeam::drawConeBeam",
+    "60fps: identity per fan for the light-shaft cone, whose vertices calcVertices rebuilds "
+    "every tick")
 SB_OVERRIDE(0x801f383cu, ov_one_rope, "TSwingBoard::drawOneRope",
             "60fps: identity for one swing-board rope, keyed by (board, call site) because the "
             "board draws exactly one rope from each of two fixed sites")
@@ -612,10 +695,18 @@ SB_OVERRIDE(0x801824b4u, ov_wipe_morf, "__Hx_FrBufferMorf (hx_wiper)",
 SB_OVERRIDE(0x8017df74u, ov_wipe_test5, "Hx_Test5 (guide wave wipe)",
             "60fps: identity per strip for the guide transition's deforming framebuffer grid; "
             "measured to move on every transition tick and previously snapped as anonymous 2D")
-SB_OVERRIDE(0x801da308u, ov_cogwheel, "TCogwheel::draw",
-            "60fps: identity per strip for Noki Bay's balance scale, whose beam vertices are written "
-            "into the FIFO as direct floats every tick (found by the graphics registry, reading "
-            "camera-only, once the arena fix made stage 9 bootable)")
+SB_OVERRIDE(
+    0x801da308u, ov_cogwheel, "TCogwheel::draw",
+    "60fps: identity per strip for Noki Bay's balance scale, whose beam vertices are written "
+    "into the FIFO as direct floats every tick (found by the graphics registry, reading "
+    "camera-only, once the arena fix made stage 9 bootable)")
 SB_OVERRIDE(0x8027cc2cu, ov_draw_mirror, "TModelWaterManager::drawMirror",
             "60fps: identity per fan for the water-mirror mask, which is rebuilt every tick around "
             "Mario's position and so moves with him")
+SB_OVERRIDE(0x801441e0u, ov_gauge_water, "TGCConsole2::drawWater",
+            "60fps: identity per animated FLUDD water-gauge primitive; orthographic does not mean "
+            "static")
+SB_OVERRIDE(0x80144840u, ov_gauge_juice, "TGCConsole2::drawJuice",
+            "60fps: identity per animated Yoshi juice-gauge primitive")
+SB_OVERRIDE(0x801492a4u, ov_gauge_back, "TGCConsole2::drawWaterBack",
+            "60fps: identity per animated FLUDD gauge-background primitive")
