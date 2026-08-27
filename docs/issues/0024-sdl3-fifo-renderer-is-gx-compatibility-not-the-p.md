@@ -33,13 +33,36 @@ identity, transformed rectangle, texture resource and decoded pixels, UV/binding
 four corner colours, black/white modulation, opacity, transform, clip, and ordering context. It must
 not recover the material by running the guest body and snapshotting the resulting FIFO/TEV state,
 which is what the current GX compatibility capture does. The decomp-side evidence owner is
-`decomp/sms/src/JSystem/J2D/J2DPicture.cpp`; a later decomp adapter constructs the same value from
-native fields without sharing object layout.
+`decomp/sms/src/JSystem/J2D/J2DPicture.cpp`; its native-layout adapter constructs the same value
+without sharing object layout.
 
 During bring-up the override always runs the original body and sends the semantic picture to an
 offscreen PC-native pass for coverage and visual comparison. After the semantic pass is verified,
 the selected native mode suppresses only that original picture draw so the visible result bypasses
 GX. The retained body remains selectable as the reference and fallback.
+
+## Implemented slice
+
+`native-render/` now owns a GX-free `PictureCommand`, layered picture material, sampler semantics,
+`J2DPicture::drawFullSet` crop/binding/mirror/flip resolver, and a guarded picture sink. Recomp's
+existing `0x802cc7c0` registration reads raw big-endian guest fields through
+`j2d_picture_adapter.cpp` at entry; decomp calls `sb_native_picture_submit` from the corresponding
+native function. Both always continue into their original body. Focused controls cover exact mesh
+order, crop/transform/UV behavior, mirror+flip behavior, endian field decoding, sampler decoding,
+packed blend factors, an invalid sampler, an unmapped matrix, and sink refusal of invalid commands.
+`native-render/src/picture_pass.cpp` is the first independent SDL3 consumer. A watched 16x16 GPU
+test proves its semantic scissor, decoded 2x2 texture quadrants, half-alpha blend, exact-repeat hash,
+and a changed-content/revision hash without consulting GX state. C077 records the combined adapter
+and GPU evidence with its falsifier.
+
+This is a rendered offscreen semantic slice, not live game presentation. Runtime producers do not
+yet own decoded/versioned RGBA payloads or install a frame sink. They also deliberately carry
+`clip.enabled=false`: clip enable, logical canvas/projection, and ordering belong to an enclosing J2D
+traversal context and cannot be inferred from this function's stale pane scissor fields.
+
+Next: own decoded/versioned RGBA resources, establish the J2D context stack, and extract one shared
+SDL3 device/presenter owner for separate GX-compatibility and semantic targets. Then install the live
+sink and render captured J2D pictures visibly while retaining the original bodies for A/B.
 
 ## Exit condition
 

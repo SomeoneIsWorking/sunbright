@@ -308,6 +308,8 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pin_state.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/fifo_player.cpp")
+    target_sources(sms-boot PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp")
     add_dependencies(sms-boot sms-native-sjis)
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
@@ -364,6 +366,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
+        sunbright-native-render-core
         Threads::Threads)
 
     # -----------------------------------------------------------------------

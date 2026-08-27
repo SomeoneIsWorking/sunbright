@@ -11,14 +11,22 @@ they may shrink but never grow, and files at 2,000+ lines remain critical extrac
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT_LIMITS = {
+    "native-render": 1200,
     "sms-boot": 1200,
     "sms-recomp": 1200,
     "tools/recompiler": 1200,
+}
+
+NATIVE_RENDER_FORBIDDEN = {
+    "GX compatibility include": re.compile(r'^\s*#\s*include\s*[<\"].*(?:native_render|scene)\.h[>\"]', re.MULTILINE),
+    "Aurora/GX include": re.compile(r'^\s*#\s*include\s*[<\"].*(?:aurora|dolphin/gx)', re.MULTILINE),
+    "GX compatibility identifier": re.compile(r'\b(?:Sbr[A-Z]\w*|GX[A-Z_]\w*|sbr_render_tris)\b'),
 }
 EXCLUDED_ROOTS = {
     "sms-recomp/generated",
@@ -72,14 +80,34 @@ def violations(measured: dict[str, int]) -> list[tuple[str, int, int]]:
     return sorted(bad)
 
 
+def native_render_boundary_violations(sources: dict[str, str]) -> list[tuple[str, str]]:
+    bad = []
+    for path, source in sources.items():
+        for label, pattern in NATIVE_RENDER_FORBIDDEN.items():
+            if pattern.search(source):
+                bad.append((path, label))
+    return sorted(bad)
+
+
 def check() -> int:
     measured = source_files()
     bad = violations(measured)
     for path, lines, limit in bad:
         actual = "missing" if lines < 0 else f"{lines} lines"
         print(f"structure: {path}: {actual}, limit {limit}")
-    print(f"structure: measured {len(measured)} source files; {len(bad)} violation(s)")
-    return 1 if bad else 0
+    native_sources = {
+        str(path.relative_to(REPO)): path.read_text(errors="replace")
+        for path in sorted((REPO / "native-render").rglob("*"))
+        if path.suffix in {".c", ".cc", ".cpp", ".h", ".hpp"}
+    }
+    boundary_bad = native_render_boundary_violations(native_sources)
+    for path, label in boundary_bad:
+        print(f"structure: {path}: forbidden {label}")
+    print(
+        f"structure: measured {len(measured)} source files; "
+        f"{len(bad) + len(boundary_bad)} violation(s)"
+    )
+    return 1 if bad or boundary_bad else 0
 
 
 def selftest() -> int:
@@ -97,10 +125,23 @@ def selftest() -> int:
     if got != expected:
         print(f"FAIL: got {got}, expected {expected}")
         return 1
+    boundary_sample = {
+        "native-render/good.cpp": "struct Picture {};\n",
+        "native-render/bad.cpp": "SbrDepthState state;\n",
+        "native-render/bad_include.cpp": '#include \"../runtime/render/scene.h\"\n',
+    }
+    boundary_got = native_render_boundary_violations(boundary_sample)
+    boundary_expected = [
+        ("native-render/bad.cpp", "GX compatibility identifier"),
+        ("native-render/bad_include.cpp", "GX compatibility include"),
+    ]
+    if boundary_got != boundary_expected:
+        print(f"FAIL: boundary got {boundary_got}, expected {boundary_expected}")
+        return 1
     if not source_files():
         print("FAIL: real-tree discovery measured no files")
         return 1
-    print("PASS: the boundary passes, one extra line fails, and real-tree discovery is non-empty")
+    print("PASS: line limits and native-render dependency boundaries distinguish both controls")
     return 0
 
 

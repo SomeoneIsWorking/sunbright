@@ -18,11 +18,16 @@
 
 #include "../runtime/probe_server.h"
 #include "../runtime/render/scene.h"
+#include "../runtime/sb_assert.h"
+#include "j2d_picture_adapter.h"
+
+#include <sunbright/native_render/picture_sink.h>
 
 #include <intrinsics.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <string>
 
@@ -209,6 +214,31 @@ PaneQuad read_pane(CPUState& cpu) {
     return q;
 }
 
+bool read_guest_bytes(void*, std::uint32_t address, void* destination, std::size_t size) {
+    if (size == 0)
+        return true;
+    if (address > UINT32_MAX - static_cast<std::uint32_t>(size - 1))
+        return false;
+    u8* first = sb_ram_fast(address);
+    u8* last = sb_ram_fast(address + static_cast<std::uint32_t>(size - 1));
+    if (first == nullptr || last != first + size - 1)
+        return false;
+    std::memcpy(destination, first, size);
+    return true;
+}
+
+void submit_semantic_picture(CPUState& cpu) {
+    if (!sb::native_render::has_picture_sink())
+        return;
+    sb::native_render::PictureCommand command{};
+    const sb::recomp::GuestByteReader reader{.read = read_guest_bytes};
+    SB_ASSERT(sb::recomp::capture_j2d_picture(reader, cpu.gpr[3], cpu.gpr[6], command),
+              "semantic J2DPicture capture failed: self=%08x parent_matrix=%08x", cpu.gpr[3],
+              cpu.gpr[6]);
+    SB_ASSERT(sb::native_render::submit_picture(command),
+              "semantic J2DPicture sink rejected a validated command: self=%08x", cpu.gpr[3]);
+}
+
 void emit_pane_quad(const PaneQuad& q) {
     const int x1 = q.x1, y1 = q.y1, x2 = q.x2, y2 = q.y2;
     const u8 ca = q.alpha;
@@ -296,6 +326,9 @@ void emit_pane_quad(const PaneQuad& q) {
 }
 
 void ov_pic_drawself_mtx(CPUState& cpu) {
+    // Capture game-semantic state at entry. The recompiled body is always retained and called;
+    // this path never reads its post-body FIFO/TEV state and never crosses into decomp objects.
+    submit_semantic_picture(cpu);
     const PaneQuad pane = j2d_capture_on() ? read_pane(cpu) : PaneQuad{};
     if (diag_on()) {
         note("J2DPicture::drawSelfM", cpu.gpr[3]);

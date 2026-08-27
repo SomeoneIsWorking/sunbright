@@ -18,6 +18,7 @@ set(AURORA_ENABLE_CARD ON  CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_DVD  ON  CACHE BOOL "" FORCE)
 set(AURORA_GPU_DIAGNOSTICS standard CACHE STRING "" FORCE)
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
+add_subdirectory(native-render)
 
 set(SMS_BUILD_BOOT ON CACHE BOOL "" FORCE)
 add_subdirectory(sms-boot)

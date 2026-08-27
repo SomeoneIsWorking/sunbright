@@ -1,4 +1,4 @@
-// Auto-generated from geom.vert.glsl by glslc — DO NOT EDIT. Regenerate: build_shaders.sh
+// Auto-generated from geom.vert.glsl by glslc — DO NOT EDIT. Regenerate: python3 tools/render/build_shaders.py
 #pragma once
 #include <cstdint>
 static const uint32_t kGeomVertSpv[] = {0x07230203,0x00010000,0x000d000b,0x00000021,

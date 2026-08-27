@@ -46,7 +46,8 @@ add_library(sms-recomp-overrides OBJECT ${SB_OVERRIDES})
 target_include_directories(sms-recomp-overrides PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/devices" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/render" "${CMAKE_CURRENT_SOURCE_DIR}/overrides"
     "${CMAKE_CURRENT_SOURCE_DIR}/frame_interp" "${GEN}")
-target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx aurora::pad)
+target_link_libraries(sms-recomp-overrides PUBLIC nod::nod aurora::gx aurora::pad
+                                             sunbright-native-render-core)
 target_link_libraries(sms-recomp-overrides PUBLIC lucent::lucent)
 
 # frame_interp/ — ALL interpolated-60fps code, in one place. See docs/60fps/README.md for the map.
@@ -81,6 +82,7 @@ set(AURORA_ENABLE_RMLUI ON CACHE BOOL "Enable the Dusklight-style Sunbright sett
 set(AURORA_BUILD_TESTS OFF CACHE BOOL "Do not register Aurora's standalone tests when embedded" FORCE)
 set(AURORA_GPU_DIAGNOSTICS standard CACHE STRING "" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora" aurora-build EXCLUDE_FROM_ALL)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native-render" native-render-build)
 
 set(AURORA_NOD_PROVIDER "auto" CACHE STRING "")
 set(AURORA_NOD_LINKAGE "static" CACHE STRING "")
@@ -317,6 +319,13 @@ add_test(NAME hud_window_layout COMMAND hud_window_layout_test)
 add_executable(native_raster_state_test tests/native_raster_state_test.cpp)
 target_include_directories(native_raster_state_test PRIVATE runtime/render)
 add_test(NAME native_raster_state COMMAND native_raster_state_test)
+
+add_executable(j2d_picture_adapter_test tests/j2d_picture_adapter_test.cpp
+                                        overrides/j2d_picture_adapter.cpp)
+target_link_libraries(j2d_picture_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(j2d_picture_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME j2d_picture_adapter COMMAND j2d_picture_adapter_test)
 
 # The interpolation pairing self-test, reached through the main binary with SBR_INTERP_SELFTEST=1.
 # It is pure CPU work — local buffers and aurora's own pairing tables — but until now it only ran

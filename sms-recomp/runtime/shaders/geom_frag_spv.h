@@ -1,4 +1,4 @@
-// Auto-generated from geom.frag.glsl by glslc — DO NOT EDIT. Regenerate: build_shaders.sh
+// Auto-generated from geom.frag.glsl by glslc — DO NOT EDIT. Regenerate: python3 tools/render/build_shaders.py
 #pragma once
 #include <cstdint>
 static const uint32_t kGeomFragSpv[] = {0x07230203,0x00010000,0x000d000b,0x00000c49,
@@ -1843,5 +1843,4 @@ static const uint32_t kGeomFragSpv[] = {0x07230203,0x00010000,0x000d000b,0x00000
 0x00000507,0x000200f8,0x00000506,0x000100fc,
 0x000200f8,0x00000507,0x0003003e,0x00000423,
 0x00000ac8,0x000200f9,0x0000050a,0x000200f8,
-0x0000050a,0x000100fd,0x00010038}
-;
+0x0000050a,0x000100fd,0x00010038};

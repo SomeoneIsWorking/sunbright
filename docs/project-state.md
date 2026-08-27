@@ -8,8 +8,8 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp renders through a PC-native game-semantic renderer above GX | missing | S001 | G003 |
-| S005 | The decomp renders through the shared PC-native game-semantic renderer above GX | missing | S002, S004 | G004 |
+| S004 | The recomp renders through a PC-native game-semantic renderer above GX | partial | S001 | G003 |
+| S005 | The decomp renders through the shared PC-native game-semantic renderer above GX | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
 
@@ -45,16 +45,30 @@ diagnostic infrastructure.
 
 ### S004 — Recomp PC-native semantic renderer
 
-Missing capability: no shipping renderer consumes J3D/J2D/particle/material/light/effect semantics
-above GX. No renderer-neutral semantic scene interface currently bypasses FIFO, BP/XF registers,
-TEV programs, and EFB-copy choreography. Issue 24 defines the required seam, constraints, and first
-vertical slice at `J2DPicture::drawSelf(int, int, Mtx*)`.
+The shared `native-render/` core now defines the first renderer-neutral picture command, semantic
+`J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission sink. The
+recomp's sole `0x802cc7c0` override reads guest `J2DPicture` state at entry through a tested
+big-endian adapter and always calls the retained body. A separate SDL3 pass consumes decoded RGBA
+images and these commands directly; its guarded GPU control verifies clipping, texture sampling,
+alpha, repeat determinism, and a changed-content/revision result. No FIFO, BP/XF register, TEV
+program, EFB operation, Aurora type, or GX compatibility type crosses this interface. C077 records
+the falsifiable combined evidence.
+
+Gap: the live runtime does not yet install the sink or supply decoded/versioned resources and the
+enclosing J2D canvas/projection/clip/order context, so the pass remains an offscreen verified slice
+rather than visible presentation. Other semantic families (J3D, particles, lights, effects) are
+still missing. Issue 24 owns this work.
 
 ### S005 — Decomp PC-native semantic renderer
 
-Missing capability: the decomp has no adapter from native game objects into the shared semantic
-scene interface and no Aurora-free PC-native presentation lane. It depends on the renderer-neutral
-schema and renderer ownership established by S004, but must keep a separate native-layout adapter.
+The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic command from native
+J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only
+values and the renderer-neutral resolver with recomp; there is no recomp/decomp object interop.
+Established picture fields at `0x104`, `0x114`, and `0x130` are named for blend weights and flip.
+
+Gap: J2D context/resource ownership and live sink/device/presentation integration are missing, so
+decomp output still presents through Aurora GX even though its commands are accepted by the same
+independent SDL3 semantic pass in isolation. The remainder of the semantic renderer is also absent.
 
 ### S006 — Lerp coverage
 
