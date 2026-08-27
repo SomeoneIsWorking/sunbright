@@ -469,8 +469,7 @@ long g_tickIndex = 0;
 namespace {
 struct PendingCopy {
     uint32_t streamPos;
-    uint32_t dest;
-    int sx, sy, sw, sh, dw, dh;
+    NativeEfbCopyRequest request;
 };
 std::vector<PendingCopy> g_pendingCopies;
 } // namespace
@@ -481,12 +480,13 @@ void sbr_scene_clear_pending_copies() {
     g_pendingCopies.clear();
 }
 
-void sbr_scene_note_efb_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh) {
-    g_pendingCopies.push_back({sbr_gxfifo_stream_pos(), dest, sx, sy, sw, sh, dw, dh});
+void sbr_scene_note_efb_copy(const NativeEfbCopyRequest& request) {
+    g_pendingCopies.push_back({sbr_gxfifo_stream_pos(), request});
     static long n = 0;
     if (++n <= 4)
-        lucent::info("nrender", "note EFB copy 0x{:08x} after drawable {} ({}x{} -> {}x{})", dest,
-                     g_cur.items.size(), sw, sh, dw, dh);
+        lucent::info("nrender", "note EFB copy 0x{:08x} after drawable {} ({}x{} -> {}x{})",
+                     request.dest, g_cur.items.size(), request.sourceWidth, request.sourceHeight,
+                     request.destWidth, request.destHeight);
 }
 
 float sbr_scene_render(double now_seconds, const float proj[16]) {
@@ -1052,9 +1052,9 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
         // Perform any EFB copy captured at or before this point in the draw order, here at the
         // actual submission site — the copy must capture only what was drawn before it.
         for (auto& pc : g_pendingCopies)
-            if (pc.dest != 0 && pc.streamPos <= d.streamPos) {
-                sbr_render_note_copy(pc.dest, pc.sx, pc.sy, pc.sw, pc.sh, pc.dw, pc.dh);
-                pc.dest = 0;
+            if (pc.request.dest != 0 && pc.streamPos <= d.streamPos) {
+                sbr_render_note_copy(pc.request);
+                pc.request.dest = 0;
             }
         if (!g_out.empty())
             sbr_render_tris(g_out.data(), (int)(g_out.size() / 3) * 3, d.depth, d.tex, d.tev);
@@ -1073,10 +1073,10 @@ float sbr_scene_render(double now_seconds, const float proj[16]) {
     // no later stream position to trigger the in-loop handoff. It still belongs at the current
     // batch boundary; native_render drains that ordered suffix after the final render pass.
     for (auto& pc : g_pendingCopies) {
-        if (pc.dest == 0)
+        if (pc.request.dest == 0)
             continue;
-        sbr_render_note_copy(pc.dest, pc.sx, pc.sy, pc.sw, pc.sh, pc.dw, pc.dh);
-        pc.dest = 0;
+        sbr_render_note_copy(pc.request);
+        pc.request.dest = 0;
     }
 
     return alpha;

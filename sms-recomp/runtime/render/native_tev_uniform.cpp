@@ -48,13 +48,19 @@ void sbr_native_pack_tev_uniform(const SbrTevState& tev, SbrNativeTevUniform& un
         const int32_t unit =
             forceUnit >= 0 ? (forceUnit & 7) : (((unitMask >> map) & 1u) != 0 ? map : 0);
         uniform.dest[index][3] = unit | static_cast<int32_t>(stage.texcoord & 3) << 8 |
-                                 static_cast<int32_t>(stage.rasChannel & 7) << 16;
+                                 static_cast<int32_t>(stage.rasChannel & 7) << 16 |
+                                 static_cast<int32_t>(stage.swapRas & 3) << 19 |
+                                 static_cast<int32_t>(stage.swapTex & 3) << 21;
         sbr_tev_konst(tev, static_cast<unsigned>(index), uniform.konst[index]);
     }
 
     for (int reg = 0; reg < 4; ++reg)
         for (int component = 0; component < 4; ++component)
             uniform.regInit[reg][component] = tev.reg[reg][component];
+
+    for (int table = 0; table < 4; ++table)
+        for (int component = 0; component < 4; ++component)
+            uniform.swapTable[table][component] = tev.swapTable[table][component] & 3;
 
     // SBR_ALPHATEST=0 forces both comparisons to ALWAYS for the alpha-test ablation.
     static const bool alphaTest = [] {

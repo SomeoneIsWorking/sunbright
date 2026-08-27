@@ -36,6 +36,15 @@ journal watcher also kills the group rather
 than allowing an unmonitored run. This is an EXTERNAL check that does not depend on the process being
 checked.
 
+If the guarded process instead terminates from a POSIX signal and the final kernel barrier contains
+no GPU fault, the watcher records a separate `cpu_signal_*.txt` incident and reports the signal name
+and number, a shell-compatible `128 + signal` exit code, exact-PID `coredumpctl` disposition, process
+output tail, and the matching submit-flight report-sidecar disposition. In particular, Python's
+`-SIGSEGV` child status is surfaced as exit 139 rather than leaking through `SystemExit` as 245. A
+zero-byte `.flight.report.txt` is named as consistent with termination before the first submit/report
+flush and is never presented as GPU-fault evidence. CPU signal incidents do not create the GPU
+cooldown stamp.
+
 The planted controls cover both answers: a harmless journal line lets a CPU-only command exit zero
 without a stamp; the exact 2026-08-26 first-error shape (`Illegal register access in command stream`)
 kills the launched parent+child process group before the first durable write, returns 86, and
@@ -51,6 +60,13 @@ observes both file and parent-directory sync calls. A SIGTERM control proves the
 descendant, and journal follower are gone before the original handlers are restored. A FIFO blocked
 inside the coredump worker's `open()` proves the parent deadline kills and reaps the exact reader and
 leaves neither a staging file nor a capture artifact.
+
+The CPU-signal classifier's known-positive child creates an exact-PID zero-byte report sidecar,
+disables core-file generation for the fixture, and delivers SIGSEGV to itself. The watcher must emit
+the separate CPU incident, preserve the planted coredump disposition seam, return 139, and leave the
+GPU cooldown unstamped. Its known-negative child exits normally with status 11; it must remain an
+ordinary nonzero exit with no CPU incident or signal classification. This distinguishes the source
+`Popen` return code `-11` from the unrelated ordinary exit code 11.
 
 ## Known failure modes
 

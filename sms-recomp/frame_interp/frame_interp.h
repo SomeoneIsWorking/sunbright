@@ -1,8 +1,8 @@
 // frame_interp.h — THE public interface to interpolated 60fps. One entry point for the whole
 // subsystem; everything else in this directory is an implementation of some part of it.
 //
-// The map of what exists, why there were three of these, and which one survives, is docs/60fps/README.md.
-// Read that before changing anything here.
+// The map of what exists, why there were three of these, and which one survives, is
+// docs/60fps/README.md. Read that before changing anything here.
 //
 // ── SHAPED AFTER DUSKLIGHT ──────────────────────────────────────────────────────────────────────
 // TwilitRealm/dusklight is a shipping Twilight Princess PC port on the same decomp+Aurora
@@ -34,7 +34,7 @@ namespace sb::frame_interp {
 enum class Mode : uint8_t { Off = 0, Capped = 1, Unlimited = 2 };
 
 Mode mode();
-bool is_enabled();   // mode() != Off
+bool is_enabled(); // mode() != Off
 
 // How far through the tick the frame being presented is: 0.0 = the previous tick's state, 1.0 =
 // this tick's. Forced to 1.0 while a presentation sync is active.
@@ -58,12 +58,14 @@ bool presentation_sync_active();
 
 // ── INTERPOLATION CALLBACKS — dusklight's add_interpolation_callback ─────────────────────────────
 //
-// Registered DURING a simulation tick, called for each in-between presentation sample.
-// The registration is cleared at the start of every tick, so a system that stops registering stops
-// being called, and there is no list of effects in this file to go stale.
+// Registered DURING a simulation tick, sealed by begin_sim_tick() at the frame boundary, then
+// called for each in-between presentation sample belonging to that completed tick. The next frame
+// boundary replaces the sealed list, so a system that stops registering stops being called and
+// there is no permanent list of effects in this file to go stale.
 //
-// `is_sim_frame` is false for the in-between frame and true for the tick's own frame, matching
-// dusklight, so one callback body can handle both.
+// `is_sim_frame` is always false in this retained-replay runtime. It remains in the
+// Dusklight-shaped callback signature, but the game-owned simulation frame does not need callback
+// dispatch here.
 //
 // ⚠ WHAT A CALLBACK CAN AND CANNOT DO, because getting this wrong produces a silent no-op.
 //
@@ -89,7 +91,10 @@ void add_interpolation_callback(Callback cb, void* user);
 
 // ── SEAMS. Called by the frame loop, not by systems. ─────────────────────────────────────────────
 
-// A new simulation tick has begun: clear the callback registration and advance the sequence.
+// The simulation tick's game work has ended and its presentation is about to begin: seal the
+// callbacks registered during that tick, discard the previous tick's sealed list, and advance the
+// sequence. The historical name is retained because this is also the boundary that starts the next
+// simulation-tick interval.
 void begin_sim_tick();
 uint64_t sim_tick_seq();
 
@@ -97,9 +102,9 @@ uint64_t sim_tick_seq();
 // from aurora_replay_sample() before each retained-snapshot replay.
 void present_interpolated_frame(float alpha);
 
-// Per-run summary, with denominators. Prints even when nothing registered, because "no effect asked
-// to be interpolated" and "the dispatch never ran" are the same silence otherwise — and of those
-// two, the dispatch never running is by far the more likely defect.
+// Per-run summary, with denominators. The current retained-replay path has no callback clients, so
+// zero registrations is reported as an unused API rather than misreported as missing interpolation
+// coverage. Matrix/vertex/effect coverage belongs to the recorded-stream audits.
 void report();
 
 } // namespace sb::frame_interp

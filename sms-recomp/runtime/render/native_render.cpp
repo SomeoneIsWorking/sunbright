@@ -15,12 +15,14 @@
 
 #include "native_render.h"
 
+#include "native_efb_copy_clear_draw.h"
 #include "native_efb_copy_plan.h"
 #include "native_gpu_admission.h"
 #include "native_gpu_guard.h"
 #include "native_gpu_pipeline.h"
 #include "native_presenter.h"
 #include "native_raster_state.h"
+#include "native_render_pass.h"
 #include "native_tev_uniform.h"
 
 #include "app/settings.h"
@@ -63,6 +65,7 @@ struct Batch {
     SbrDepthState st;
     uint32_t first, count;
     uint64_t copyEpoch;
+    bool copyClear = false;
     // One entry per GX texture unit. 0 = untextured (a 1x1 white texel is bound so one shader
     // serves both cases and no branch is needed in the TEV loop).
     uint64_t texKey[8];
@@ -88,8 +91,7 @@ struct CopyTex {
 std::unordered_map<uint32_t, CopyTex> g_copyTex;
 struct CopyPoint {
     size_t batchIndex;
-    uint32_t dest;
-    int sx, sy, sw, sh, dw, dh;
+    NativeEfbCopyPlan plan;
 };
 std::vector<CopyPoint> g_copyPoints;
 NativeEfbCopySequence g_copySequence;
@@ -102,17 +104,17 @@ enum class CopyResult : uint8_t { Encoded, NoOp, Failed };
 CopyResult perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
     if (sbr_native_gpu_dead())
         return CopyResult::Failed;
-    const NativeEfbCopySource source =
-        sbr_native_efb_copy_source(cp.sx, cp.sy, cp.sw, cp.sh, g_w, g_h);
-    if (!source.valid) {
+    const NativeEfbCopyPlan& plan = cp.plan;
+    if (!plan.has_copy()) {
         lucent::debug("nrender",
                       "EFB copy 0x{:08x} has no source intersection: [{},{} {}x{}] in {}x{} — "
                       "no GPU operation encoded",
-                      cp.dest, cp.sx, cp.sy, cp.sw, cp.sh, g_w, g_h);
+                      plan.dest, plan.source.x, plan.source.y, plan.source.width,
+                      plan.source.height, g_w, g_h);
         return CopyResult::NoOp;
     }
-    const int wantW = std::max(cp.dw, 1), wantH = std::max(cp.dh, 1);
-    CopyTex& slot = g_copyTex[cp.dest];
+    const int wantW = std::max(plan.destWidth, 1), wantH = std::max(plan.destHeight, 1);
+    CopyTex& slot = g_copyTex[plan.dest];
     // A cached texture that no longer fits the requested destination is REPLACED, not reused. The
     // alternative — clamping the blit to the old size — would silently resolve into a surface of
     // the wrong dimensions and hand the game a stretched reflection, trading a GPU fault for a
@@ -122,7 +124,7 @@ CopyResult perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
                      "EFB copy 0x{:08x}: destination changed size {}x{} -> {}x{}; reallocating. "
                      "Blitting the larger rect into the old allocation would have been an "
                      "out-of-bounds GPU write.",
-                     cp.dest, slot.w, slot.h, wantW, wantH);
+                     plan.dest, slot.w, slot.h, wantW, wantH);
         SDL_ReleaseGPUTexture(g_dev, slot.tex);
         slot.tex = nullptr;
     }
@@ -145,15 +147,16 @@ CopyResult perform_copy(SDL_GPUCommandBuffer* cmd, const CopyPoint& cp) {
         }
         slot.w = wantW;
         slot.h = wantH;
-        lucent::info("nrender", "EFB copy -> texture 0x{:08x}: EFB [{},{} {}x{}] -> {}x{}", cp.dest,
-                     cp.sx, cp.sy, cp.sw, cp.sh, wantW, wantH);
+        lucent::info("nrender", "EFB copy -> texture 0x{:08x}: EFB [{},{} {}x{}] -> {}x{}",
+                     plan.dest, plan.source.x, plan.source.y, plan.source.width, plan.source.height,
+                     wantW, wantH);
     }
     SDL_GPUBlitInfo bi{};
     bi.source.texture = g_color;
-    bi.source.x = static_cast<Uint32>(source.x);
-    bi.source.y = static_cast<Uint32>(source.y);
-    bi.source.w = static_cast<Uint32>(source.width);
-    bi.source.h = static_cast<Uint32>(source.height);
+    bi.source.x = static_cast<Uint32>(plan.source.x);
+    bi.source.y = static_cast<Uint32>(plan.source.y);
+    bi.source.w = static_cast<Uint32>(plan.source.width);
+    bi.source.h = static_cast<Uint32>(plan.source.height);
     bi.destination.texture = dst;
     // Belt and braces: the rect is clamped to the allocation that is actually bound, so even if the
     // reallocation above were ever bypassed the blit cannot address memory outside the texture.
@@ -615,11 +618,29 @@ SDL_FColor g_clear{};
 int g_lastVerts = 0;
 } // namespace
 
-void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh) {
+void sbr_render_note_copy(const NativeEfbCopyRequest& request) {
     if (!g_ok)
         return;
+    const NativeEfbCopyPlan plan = sbr_native_efb_copy_plan(request, g_w, g_h);
     const size_t boundary = g_copySequence.note_copy(g_batches.size());
-    g_copyPoints.push_back({boundary, dest, sx, sy, sw, sh, dw, dh});
+    g_copyPoints.push_back({boundary, plan});
+    NativeEfbCopyClearDraw clearDraw{};
+    if (!sbr_native_efb_copy_clear_draw(plan, clearDraw))
+        return;
+
+    // GXCopyTex(clear=true) resolves first and then clears the copy source rectangle under the
+    // current PE color/alpha/depth update masks. The native backend records a frame before encoding
+    // it, so represent that clear as the first ordered batch after the copy barrier. An oversized
+    // clip-space triangle plus the exact clipped source scissor expresses both full and partial
+    // clears without treating an empty rectangle as a full-target sentinel.
+    sbr_render_tris(clearDraw.vertices, 3, clearDraw.state, clearDraw.textures, clearDraw.tev);
+    if (g_batches.size() <= boundary)
+        return;
+    Batch& clearBatch = g_batches.back();
+    clearBatch.copyClear = true;
+    // TEV visualization and operation ablation diagnose game draws, not hardware maintenance.
+    clearBatch.tev.alphaRef[2] = 0.0f;
+    clearBatch.tev.alphaRef[3] = 0.0f;
 }
 
 // Dump an EFB-copy surface to a raw RGBA file. What the game samples from a copy destination has
@@ -724,17 +745,6 @@ void sbr_render_begin(float r, float g, float b, float a) {
     g_copySequence.reset();
 }
 
-// Which textures the stages that NAME unit 1 actually bind, weighted by vertices. Vertices, not
-// draws, because a 60-vertex horizon strip and a 26k-vertex batch are not equally responsible for
-// a black region.
-//
-// NO LONGER TRUE (measured 2026-08-12): this used to say "unit 1 is the whole routing deficit —
-// pinning it alone recovers +6.0, units 2-7 recover nothing". The ablation sweep now renders
-// `pin unit1->0` and gets a BYTE-IDENTICAL frame, as do units 2-7 and `texmap->unit0`; the run's
-// own instrumentation agrees, reporting "unit 1: 0 distinct addresses" and zero TX_SETIMAGE0
-// writes for unit 1. No draw in these plaza frames samples any unit above 0, so the +6.0 cannot
-// be reproduced and nothing here is currently a deficit. Whatever scene that number came from, it
-// is not this one.
 std::map<uint32_t, long> g_unit1Use;
 
 void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
@@ -756,7 +766,7 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
     // Merge into the previous run when the state is unchanged, so honouring per-material depth
     // costs draws only where the state actually changes.
     const uint32_t first = (uint32_t)(g_verts.size() - (size_t)count);
-    Batch b{depth, first, (uint32_t)count, g_copySequence.epoch(), {}, {}, {}};
+    Batch b{depth, first, static_cast<uint32_t>(count), g_copySequence.epoch()};
     // SBR_TEX_MIRROR=1 binds unit 0's texture to ALL FOUR slots. Combined with SBR_TEXMAP_FORCE it
     // is the only clean test of the slots themselves: with identical content in every slot, forcing
     // the frame through slot 0 and through slot 1 must produce IDENTICAL images. Any difference is
@@ -778,6 +788,7 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
     // different combiners are different materials and must not merge.
     const bool same =
         !g_batches.empty() && g_copySequence.may_merge(g_batches.back().copyEpoch) &&
+        g_batches.back().copyClear == b.copyClear &&
         sbr_native_gpu_pipeline_key(g_batches.back().st) == sbr_native_gpu_pipeline_key(depth) &&
         std::memcmp(g_batches.back().st.scissor, depth.scissor, sizeof depth.scissor) == 0 &&
         std::memcmp(g_batches.back().texKey, b.texKey, sizeof b.texKey) == 0 &&
@@ -927,15 +938,18 @@ bool render_pass(uint32_t ablation, bool download, bool present) {
     // therefore preserve depth; DONT_CARE followed by LOAD made post-copy depth undefined.
     dsi.store_op = SDL_GPU_STOREOP_STORE;
 
-    SDL_GPURenderPass* rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi);
+    const auto begin_pass = [&] {
+        return sbr_native_begin_render_pass(
+            [&] { return SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi); },
+            [&](SDL_GPURenderPass* pass) {
+                const SDL_GPUBufferBinding binding{g_vbuf, 0};
+                SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
+            },
+            vbytes > 0);
+    };
+    SDL_GPURenderPass* rp = begin_pass();
     size_t nextCopy = 0;
     if (vbytes > 0) {
-        SDL_GPUBufferBinding vbTmp{};
-        (void)vbTmp;
-        SDL_GPUBufferBinding vb{};
-        vb.buffer = g_vbuf;
-        vb.offset = 0;
-        SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
         int drawn = 0;
         if (g_batchLimit < 0 && g_batchLimitEnv >= 0)
             g_batchLimit = g_batchLimitEnv;
@@ -943,18 +957,14 @@ bool render_pass(uint32_t ablation, bool download, bool present) {
             const Batch& b = g_batches[bi];
             if (g_batchLimit >= 0 && drawn++ >= g_batchLimit)
                 break;
-            // A copy captures only what was drawn BEFORE it, and a blit is not a render-pass
-            // operation — so the pass ends here, the resolve happens, and a new pass RESUMES over
-            // the same target (LOAD, not CLEAR, or everything drawn so far is thrown away).
+            // A copy captures only earlier draws, so end the pass, resolve, and resume with LOAD.
             while (nextCopy < g_copyPoints.size() && g_copyPoints[nextCopy].batchIndex <= bi) {
-                { // WHEN is the copy taken? A copy at batch 0 of 146 captures an essentially
-                    // empty target, so the surface the game then samples is whatever the clear
-                    // left — the composite can look plausible while the copy is meaningless.
+                { // Report the copy boundary on the same ordered batch stream.
                     static long tell = 0;
                     if (tell < 8) {
                         ++tell;
                         lucent::info("nrender", "  copy 0x{:08x} performed at batch {} of {}",
-                                     g_copyPoints[nextCopy].dest, bi, g_batches.size());
+                                     g_copyPoints[nextCopy].plan.dest, bi, g_batches.size());
                     }
                 }
                 SDL_EndGPURenderPass(rp);
@@ -965,7 +975,7 @@ bool render_pass(uint32_t ablation, bool download, bool present) {
                 ++nextCopy;
                 cti.load_op = SDL_GPU_LOADOP_LOAD;
                 dsi.load_op = SDL_GPU_LOADOP_LOAD;
-                rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dsi);
+                rp = begin_pass();
             }
             SDL_BindGPUGraphicsPipeline(rp, sbr_native_gpu_pipeline_for(b.st));
             // The hardware clips each draw to its own scissor rect. Clamped to the target because
@@ -984,7 +994,7 @@ bool render_pass(uint32_t ablation, bool download, bool present) {
                 sc.y = std::clamp<int>(b.st.scissor[1], 0, g_h);
                 sc.w = std::clamp<int>(b.st.scissor[2], 0, g_w - sc.x);
                 sc.h = std::clamp<int>(b.st.scissor[3], 0, g_h - sc.y);
-                if (noScissor) {
+                if (noScissor && !b.copyClear) {
                     sc.x = 0;
                     sc.y = 0;
                     sc.w = g_w;
@@ -1026,7 +1036,7 @@ bool render_pass(uint32_t ablation, bool download, bool present) {
             // already the SBR_TEV_VIZ selector: writing the ablation id there turned every variant
             // into a visualisation mode that returns early, which is exactly what the
             // control:no-op ablation caught (it rendered untextured instead of matching baseline).
-            tu.alphaRef[3] = (float)ablation;
+            tu.alphaRef[3] = b.copyClear ? 0.0f : static_cast<float>(ablation);
             SDL_PushGPUFragmentUniformData(cmd, 0, &tu, sizeof tu);
             SDL_DrawGPUPrimitives(rp, b.count, 1, b.first, 0);
         }

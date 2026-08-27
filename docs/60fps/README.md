@@ -96,7 +96,30 @@ loser's 10.297, so neither end corresponds.
 
 ---
 
-## Does any of it actually look smoother? (pixels, 2026-08-12)
+## Does any of it actually look smoother? (pixels, verified 2026-08-28)
+
+The current evidence comes from `tools/interp/compare_modes.py`, not the earlier two-run cadence
+sample. It binds the ROM, DOL, host binary, tool and launcher sources, input policy, texture
+descriptor population, exact frame hashes, and the settled camera matrix at each guest tick. It
+also requires a byte-identical Native60 repeat and carries a planted every-other-frame snap control.
+
+With the camera first turned toward the sea and then rotating slowly, all three 33-frame captures
+covered guest retraces 1822..1854 with identical camera matrices. The default gameplay ROI excludes
+the bottom dialogue band:
+
+| region | Native60 spatial alternation | Lerp60 spatial alternation |
+|---|---:|---:|
+| gameplay `[0,0..16,10)` | 0.291 | **0.245** |
+| visible sea `[9,3..14,5)` | 0.234 | **0.227** |
+| forced-snap control, gameplay | 0.291 | **1.000** |
+
+Lower is more even. Water therefore improves slightly as a region and is not, as a whole, the
+missing lerp target in this view. The strongest local regression is one cell above the waterline,
+where a palm trunk moves against the sky (0.596 Native60 to 0.779 Lerp60). This is screen-space
+localization only; naming the responsible draw requires a stable draw-identity join. Claim C076 and
+instrument I038 carry the exact evidence and falsifiers.
+
+### Superseded 2026-08-12 sample
 
 Every number above is a PAIRING percentage — the share of draws that received an interpolated pose.
 That is not the same as smoothness, and the project's own doctrine says so. Closing the loop means
@@ -104,7 +127,11 @@ measuring the presented pixels, which `tools/interp/cadence.py` does: the mean a
 between consecutive presents, and the ratio between the two phases of the two-present cadence
 (ALTERNATION, where 1.0 means both presents advance the picture equally).
 
-**With the camera rotating** (`SBR_PAD_SCRIPT="400:CSTICK=100/0"`), Delfino, matched guest ticks
+The historical result used a script keyed by `PADRead` count. Native60 and Lerp60 consumed that
+clock at different rates, so matching guest-retrace labels did not establish the same camera
+trajectory. These figures are retained only as the reason the replacement instrument was built;
+they must not be used for cross-mode attribution. With the camera rotating
+(`SBR_PAD_SCRIPT="400:CSTICK=100/0"`), Delfino, nominally matched guest ticks
 1606-1684:
 
 | | mean step | ALTERNATION |

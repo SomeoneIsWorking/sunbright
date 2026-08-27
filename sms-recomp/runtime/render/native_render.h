@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "native_efb_copy_plan.h"
+
 struct SDL_Window;
 
 // One vertex as the backend consumes it: position already in CLIP space (the frontend applies the
@@ -288,7 +290,7 @@ void sbr_render_report_black_owner(int px, int py);
 // Recorded at the point in the DRAW ORDER where the copy happened, because this renderer is
 // deferred: it batches a whole frame and draws at the end, while a copy must capture only what was
 // drawn before it.
-void sbr_render_note_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh);
+void sbr_render_note_copy(const NativeEfbCopyRequest& request);
 
 // True if this guest address resolves to an EFB-copy surface rather than to decoded guest memory.
 // The CPU TEV reference decodes guest memory, so for such an address it does NOT mirror what the

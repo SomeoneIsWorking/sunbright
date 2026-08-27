@@ -25,6 +25,7 @@
 #include "gx_fifo_input.hpp"
 #include "gx_fifo_vertex_layout.hpp"
 #include "mmio.h"
+#include "native_efb_copy_plan.h"
 #include "native_render.h"
 #include "scene.h"
 #include "state_oracle.h"
@@ -82,6 +83,15 @@ u32 g_copy_dest = 0;
 // half-scale bit of the copy command this is how a full EFB is resolved down into a smaller
 // texture — the sea reflection copies 640x448 of EFB into a 320x224 texture this way.
 u32 g_copy_yscale = 0x100;
+
+// Copy-clear registers and the write masks the PE applies after resolving. Aurora consumes these
+// from the raw BP stream; the native renderer needs the same state captured explicitly at the
+// typed copy handoff or it silently resumes with LOAD and leaves the pre-copy EFB intact.
+u32 g_copy_clear_ar = 0x0000FF00u;
+u32 g_copy_clear_gb = 0;
+u32 g_copy_clear_depth = 0x00FFFFFFu;
+u32 g_copy_zmode = 1u << 4;
+u32 g_copy_color_mode = (1u << 3) | (1u << 4);
 
 // Per-texmap image registers. image0 carries dimensions and format; image3 carries the
 // texel address (in 32-byte units). Aurora records both but takes the actual texel POINTER
@@ -258,9 +268,20 @@ void emit_copy_state(u32 cmd, bool to_xfb) {
     // Hand a TEXTURE copy to the renderer so it can resolve the EFB region into a real GPU texture
     // registered under the destination address. A display (XFB) copy is the presented frame and has
     // no texture consumer, so it is not forwarded.
-    if (!to_xfb && g_copy_dest != 0)
-        sbr_scene_note_efb_copy((g_copy_dest << 5) | 0x80000000u, (int)g_copy_left, (int)g_copy_top,
-                                (int)g_copy_w, (int)g_copy_h, (int)dst_w, (int)dst_h);
+    if (!to_xfb && g_copy_dest != 0) {
+        NativeEfbCopyRequest request{};
+        request.dest = (g_copy_dest << 5) | 0x80000000u;
+        request.sourceX = static_cast<int>(g_copy_left);
+        request.sourceY = static_cast<int>(g_copy_top);
+        request.sourceWidth = static_cast<int>(g_copy_w);
+        request.sourceHeight = static_cast<int>(g_copy_h);
+        request.destWidth = static_cast<int>(dst_w);
+        request.destHeight = static_cast<int>(dst_h);
+        request.clear =
+            sbr_native_efb_copy_clear_from_bp(cmd, g_copy_clear_ar, g_copy_clear_gb,
+                                              g_copy_clear_depth, g_copy_zmode, g_copy_color_mode);
+        sbr_scene_note_efb_copy(request);
+    }
 
     // The copy format is NOT the raw bits 3-6. Hardware packs it so that the low bit selects
     // the upper half of the format space:  fmt = field/2 + (field & 1) * 8.  Verified against
@@ -993,10 +1014,12 @@ size_t parse(const u8* p, size_t n, int depth) {
             //         bit4 alphaUpdate | bits5-7 dstFactor | bits8-10 srcFactor | bit11 subtract |
             //         bits12-15 logicOp.  Mode precedence is subtract > blend > logic > none.
             if (reg == 0x40) {
+                g_copy_zmode = val;
                 g_fifoZ.test = (uint8_t)(val & 1);
                 g_fifoZ.func = (uint8_t)((val >> 1) & 7);
                 g_fifoZ.write = (uint8_t)((val >> 4) & 1);
             } else if (reg == 0x41) {
+                g_copy_color_mode = val;
                 const bool blendEn = (val & 1) != 0;
                 const bool logicEn = ((val >> 1) & 1) != 0;
                 const bool subtract = ((val >> 11) & 1) != 0;
@@ -1036,18 +1059,20 @@ size_t parse(const u8* p, size_t n, int depth) {
             // 0x4F/0x50: the EFB clear colour (AR / GB). A copy with the clear bit set leaves
             // the EFB filled with this, so anything grabbed before much is drawn returns it.
             else if (reg == 0x4F || reg == 0x50) {
-                static u32 ar = 0xFFFFFFFF, gb = 0xFFFFFFFF;
                 if (reg == 0x4F)
-                    ar = val;
+                    g_copy_clear_ar = val;
                 else
-                    gb = val;
+                    g_copy_clear_gb = val;
                 static u32 last_ar = 0, last_gb = 0;
-                if (ar != last_ar || gb != last_gb) {
-                    last_ar = ar;
-                    last_gb = gb;
+                if (g_copy_clear_ar != last_ar || g_copy_clear_gb != last_gb) {
+                    last_ar = g_copy_clear_ar;
+                    last_gb = g_copy_clear_gb;
                     lucent::debug("gxfifo", "EFB clear colour: a={} r={} g={} b={}",
-                                  (ar >> 8) & 0xFF, ar & 0xFF, (gb >> 8) & 0xFF, gb & 0xFF);
+                                  (g_copy_clear_ar >> 8) & 0xFF, g_copy_clear_ar & 0xFF,
+                                  (g_copy_clear_gb >> 8) & 0xFF, g_copy_clear_gb & 0xFF);
                 }
+            } else if (reg == 0x51) {
+                g_copy_clear_depth = val;
             } else if (reg == 0x4E) {
                 g_copy_yscale = val & 0x00FFFFFFu;
             }

@@ -31,7 +31,13 @@ int main() {
     tev.stage[0].cDest = 2;
     tev.stage[0].aDest = 3;
     tev.stage[0].texEnable = 1;
+    tev.stage[0].swapRas = 2;
+    tev.stage[0].swapTex = 3;
     tev.stage[0].kC = 0;
+    tev.swapTable[2][0] = 3;
+    tev.swapTable[2][1] = 2;
+    tev.swapTable[2][2] = 1;
+    tev.swapTable[2][3] = 0;
     tev.reg[2][3] = 0.625f;
     tev.alphaOp0 = 4;
     tev.alphaOp1 = 6;
@@ -50,6 +56,10 @@ int main() {
     require(uniform.aSel[0][0] == 1 && uniform.aSel[0][1] == 2 && uniform.aSel[0][2] == 3 &&
             uniform.aSel[0][3] == 4);
     require(uniform.dest[0][0] == 2 && uniform.dest[0][1] == 3 && uniform.dest[0][2] == 1);
+    require(((uniform.dest[0][3] >> 19) & 3) == 2);
+    require(((uniform.dest[0][3] >> 21) & 3) == 3);
+    require(uniform.swapTable[2][0] == 3 && uniform.swapTable[2][1] == 2 &&
+            uniform.swapTable[2][2] == 1 && uniform.swapTable[2][3] == 0);
     require(std::fabs(uniform.konst[0][0] - 1.0f) < 0.0001f);
     require(std::fabs(uniform.regInit[2][3] - 0.625f) < 0.0001f);
     require(uniform.control[1] == 4 && uniform.control[2] == 6 && uniform.control[3] == 2);

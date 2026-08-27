@@ -10,8 +10,11 @@
 //
 //   SBR_PAD_SCRIPT="600:START,640:-,900:STICK=0/-90,1000:STICK=0/0+A+RTRIGGER=255"
 //
-// keys on the PAD read count (one per frame): from read 600 hold START, from 640 hold
-// nothing. Buttons are named (A B X Y Z L R START UP DOWN LEFT RIGHT) or "-" for none.
+// By default keys are the PAD read count (one per frame): from read 600 hold START, from 640
+// hold nothing. SBR_PAD_SCRIPT_CLOCK=guest-retrace instead keys steps on the live guest VI
+// retrace counter at PADRead, so comparisons whose modes advance different retrace counts per
+// simulation tick still apply input at the same guest time. Buttons are named (A B X Y Z L R
+// START UP DOWN LEFT RIGHT) or "-" for none.
 //
 // CSTICK=<x>/<y> sets the C-STICK, which rotates the CAMERA. It exists for the 60fps measurement
 // harness: interpolation quality can only be graded on a moment whose motion is GEOMETRY, and a
@@ -92,6 +95,36 @@ struct Step {
 std::vector<Step> g_script;
 long g_reads = 0;
 
+sunbright::pad::ScriptClock configured_script_clock() {
+    static const sunbright::pad::ScriptClock value = [] {
+        const char* env = std::getenv("SBR_PAD_SCRIPT_CLOCK");
+        const std::string_view text = env != nullptr ? env : "";
+        const auto parsed = sunbright::pad::parse_script_clock(text);
+        if (!parsed) {
+            lucent::error("pad",
+                          "SBR_PAD_SCRIPT_CLOCK '{}' is invalid; expected read-count or "
+                          "guest-retrace",
+                          text);
+            std::abort();
+        }
+        lucent::info("pad", "scripted input clock: {}", sunbright::pad::script_clock_name(*parsed));
+        return *parsed;
+    }();
+    return value;
+}
+
+u32 guest_retrace_at_pad_read(const CPUState& cpu) {
+    const u32 address = cpu.gpr[13] - 22768;
+    if (!sb_ram_fast(address)) {
+        lucent::error("pad",
+                      "SBR_PAD_SCRIPT_CLOCK=guest-retrace cannot read __VIRetraceCount at "
+                      "0x{:08x} (r13=0x{:08x})",
+                      address, cpu.gpr[13]);
+        std::abort();
+    }
+    return sb_r32(address);
+}
+
 bool script_only() {
     static const bool value = [] {
         const char* env = std::getenv("SBR_PAD_SCRIPT_ONLY");
@@ -147,7 +180,7 @@ void parse_script() {
         if (!item.empty()) {
             const size_t colon = item.find(':');
             if (colon == std::string::npos) {
-                lucent::error("pad", "SBR_PAD_SCRIPT entry '{}' is not <frame>:<button>", item);
+                lucent::error("pad", "SBR_PAD_SCRIPT entry '{}' is not <key>:<button>", item);
                 std::abort();
             }
             Step st{std::strtol(item.substr(0, colon).c_str(), nullptr, 10), 0};
@@ -212,28 +245,29 @@ void parse_script() {
             break;
         pos = comma + 1;
     }
+    const auto clockName = sunbright::pad::script_clock_name(configured_script_clock());
     for (const auto& st : g_script)
         lucent::info("pad",
-                     "script: from read {} hold 0x{:04x} stick {}/{} cstick {}/{} triggers {}/{}",
-                     st.frame, st.buttons, st.stickX == 0x8000 ? 999 : st.stickX,
+                     "script: from {} {} hold 0x{:04x} stick {}/{} cstick {}/{} triggers {}/{}",
+                     clockName, st.frame, st.buttons, st.stickX == 0x8000 ? 999 : st.stickX,
                      st.stickY == 0x8000 ? 999 : st.stickY, st.subX == 0x8000 ? 999 : st.subX,
                      st.subY == 0x8000 ? 999 : st.subY, st.triggerLeft, st.triggerRight);
 }
 
-u16 scripted_buttons() {
+u16 scripted_buttons(std::int64_t scriptKey) {
     u16 held = 0;
     for (const auto& st : g_script)
-        if (g_reads >= st.frame)
+        if (scriptKey >= st.frame)
             held = st.buttons; // last matching step wins
     return held;
 }
 
 // Latest step at or before now that actually SET a stick value; 0x8000 if none has.
-void scripted_stick(int& x, int& y) {
+void scripted_stick(std::int64_t scriptKey, int& x, int& y) {
     x = 0x8000;
     y = 0x8000;
     for (const auto& st : g_script) {
-        if (g_reads < st.frame)
+        if (scriptKey < st.frame)
             continue;
         if (st.stickX != 0x8000)
             x = st.stickX;
@@ -242,11 +276,11 @@ void scripted_stick(int& x, int& y) {
     }
 }
 
-void scripted_substick(int& x, int& y) {
+void scripted_substick(std::int64_t scriptKey, int& x, int& y) {
     x = 0x8000;
     y = 0x8000;
     for (const auto& st : g_script) {
-        if (g_reads < st.frame)
+        if (scriptKey < st.frame)
             continue;
         if (st.subX != 0x8000)
             x = st.subX;
@@ -255,11 +289,11 @@ void scripted_substick(int& x, int& y) {
     }
 }
 
-void scripted_triggers(int& left, int& right) {
+void scripted_triggers(std::int64_t scriptKey, int& left, int& right) {
     left = -1;
     right = -1;
     for (const auto& st : g_script) {
-        if (g_reads < st.frame)
+        if (scriptKey < st.frame)
             continue;
         if (st.triggerLeft >= 0)
             left = st.triggerLeft;
@@ -302,6 +336,10 @@ void pad_read(CPUState& cpu) {
 
     const u32 out = cpu.gpr[3];
     ++g_reads;
+    const auto clock = configured_script_clock();
+    const u32 guestRetrace =
+        clock == sunbright::pad::ScriptClock::GuestRetrace ? guest_retrace_at_pad_read(cpu) : 0;
+    const std::int64_t scriptKey = sunbright::pad::select_script_key(clock, g_reads, guestRetrace);
 
     // REAL input from aurora (keyboard and any attached controller), OR-ed with the script so
     // an automated run and a human at the keyboard both work — and so a scripted run can still
@@ -314,11 +352,12 @@ void pad_read(CPUState& cpu) {
         ::PADRead(host);
 
     const u16 buttons =
-        sunbright::pad::combine_buttons(scripted_buttons(), host[0].button, scriptOnly);
+        sunbright::pad::combine_buttons(scripted_buttons(scriptKey), host[0].button, scriptOnly);
     static u16 last = 0xFFFF;
     if (buttons != last) {
         last = buttons;
-        lucent::info("pad", "read {}: buttons 0x{:04x}", g_reads, buttons);
+        lucent::info("pad", "read {} script-key {} ({}): buttons 0x{:04x}", g_reads, scriptKey,
+                     sunbright::pad::script_clock_name(clock), buttons);
     }
 
     for (u32 i = 0; i < 4; i++) {
@@ -330,19 +369,19 @@ void pad_read(CPUState& cpu) {
             // A script value overrides the host stick; where the script is silent the
             // keyboard still drives, so a scripted run can be nudged by hand.
             int sx = 0x8000, sy = 0x8000;
-            scripted_stick(sx, sy);
+            scripted_stick(scriptKey, sx, sy);
             sb_w8(p + PS_STICK_X,
                   (u8)(s8)sunbright::pad::select_axis(sx, host[0].stickX, scriptOnly));
             sb_w8(p + PS_STICK_Y,
                   (u8)(s8)sunbright::pad::select_axis(sy, host[0].stickY, scriptOnly));
             int cx = 0x8000, cy = 0x8000;
-            scripted_substick(cx, cy);
+            scripted_substick(scriptKey, cx, cy);
             sb_w8(p + PS_SUB_X,
                   (u8)(s8)sunbright::pad::select_axis(cx, host[0].substickX, scriptOnly));
             sb_w8(p + PS_SUB_Y,
                   (u8)(s8)sunbright::pad::select_axis(cy, host[0].substickY, scriptOnly));
             int triggerLeft = -1, triggerRight = -1;
-            scripted_triggers(triggerLeft, triggerRight);
+            scripted_triggers(scriptKey, triggerLeft, triggerRight);
             sb_w8(p + PS_TRIG_L,
                   sunbright::pad::select_trigger(triggerLeft, host[0].triggerLeft, scriptOnly));
             sb_w8(p + PS_TRIG_R,

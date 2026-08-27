@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import signal
@@ -132,6 +134,76 @@ def selftest() -> int:
         )
         assert clean.returncode == 0, clean
         assert not (temp / "stamp").exists()
+
+        cpu_signal_incidents = temp / "cpu-signal-incidents"
+        cpu_signal_kernel = [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+        ]
+        cpu_signal_script = (
+            "import os,pathlib,resource,signal; "
+            f"root=pathlib.Path({str(cpu_signal_incidents)!r}); root.mkdir(); "
+            "(root/f'session_{os.getpid()}_before-submit.flight.report.txt').touch(); "
+            "resource.setrlimit(resource.RLIMIT_CORE,(0,0)); "
+            "os.kill(os.getpid(),signal.SIGSEGV)"
+        )
+        cpu_signal_stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                module,
+                "_core_dump_evidence",
+                return_value=["status: FOUND (planted exact-PID coredump record)"],
+            ),
+            contextlib.redirect_stderr(cpu_signal_stderr),
+        ):
+            cpu_signal = run_guarded(
+                [sys.executable, "-c", cpu_signal_script],
+                5,
+                incident_dir=cpu_signal_incidents,
+                stamp=temp / "cpu-signal.stamp",
+                kernel_command=cpu_signal_kernel,
+                include_flight=False,
+                devcoredump_root=no_dump_root,
+            )
+        assert cpu_signal.returncode == 128 + signal.SIGSEGV, cpu_signal
+        assert cpu_signal.fault_line == "SIGSEGV (signal 11)"
+        assert cpu_signal.incident_path is not None
+        cpu_signal_text = cpu_signal.incident_path.read_text(errors="replace")
+        assert "classification: PROCESS SIGNAL (not a detected kernel GPU fault)" in (
+            cpu_signal_text
+        )
+        assert "termination: SIGSEGV (signal 11)" in cpu_signal_text
+        assert "shell-compatible exit code: 139" in cpu_signal_text
+        assert "status: FOUND (planted exact-PID coredump record)" in cpu_signal_text
+        assert "status: EMPTY" in cpu_signal_text
+        assert "size=0" in cpu_signal_text
+        assert "empty submit-flight sidecar is not GPU-fault evidence" in cpu_signal_text
+        assert "CPU/process signal case" in cpu_signal_stderr.getvalue()
+        assert "not a detected kernel GPU fault" in cpu_signal_stderr.getvalue()
+        assert not (temp / "cpu-signal.stamp").exists()
+
+        ordinary_failure_incidents = temp / "ordinary-failure-incidents"
+        ordinary_failure_stderr = io.StringIO()
+        with contextlib.redirect_stderr(ordinary_failure_stderr):
+            ordinary_failure = run_guarded(
+                [sys.executable, "-c", "raise SystemExit(11)"],
+                5,
+                incident_dir=ordinary_failure_incidents,
+                stamp=temp / "ordinary-failure.stamp",
+                kernel_command=[
+                    sys.executable,
+                    "-c",
+                    "import time; time.sleep(30)",
+                ],
+                include_flight=False,
+                devcoredump_root=no_dump_root,
+            )
+        assert ordinary_failure.returncode == 11, ordinary_failure
+        assert ordinary_failure.incident_path is None
+        assert not list(ordinary_failure_incidents.glob("cpu_signal_*.txt"))
+        assert "CPU/process signal case" not in ordinary_failure_stderr.getvalue()
+        assert not (temp / "ordinary-failure.stamp").exists()
 
         radv_exit_fifo = temp / "radv-exit.fifo"
         os.mkfifo(radv_exit_fifo)
@@ -698,6 +770,9 @@ def selftest() -> int:
         "  known-negative harmless journal line: command exits normally, no cooldown stamp"
     )
     print("  unlimited interactive guard accepts a clean child exit")
+    print(
+        "  SIGSEGV becomes exit 139 with a CPU/core incident; ordinary exit 11 is not misclassified"
+    )
     print(
         "  known-positive illegal-register line: exact group killed before durable incident writes"
     )

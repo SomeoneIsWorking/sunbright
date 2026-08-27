@@ -143,8 +143,8 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp host/aurora_config.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/gpu_incident_recorder.cpp runtime/gpu_incident_report.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
-                           runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_presenter.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
-                           runtime/render/render_compare.cpp runtime/render/frame_smoothness.cpp)
+                           runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_efb_copy_clear_draw.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_presenter.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
+                           runtime/render/render_compare.cpp runtime/render/render_compare_join.cpp runtime/render/render_compare_metric.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
 # is the guest call stack — but only if the names resolve.
@@ -227,7 +227,8 @@ target_include_directories(native_gpu_guard_test PRIVATE runtime/render)
 add_test(NAME native_gpu_guard COMMAND native_gpu_guard_test)
 
 add_executable(native_efb_copy_plan_test tests/native_efb_copy_plan_test.cpp
-                                         runtime/render/native_efb_copy_plan.cpp)
+                                         runtime/render/native_efb_copy_plan.cpp
+                                         runtime/render/native_efb_copy_clear_draw.cpp)
 target_include_directories(native_efb_copy_plan_test PRIVATE runtime/render)
 add_test(NAME native_efb_copy_plan COMMAND native_efb_copy_plan_test)
 
@@ -243,6 +244,16 @@ add_executable(native_tev_uniform_test tests/native_tev_uniform_test.cpp
 target_link_libraries(native_tev_uniform_test PRIVATE lucent::lucent)
 target_include_directories(native_tev_uniform_test PRIVATE runtime/render)
 add_test(NAME native_tev_uniform COMMAND native_tev_uniform_test)
+
+add_executable(render_compare_join_test tests/render_compare_join_test.cpp
+                                        runtime/render/render_compare_join.cpp)
+target_include_directories(render_compare_join_test PRIVATE runtime/render)
+add_test(NAME render_compare_join COMMAND render_compare_join_test)
+
+add_executable(render_compare_metric_test tests/render_compare_metric_test.cpp
+                                          runtime/render/render_compare_metric.cpp)
+target_include_directories(render_compare_metric_test PRIVATE runtime/render)
+add_test(NAME render_compare_metric COMMAND render_compare_metric_test)
 
 add_executable(gx_fifo_input_test tests/gx_fifo_input_test.cpp
                                   runtime/devices/gx_fifo_input.cpp
@@ -260,7 +271,26 @@ target_include_directories(tag_2d_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime")
 add_test(NAME tag_2d COMMAND tag_2d_test)
 
-add_executable(native_pad_policy_test tests/native_pad_policy_test.cpp)
+add_executable(presentation_label_test tests/presentation_label_test.cpp
+                                       frame_interp/presentation_label.cpp)
+target_include_directories(presentation_label_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME presentation_label COMMAND presentation_label_test)
+
+add_executable(capture_pose_test tests/capture_pose_test.cpp frame_interp/capture_pose.cpp)
+target_include_directories(capture_pose_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME capture_pose COMMAND capture_pose_test)
+
+add_executable(frame_interp_callback_test tests/frame_interp_callback_test.cpp
+                                          frame_interp/frame_interp.cpp)
+target_link_libraries(frame_interp_callback_test PRIVATE lucent::lucent)
+target_include_directories(frame_interp_callback_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
+    "${GEN}")
+add_test(NAME frame_interp_callback COMMAND frame_interp_callback_test)
+
+add_executable(native_pad_policy_test tests/native_pad_policy_test.cpp
+                                      overrides/native_pad_policy.cpp)
 target_include_directories(native_pad_policy_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME native_pad_policy COMMAND native_pad_policy_test)
 

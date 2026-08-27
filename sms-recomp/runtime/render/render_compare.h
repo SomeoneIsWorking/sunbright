@@ -35,10 +35,20 @@
 // Register the aurora frame sink and start scoring. Safe to call every frame; acts once.
 void sbr_compare_init();
 
-// Hand over the native frame for this frame (RGBA8, top-left origin) plus the exact clear colour
-// it was rendered over. Stored until aurora's asynchronous readback for the same frame arrives.
-void sbr_compare_submit_native(const uint8_t* rgba, int w, int h, uint8_t clearR, uint8_t clearG,
-                               uint8_t clearB);
+// Reserve the exact Aurora packet selected by the frame sink for this native render. Returns zero
+// when this present is outside the comparison cadence. Query before aurora_end_frame closes the
+// packet; delayed callbacks later rendezvous on this ID, never on arrival order.
+uint64_t sbr_compare_capture_frame_id();
+
+// Capture the current native frame, optional round-robin ablation, and seal both under the exact
+// Aurora packet selected by the sink. This owns the renderer-specific producer transaction so the
+// frame seam only orchestrates subsystems.
+void sbr_compare_capture_current_native_frame();
+
+// Hand over the native image for the reserved Aurora packet (RGBA8, top-left origin) plus the exact
+// clear colour it was rendered over.
+void sbr_compare_submit_native(uint64_t frameId, const uint8_t* rgba, int w, int h, uint8_t clearR,
+                               uint8_t clearG, uint8_t clearB);
 
 // True if SBR_AB is on.
 bool sbr_compare_enabled();
@@ -49,16 +59,21 @@ bool sbr_compare_enabled();
 // mean drifts several points with the frame COUNT alone, so two runs of different length are not
 // comparable, and that trap has already produced one wrong conclusion in this arc.
 //
-// So variants are scored INSIDE one run, against THE SAME aurora frame. Each variant replaces
-// exactly one operation with a neutral reference (texgen -> raw uv, texture fetch -> white,
-// ras -> channel 0, and so on). Equal-N holds by construction, and the ranked delta names the
-// operation: the ablation that RECOVERS the most score is the operation this port gets wrong.
+// So each variant is scored against the exact Aurora frame and native baseline carrying the same
+// packet ID. Each variant replaces one operation with a neutral reference (texgen -> raw uv,
+// texture fetch -> white, ras -> channel 0, and so on). This makes each row's delta valid; the
+// round-robin still samples different variants on different scene frames, so cross-row ranking is
+// exploratory until every variant is exercised on the same frozen frame population.
 //
 //   SBR_ABLATE=1   run the sweep on every scored frame and report a ranked table.
 
 // Submit one labelled variant of the current native frame. Scored against the same aurora frame as
 // the baseline; accumulated per variant across frames.
-void sbr_compare_submit_variant(int id, const char* name, const uint8_t* rgba, int w, int h);
+void sbr_compare_submit_variant(uint64_t frameId, int id, const char* name, const uint8_t* rgba,
+                                int w, int h);
+// Seal the native producer side after its optional variant is submitted. An Aurora callback that
+// arrived early remains retained until this call; a later callback completes the same rendezvous.
+void sbr_compare_finish_frame(uint64_t frameId);
 
 // True if the ablation sweep is on.
 bool sbr_compare_ablate_enabled();
@@ -71,5 +86,5 @@ bool sbr_compare_ablate_enabled();
 // cannot alias, whatever the two cadences are.
 int sbr_compare_ablation_to_render();
 
-// Ranked attribution table: every variant's mean score and its delta from the baseline.
+// Attribution table: every variant's mean score and paired delta from its exact-frame baseline.
 void sbr_compare_report_attribution();

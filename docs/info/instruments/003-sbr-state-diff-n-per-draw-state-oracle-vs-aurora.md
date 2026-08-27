@@ -1,8 +1,9 @@
 ---
 id: I003
 kind: instrument
-status: trusted
+status: DISTRUSTED
 created: 2026-07-28
+distrusted_on: 2026-08-27
 ---
 
 ## Instrument
@@ -16,3 +17,9 @@ KNOWN-POSITIVE: distinct unit ids per side over a frame are comparable (u0 97 vs
 ## Known failure modes
 
 (none recorded yet)
+
+## DISTRUSTED 2026-08-27
+
+Frames are paired by oldest closed queue position without a shared frame identity, then by stream offsets that repeat every frame. Delayed, missing, or reordered frame completion can silently compare different frames. Add a shared frame ID and pair on (frameId, streamOffset), with reordered/missing controls.
+
+> Every result this instrument produced is suspect until it is re-validated.

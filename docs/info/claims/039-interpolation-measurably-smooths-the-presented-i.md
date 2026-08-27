@@ -8,12 +8,23 @@ tags:
 
 ## Claim
 
-Interpolation measurably smooths the presented image: with the camera rotating, both presents of a tick advance the picture nearly equally (ALTERNATION 1.19) and each present moves it about two thirds as far as a 30Hz present
+Interpolation measurably smooths the presented image during a controlled camera rotation: its
+whole-gameplay spatial alternation is lower than Native60 over the same guest time and exact camera
+trajectory.
 
 ## Evidence
 
-tools/interp/cadence.py on Delfino, matched guest ticks 1606-1684, SBR_PAD_SCRIPT=400:CSTICK=100/0: SBR_LERP60=1 gives mean step 13.34 and ALTERNATION 1.19 (phase means 14.46/12.19); the same ticks with interpolation off give mean step 19.45. Measured at the PIXEL level, independent of the per-draw pairing percentages.
+Schema-5 `tools/interp/compare_modes.py` capture on 2026-08-28, Delfino guest retraces 1822..1854,
+with guest-retrace-keyed slow camera rotation. Native60 repeated byte-for-byte and every cross-mode
+settled camera matrix matched. Across grid ROI `[0,0..16,10)`, excluding the dialogue band,
+Native60 mean spatial alternation was 0.291 and Lerp60 was 0.245. The planted every-other-frame
+snap control raised the same Native60 baseline to 1.000. Instrument I038 records the provenance and
+blind spots.
+
+The old 2026-08-12 `PADRead`-count comparison is superseded: the same script advanced at different
+guest times in Native60 and Lerp60 and therefore did not establish the same camera trajectory.
 
 ## What would falsify it
 
-a change to the interpolation alpha (forced 0.5 in stream_interp.cpp), to which draws are tagged, or to the replay-emission mechanism; re-measure with the same CSTICK script and matched ticks
+a change to interpolation, replay emission, camera/input timing, renderer output, or the comparator;
+re-run the complete schema-5 Native60 / repeat / Lerp60 control

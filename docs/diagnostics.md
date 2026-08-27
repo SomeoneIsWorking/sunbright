@@ -251,6 +251,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_BIND_DECODE_LOG` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
 | `SBR_BIND_LOG` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_BLACK_OWNER` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_CAPTURE_POSE` | 1 | `sms-recomp/frame_interp/capture_pose_guest.cpp` |  |
 | `SBR_CARD_A` | 1 | `sms-recomp/overrides/native_card.cpp` |  |
 | `SBR_CARD_TRACE` | 1 | `sms-recomp/overrides/diag_card.cpp` |  |
 | `SBR_CRASH_SELFTEST` | 1 | `sms-recomp/runtime/rt_core.cpp` |  |
@@ -323,6 +324,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_J2D_SOLID` | 1 | `sms-recomp/overrides/diag_2d.cpp` |  |
 | `SBR_J3D_CAPTURE` | 1 | `sms-recomp/overrides/j3d_capture.cpp` |  |
 | `SBR_LERP60` | 1 | `sms-recomp/app/settings.cpp` |  |
+| `SBR_LUCENT_DEBUG` | 1 | `tools/launch/run.py` |  |
 | `SBR_MAX_BATCH` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_MIDPOINT_SLACK` | 2 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_MTX_CHECK` | 1 | `sms-recomp/overrides/mtx_crosscheck.cpp` |  |
@@ -330,6 +332,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_NO_SCISSOR` | 1 | `sms-recomp/runtime/render/native_render.cpp` |  |
 | `SBR_NO_TEXOBJ` | 1 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
 | `SBR_PAD_SCRIPT` | 1 | `sms-recomp/overrides/native_pad.cpp` |  |
+| `SBR_PAD_SCRIPT_CLOCK` | 1 | `sms-recomp/overrides/native_pad.cpp` |  |
 | `SBR_PAD_SCRIPT_ONLY` | 1 | `sms-recomp/overrides/native_pad.cpp` |  |
 | `SBR_PHASE_COUNT` | 1 | `sms-recomp/overrides/diag_phases.cpp` |  |
 | `SBR_PRESENT_AFTER_COPY` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
@@ -378,4 +381,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**357 switches; 62 still gate a raw print.**
+**360 switches; 62 still gate a raw print.**

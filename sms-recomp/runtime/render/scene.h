@@ -1,4 +1,6 @@
 #pragma once
+
+#include "native_efb_copy_plan.h"
 // scene — the interpolated scene the native renderer draws.
 //
 // WHY THIS EXISTS (2026-07-23, user-directed): the previous 60fps attempt drove the RENDER from the
@@ -33,20 +35,20 @@ struct SbrDrawable {
     // samples it (a feedback loop). Stream offset is the position both the parser and the oracle
     // already agree on.
     uint32_t streamPos;
-    uint64_t key;       // stable identity across ticks: (shape pointer << 16) | element index
-    uint32_t geom;      // handle into the geometry cache (0 = not yet decoded)
-    float    mtx[12];   // the draw matrix, row-major 3x4 — model x view (the camera is composed in
-                        // at capture time), so only the projection remains
+    uint64_t key;        // stable identity across ticks: (shape pointer << 16) | element index
+    uint32_t geom;       // handle into the geometry cache (0 = not yet decoded)
+    float mtx[12];       // the draw matrix, row-major 3x4 — model x view (the camera is composed in
+                         // at capture time), so only the projection remains
     SbrDepthState depth; // the GX depth state this shape's MATERIAL set, captured at draw time
-    float    proj[16];   // the projection LOADED when this shape was drawn. Per-drawable because a
+    float proj[16];      // the projection LOADED when this shape was drawn. Per-drawable because a
                          // frame mixes perspective (the world) and ortho (HUD, message box), and
                          // projecting a 2D element with the 3D matrix makes it cover the screen.
-    uint8_t  is2d;       // that projection was an ortho
+    uint8_t is2d;        // that projection was an ortho
     SbrTexture tex[8];   // TEXMAP0..7 as bound when this shape was drawn. A TEV stage names its own
                          // texmap, and 72% of the plaza's drawables name one above 0 — binding only
                          // TEXMAP0 gave every one of those stages the wrong image.
     SbrTevState tev;     // the material's TEV configuration at that moment
-    SbrXfState  xf;      // colour-channel control and lights at that moment
+    SbrXfState xf;       // colour-channel control and lights at that moment
 };
 
 // One decoded model-space vertex. `slot` is the vertex's PNMTXIDX/3 — which J3DShapeMtx slot it
@@ -54,10 +56,10 @@ struct SbrDrawable {
 // applies to all of them; skinned shapes vary it per vertex (see sbr_scene_multislot_count).
 struct SbrGeomVert {
     float x, y, z;
-    float nx, ny, nz;  // model-space normal, for the lit colour channel
+    float nx, ny, nz; // model-space normal, for the lit colour channel
     uint32_t slot;
-    float uv[4][2];    // RAW coordinate sets TEX0..TEX3, before texgen
-    uint32_t rgba;     // CLR0
+    float uv[4][2]; // RAW coordinate sets TEX0..TEX3, before texgen
+    uint32_t rgba;  // CLR0
 };
 
 // Intern one drawable's geometry, returning its cache handle (never 0). Model-space positions do
@@ -105,9 +107,8 @@ void sbr_scene_begin_tick();
 // Record one drawable. Called from the J3D capture hook.
 void sbr_scene_add(const SbrDrawable& d);
 
-
-// Finish the tick: rotate current -> previous and stamp the wall clock, so the renderer can work out
-// how far between the two snapshots any given display frame falls.
+// Finish the tick: rotate current -> previous and stamp the wall clock, so the renderer can work
+// out how far between the two snapshots any given display frame falls.
 void sbr_scene_end_tick();
 
 // Render one display frame. `now_seconds` is the wall clock; the interpolation factor is derived
@@ -135,6 +136,6 @@ int sbr_scene_matched_count();
 
 // An EFB texture copy seen by the FIFO parser, remembered with its position in the capture order
 // so the renderer can perform it at the right point in the batch list. See native_render.h.
-void sbr_scene_note_efb_copy(uint32_t dest, int sx, int sy, int sw, int sh, int dw, int dh);
+void sbr_scene_note_efb_copy(const NativeEfbCopyRequest& request);
 void sbr_scene_clear_pending_copies();
 void sbr_scene_report_2d();

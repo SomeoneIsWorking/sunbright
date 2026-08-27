@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run one command while watching the kernel journal for the first new GPU fault.
 
-The watched command starts in a new process group. On the first fault this tool immediately
+The watched command starts in a new process group. On the first GPU fault this tool immediately
 SIGKILLs that exact process group, then writes a crash-surviving incident bundle and GPU-fault
-cooldown stamp and decodes the matching recomp submit-flight file when the reader is available.
+cooldown stamp and decodes the matching recomp submit-flight file when the reader is available. A
+process signal without kernel GPU evidence instead produces a separate CPU/core-dump report and no
+GPU cooldown.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ OUTPUT_TAIL_LINES = 160
 POST_EXIT_SETTLE_SECS = 0.4
 REAP_TIMEOUT_SECS = 1.0
 MAX_GUARD_TIMEOUT_SECS = 600.0
+CORE_DUMP_QUERY_TIMEOUT_SECS = 3.0
 KERNEL_TIMESTAMP = re.compile(
     r"^(?P<second>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
     r"(?:\.(?P<fraction>\d{1,9}))?"
@@ -380,6 +383,128 @@ def _static_environment(command: list[str]) -> list[str]:
         relevant[key] = "<redacted>" if SECRET_NAME.search(key) else value
     lines.extend(f"env {key}={value}" for key, value in sorted(relevant.items()))
     return lines
+
+
+def _signal_name(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"SIGNAL_{signum}"
+
+
+def _core_dump_evidence(child_pid: int) -> list[str]:
+    """Query the systemd coredump index without copying or exposing dump contents."""
+    executable = shutil.which("coredumpctl")
+    if executable is None:
+        return [
+            "status: UNAVAILABLE (coredumpctl is not installed)",
+            "the process signal is proven, but core-file creation is not observable here",
+        ]
+    command = [executable, "--no-pager", "info", str(child_pid)]
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=CORE_DUMP_QUERY_TIMEOUT_SECS,
+        )
+    except subprocess.TimeoutExpired:
+        return [
+            f"status: UNAVAILABLE (coredumpctl exceeded {CORE_DUMP_QUERY_TIMEOUT_SECS:g}s)",
+            f"inspection command: coredumpctl --no-pager info {child_pid}",
+        ]
+    except OSError as exc:
+        return [
+            f"status: UNAVAILABLE (coredumpctl could not run: {exc})",
+            f"inspection command: coredumpctl --no-pager info {child_pid}",
+        ]
+    if result.returncode == 0:
+        return [
+            "status: FOUND (coredumpctl has a record for the exact child PID)",
+            f"inspection command: coredumpctl --no-pager info {child_pid}",
+        ]
+    return [
+        f"status: NOT-FOUND (coredumpctl exited {result.returncode} for the exact child PID)",
+        "the process signal is proven, but a retained core dump is not",
+    ]
+
+
+def _flight_report_evidence(
+    child_pid: int,
+    incident_dir: Path,
+    report_snapshot: dict[str, tuple[int, int, int]],
+) -> list[str]:
+    reports: list[Path] = []
+    for path in incident_dir.glob(f"session_{child_pid}_*.flight.report.txt"):
+        try:
+            identity = (path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns)
+        except OSError:
+            continue
+        if report_snapshot.get(str(path.resolve())) != identity:
+            reports.append(path)
+    if not reports:
+        return [
+            "status: ABSENT (no new/changed report sidecar matched the exact child PID)",
+            "this is consistent with termination before the submit-flight reporter produced output",
+        ]
+    lines: list[str] = []
+    for path in sorted(reports):
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            lines.append(f"status: UNAVAILABLE path={path} detail={exc}")
+            continue
+        state = "EMPTY" if size == 0 else "PRESENT"
+        lines.append(f"status: {state} path={path} size={size}")
+    lines.append(
+        "an empty submit-flight sidecar is not GPU-fault evidence; it is consistent with "
+        "termination before the first submit/report flush"
+    )
+    return lines
+
+
+def _write_cpu_signal_incident(
+    incident_dir: Path,
+    child_pid: int,
+    command: list[str],
+    leader_returncode: int,
+    output_tail: list[str],
+    report_snapshot: dict[str, tuple[int, int, int]],
+    reap_note: str | None = None,
+) -> Path:
+    signum = -leader_returncode
+    name = _signal_name(signum)
+    shell_returncode = 128 + signum
+    timestamp = datetime.now(timezone.utc)
+    incident_dir.mkdir(parents=True, exist_ok=True)
+    incident = (
+        incident_dir
+        / f"cpu_signal_{timestamp.strftime('%Y%m%dT%H%M%S.%fZ')}_{child_pid}.txt"
+    )
+    sections = [
+        "Sunbright guarded-process signal incident",
+        f"utc: {timestamp.isoformat()}",
+        f"guarded pid/pgid: {child_pid}",
+        f"command: {_redacted_command(command)!r}",
+        "classification: PROCESS SIGNAL (not a detected kernel GPU fault)",
+        f"termination: {name} (signal {signum})",
+        f"shell-compatible exit code: {shell_returncode}",
+        "kernel GPU barrier: no GPU fault observed through the final post-exit scan",
+        "",
+        "--- Linux CPU core-dump disposition ---",
+        *_core_dump_evidence(child_pid),
+        "",
+        "--- submit-flight report disposition ---",
+        *_flight_report_evidence(child_pid, incident_dir, report_snapshot),
+        "",
+        "--- guarded process output tail ---",
+        *(output_tail or ["<no process output captured>"]),
+    ]
+    if reap_note is not None:
+        sections.extend(("", f"REAP STATUS: {reap_note}"))
+    sections.extend(("", "--- static CPU-only environment ---", *_static_environment(command)))
+    atomic_durable_replace(incident, "\n".join(sections) + "\n")
+    return incident
 
 
 def _write_minimal_fault(
@@ -715,6 +840,14 @@ def _run_guarded_protected(
         )
         for path in incident_dir.glob("session_*.flight")
     }
+    flight_report_snapshot = {
+        str(path.resolve()): (
+            path.stat().st_ino,
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+        )
+        for path in incident_dir.glob("session_*.flight.report.txt")
+    }
     devcoredump_before, devcoredump_snapshot_error = device_coredump_snapshot(
         devcoredump_root
     )
@@ -926,6 +1059,52 @@ def _run_guarded_protected(
                     barrier_result = final_kernel_result()
                     if barrier_result is not None:
                         return barrier_result
+                    if leader_rc < 0:
+                        signum = -leader_rc
+                        name = _signal_name(signum)
+                        public_returncode = 128 + signum
+                        pump.join(timeout=0.25)
+                        incident: Path | None = None
+                        try:
+                            incident = _write_cpu_signal_incident(
+                                incident_dir,
+                                child.pid,
+                                command,
+                                leader_rc,
+                                pump.snapshot(),
+                                flight_report_snapshot,
+                                reap_note,
+                            )
+                        except Exception as exc:
+                            print(
+                                f"[gpu-watch] CPU signal incident persistence failed: {exc}",
+                                file=sys.stderr,
+                            )
+                        report_radv_terminal(
+                            f"child terminated by {name} (signal {signum}); "
+                            f"returncode {public_returncode}"
+                        )
+                        incident_label = (
+                            str(incident) if incident is not None else "UNAVAILABLE"
+                        )
+                        print(
+                            f"[gpu-watch] guarded process terminated by {name} "
+                            f"(signal {signum}); this is a CPU/process signal case, not a "
+                            "detected kernel GPU fault; "
+                            f"CPU incident: {incident_label}",
+                            file=sys.stderr,
+                        )
+                        print(
+                            "[gpu-watch] an empty .flight.report.txt can mean the process "
+                            "died before its first GPU submit/report flush; inspect the CPU "
+                            "incident and coredump disposition above.",
+                            file=sys.stderr,
+                        )
+                        return GuardResult(
+                            public_returncode,
+                            f"{name} (signal {signum})",
+                            incident,
+                        )
                     report_radv_terminal(
                         f"child exit; returncode {leader_rc}"
                     )

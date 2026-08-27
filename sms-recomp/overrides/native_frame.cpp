@@ -9,9 +9,11 @@
 // (overrides/native_vi.cpp). This split is the same one the decomp runtime uses.
 
 #include "native_frame.h"
+#include "../frame_interp/capture_pose.h"
 #include "../frame_interp/effects.h"
 #include "../frame_interp/frame_interp.h"
 #include "../frame_interp/graphics_db.h"
+#include "../frame_interp/presentation_label.h"
 #include "../frame_interp/stream_interp.h"
 #include "../runtime/probe_server.h"
 #include "../runtime/render/native_render.h"
@@ -444,7 +446,16 @@ extern "C" void aurora_replay_midpoint() {
     nanosleep(&ts, nullptr);
 }
 
-extern "C" void aurora_replay_sample(float alpha, unsigned, unsigned) {
+extern "C" void aurora_replay_sample(float alpha, unsigned index, unsigned count) {
+    const auto label = sb::frame_interp::replay_sample_dump_label(g_dumpGuestTick, index, count);
+    if (!label) {
+        lucent::error("frame",
+                      "Aurora requested invalid retained replay sample {}/{} at guest "
+                      "tick {}; refusing to mislabel the presentation",
+                      index, count, g_dumpGuestTick);
+        std::abort();
+    }
+    aurora_set_dump_tag(label->data());
     ++g_present_count;
     throttle_gpu_submission();
     sb::frame_interp::present_interpolated_frame(alpha);
@@ -802,78 +813,7 @@ void video_wait_for_retrace(CPUState& cpu) {
         sbr_render_end();
 
         sbr_compare_init();
-        // The comparator wants a frame every SBR_AB_EVERY presents, which is a different (and
-        // usually much denser) cadence than the human-readable report below — so it gets its own
-        // readback rather than piggybacking on that one.
-        if (sbr_compare_enabled()) {
-            static std::vector<uint8_t> ab(640 * 448 * 4);
-            if (sbr_render_capture() && sbr_render_readback(ab.data(), 640, 448))
-                sbr_compare_submit_native(ab.data(), 640, 448, 26, 102, 204);
-            // OPERATION ATTRIBUTION: re-render this same frame once per ablated operation and
-            // submit each as a labelled variant. All of them are scored against the SAME aurora
-            // frame as the baseline, so the ranked table is drift-free — unlike comparing the
-            // means of two runs of different length, which is what previously misled this arc.
-            if (sbr_compare_ablate_enabled()) {
-                // Checksum every variant INCLUDING the control, against the baseline's. The
-                // control renders the real pipeline, so its checksum MUST equal the baseline's.
-                // If it does not, re-rendering the same frame is not reproducible and the whole
-                // attribution table is void — this is the check that says so out loud rather than
-                // letting a broken sweep read as a finding.
-                auto sum = [](const std::vector<uint8_t>& p) {
-                    unsigned long long h = 1469598103934665603ULL;
-                    for (size_t i = 0; i < p.size(); i += 4)
-                        h = (h ^ (p[i] + 3u * p[i + 1] + 7u * p[i + 2])) * 1099511628211ULL;
-                    return h;
-                };
-                const unsigned long long base = sum(ab);
-                auto dump = [](const char* path, const std::vector<uint8_t>& p) {
-                    if (FILE* f = std::fopen(path, "wb")) {
-                        std::fwrite(p.data(), 1, p.size(), f);
-                        std::fclose(f);
-                    }
-                };
-                // The checksum of each variant against the baseline's, ONE PER FRAME like the
-                // scoring itself. The control renders the real pipeline, so its checksum MUST
-                // equal the baseline's; if it does not, re-rendering the same frame is not
-                // reproducible and the whole attribution table is void.
-                //
-                // This used to sweep all fifteen variants at once on the first two frames with
-                // geometry, to get the checksums together. That is sixteen full offscreen passes
-                // in a single frame, which is exactly the burst that hung the graphics ring and
-                // cost the user their desktop session — the renderer now caps passes per frame and
-                // would refuse most of them anyway. Spreading the checksums costs nothing: each is
-                // a comparison against ITS OWN frame's baseline, which was never a cross-frame
-                // quantity.
-                //
-                // Only on frames that HAVE geometry: the first presents are the loading screen,
-                // where every ablation of an empty frame is trivially identical — a degenerate
-                // input that would read as "the sweep works" when it proves nothing.
-                static long told = 0;
-                const bool haveGeom = sbr_render_last_vertex_count() > 1000;
-                const int nAbl = sbr_render_ablation_count();
-                const int only = sbr_compare_ablation_to_render();
-                const bool tell = haveGeom && told < (long)nAbl * 2;
-
-                if (tell && told == 0)
-                    dump("scratch/bin/sweep_baseline.rgba", ab);
-                for (int a = 1; a < nAbl; ++a) {
-                    if (a != only)
-                        continue;
-                    if (sbr_render_ablation_render(a) && sbr_render_readback(ab.data(), 640, 448)) {
-                        if (tell && a == 9)
-                            dump("scratch/bin/sweep_pinunit1.rgba", ab);
-                        if (tell) {
-                            ++told;
-                            lucent::info("ab", "   sweep checksum: baseline {:016x}  {} {:016x}{}",
-                                         base, sbr_render_ablation_name(a), sum(ab),
-                                         (sum(ab) == base) ? "  (identical)" : "");
-                        }
-                        sbr_compare_submit_variant(a, sbr_render_ablation_name(a), ab.data(), 640,
-                                                   448);
-                    }
-                }
-            }
-        }
+        sbr_compare_capture_current_native_frame();
 
         static long n = 0;
         if (++n <= 4 || n % 120 == 0) {
@@ -885,9 +825,9 @@ void video_wait_for_retrace(CPUState& cpu) {
                 for (size_t i = 0; i < px.size(); i += 4)
                     if (px[i] != 26 || px[i + 1] != 102 || px[i + 2] != 204)
                         ++lit;
-            // Coverage is the honest bring-up signal: vertices submitted proves the frontend ran,
-            // but only pixels differing from the clear prove the transform chain actually put
-            // geometry on screen.
+            // Coverage is the honest bring-up signal: vertices submitted proves the frontend
+            // ran, but only pixels differing from the clear prove the transform chain actually
+            // put geometry on screen.
             float lo[3], hi[3], med = 0.0f;
             sbr_scene_translation_bounds(lo, hi, &med);
             lucent::info("nrender",
@@ -917,10 +857,10 @@ void video_wait_for_retrace(CPUState& cpu) {
         }
     }
 
-    // The state oracle compares this FIFO parser with Aurora's parser; it is useful whether or not
-    // the offscreen native GPU path initializes successfully. Keeping its reporting inside the
-    // native-render block made SBR_RENDERER=aurora silently disable the instrument that validates
-    // the shared command-stream state.
+    // The state oracle compares this FIFO parser with Aurora's parser; it is useful whether or
+    // not the offscreen native GPU path initializes successfully. Keeping its reporting inside
+    // the native-render block made SBR_RENDERER=aurora silently disable the instrument that
+    // validates the shared command-stream state.
     static long oracleReportFrame = 0;
     if (sbr_state_diff_enabled() && (++oracleReportFrame <= 4 || (oracleReportFrame % 120) == 0))
         sbr_state_oracle_report();
@@ -956,20 +896,22 @@ void video_wait_for_retrace(CPUState& cpu) {
     cpu.gpr[4] = sb::app::frame_rate::game_retrace_count(cpu.gpr[4]);
     func_802fc9a4(cpu);
 
-    // The tick's scene is complete (the capture hooks ran during the game's draw). Rotate it so the
-    // renderer has two snapshots to interpolate between, then open the next tick's recording.
+    // The tick's scene is complete (the capture hooks ran during the game's draw). Rotate it so
+    // the renderer has two snapshots to interpolate between, then open the next tick's
+    // recording.
     sbr_mtx_report_index();
     sbr_scene_end_tick();
     sbr_scene_begin_tick();
 
     // NOTE: the stream is built and sent in present_tail(), not here. Under
-    // SBR_PRESENT_AFTER_COPY the seam returns before the game issues its GXCopyDisp, so building
-    // here would close the stream BEFORE the copy command exists — the copy would then land in the
-    // NEXT tick's stream and every present would render a frame whose copy had not been emitted.
+    // SBR_PRESENT_AFTER_COPY the seam returns before the game issues its GXCopyDisp, so
+    // building here would close the stream BEFORE the copy command exists — the copy would then
+    // land in the NEXT tick's stream and every present would render a frame whose copy had not
+    // been emitted.
 
     // Rates, so "is it slow?" is measured rather than guessed. TICKS are game frames; PRESENTS
-    // are what reaches the screen. Today that is one per tick; counting presents rather than ticks
-    // keeps the number meaningful if that ever stops being true.
+    // are what reaches the screen. Today that is one per tick; counting presents rather than
+    // ticks keeps the number meaningful if that ever stops being true.
     {
         using clock = std::chrono::steady_clock;
         static auto t0 = clock::now();
@@ -997,27 +939,28 @@ void video_wait_for_retrace(CPUState& cpu) {
     // (s_frameActive is at namespace scope: the seam is split across two functions when
     //  SBR_PRESENT_AFTER_COPY defers the present past the game's copy.)
 
-    // The camera this tick's draws were built with, for interpolation. Last thing in the stream, so
-    // it is the settled value rather than the previous tick's.
+    // The camera this tick's draws were built with, for interpolation. Last thing in the
+    // stream, so it is the settled value rather than the previous tick's.
 
-    // A tick in which the game WARPED the camera has no in-between to show. Tell aurora to present
-    // this tick exactly rather than a halfway viewpoint the game never simulated. Read here, before
-    // the present, so the flag covers exactly the tick whose draws are about to be emitted.
+    // A tick in which the game WARPED the camera has no in-between to show. Tell aurora to
+    // present this tick exactly rather than a halfway viewpoint the game never simulated. Read
+    // here, before the present, so the flag covers exactly the tick whose draws are about to be
+    // emitted.
 
-    // The mid-tick pacing hook needs this tick's field count, and aurora issues the second present
-    // from inside its own end_frame where that number is out of scope. The count is only known
-    // AFTER the present (it is a delta on the game's retrace counter), so use the PREVIOUS tick's —
-    // it is the same number on every tick of a steady scene, and being one tick stale costs at most
-    // a slightly mistimed midpoint on the frame where the rate changes. Seeded to 2 because a
-    // 30fps scene requests two fields per tick, so the very first tick paces correctly rather than
-    // at double rate.
-    // SBR_PRESENT_AFTER_COPY=1: defer the present until after the game's EFB->XFB copy.
+    // The mid-tick pacing hook needs this tick's field count, and aurora issues the second
+    // present from inside its own end_frame where that number is out of scope. The count is
+    // only known AFTER the present (it is a delta on the game's retrace counter), so use the
+    // PREVIOUS tick's — it is the same number on every tick of a steady scene, and being one
+    // tick stale costs at most a slightly mistimed midpoint on the frame where the rate
+    // changes. Seeded to 2 because a 30fps scene requests two fields per tick, so the very
+    // first tick paces correctly rather than at double rate. SBR_PRESENT_AFTER_COPY=1: defer
+    // the present until after the game's EFB->XFB copy.
     //
     // TDisplay::endRendering calls waitForRetrace FIRST and IssueGXCopyDisp SECOND, and this
     // function IS waitForRetrace — so presenting here presents a frame whose copy has not been
     // issued yet. That has been the behaviour all along and it looked correct only because the
-    // display kept showing the previously copied XFB, one frame stale. It became visible the moment
-    // a sub-frame issued a copy of its own: the main presents came back black.
+    // display kept showing the previously copied XFB, one frame stale. It became visible the
+    // moment a sub-frame issued a copy of its own: the main presents came back black.
     //
     // waitForRetrace has exactly ONE call site (JDRDisplay.cpp:38), so deferring to the end of
     // endRendering is a single-path change rather than a guess about who else might call it.
@@ -1030,16 +973,18 @@ void video_wait_for_retrace(CPUState& cpu) {
     present_tail(cpu);
 }
 
-// The part of the seam that must happen AFTER the game's EFB->XFB copy when SBR_PRESENT_AFTER_COPY
-// is set: the present itself, the interpolated sub-frame, and the frame-time bookkeeping that
-// brackets them. Factored out rather than duplicated so the two placements cannot drift apart.
+// The part of the seam that must happen AFTER the game's EFB->XFB copy when
+// SBR_PRESENT_AFTER_COPY is set: the present itself, the interpolated sub-frame, and the
+// frame-time bookkeeping that brackets them. Factored out rather than duplicated so the two
+// placements cannot drift apart.
 void present_tail(CPUState& cpu) {
     update_display_refresh_rate();
-    // Close and send THIS tick's stream. Deliberately here and not in the seam: when the present is
-    // deferred past the game's EFB->XFB copy, the copy command is emitted after the seam returns,
-    // so a stream closed in the seam would not contain it.
-    // ONE SIMULATION TICK ENDS HERE. begin_sim_tick() clears the interpolation-callback registry,
-    // so it must run once per tick and before anything registers for the NEXT in-between frame.
+    // Close and send THIS tick's stream. Deliberately here and not in the seam: when the
+    // present is deferred past the game's EFB->XFB copy, the copy command is emitted after the
+    // seam returns, so a stream closed in the seam would not contain it. ONE SIMULATION TICK
+    // ENDS HERE. begin_sim_tick() seals the callbacks registered by the completed tick and
+    // replaces the previous sealed list, so it must run once per tick before the retained sample
+    // dispatches and before anything registers for the next tick.
     sb::frame_interp::begin_sim_tick();
     sbr_tag_shadow_begin_tick();
     sbr_shape_identity_tick();
@@ -1050,10 +995,11 @@ void present_tail(CPUState& cpu) {
     // Close only after the view-matrix extension is emitted. Building first put that command at
     // the front of the next frame, so camera state and geometry came from different ticks.
     gxfifo_build();
-    // The camera cut goes through the unified API rather than straight to aurora's snap: a cut is
-    // "present this tick exactly", which is a statement about the whole frame and not only about
-    // the renderer's matrix rewrite. Routing it here is what lets anything else that must be exact
-    // on a cut — an effect, a UI element — see the same signal instead of re-deriving it.
+    // The camera cut goes through the unified API rather than straight to aurora's snap: a cut
+    // is "present this tick exactly", which is a statement about the whole frame and not only
+    // about the renderer's matrix rewrite. Routing it here is what lets anything else that must
+    // be exact on a cut — an effect, a UI element — see the same signal instead of re-deriving
+    // it.
     if (sbr_lerp_enabled() && sbr_camera_cut_take())
         sb::frame_interp::request_presentation_sync();
     if (!s_frameActive) {
@@ -1064,49 +1010,51 @@ void present_tail(CPUState& cpu) {
 
     // Label this present for the dump series. The sub-frame below issues a SECOND present per
     // tick, and a dump series with no record of which file is which has to be identified by
-    // inference — which has already produced two wrong readings in this arc. The runtime knows the
-    // answer, so it says it.
+    // inference — which has already produced two wrong readings in this arc. The runtime knows
+    // the answer, so it says it.
     //
     // AND THE GUEST TICK, because the present INDEX is not a moment. Configurations of the
     // interpolation reach different game states by the same present number — measured, three
     // configurations dumped at present 60 sat at tick motions of 10.6, 76.5 and 27.7 — so any
     // cross-configuration comparison keyed on the index is comparing two different moments and
-    // reporting the difference as a finding. The game's own retrace counter is the anchor the two
-    // runs genuinely share, and it costs one word in a filename to carry it.
+    // reporting the difference as a finding. The game's own retrace counter is the anchor the
+    // two runs genuinely share, and it costs one word in a filename to carry it.
     const u32 gtickAddr = (u32)cpu.gpr[13] - 22768;
     const u32 gtick = sb_ram_fast(gtickAddr) ? sb_r32(gtickAddr) : 0u;
     g_dumpGuestTick = gtick;
-    char tag[32];
-    std::snprintf(tag, sizeof tag, "main-t%u", gtick);
-    aurora_set_dump_tag(tag);
+    sb::frame_interp::emit_capture_pose(gtick);
+    const auto mainLabel =
+        sb::frame_interp::presentation_dump_label(sb::frame_interp::PresentationRole::Main, gtick);
+    aurora_set_dump_tag(mainLabel.data());
     sbr_prepare_interpolation_presentations();
     present_and_reopen(s_frameActive);
 
     // GAME-NATIVE 60fps: the interpolated sub-frame.
     //
-    // Placed AFTER the tick's own present, which is where it belongs temporally rather than where
-    // it is merely convenient. The draw lists run at the START of a direct() call and PreEntry runs
-    // at the END (measured, SBR_INTERP60_LISTS), so the frame just presented was drawn from the
-    // pose entered at tick N-1. The sub-frame built here is lerp(N-1, N, alpha), so what reaches
-    // the display is N-1, mid, N, mid, N+1 — in order.
+    // Placed AFTER the tick's own present, which is where it belongs temporally rather than
+    // where it is merely convenient. The draw lists run at the START of a direct() call and
+    // PreEntry runs at the END (measured, SBR_INTERP60_LISTS), so the frame just presented was
+    // drawn from the pose entered at tick N-1. The sub-frame built here is lerp(N-1, N, alpha),
+    // so what reaches the display is N-1, mid, N, mid, N+1 — in order.
     //
-    // The callback closes the sub-frame's GX stream exactly the way the tick's own is closed. It
-    // must not be a partial imitation: a sub-frame assembled by a different path would diverge from
-    // the real frame for reasons that have nothing to do with interpolation.
-    // SBR_INTERP60_CENSUS also reaches here: the motion census lives at the top of that function
-    // and must be obtainable from a run that interpolates nothing, because that run is the
-    // baseline.
+    // The callback closes the sub-frame's GX stream exactly the way the tick's own is closed.
+    // It must not be a partial imitation: a sub-frame assembled by a different path would
+    // diverge from the real frame for reasons that have nothing to do with interpolation.
+    // SBR_INTERP60_CENSUS also reaches here: the motion census lives at the top of that
+    // function and must be obtainable from a run that interpolates nothing, because that run is
+    // the baseline.
     if (std::getenv("SBR_INTERP60") || std::getenv("SBR_INTERP60_CENSUS")) {
         static bool* s_active = &s_frameActive;
         s_active = &s_frameActive;
         sbr_interp60_subframe(cpu, [] {
             // Does the sub-frame's own stream actually reach the present?
             //
-            // The runtime-labelled dump series says the presented sub-frame is pixel-identical to
-            // the main frame before it, which is what "the main frame was presented twice" looks
-            // like. gxfifo_build() RETURNS EARLY when g_out is empty, leaving g_last holding the
-            // previous (main) frame — and gxfifo_send_last() would then re-send that. So the sizes
-            // either side of the build are the discriminator, and they are cheap to print.
+            // The runtime-labelled dump series says the presented sub-frame is pixel-identical
+            // to the main frame before it, which is what "the main frame was presented twice"
+            // looks like. gxfifo_build() RETURNS EARLY when g_out is empty, leaving g_last
+            // holding the previous (main) frame — and gxfifo_send_last() would then re-send
+            // that. So the sizes either side of the build are the discriminator, and they are
+            // cheap to print.
             const uint32_t before = sbr_gxfifo_stream_pos();
             gxfifo_build();
             const uint32_t after = sbr_gxfifo_stream_pos();
@@ -1120,35 +1068,38 @@ void present_tail(CPUState& cpu) {
                                            "frame's stream is what gets re-sent"
                                          : "");
             gxfifo_send_last();
-            // Same guest tick as the main present above: the sub-frame is an EXTRA present inside
-            // one tick, not a tick of its own, and stamping it with a tick of its own would make
-            // the anchor lie in exactly the way the present index already does.
-            char stag[32];
-            std::snprintf(stag, sizeof stag, "sub-t%u", g_dumpGuestTick);
-            aurora_set_dump_tag(stag);
-            // The half-tick image has to be SHOWN at the half tick; both presents issued back to
-            // back are 30fps with every frame sent twice, however high the present count reads.
+            // Same guest tick as the main present above: the sub-frame is an EXTRA present
+            // inside one tick, not a tick of its own, and stamping it with a tick of its own
+            // would make the anchor lie in exactly the way the present index already does.
+            const auto subLabel = sb::frame_interp::presentation_dump_label(
+                sb::frame_interp::PresentationRole::Sub, g_dumpGuestTick);
+            aurora_set_dump_tag(subLabel.data());
+            // The half-tick image has to be SHOWN at the half tick; both presents issued back
+            // to back are 30fps with every frame sent twice, however high the present count
+            // reads.
             aurora_replay_midpoint();
             present_and_reopen(*s_active);
         });
     }
 
-    // Sampled AFTER the present, and stamped with aurora's OWN tick counter rather than one derived
-    // from the present count. The two instruments must be joined on a number they genuinely share:
-    // presents run at two per tick under replay, so a derived index would drift silently and any
-    // correlation drawn from it would be worthless — the failure this project has hit repeatedly.
+    // Sampled AFTER the present, and stamped with aurora's OWN tick counter rather than one
+    // derived from the present count. The two instruments must be joined on a number they
+    // genuinely share: presents run at two per tick under replay, so a derived index would
+    // drift silently and any correlation drawn from it would be worthless — the failure this
+    // project has hit repeatedly.
     if (sbr_lerp_enabled())
         sbr_camera_mode_tick(aurora::gfx::interp::tick_index());
 
-    // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps against
-    // the oracle's 30) — every animation, timer and physics step driven off the retrace count
-    // runs at whatever speed the machine happens to manage, which is not the game.
+    // PACING. Without this the recomp runs as fast as the host allows (measured ~157 fps
+    // against the oracle's 30) — every animation, timer and physics step driven off the retrace
+    // count runs at whatever speed the machine happens to manage, which is not the game.
     //
     // Pace to the number of retraces the GAME asked for this frame, taken from its own counter
     // (the same counter VIWaitForRetrace advances), not to a fixed 60Hz: a 30fps scene requests
-    // two fields per frame and must be paced as two. Deadline-based rather than sleep-per-frame,
-    // so a frame that overruns is absorbed by the next instead of compounding drift. This mirrors
-    // sms-boot/runtime/frame_seam.cpp; SB_TURBO=1 disables it in both runtimes.
+    // two fields per frame and must be paced as two. Deadline-based rather than
+    // sleep-per-frame, so a frame that overruns is absorbed by the next instead of compounding
+    // drift. This mirrors sms-boot/runtime/frame_seam.cpp; SB_TURBO=1 disables it in both
+    // runtimes.
     {
         const u32 addr = cpu.gpr[13] - 22768;
         static u32 s_prevRetrace = 0;

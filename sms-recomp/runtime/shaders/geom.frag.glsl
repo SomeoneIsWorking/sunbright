@@ -39,6 +39,7 @@ layout(set = 3, binding = 0) uniform TevBlock {
     ivec4 dest[16];      // cDest, aDest, texEnable, texmap | texcoord << 8
     vec4  konst[16];     // resolved konst colour for the stage (rgb) + konst alpha (a)
     vec4  regInit[4];    // prev, c0, c1, c2 as the material set them
+    ivec4 swapTable[4];  // output component -> source component for the four GX swap rows
     ivec4 control;       // x = numStages, y = alphaOp0, z = alphaOp1, w = alphaLogic
     vec4  alphaRef;      // x = ref0, y = ref1 (0..255), z = SBR_TEV_VIZ mode, w = ablation id
 } tev;
@@ -154,6 +155,11 @@ vec4 rasOf(int chan) {
     return v_col;
 }
 
+vec4 swapped(vec4 value, int table) {
+    ivec4 row = tev.swapTable[table & 3];
+    return vec4(value[row.x & 3], value[row.y & 3], value[row.z & 3], value[row.w & 3]);
+}
+
 vec2 coordOf(int idx) {
     if (idx == 1) return v_uv01.zw;
     if (idx == 2) return v_uv23.xy;
@@ -185,12 +191,14 @@ void main() {
         if (abl == 1) uv = v_uv01.xy;
         // A stage with its texture disabled must not read the texture: GX feeds it nothing, and
         // sampling anyway would tint untextured stages with whatever was last bound.
-        vec4 t = (tev.dest[i].z != 0) ? sampleUnit(unit, uv) : vec4(0.0);
+        vec4 t = (tev.dest[i].z != 0)
+                   ? swapped(sampleUnit(unit, uv), (tev.dest[i].w >> 21) & 3)
+                   : vec4(0.0);
         if (abl == 2 && tev.dest[i].z != 0) t = vec4(1.0);
         vec4 k = tev.konst[i];
         if (abl == 5) k = vec4(1.0);
         // Per STAGE, not per draw: two stages of one material legitimately read different channels.
-        vec4 ras = rasOf((tev.dest[i].w >> 16) & 7);
+        vec4 ras = swapped(rasOf((tev.dest[i].w >> 16) & 7), (tev.dest[i].w >> 19) & 3);
         if (abl == 3) ras = v_col;
         if (i == 0) { t0 = t; ras0 = ras; }
 

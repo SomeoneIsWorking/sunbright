@@ -203,7 +203,15 @@ int main(int argc, char** argv) {
         // and swapchain.
         aurora_set_presentation_enabled(false);
         sbr_render_set_present_window(ainfo.window);
-        if (!sbr_render_init(640, 448)) {
+        // aurora_initialize starts cached-pipeline compilation in the background. SDL's Vulkan
+        // device creation must not overlap that worker: both implementations enter the process-wide
+        // Vulkan loader and debug-utils dispatch, and the overlap reproduced a startup SIGSEGV in
+        // SetDebugUtilsObjectName. Closing this gate waits for an in-flight compile and prevents
+        // the next one from starting until SDL_CreateGPUDevice has returned.
+        aurora_pause_pipeline_compilation();
+        const bool nativeInitialized = sbr_render_init(640, 448);
+        aurora_resume_pipeline_compilation();
+        if (!nativeInitialized) {
             lucent::error("main", "native renderer selected but could not claim presentation");
             return 1;
         }

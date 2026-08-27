@@ -70,7 +70,13 @@ struct Registration {
     void* user;
 };
 
-std::vector<Registration> g_callbacks;
+// Systems register while the game simulates. present_tail reaches begin_sim_tick() only after that
+// game work and immediately before Aurora presents the completed tick, so the frame boundary must
+// SEAL those registrations rather than erase them. Keeping pending and sealed lists separate also
+// makes registration from a host-side callback safe: it belongs to the next tick and cannot mutate
+// the list currently being iterated.
+std::vector<Registration> g_pendingCallbacks;
+std::vector<Registration> g_presentationCallbacks;
 uint64_t g_tickSeq = 0;
 bool g_syncRequested = false;
 float g_presentationAlpha = 0.5f;
@@ -134,16 +140,18 @@ bool presentation_sync_active() {
 void add_interpolation_callback(Callback cb, void* user) {
     if (!is_enabled() || cb == nullptr)
         return;
-    g_callbacks.push_back({cb, user});
+    g_pendingCallbacks.push_back({cb, user});
     ++g_registrations;
 }
 
 void begin_sim_tick() {
     ++g_ticks;
     ++g_tickSeq;
-    // Cleared every tick, which is what makes the registry self-maintaining: a system that stops
-    // registering stops being called, and nothing in this file has to know the list of effects.
-    g_callbacks.clear();
+    // Seal the callbacks registered by the tick that just finished. The next boundary replaces
+    // this list, which preserves the self-maintaining contract without clearing registrations
+    // immediately before the retained sample that is supposed to dispatch them.
+    g_presentationCallbacks.swap(g_pendingCallbacks);
+    g_pendingCallbacks.clear();
     g_syncRequested = false;
 }
 
@@ -156,7 +164,7 @@ void present_interpolated_frame(float alpha) {
         return;
     g_presentationAlpha = alpha;
     ++g_presentedFrames;
-    for (const Registration& r : g_callbacks) {
+    for (const Registration& r : g_presentationCallbacks) {
         r.cb(/*is_sim_frame=*/false, r.user);
         ++g_dispatched;
     }
@@ -176,13 +184,12 @@ void report() {
         "dispatch(es).{}",
         g_ticks, g_presentedFrames, g_syncedTicks, g_registrations, g_dispatched,
         g_registrations == 0
-            ? "   <-- NO SYSTEM REGISTERED A CALLBACK. That is not 'no effect needed one': "
-              "it means nothing in this build opts into presentation-frame work, so every "
-              "effect is running at the simulation rate inside an interpolated frame."
+            ? "   <-- UNUSED API: the current retained-replay path has no presentation-callback "
+              "clients. This is not an interpolation-coverage result and identifies no missing "
+              "target; read the recorded-stream matrix/vertex/effect audits above."
         : g_dispatched == 0
-            ? "   <-- registrations happened but NOTHING WAS EVER DISPATCHED, so "
-              "present_interpolated_frame() is not being reached. The registrations are "
-              "being cleared by the next tick before the in-between frame presents."
+            ? "   <-- registrations happened but NOTHING WAS DISPATCHED. The retained-sample "
+              "callback seam or its frame-boundary sealing order is broken."
             : "");
 }
 

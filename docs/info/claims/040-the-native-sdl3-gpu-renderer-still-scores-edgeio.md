@@ -1,9 +1,10 @@
 ---
 id: C040
 kind: claim
-status: holds
+status: falsified
 created: 2026-08-12
 tags: 
+falsified_on: 2026-08-27
 ---
 
 ## Claim
@@ -17,3 +18,9 @@ The native SDL3-GPU renderer still scores edgeIoU 32.2% / lumaCorr +0.72 against
 ## What would falsify it
 
 any change under sms-recomp/runtime/render/ or sms-recomp/runtime/shaders/, or to the J3D capture seam; re-run the same command and read the N=59 line
+
+## FALSIFIED 2026-08-27
+
+The in-process A/B does not join the same frame: Aurora frame-sink readback arrives one or two presents later while render_compare.cpp retains only the latest native frame. SBR_AB_SELFTEST overwrites native from inside the callback and therefore bypasses this broken join. The N=59 score is not exact-frame evidence.
+
+> Anything that cited this claim as proof must be re-checked. Grep the repo for it.

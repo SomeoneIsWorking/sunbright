@@ -7,6 +7,7 @@ import math
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,11 @@ RUNNERS = {
 }
 MAX_PRESENT_HZ = 60.0
 MAX_QUIT_AFTER = 10_000
+TEXTURE_RESOLUTION_LINE = re.compile(
+    r"^\[[^]\r\n]+\] \[texresolve\] static "
+    r"(?P<width>[1-9][0-9]*)x(?P<height>[1-9][0-9]*) "
+    r"mips=(?P<mips>[1-9][0-9]*) fmt=(?P<format>[0-9]+) data=0x[0-9A-Fa-f]+$"
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,8 @@ class Invocation:
     timeout_secs: float | None
     diagnostic: bool
     renderer_was_forced: bool
+    explicit_environment: dict[str, str]
+    isolated_environment: bool
 
 
 def _required(arguments: list[str], index: int, option: str) -> tuple[str, int]:
@@ -95,11 +103,18 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
     timeout_option: str | None = None
     index = 0
     after_separator = False
+    isolated_environment = False
+    explicit_names: set[str] = set()
+
+    def set_explicit(name: str, value: str) -> None:
+        environment[name] = value
+        explicit_names.add(name)
 
     while index < len(arguments):
         argument = arguments[index]
         if after_separator:
             apply_environment_assignment(environment, argument)
+            explicit_names.add(argument.split("=", 1)[0])
             index += 1
             continue
         if argument == "--":
@@ -109,27 +124,31 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
         if argument in ("-h", "--help"):
             raise ValueError("--help must be handled before invocation parsing")
         if argument in ("--60fps", "--fps60"):
-            environment["SBR_60FPS"] = "1"
+            set_explicit("SBR_60FPS", "1")
             index += 1
             continue
         if argument == "--fastboot":
-            environment["SBR_FASTBOOT"] = "1"
+            set_explicit("SBR_FASTBOOT", "1")
             index += 1
             continue
         if argument == "--headless":
-            environment["SB_HEADLESS"] = "1"
+            set_explicit("SB_HEADLESS", "1")
             index += 1
             continue
         if argument == "--mute":
-            environment["SBR_MUTE"] = "1"
+            set_explicit("SBR_MUTE", "1")
             index += 1
             continue
         if argument == "--turbo":
-            environment["SB_TURBO"] = "1"
+            set_explicit("SB_TURBO", "1")
             index += 1
             continue
         if argument == "--diagnostic":
             diagnostic = True
+            index += 1
+            continue
+        if argument == "--isolated-environment":
+            isolated_environment = True
             index += 1
             continue
         if argument in ("--stage", "--scenario", "--size", "--rom", "--runtime",
@@ -137,17 +156,19 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
             value, index = _required(arguments, index, argument)
             if argument == "--stage":
                 stage = str(_positive_integer(value, argument))
-                environment["SBR_STAGE"] = stage
-                environment["SB_STAGE"] = stage
+                set_explicit("SBR_STAGE", stage)
+                set_explicit("SB_STAGE", stage)
             elif argument == "--scenario":
                 scenario = str(_nonnegative_integer(value, argument))
-                environment["SBR_SCENARIO"] = scenario
-                environment["SB_SCENARIO"] = scenario
+                set_explicit("SBR_SCENARIO", scenario)
+                set_explicit("SB_SCENARIO", scenario)
             elif argument == "--size":
                 match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", value)
                 if match is None:
                     raise ValueError(f"--size wants WIDTHxHEIGHT, got {value!r}")
-                environment["SB_W"], environment["SB_H"] = match.groups()
+                width, height = match.groups()
+                set_explicit("SB_W", width)
+                set_explicit("SB_H", height)
             elif argument == "--rom":
                 rom = value
             elif argument == "--runtime":
@@ -155,16 +176,18 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
                     raise ValueError("--runtime must be 'recomp' or 'decomp'")
                 runner = value
             elif argument == "--quit-after":
-                environment["SBR_QUIT_AFTER"] = str(
-                    _positive_integer(value, argument, MAX_QUIT_AFTER)
+                set_explicit(
+                    "SBR_QUIT_AFTER",
+                    str(_positive_integer(value, argument, MAX_QUIT_AFTER)),
                 )
             elif argument == "--run-secs":
                 timeout_option = value
             else:
-                environment["SB_MAX_PRESENT_HZ"] = value
+                set_explicit("SB_MAX_PRESENT_HZ", value)
             continue
         if "=" in argument:
             apply_environment_assignment(environment, argument)
+            explicit_names.add(argument.split("=", 1)[0])
             index += 1
             continue
         raise ValueError(f"unknown option {argument!r}; run ./run.sh --help")
@@ -179,6 +202,10 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
         runner = legacy_map[legacy_runner]
     if runner != "recomp" and not diagnostic:
         raise ValueError("the decomp oracle requires --diagnostic --runtime decomp")
+    if isolated_environment and not diagnostic:
+        raise ValueError("--isolated-environment requires --diagnostic")
+    if isolated_environment and runner != "recomp":
+        raise ValueError("--isolated-environment currently supports only the recomp runtime")
 
     if diagnostic:
         for name, value in (
@@ -189,8 +216,10 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
             ("SBR_QUIT_AFTER", "400"),
         ):
             _set_default(environment, name, value)
+            explicit_names.add(name)
         environment["SB_HEADLESS"] = "1"
         environment["SBR_MUTE"] = "1"
+        explicit_names.update(("SB_HEADLESS", "SBR_MUTE"))
 
     renderer_was_forced = (environment.get("SBR_RENDERER") or "aurora") != "aurora"
     environment["SBR_RENDERER"] = "aurora"
@@ -212,7 +241,14 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
 
     runner_args = [rom] if rom else []
     return Invocation(
-        environment, runner, runner_args, timeout_secs, diagnostic, renderer_was_forced
+        environment,
+        runner,
+        runner_args,
+        timeout_secs,
+        diagnostic,
+        renderer_was_forced,
+        {name: environment[name] for name in sorted(explicit_names)},
+        isolated_environment,
     )
 
 
@@ -234,6 +270,7 @@ Normal play is windowed, paced, audible, unlimited, and protected by the live GP
   --run-secs SECONDS      impose a wall-clock limit
   --max-present-hz HZ     cap GPU submission rate
   --diagnostic            conservative headless/muted/60-Hz/240-second defaults
+  --isolated-environment  clear ambient project knobs (diagnostic recomp only)
   --runtime decomp        use the decomp oracle (requires --diagnostic)
   -- NAME=VALUE ...       add exact environment settings after launcher options
 """
@@ -256,13 +293,36 @@ def _clean_scratch_file(path: Path) -> None:
 
 
 def _texture_manifest_lines(output: str) -> list[str]:
-    return [line for line in output.splitlines() if line.startswith("[texresolve] static ")]
+    normalized = []
+    for line in output.splitlines():
+        if "[texresolve] static " not in line:
+            continue
+        match = TEXTURE_RESOLUTION_LINE.fullmatch(line)
+        if match is None:
+            raise ValueError(f"unrecognized texresolve record: {line!r}")
+        normalized.append(
+            "[texresolve] static "
+            f"{match.group('width')}x{match.group('height')} "
+            f"mips={match.group('mips')} fmt={match.group('format')}"
+        )
+    return normalized
 
 
-def _arm_child_contract(environment: dict[str, str], runner: str) -> None:
+def _texture_capture_channels(environment: dict[str, str]) -> str:
+    channels = environment.get("SBR_LUCENT_DEBUG", "")
+    selected = {channel for channel in channels.split(",") if channel}
+    if "texresolve" in selected or "all" in selected:
+        return channels
+    return ",".join(filter(None, (channels, "texresolve")))
+
+
+def _arm_child_contract(
+    environment: dict[str, str], runner: str, isolated_environment: bool = False
+) -> None:
     environment["SUNBRIGHT_SAFE_RUN"] = "1"
     environment["SUNBRIGHT_SAFE_RENDERER"] = "aurora"
     environment["SUNBRIGHT_SAFE_RADV_DEBUG"] = environment.get("RADV_DEBUG", "")
+    environment["SUNBRIGHT_SAFE_ISOLATED"] = "1" if isolated_environment else "0"
     for source, destination in (
         ("SB_HEADLESS", "SUNBRIGHT_SAFE_HEADLESS"),
         ("SBR_MUTE", "SUNBRIGHT_SAFE_MUTE"),
@@ -279,6 +339,31 @@ def _arm_child_contract(environment: dict[str, str], runner: str) -> None:
         environment["SUNBRIGHT_SAFE_STAGE"] = environment[stage_name]
     if scenario_name in environment:
         environment["SUNBRIGHT_SAFE_SCENARIO"] = environment[scenario_name]
+
+
+def _environment_override_text(values: dict[str, str]) -> str:
+    """Serialize validated launcher assignments for reapplication after `.env`."""
+    lines = []
+    for name, value in sorted(values.items()):
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+            raise ValueError(f"invalid protected environment name {name!r}")
+        lines.append(f"export {name}={shlex.quote(value)}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _write_environment_override(values: dict[str, str]) -> Path | None:
+    if not values:
+        return None
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".run-env.", dir=SCRATCH, text=True)
+    path = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(_environment_override_text(values))
+    except BaseException:
+        _clean_scratch_file(path)
+        raise
+    return path
 
 
 def _run_guarded(invocation: Invocation, output_log: Path | None = None) -> int:
@@ -318,46 +403,56 @@ def _print_controls(invocation: Invocation) -> None:
 def run(invocation: Invocation) -> int:
     os.environ.clear()
     os.environ.update(invocation.environment)
-    _arm_child_contract(os.environ, invocation.runner)
-    if invocation.renderer_was_forced:
-        print("[run] SBR_RENDERER was overridden; the default product uses Aurora.", file=sys.stderr)
-    _print_controls(invocation)
-    mode = "diagnostic" if invocation.diagnostic else "interactive"
-    duration = f"{invocation.timeout_secs:g}s cap" if invocation.timeout_secs else "no time cap"
-    print(f"[run] {mode} {invocation.runner} launch; live GPU watcher; {duration}.")
-    if radv_hang_enabled(os.environ):
-        print(
-            "[run] RADV hang diagnostics ENABLED: driver synchronization may mask the timing defect."
-        )
-
-    dump_path = os.environ.get("SB_DUMP_FRAME")
-    if not dump_path:
-        return _run_guarded(invocation)
-
-    debug_channels = os.environ.get("LUCENT_DEBUG", "")
-    selected = {channel for channel in debug_channels.split(",") if channel}
-    if "texresolve" not in selected and "all" not in selected:
-        os.environ["LUCENT_DEBUG"] = ",".join(filter(None, (debug_channels, "texresolve")))
-    SCRATCH.mkdir(parents=True, exist_ok=True)
-    descriptor, output_name = tempfile.mkstemp(prefix=".run-out.", dir=SCRATCH)
-    os.close(descriptor)
-    output_log = Path(output_name)
+    _arm_child_contract(os.environ, invocation.runner, invocation.isolated_environment)
+    override_path: Path | None = None
     try:
-        returncode = _run_guarded(invocation, output_log)
-        manifest = Path(f"{dump_path}.textures.txt")
-        lines = _texture_manifest_lines(output_log.read_text(errors="replace"))
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
-        if lines:
-            print(f"[run] texture manifest: {manifest} ({len(lines)} texture(s))")
-        else:
+        if invocation.renderer_was_forced:
+            print("[run] SBR_RENDERER was overridden; the default product uses Aurora.", file=sys.stderr)
+        _print_controls(invocation)
+        mode = "diagnostic" if invocation.diagnostic else "interactive"
+        duration = f"{invocation.timeout_secs:g}s cap" if invocation.timeout_secs else "no time cap"
+        print(f"[run] {mode} {invocation.runner} launch; live GPU watcher; {duration}.")
+        if radv_hang_enabled(os.environ):
             print(
-                "[run] no texture manifest was captured; the framebuffer dump is not comparable.",
-                file=sys.stderr,
+                "[run] RADV hang diagnostics ENABLED: driver synchronization may mask the timing defect."
             )
-        return returncode
+
+        dump_path = os.environ.get("SB_DUMP_FRAME")
+        if not dump_path:
+            override_path = _write_environment_override(invocation.explicit_environment)
+            if override_path is not None:
+                os.environ["SUNBRIGHT_SAFE_EXPLICIT_ENV_FILE"] = str(override_path)
+            return _run_guarded(invocation)
+
+        os.environ["SBR_LUCENT_DEBUG"] = _texture_capture_channels(os.environ)
+        protected_environment = dict(invocation.explicit_environment)
+        protected_environment["SBR_LUCENT_DEBUG"] = os.environ["SBR_LUCENT_DEBUG"]
+        override_path = _write_environment_override(protected_environment)
+        if override_path is not None:
+            os.environ["SUNBRIGHT_SAFE_EXPLICIT_ENV_FILE"] = str(override_path)
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        descriptor, output_name = tempfile.mkstemp(prefix=".run-out.", dir=SCRATCH)
+        os.close(descriptor)
+        output_log = Path(output_name)
+        try:
+            returncode = _run_guarded(invocation, output_log)
+            manifest = Path(f"{dump_path}.textures.txt")
+            lines = _texture_manifest_lines(output_log.read_text(errors="replace"))
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+            if lines:
+                print(f"[run] texture manifest: {manifest} ({len(lines)} texture(s))")
+            else:
+                print(
+                    "[run] no texture manifest was captured; the framebuffer dump is not comparable.",
+                    file=sys.stderr,
+                )
+            return returncode
+        finally:
+            _clean_scratch_file(output_log)
     finally:
-        _clean_scratch_file(output_log)
+        if override_path is not None:
+            _clean_scratch_file(override_path)
 
 
 def selftest() -> int:
@@ -365,6 +460,7 @@ def selftest() -> int:
     assert interactive.runner == "recomp"
     assert interactive.timeout_secs is None
     assert not interactive.diagnostic
+    assert not interactive.isolated_environment
     assert interactive.environment["SBR_RENDERER"] == "aurora"
     assert "SB_HEADLESS" not in interactive.environment
 
@@ -374,6 +470,8 @@ def selftest() -> int:
     assert diagnostic.environment["SBR_MUTE"] == "1"
     assert diagnostic.environment["SB_MAX_PRESENT_HZ"] == "60"
     assert diagnostic.environment["SBR_QUIT_AFTER"] == "400"
+    assert diagnostic.explicit_environment["SB_TURBO"] == "1"
+    assert diagnostic.explicit_environment["SBR_QUIT_AFTER"] == "400"
 
     selected = parse_invocation(
         [
@@ -392,15 +490,24 @@ def selftest() -> int:
         {},
     )
     assert selected.runner == "decomp"
+    assert not selected.isolated_environment
     assert selected.timeout_secs == 30
     assert selected.environment["SBR_STAGE"] == "9"
     assert selected.environment["SB_STAGE"] == "9"
     assert selected.environment["SBR_SCENARIO"] == "2"
     assert selected.environment["SB_SCENARIO"] == "2"
     assert selected.environment["SB_DRAW_STATS"] == "1"
+    assert selected.explicit_environment["SB_DRAW_STATS"] == "1"
+    assert selected.explicit_environment["SBR_STAGE"] == "9"
+
+    isolated = parse_invocation(["--diagnostic", "--isolated-environment"], {})
+    assert isolated.runner == "recomp"
+    assert isolated.isolated_environment
 
     for invalid in (
         ["--runtime", "decomp"],
+        ["--isolated-environment"],
+        ["--diagnostic", "--isolated-environment", "--runtime", "decomp"],
         ["--diagnostic", "--max-present-hz", "0"],
         ["--run-secs", "nan"],
         ["--quit-after", "10001"],
@@ -417,10 +524,35 @@ def selftest() -> int:
     _arm_child_contract(environment, diagnostic.runner)
     assert environment["SUNBRIGHT_SAFE_RENDERER"] == "aurora"
     assert environment["SUNBRIGHT_SAFE_HEADLESS"] == "1"
-    assert _texture_manifest_lines("x\n[texresolve] static a\n") == [
-        "[texresolve] static a"
-    ]
+    first_texture = (
+        "[2026-08-27T20:44:33.822Z] [texresolve] "
+        "static 256x128 mips=4 fmt=1 data=0x7f22ed11f9e0"
+    )
+    same_texture_other_process = (
+        "[2026-08-27T20:45:01.100Z] [texresolve] "
+        "static 256x128 mips=4 fmt=1 data=0x123456789abc"
+    )
+    changed_mips = same_texture_other_process.replace("mips=4", "mips=1")
+    expected_texture = ["[texresolve] static 256x128 mips=4 fmt=1"]
+    assert _texture_manifest_lines(first_texture) == expected_texture
+    assert _texture_manifest_lines(same_texture_other_process) == expected_texture
+    assert _texture_manifest_lines(changed_mips) != expected_texture
+    assert _texture_manifest_lines(
+        first_texture.replace("[texresolve]", "[other-channel]")
+    ) == []
     assert _texture_manifest_lines("known-negative\n") == []
+    protected = _environment_override_text(
+        {"SBR_PAD_SCRIPT": "400:CSTICK=110/0", "SBR_NOTE": "a value with spaces"}
+    )
+    assert "export SBR_PAD_SCRIPT=400:CSTICK=110/0\n" in protected
+    assert "export SBR_NOTE='a value with spaces'\n" in protected
+    dump_invocation = parse_invocation(
+        ["--diagnostic", "--", "SB_DUMP_FRAME=scratch/frames/test.rgba"],
+        {"SBR_LUCENT_DEBUG": "interp,frame"},
+    )
+    assert _texture_capture_channels(dump_invocation.environment) == "interp,frame,texresolve"
+    assert _texture_capture_channels({"SBR_LUCENT_DEBUG": "all"}) == "all"
+    assert "LUCENT_DEBUG" not in dump_invocation.environment
     print("default launch policy selftest PASS")
     print("  interactive launch is guarded and unlimited; diagnostic defaults remain bounded")
     print("  runtime selection, environment separator, and invalid-limit controls pass")

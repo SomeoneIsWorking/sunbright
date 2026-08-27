@@ -37,6 +37,7 @@ EXCLUDED_PREFIXES = (
     "scratch/",
     "sms-recomp/generated/",
 )
+GENERATED_SUFFIXES = ("_spv.h",)
 
 
 def run_git(*args: str) -> list[str]:
@@ -48,7 +49,11 @@ def run_git(*args: str) -> list[str]:
 
 def is_first_party_cpp(relative: str) -> bool:
     normalized = relative.replace(os.sep, "/")
-    return Path(normalized).suffix in CPP_SUFFIXES and not normalized.startswith(EXCLUDED_PREFIXES)
+    return (
+        Path(normalized).suffix in CPP_SUFFIXES
+        and not normalized.startswith(EXCLUDED_PREFIXES)
+        and not normalized.endswith(GENERATED_SUFFIXES)
+    )
 
 
 def changed_files() -> list[str]:
@@ -145,6 +150,13 @@ def check(paths: list[str]) -> int:
 
 
 def selftest() -> int:
+    if is_first_party_cpp("sms-recomp/runtime/shaders/example_spv.h"):
+        print("FAIL: generated SPIR-V header was classified as first-party source")
+        return 1
+    if not is_first_party_cpp("sms-recomp/runtime/render/example.h"):
+        print("FAIL: ordinary first-party header was excluded with generated SPIR-V headers")
+        return 1
+
     scratch = REPO / "scratch"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cpp-quality-selftest-", dir=scratch) as directory:
@@ -171,6 +183,7 @@ def selftest() -> int:
             f"(bad={bad_result.returncode}, good={good_result.returncode})"
         )
         return 1
+    print("PASS: generated SPIR-V headers are excluded without excluding ordinary headers")
     print("PASS: clang-format rejects malformed source and accepts its formatted control")
     return 0
 

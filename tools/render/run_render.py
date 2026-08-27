@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,42 @@ from arguments import REPO, parse_arguments  # noqa: E402
 class NativeInvocation:
     environment: dict[str, str]
     runner_args: list[str]
+
+
+AB_BOOLEAN_KEYS = ("SBR_AB", "SBR_AB_SELFTEST", "SBR_ABLATE")
+AB_POSITIVE_INTEGER_KEYS = ("SBR_AB_EVERY", "SBR_AB_AT")
+MAX_AB_INTEGER = (1 << 31) - 1
+
+
+def validate_ab_environment(environment: dict[str, str]) -> None:
+    for name in AB_BOOLEAN_KEYS:
+        value = environment.get(name)
+        if value in (None, ""):
+            environment.pop(name, None)
+            continue
+        if value not in ("0", "1"):
+            raise ValueError(f"{name} must be 0 or 1")
+    for name in AB_POSITIVE_INTEGER_KEYS:
+        value = environment.get(name)
+        if value in (None, ""):
+            environment.pop(name, None)
+            continue
+        if not value.isascii() or not value.isdecimal():
+            raise ValueError(f"{name} must be a positive decimal integer")
+        parsed = int(value, 10)
+        if not 0 < parsed <= MAX_AB_INTEGER:
+            raise ValueError(f"{name} must be in [1,{MAX_AB_INTEGER}]")
+        environment[name] = str(parsed)
+
+
+def safe_ab_handoff(environment: dict[str, str]) -> dict[str, str]:
+    handoff = {"SUNBRIGHT_SAFE_AB_HANDOFF": "1"}
+    for name in (*AB_BOOLEAN_KEYS, *AB_POSITIVE_INTEGER_KEYS):
+        suffix = name.removeprefix("SBR_")
+        present = name in environment
+        handoff[f"SUNBRIGHT_SAFE_{suffix}_SET"] = "1" if present else "0"
+        handoff[f"SUNBRIGHT_SAFE_{suffix}"] = environment.get(name, "")
+    return handoff
 
 
 def parse_invocation(
@@ -47,6 +84,7 @@ def parse_invocation(
             "SBR_TEX": "1",
         }
     )
+    validate_ab_environment(environment)
     configure_radv_hang_environment(environment)
     return NativeInvocation(environment, runner_args)
 
@@ -97,6 +135,7 @@ def run(invocation: NativeInvocation) -> int:
             "SUNBRIGHT_SAFE_RADV_DEBUG": os.environ.get("RADV_DEBUG", ""),
         }
     )
+    os.environ.update(safe_ab_handoff(os.environ))
     result = run_guarded(
         [str(REPO / "run-recomp.sh"), *invocation.runner_args], timeout
     )
@@ -134,11 +173,56 @@ def selftest() -> int:
     )
     assert radv.environment["RADV_DEBUG"] == "zerovram,hang"
     assert radv_hang_enabled(radv.environment)
+
+    for name in AB_BOOLEAN_KEYS:
+        for invalid in ("yes", "-1", "2", " 1"):
+            try:
+                parse_invocation([f"{name}={invalid}"], {"SBR_RENDER_APPROVED": "1"})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"hostile A/B boolean accepted: {name}={invalid!r}")
+    for name in AB_POSITIVE_INTEGER_KEYS:
+        for invalid in ("nan", "-1", "0", "1x", str(MAX_AB_INTEGER + 1)):
+            try:
+                parse_invocation([f"{name}={invalid}"], {"SBR_RENDER_APPROVED": "1"})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"hostile A/B integer accepted: {name}={invalid!r}")
+
+    explicit_ab = parse_invocation(
+        [
+            "SBR_AB=1",
+            "SBR_AB_EVERY=7",
+            "SBR_AB_SELFTEST=1",
+            "SBR_ABLATE=0",
+            "SBR_AB_AT=13",
+        ],
+        {"SBR_RENDER_APPROVED": "1"},
+    )
+    for invocation in (explicit_ab, parse_invocation([], {"SBR_RENDER_APPROVED": "1"})):
+        test_environment = dict(invocation.environment)
+        test_environment["SUNBRIGHT_SAFE_RUN"] = "1"
+        test_environment.update(safe_ab_handoff(test_environment))
+        result = subprocess.run(
+            [str(REPO / "run-recomp.sh"), "--selftest-safe-ab-handoff"],
+            env=test_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "post-.env A/B handoff selftest failed:\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
     print("run-render policy selftest PASS")
     print(
         "  approval remains required; hostile renderer/capture/headless inputs are forced safe"
     )
     print("  non-finite/unbounded timeouts and separator parsing controls pass")
+    print("  allowlisted A/B values and explicit-unset state survive hostile post-capture input")
     return 0
 
 

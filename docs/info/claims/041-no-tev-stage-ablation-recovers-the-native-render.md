@@ -1,10 +1,11 @@
 ---
 id: C041
 kind: claim
-status: holds
+status: falsified
 created: 2026-08-12
 tags: 
 depends: sms-recomp/runtime/render/native_render.cpp, sms-recomp/runtime/render/render_compare.cpp
+falsified_on: 2026-08-27
 ---
 
 ## Claim
@@ -18,3 +19,9 @@ scratch/logs/ablate5.log, 2026-08-12: the round-robin ablation sweep sampled all
 ## What would falsify it
 
 a plaza frame that binds a texture unit above 0, or an ablation reaching n>=5 with a paired delta above +2
+
+## FALSIFIED 2026-08-27
+
+The round-robin ablation sweep compares each operation on a different game frame, and a control:no-op failure is logged without suppressing the ranking. Its leading positive row had n=1. Until variants share one tagged frozen frame and the control fails closed, the sweep cannot exclude TEV or texture operations.
+
+> Anything that cited this claim as proof must be re-checked. Grep the repo for it.

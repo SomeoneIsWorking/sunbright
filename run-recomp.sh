@@ -49,8 +49,60 @@ readonly _SUNBRIGHT_SAFE_TEX_CAPTURE="${SUNBRIGHT_SAFE_TEX:-}"
 readonly _SUNBRIGHT_SAFE_FASTBOOT_CAPTURE="${SUNBRIGHT_SAFE_FASTBOOT:-}"
 readonly _SUNBRIGHT_SAFE_STAGE_CAPTURE="${SUNBRIGHT_SAFE_STAGE:-}"
 readonly _SUNBRIGHT_SAFE_SCENARIO_CAPTURE="${SUNBRIGHT_SAFE_SCENARIO:-}"
+readonly _SUNBRIGHT_SAFE_AB_HANDOFF_CAPTURE="${SUNBRIGHT_SAFE_AB_HANDOFF:-0}"
+readonly _SUNBRIGHT_SAFE_AB_SET_CAPTURE="${SUNBRIGHT_SAFE_AB_SET:-0}"
+readonly _SUNBRIGHT_SAFE_AB_CAPTURE="${SUNBRIGHT_SAFE_AB-}"
+readonly _SUNBRIGHT_SAFE_AB_EVERY_SET_CAPTURE="${SUNBRIGHT_SAFE_AB_EVERY_SET:-0}"
+readonly _SUNBRIGHT_SAFE_AB_EVERY_CAPTURE="${SUNBRIGHT_SAFE_AB_EVERY-}"
+readonly _SUNBRIGHT_SAFE_AB_SELFTEST_SET_CAPTURE="${SUNBRIGHT_SAFE_AB_SELFTEST_SET:-0}"
+readonly _SUNBRIGHT_SAFE_AB_SELFTEST_CAPTURE="${SUNBRIGHT_SAFE_AB_SELFTEST-}"
+readonly _SUNBRIGHT_SAFE_ABLATE_SET_CAPTURE="${SUNBRIGHT_SAFE_ABLATE_SET:-0}"
+readonly _SUNBRIGHT_SAFE_ABLATE_CAPTURE="${SUNBRIGHT_SAFE_ABLATE-}"
+readonly _SUNBRIGHT_SAFE_AB_AT_SET_CAPTURE="${SUNBRIGHT_SAFE_AB_AT_SET:-0}"
+readonly _SUNBRIGHT_SAFE_AB_AT_CAPTURE="${SUNBRIGHT_SAFE_AB_AT-}"
+readonly _SUNBRIGHT_SAFE_EXPLICIT_ENV_FILE_CAPTURE="${SUNBRIGHT_SAFE_EXPLICIT_ENV_FILE:-}"
+readonly _SUNBRIGHT_SAFE_ISOLATED_CAPTURE="${SUNBRIGHT_SAFE_ISOLATED:-0}"
+
+restore_protected_value() {
+    local target="$1"
+    local is_set="$2"
+    local value="$3"
+    if [ "$is_set" = "1" ]; then
+        printf -v "$target" '%s' "$value"
+        export "$target"
+    else
+        unset "$target"
+    fi
+}
+
+restore_protected_ab_environment() {
+    # These are the complete A/B allowlist. Do not generalize this to arbitrary SBR_* values: some
+    # renderer diagnostics materially change GPU workload and must not cross the safe boundary
+    # without their own validation and explicit addition here.
+    restore_protected_value SBR_AB "$_SUNBRIGHT_SAFE_AB_SET_CAPTURE" "$_SUNBRIGHT_SAFE_AB_CAPTURE"
+    restore_protected_value SBR_AB_EVERY \
+        "$_SUNBRIGHT_SAFE_AB_EVERY_SET_CAPTURE" "$_SUNBRIGHT_SAFE_AB_EVERY_CAPTURE"
+    restore_protected_value SBR_AB_SELFTEST \
+        "$_SUNBRIGHT_SAFE_AB_SELFTEST_SET_CAPTURE" "$_SUNBRIGHT_SAFE_AB_SELFTEST_CAPTURE"
+    restore_protected_value SBR_ABLATE \
+        "$_SUNBRIGHT_SAFE_ABLATE_SET_CAPTURE" "$_SUNBRIGHT_SAFE_ABLATE_CAPTURE"
+    restore_protected_value SBR_AB_AT \
+        "$_SUNBRIGHT_SAFE_AB_AT_SET_CAPTURE" "$_SUNBRIGHT_SAFE_AB_AT_CAPTURE"
+}
+
 [ -f "$HERE/.env" ] && { set -a; . "$HERE/.env"; set +a; }
 if [ "$_SUNBRIGHT_SAFE_RUN_CAPTURE" = "1" ]; then
+    if [ "$_SUNBRIGHT_SAFE_ISOLATED_CAPTURE" = "1" ]; then
+        # Measurement runs must not inherit a forgotten ablation, renderer diagnostic, or pacing
+        # knob from either the caller or .env. Enumerate only project-owned prefixes; compiler,
+        # desktop, asset-location, and system variables remain untouched. Explicit launcher
+        # assignments are sourced below after this clearing pass.
+        while IFS= read -r name; do
+            case "$name" in
+                SB_*|SBR_*|AURORA_*|RADV_*|LUCENT_*) unset "$name" ;;
+            esac
+        done < <(compgen -A variable)
+    fi
     export SBR_RENDERER="$_SUNBRIGHT_SAFE_RENDERER_CAPTURE"
     export RADV_DEBUG="$_SUNBRIGHT_SAFE_RADV_DEBUG_CAPTURE"
     [ -z "$_SUNBRIGHT_SAFE_HEADLESS_CAPTURE" ] || export SB_HEADLESS="$_SUNBRIGHT_SAFE_HEADLESS_CAPTURE"
@@ -61,6 +113,54 @@ if [ "$_SUNBRIGHT_SAFE_RUN_CAPTURE" = "1" ]; then
     [ -z "$_SUNBRIGHT_SAFE_FASTBOOT_CAPTURE" ] || export SBR_FASTBOOT="$_SUNBRIGHT_SAFE_FASTBOOT_CAPTURE"
     [ -z "$_SUNBRIGHT_SAFE_STAGE_CAPTURE" ] || export SBR_STAGE="$_SUNBRIGHT_SAFE_STAGE_CAPTURE"
     [ -z "$_SUNBRIGHT_SAFE_SCENARIO_CAPTURE" ] || export SBR_SCENARIO="$_SUNBRIGHT_SAFE_SCENARIO_CAPTURE"
+    if [ -n "$_SUNBRIGHT_SAFE_EXPLICIT_ENV_FILE_CAPTURE" ]; then
+        if [ ! -f "$_SUNBRIGHT_SAFE_EXPLICIT_ENV_FILE_CAPTURE" ]; then
+            echo "[run-recomp] protected launcher environment is missing" >&2
+            exit 1
+        fi
+        # The guarded Python launcher wrote this mode-0600 file from already validated NAME=VALUE
+        # arguments. Reapply it AFTER .env so an explicit diagnostic/capture contract cannot be
+        # silently replaced by a developer's persistent interactive settings.
+        . "$_SUNBRIGHT_SAFE_EXPLICIT_ENV_FILE_CAPTURE"
+    fi
+    # run-render's validated A/B contract is final. Other safe launchers do not set this marker and
+    # retain their existing explicit-environment behavior.
+    if [ "$_SUNBRIGHT_SAFE_AB_HANDOFF_CAPTURE" = "1" ]; then
+        restore_protected_ab_environment
+    fi
+fi
+
+if [ "${1:-}" = "--selftest-safe-ab-handoff" ]; then
+    if [ "$_SUNBRIGHT_SAFE_RUN_CAPTURE" != "1" ] ||
+        [ "$_SUNBRIGHT_SAFE_AB_HANDOFF_CAPTURE" != "1" ]; then
+        echo "[run-recomp] safe A/B handoff selftest requires run-render handoff" >&2
+        exit 1
+    fi
+    # Simulate a hostile .env layer after capture, prove that it changed every field, then reapply
+    # the same shipping handoff used above. This is the negative control: without the restoration,
+    # all five assertions below would observe these planted values.
+    export SBR_AB="hostile"
+    export SBR_AB_EVERY="hostile"
+    export SBR_AB_SELFTEST="hostile"
+    export SBR_ABLATE="hostile"
+    export SBR_AB_AT="hostile"
+    restore_protected_ab_environment
+    for protected in AB AB_EVERY AB_SELFTEST ABLATE AB_AT; do
+        set_name="_SUNBRIGHT_SAFE_${protected}_SET_CAPTURE"
+        value_name="_SUNBRIGHT_SAFE_${protected}_CAPTURE"
+        target="SBR_${protected}"
+        if [ "${!set_name}" = "1" ]; then
+            [ "${!target+x}" = "x" ] && [ "${!target}" = "${!value_name}" ] || {
+                echo "[run-recomp] safe A/B handoff selftest failed for $target" >&2
+                exit 1
+            }
+        elif [ "${!target+x}" = "x" ]; then
+            echo "[run-recomp] safe A/B handoff selftest failed to unset $target" >&2
+            exit 1
+        fi
+    done
+    echo "[run-recomp] safe A/B handoff selftest PASS"
+    exit 0
 fi
 NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 

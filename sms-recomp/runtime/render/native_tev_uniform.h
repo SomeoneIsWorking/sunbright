@@ -14,6 +14,7 @@ struct SbrNativeTevUniform {
     int32_t dest[16][4];
     float konst[16][4];
     float regInit[4][4];
+    int32_t swapTable[4][4];
     int32_t control[4];
     float alphaRef[4];
 };

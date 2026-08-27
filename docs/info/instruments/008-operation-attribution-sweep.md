@@ -1,9 +1,10 @@
 ---
 id: I008
 kind: instrument
-status: validated
+status: DISTRUSTED
 created: 2026-07-29
 tags: render, recomp, attribution
+distrusted_on: 2026-08-27
 ---
 
 ## Instrument
@@ -37,3 +38,9 @@ of an empty frame is trivially identical.
 The control ablation ceasing to be checksum-identical to the baseline, two different ablations
 producing the same checksum on a frame with geometry, or a variant count that does not equal the
 baseline frame count.
+
+## DISTRUSTED 2026-08-27
+
+Aurora readback is not joined to the same native frame; each round-robin variant samples a different game frame; and control:no-op failure does not suppress the ranking. Exact tagged frame pairing and fail-closed control are required before attribution is trusted.
+
+> Every result this instrument produced is suspect until it is re-validated.

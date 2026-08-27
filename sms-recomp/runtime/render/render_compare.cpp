@@ -3,7 +3,9 @@
 
 #include "render_compare.h"
 
-#include "native_render.h"   // sbr_render_ablation_count/name — to name the variants NOT yet sampled
+#include "native_render.h" // sbr_render_ablation_count/name — to name the variants NOT yet sampled
+#include "render_compare_join.h"
+#include "render_compare_metric.h"
 
 #include "frame_smoothness.h"
 
@@ -11,92 +13,39 @@
 #include <lucent/log.h>
 
 #include <algorithm>
-#include <cmath>
+#include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace {
 
-// Both images are resampled onto this grid before anything is measured. Small enough that the
-// per-frame cost is irrelevant, large enough that building silhouettes survive.
-constexpr int kGW = 320, kGH = 224;
-
-// Fraction of pixels treated as "edge" in each image. Taken as a PERCENTILE of each image's own
-// gradient magnitude rather than a fixed threshold, so neither exposure nor the native path's flat
-// shading biases the comparison.
-constexpr float kEdgeFraction = 0.15f;
-
 bool g_on = false;
 bool g_registered = false;
-int  g_every = 60;
-
-struct Frame {
-    std::vector<uint8_t> rgba;
-    int w = 0, h = 0;
-    bool valid = false;
-};
-Frame g_native;
-uint8_t g_clear[3] = {0, 0, 0};
+bool g_sinkEveryPresent = false;
+int g_every = 60;
 long g_captures = 0;
 
+// A MapAsync callback is expected within a handful of submissions, but the join must remain
+// bounded even if the driver delays callbacks indefinitely. Capacity pressure is a loud refusal;
+// it never evicts an older exact-key reservation and silently changes the comparison population.
+sb::render_compare::FrameJoin g_join{64};
+
 // Every scored frame that had geometry, so the report can be a distribution rather than a sample.
-struct Score { double iou, corr; };
+struct Score {
+    double iou, corr;
+};
 std::vector<Score> g_scored;
 
-// Point-sample onto the common grid. Nearest-neighbour is deliberate: averaging would blur exactly
-// the thin structures (railings, poles, window frames) the edge metric is there to compare.
-void to_grid_luma(const uint8_t* src, int sw, int sh, std::vector<float>& out) {
-    out.resize(kGW * kGH);
-    for (int y = 0; y < kGH; ++y) {
-        const int sy = (int)((int64_t)y * sh / kGH);
-        for (int x = 0; x < kGW; ++x) {
-            const int sx = (int)((int64_t)x * sw / kGW);
-            const uint8_t* p = src + ((size_t)sy * sw + sx) * 4;
-            out[y * kGW + x] = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
-        }
-    }
-}
-
-// Sobel magnitude, then keep the strongest kEdgeFraction as the edge mask.
-void edge_mask(const std::vector<float>& lum, std::vector<uint8_t>& mask) {
-    std::vector<float> mag((size_t)kGW * kGH, 0.0f);
-    for (int y = 1; y < kGH - 1; ++y) {
-        for (int x = 1; x < kGW - 1; ++x) {
-            const auto L = [&](int dx, int dy) { return lum[(y + dy) * kGW + (x + dx)]; };
-            const float gx = -L(-1, -1) - 2 * L(-1, 0) - L(-1, 1) + L(1, -1) + 2 * L(1, 0) + L(1, 1);
-            const float gy = -L(-1, -1) - 2 * L(0, -1) - L(1, -1) + L(-1, 1) + 2 * L(0, 1) + L(1, 1);
-            mag[y * kGW + x] = std::sqrt(gx * gx + gy * gy);
-        }
-    }
-    std::vector<float> sorted = mag;
-    const size_t k = (size_t)((1.0f - kEdgeFraction) * (float)sorted.size());
-    std::nth_element(sorted.begin(), sorted.begin() + k, sorted.end());
-    const float thr = std::max(sorted[k], 1.0f);   // floor: a flat image has no edges, not all edges
-    mask.assign((size_t)kGW * kGH, 0);
-    for (size_t i = 0; i < mag.size(); ++i) mask[i] = mag[i] >= thr ? 1 : 0;
-}
-
-float pearson(const std::vector<float>& a, const std::vector<float>& b) {
-    double ma = 0, mb = 0;
-    for (size_t i = 0; i < a.size(); ++i) { ma += a[i]; mb += b[i]; }
-    ma /= (double)a.size();
-    mb /= (double)b.size();
-    double num = 0, da = 0, db = 0;
-    for (size_t i = 0; i < a.size(); ++i) {
-        const double x = a[i] - ma, y = b[i] - mb;
-        num += x * y; da += x * x; db += y * y;
-    }
-    if (da <= 0.0 || db <= 0.0) return 0.0f;
-    return (float)(num / std::sqrt(da * db));
-}
-
 // SBR_AB_SELFTEST=1 scores aurora against ITSELF. A metric that cannot report a perfect match on
-// identical input is not measuring what it claims, and a bad score from it would be indistinguishable
-// from a bad render — so the instrument is validated against a known-positive before its verdicts on
-// the native path are believed.
+// identical input is not measuring what it claims, and a bad score from it would be
+// indistinguishable from a bad render — so the instrument is validated against a known-positive
+// before its verdicts on the native path are believed.
 bool selftest() {
     static int v = -1;
     if (v < 0) {
@@ -107,25 +56,25 @@ bool selftest() {
 }
 
 // ---- Operation attribution ----
-// Variants submitted for the CURRENT frame, scored against the same aurora frame as the baseline.
-// `seq` is the baseline this variant belongs to. Aurora's sink fires from its own end-of-frame,
-// which can land BETWEEN the baseline submit and the sweep — so position in the queue does not
-// establish which frame a variant came from, and scoring on position compared variants against
-// the NEXT aurora frame. That is what made the control:no-op ablation score -11.8 instead of 0.
-struct Variant { int id = 0; uint64_t seq = 0; std::string name; std::vector<uint8_t> rgba;
-                 int w = 0, h = 0; };
-std::vector<Variant> g_variants;
 // dIou/dCorr are PAIRED differences: variant-minus-baseline measured on the SAME frame against the
 // SAME aurora capture, summed. The mean of those is drift-free by construction. The obvious
 // alternative — mean(variant) - mean(baseline over every scored frame) — is not: variants are only
 // scored on frames where the sweep completed and met its baseline, so the two means are taken over
 // different frame sets, and this project's own rule is that aggregates at different sample counts
 // are not comparable. That subtraction was here and is what this replaces.
-struct VarAcc { std::string name; double iou = 0, corr = 0; double dIou = 0, dCorr = 0; long n = 0; };
+struct VarAcc {
+    std::string name;
+    double iou = 0, corr = 0;
+    double dIou = 0, dCorr = 0;
+    long n = 0;
+};
 std::map<int, VarAcc> g_varAcc;
-uint64_t g_nativeSeq = 0;      // bumped per baseline submit; variants carry the value they saw
-long g_variantDropped = 0;     // variant sets that never met their baseline — reported, not hidden
-int g_ablNext = 1;             // rotation cursor, advanced only when a variant is actually scored
+std::unique_ptr<sb::render_compare::AttributionControl> g_attributionControl;
+std::atomic<int> g_ablNext{1}; // advanced only when a variant is actually scored
+std::mutex g_scoreMutex;
+sb::render_compare::IdentityControlResult g_metricIdentityControl =
+    sb::render_compare::IdentityControlResult::Deferred;
+bool g_metricDeferredReported = false;
 
 bool ablate() {
     static int v = -1;
@@ -136,125 +85,168 @@ bool ablate() {
     return v == 1;
 }
 
-// Score one native buffer against an aurora frame with the SAME metric as the baseline.
-void score_against(const uint8_t* nat, int nw, int nh, const uint8_t* aur, int aw, int ah,
-                   double& iou, double& corr) {
-    std::vector<float> ln, la;
-    to_grid_luma(nat, nw, nh, ln);
-    to_grid_luma(aur, aw, ah, la);
-    std::vector<uint8_t> en, ea;
-    edge_mask(ln, en);
-    edge_mask(la, ea);
-    long inter = 0, uni = 0;
-    for (size_t i = 0; i < en.size(); ++i) {
-        if (en[i] || ea[i]) ++uni;
-        if (en[i] && ea[i]) ++inter;
+void score_joined(sb::render_compare::JoinedFrame joined) {
+    if (selftest() &&
+        g_metricIdentityControl != sb::render_compare::IdentityControlResult::Passed) {
+        return;
     }
-    iou  = uni ? 100.0 * (double)inter / (double)uni : 0.0;
-    corr = pearson(ln, la);
+    const auto& native = joined.baseline.image;
+    const auto& oracle = joined.oracle;
+    long lit = 0;
+    const size_t npx = static_cast<size_t>(native.width) * native.height;
+    for (size_t i = 0; i < npx; ++i) {
+        const uint8_t* pixel = &native.rgba[i * 4];
+        if (pixel[0] != joined.baseline.clear[0] || pixel[1] != joined.baseline.clear[1] ||
+            pixel[2] != joined.baseline.clear[2]) {
+            ++lit;
+        }
+    }
+
+    const auto baselineScore =
+        sb::render_compare::score_images(native.rgba.data(), native.width, native.height,
+                                         oracle.rgba.data(), oracle.width, oracle.height);
+    const double iou = baselineScore.edgeIou;
+    const double corr = baselineScore.lumaCorrelation;
+
+    bool reportAttribution = false;
+    {
+        std::scoped_lock lock{g_scoreMutex};
+        ++g_captures;
+        lucent::info("ab",
+                     "#{} frame={} native {}x{} vs aurora {}x{} | geom {:.1f}% | edgeIoU "
+                     "{:.1f}% | lumaCorr {:+.3f}",
+                     g_captures, joined.frameId, native.width, native.height, oracle.width,
+                     oracle.height, 100.0 * static_cast<double>(lit) / static_cast<double>(npx),
+                     iou, corr);
+
+        if (lit > 0) {
+            g_scored.push_back({iou, corr});
+            double sumIou = 0.0, sumCorr = 0.0, bestIou = 0.0;
+            for (const auto& score : g_scored) {
+                sumIou += score.iou;
+                sumCorr += score.corr;
+                bestIou = std::max(bestIou, score.iou);
+            }
+            const double count = static_cast<double>(g_scored.size());
+            lucent::info("ab",
+                         "    mean over {} exact-frame samples: edgeIoU {:.1f}% (best "
+                         "{:.1f}%), lumaCorr {:+.3f}",
+                         g_scored.size(), sumIou / count, bestIou, sumCorr / count);
+            static const size_t kAt = [] {
+                const char* value = std::getenv("SBR_AB_AT");
+                return static_cast<size_t>(value != nullptr ? std::strtoul(value, nullptr, 10)
+                                                            : 59);
+            }();
+            if (g_scored.size() == kAt) {
+                lucent::info("ab",
+                             "=== COMPARABLE @ N={}: edgeIoU {:.2f}% lumaCorr {:+.4f} "
+                             "=== exact Aurora frame IDs (compare runs on THIS line)",
+                             kAt, sumIou / count, sumCorr / count);
+            }
+
+            for (const auto& variant : joined.variants) {
+                if (g_attributionControl != nullptr) {
+                    g_attributionControl->observe(joined.baseline, variant);
+                }
+                const auto variantScore = sb::render_compare::score_images(
+                    variant.image.rgba.data(), variant.image.width, variant.image.height,
+                    oracle.rgba.data(), oracle.width, oracle.height);
+                const double variantIou = variantScore.edgeIou;
+                const double variantCorr = variantScore.lumaCorrelation;
+                VarAcc& accumulator = g_varAcc[variant.id];
+                accumulator.name = variant.name;
+                accumulator.iou += variantIou;
+                accumulator.corr += variantCorr;
+                accumulator.dIou += variantIou - iou;
+                accumulator.dCorr += variantCorr - corr;
+                ++accumulator.n;
+                const int ablationCount = sbr_render_ablation_count();
+                if (ablationCount > 1) {
+                    g_ablNext.store((variant.id % (ablationCount - 1)) + 1,
+                                    std::memory_order_relaxed);
+                }
+            }
+            reportAttribution =
+                !g_varAcc.empty() && (g_scored.size() <= 5 || (g_scored.size() % 10) == 0);
+        }
+    }
+    if (reportAttribution) {
+        sbr_compare_report_attribution();
+    }
 }
 
-void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, void*) {
-    // Smoothness is a property of CONSECUTIVE presents, so it must see every one. When it is armed
-    // the sink cadence is forced to 1 and the A/B below is gated by its own counter instead —
-    // scoring every frame would otherwise make the two instruments fight over the sink.
-    sbr_smooth_feed(rgba, (int)w, (int)h);
-    if (sbr_smooth_enabled() && g_every > 1) {
-        static int tick = 0;
-        if (++tick % g_every != 0) return;
+void consume_ready(uint64_t frameId) {
+    sb::render_compare::JoinedFrame joined;
+    const auto status = g_join.take_ready(frameId, joined);
+    if (status == sb::render_compare::JoinStatus::AwaitingPeer ||
+        status == sb::render_compare::JoinStatus::UnknownFrame) {
+        return;
     }
-    if (!sbr_compare_enabled()) return;
-    if (selftest()) {
-        g_native.rgba.assign(rgba, rgba + (size_t)w * h * 4);
-        g_native.w = (int)w;
-        g_native.h = (int)h;
-        g_native.valid = true;
-        g_clear[0] = g_clear[1] = g_clear[2] = 0xFF;   // unused by the structural metrics
+    if (status != sb::render_compare::JoinStatus::Accepted) {
+        lucent::error("ab", "frame {} refused by exact join: {}", frameId,
+                      sb::render_compare::join_status_name(status));
+        return;
     }
-    if (!g_native.valid) return;
+    score_joined(std::move(joined));
+}
 
-    // Native coverage against the EXACT clear colour — no inference, so this number means what it
-    // says even when one object covers most of the frame.
-    long lit = 0;
-    const size_t npx = (size_t)g_native.w * g_native.h;
-    for (size_t i = 0; i < npx; ++i) {
-        const uint8_t* p = &g_native.rgba[i * 4];
-        if (p[0] != g_clear[0] || p[1] != g_clear[1] || p[2] != g_clear[2]) ++lit;
-    }
-
-    std::vector<float> ln, la;
-    to_grid_luma(g_native.rgba.data(), g_native.w, g_native.h, ln);
-    to_grid_luma(rgba, (int)w, (int)h, la);
-
-    std::vector<uint8_t> en, ea;
-    edge_mask(ln, en);
-    edge_mask(la, ea);
-    long inter = 0, uni = 0;
-    for (size_t i = 0; i < en.size(); ++i) {
-        if (en[i] || ea[i]) ++uni;
-        if (en[i] && ea[i]) ++inter;
+void on_aurora_frame(const uint8_t* rgba, uint32_t w, uint32_t h, const AuroraFrameSinkInfo* info,
+                     void*) {
+    // Smoothness is a property of CONSECUTIVE presents, so it sees every informed sink delivery.
+    // A/B reservations below are independently sparse and exact-keyed.
+    sbr_smooth_feed(rgba, static_cast<int>(w), static_cast<int>(h));
+    if (!sbr_compare_enabled())
+        return;
+    if (info == nullptr || info->structSize < sizeof(AuroraFrameSinkInfo) ||
+        info->version != AURORA_FRAME_SINK_INFO_VERSION || info->frameId == 0) {
+        lucent::error("ab", "frame sink refused invalid identity metadata");
+        return;
     }
 
-    ++g_captures;
-    const double iou  = uni ? 100.0 * (double)inter / (double)uni : 0.0;
-    const double corr = pearson(ln, la);
-    lucent::info("ab", "#{} native {}x{} vs aurora {}x{} | geom {:.1f}% | edgeIoU {:.1f}% | "
-                       "lumaCorr {:+.3f}",
-                 g_captures, g_native.w, g_native.h, w, h, 100.0 * (double)lit / (double)npx,
-                 iou, corr);
-
-    // RUNNING SUMMARY. A single frame's score is not comparable between runs: consecutive frames
-    // differ in animation phase, and the spread between them turned out to be as large as the
-    // changes being measured — so reading one number as progress is measuring noise. Accumulate
-    // from the first frame that has geometry (earlier ones are the loading screen and would drag
-    // every mean toward zero) and report the mean, the best, and the sample count.
-    if (lit > 0) {
-        g_scored.push_back({iou, corr});
-        double si = 0.0, sc = 0.0, bi = 0.0;
-        for (const auto& s : g_scored) { si += s.iou; sc += s.corr; bi = std::max(bi, s.iou); }
-        const double n = (double)g_scored.size();
-        lucent::info("ab", "    mean over {} scored frames: edgeIoU {:.1f}% (best {:.1f}%), "
-                           "lumaCorr {:+.3f}", g_scored.size(), si / n, bi, sc / n);
-        // A FIXED-N comparison point, emitted exactly once. The running mean drifts several points
-        // with the frame COUNT alone, so two runs of different length are not comparable — reading
-        // them as a before/after produced a wrong conclusion in this project once already. Compare
-        // runs on THIS line and nothing else; SBR_AB_AT moves the point.
-        static const size_t kAt = [] {
-            const char* e = std::getenv("SBR_AB_AT");
-            return (size_t)(e != nullptr ? std::strtoul(e, nullptr, 10) : 59);
-        }();
-        if (g_scored.size() == kAt)
-            lucent::info("ab", "=== COMPARABLE @ N={}: edgeIoU {:.2f}% lumaCorr {:+.4f} === "
-                               "(compare runs on THIS line; means at different N are not "
-                               "comparable)", kAt, si / n, sc / n);
-    }
-    // Every variant of THIS frame against THIS aurora frame — the whole point of doing the sweep
-    // in-process. A variant that scores higher than the baseline names an operation this port is
-    // getting wrong, because replacing it with a neutral reference moved the frame TOWARD aurora.
-    if (lit > 0)
-        for (const Variant& v : g_variants) {
-            if (v.seq != g_nativeSeq) { ++g_variantDropped; continue; }
-            double vi = 0, vc = 0;
-            score_against(v.rgba.data(), v.w, v.h, rgba, (int)w, (int)h, vi, vc);
-            VarAcc& a = g_varAcc[v.id];
-            a.name = v.name;
-            a.iou += vi; a.corr += vc;
-            a.dIou += vi - iou; a.dCorr += vc - corr;   // paired with THIS frame's baseline
-            ++a.n;
-            // This variant has now been consumed; move the rotation on so the next swept frame
-            // renders a different one. See sbr_compare_ablation_to_render for why the cursor lives
-            // here rather than at the call site.
-            const int nAbl = sbr_render_ablation_count();
-            if (nAbl > 1) g_ablNext = (v.id % (nAbl - 1)) + 1;
+    // Metric known-positive control. Unlike the retired self-test, this validates only the metric;
+    // it does not overwrite the native side inside the callback and bypass the frame join.
+    if (selftest() &&
+        g_metricIdentityControl == sb::render_compare::IdentityControlResult::Deferred) {
+        const auto identityScore =
+            sb::render_compare::score_images(rgba, static_cast<int>(w), static_cast<int>(h), rgba,
+                                             static_cast<int>(w), static_cast<int>(h));
+        const auto result = sb::render_compare::evaluate_identity_control(identityScore);
+        if (result == sb::render_compare::IdentityControlResult::Deferred) {
+            if (!g_metricDeferredReported) {
+                g_metricDeferredReported = true;
+                lucent::info("ab",
+                             "metric self-test deferred: identical frame {} has no comparable "
+                             "edge population or luma variance",
+                             info->frameId);
+            }
+        } else {
+            g_metricIdentityControl = result;
+            if (result == sb::render_compare::IdentityControlResult::Passed) {
+                lucent::info("ab",
+                             "metric self-test passed on non-degenerate identical frame: "
+                             "edgeIoU {:.1f}% lumaCorr {:+.3f} (frame {})",
+                             identityScore.edgeIou, identityScore.lumaCorrelation, info->frameId);
+            } else {
+                lucent::error("ab",
+                              "metric self-test FAILED on non-degenerate identical frame: "
+                              "edgeIoU {:.1f}% lumaCorr {:+.3f} (frame {}); A/B verdicts "
+                              "suppressed",
+                              identityScore.edgeIou, identityScore.lumaCorrelation, info->frameId);
+            }
         }
-    // Emit the table as it accumulates, not only at shutdown. The sweep re-renders the frame 16
-    // times and has taken the GPU device down mid-run (RADV GPUVM fault -> VK_ERROR_DEVICE_LOST),
-    // and a run that aborts never reaches the final reports — so a shutdown-only table meant every
-    // such run produced checksums and no attribution at all.
-    if (lit > 0 && !g_varAcc.empty() && (g_scored.size() <= 5 || (g_scored.size() % 10) == 0))
-        sbr_compare_report_attribution();
-    g_variants.clear();
-    g_native.valid = false;   // consume: never score the same native frame against two oracles
+    }
+
+    const auto status =
+        g_join.submit_oracle(info->frameId, rgba, static_cast<int>(w), static_cast<int>(h));
+    if (status == sb::render_compare::JoinStatus::UnknownFrame) {
+        return; // expected when smoothness forces sink cadence 1 but A/B is sparse
+    }
+    if (status != sb::render_compare::JoinStatus::Accepted) {
+        lucent::error("ab", "Aurora oracle for frame {} refused: {}", info->frameId,
+                      sb::render_compare::join_status_name(status));
+        return;
+    }
+    consume_ready(info->frameId);
 }
 
 } // namespace
@@ -264,91 +256,225 @@ bool sbr_compare_enabled() {
     if (v < 0) {
         const char* e = std::getenv("SBR_AB");
         v = (e != nullptr && e[0] != '\0' && e[0] != '0') ? 1 : 0;
-        if (const char* n = std::getenv("SBR_AB_EVERY")) g_every = std::max(1, std::atoi(n));
+        if (const char* n = std::getenv("SBR_AB_EVERY"))
+            g_every = std::max(1, std::atoi(n));
         g_on = v == 1;
     }
     return g_on;
 }
 
 void sbr_compare_init() {
-    if (g_registered) return;
+    if (g_registered)
+        return;
     // Either instrument needs the sink. The smoothness analyser needs EVERY present; the A/B does
     // not, and asking aurora for every frame when only the A/B is armed would cost a readback per
     // present for nothing.
     const bool wantSmooth = sbr_smooth_enabled();
-    if (!sbr_compare_enabled() && !wantSmooth) return;
+    if (!sbr_compare_enabled() && !wantSmooth)
+        return;
     g_registered = true;
-    aurora_set_frame_sink(&on_aurora_frame, nullptr, wantSmooth ? 1 : g_every);
-    if (sbr_compare_enabled())
-        lucent::info("ab", "in-process A/B armed: scoring every {} presents against the aurora "
-                           "oracle", g_every);
+    g_sinkEveryPresent = wantSmooth;
+    aurora_set_frame_sink_with_info(&on_aurora_frame, nullptr, wantSmooth ? 1 : g_every);
+    if (sbr_compare_enabled()) {
+        if (ablate()) {
+            int controlId = -1;
+            for (int id = 1; id < sbr_render_ablation_count(); ++id) {
+                if (std::strcmp(sbr_render_ablation_name(id), "control:no-op") == 0) {
+                    controlId = id;
+                    break;
+                }
+            }
+            if (controlId < 0) {
+                lucent::error("ab", "attribution disabled: no control:no-op ablation exists");
+            } else {
+                g_attributionControl =
+                    std::make_unique<sb::render_compare::AttributionControl>(controlId);
+            }
+        }
+        lucent::info("ab",
+                     "in-process A/B armed: scoring every {} presents against the aurora "
+                     "oracle by exact frame ID",
+                     g_every);
+    }
 }
 
-void sbr_compare_submit_native(const uint8_t* rgba, int w, int h, uint8_t r, uint8_t g, uint8_t b) {
-    // A NEW baseline supersedes the previous frame's variants: they accumulate over every present
-    // between aurora callbacks, and scoring them all against one aurora frame both inflates n and
-    // compares a variant of one frame against a different frame's oracle.
-    g_variants.clear();
-    ++g_nativeSeq;
-    if (!sbr_compare_enabled()) return;
-    // Aurora's readback is asynchronous (copy at one present, map at the next), so the frame that
-    // reaches the sink trails this one by a present or two. Keeping the LATEST native frame means
-    // the pair can be up to ~2 frames apart; at 30 Hz with a mostly-static camera that is far
-    // below the differences being measured, but it is a real skew and not pretended away.
-    g_native.rgba.assign(rgba, rgba + (size_t)w * h * 4);
-    g_native.w = w;
-    g_native.h = h;
-    g_native.valid = true;
-    g_clear[0] = r; g_clear[1] = g; g_clear[2] = b;
+uint64_t sbr_compare_capture_frame_id() {
+    if (!sbr_compare_enabled())
+        return 0;
+    const uint64_t frameId = aurora_frame_sink_capture_frame_id();
+    if (frameId == 0)
+        return 0;
+    // Smoothness forces Aurora to capture every present. Keep A/B sparse on its own caller cadence;
+    // callbacks for the intervening unreserved IDs feed smoothness and are ignored by the join.
+    if (g_sinkEveryPresent && g_every > 1) {
+        static uint64_t captureCall = 0;
+        if ((captureCall++ % static_cast<uint64_t>(g_every)) != 0)
+            return 0;
+    }
+    const auto status = g_join.reserve(frameId);
+    if (status != sb::render_compare::JoinStatus::Accepted) {
+        lucent::error("ab", "could not reserve Aurora frame {}: {} ({} pending)", frameId,
+                      sb::render_compare::join_status_name(status), g_join.pending());
+        return 0;
+    }
+    return frameId;
 }
 
-bool sbr_compare_ablate_enabled() { return ablate(); }
+void sbr_compare_capture_current_native_frame() {
+    if (!sbr_compare_enabled())
+        return;
+    const uint64_t frameId = sbr_compare_capture_frame_id();
+    if (frameId == 0)
+        return;
 
-void sbr_compare_submit_variant(int id, const char* name, const uint8_t* rgba, int w, int h) {
-    if (!g_native.valid || rgba == nullptr) return;   // no baseline pending -> nothing to pair with
-    Variant v;
-    v.id = id;
-    v.seq = g_nativeSeq;
-    v.name = name != nullptr ? name : "?";
-    v.w = w; v.h = h;
-    v.rgba.assign(rgba, rgba + (size_t)w * h * 4);
-    g_variants.push_back(std::move(v));
+    static std::vector<uint8_t> pixels(640 * 448 * 4);
+    if (sbr_render_capture() && sbr_render_readback(pixels.data(), 640, 448)) {
+        sbr_compare_submit_native(frameId, pixels.data(), 640, 448, 26, 102, 204);
+        if (sbr_compare_ablate_enabled()) {
+            // The control renders the real pipeline and must reproduce this exact-frame baseline.
+            // The historical all-variants burst hung the graphics ring, so one round-robin variant
+            // is rendered per selected frame.
+            const auto checksum = [](const std::vector<uint8_t>& image) {
+                unsigned long long hash = 1469598103934665603ULL;
+                for (size_t index = 0; index < image.size(); index += 4) {
+                    hash = (hash ^ (image[index] + 3u * image[index + 1] + 7u * image[index + 2])) *
+                           1099511628211ULL;
+                }
+                return hash;
+            };
+            const auto dump = [](const char* path, const std::vector<uint8_t>& image) {
+                if (FILE* file = std::fopen(path, "wb")) {
+                    std::fwrite(image.data(), 1, image.size(), file);
+                    std::fclose(file);
+                }
+            };
+            const unsigned long long baselineChecksum = checksum(pixels);
+            static long reported = 0;
+            const int ablationCount = sbr_render_ablation_count();
+            const int ablation = sbr_compare_ablation_to_render();
+            const bool report = sbr_render_last_vertex_count() > 1000 &&
+                                reported < static_cast<long>(ablationCount) * 2;
+            if (report && reported == 0)
+                dump("scratch/bin/sweep_baseline.rgba", pixels);
+            if (ablation > 0 && ablation < ablationCount && sbr_render_ablation_render(ablation) &&
+                sbr_render_readback(pixels.data(), 640, 448)) {
+                if (report && ablation == 9)
+                    dump("scratch/bin/sweep_pinunit1.rgba", pixels);
+                if (report) {
+                    ++reported;
+                    const unsigned long long variantChecksum = checksum(pixels);
+                    lucent::info("ab", "   sweep checksum: baseline {:016x}  {} {:016x}{}",
+                                 baselineChecksum, sbr_render_ablation_name(ablation),
+                                 variantChecksum,
+                                 variantChecksum == baselineChecksum ? "  (identical)" : "");
+                }
+                sbr_compare_submit_variant(frameId, ablation, sbr_render_ablation_name(ablation),
+                                           pixels.data(), 640, 448);
+            }
+        }
+    }
+    sbr_compare_finish_frame(frameId);
+}
+
+void sbr_compare_submit_native(uint64_t frameId, const uint8_t* rgba, int w, int h, uint8_t r,
+                               uint8_t g, uint8_t b) {
+    if (!sbr_compare_enabled())
+        return;
+    const auto status = g_join.submit_baseline(frameId, rgba, w, h, r, g, b);
+    if (status != sb::render_compare::JoinStatus::Accepted) {
+        lucent::error("ab", "native baseline for Aurora frame {} refused: {}", frameId,
+                      sb::render_compare::join_status_name(status));
+    }
+}
+
+bool sbr_compare_ablate_enabled() {
+    return ablate();
+}
+
+void sbr_compare_submit_variant(uint64_t frameId, int id, const char* name, const uint8_t* rgba,
+                                int w, int h) {
+    const auto status = g_join.submit_variant(frameId, id, name, rgba, w, h);
+    if (status != sb::render_compare::JoinStatus::Accepted) {
+        lucent::error("ab", "variant {} for Aurora frame {} refused: {}",
+                      name != nullptr ? name : "?", frameId,
+                      sb::render_compare::join_status_name(status));
+    }
+}
+
+void sbr_compare_finish_frame(uint64_t frameId) {
+    const auto status = g_join.seal(frameId);
+    if (status != sb::render_compare::JoinStatus::Accepted) {
+        lucent::error("ab", "could not seal Aurora frame {}: {}", frameId,
+                      sb::render_compare::join_status_name(status));
+        return;
+    }
+    consume_ready(frameId);
 }
 
 // THE ATTRIBUTION TABLE. Ranked by how much each ablation RECOVERS over the baseline, so the
 // answer to "which operation is wrong" is the first row, with a number attached — not an
 // inference drawn from two runs of different length.
-int sbr_compare_ablation_to_render() { return g_ablNext; }
+int sbr_compare_ablation_to_render() {
+    return g_ablNext.load(std::memory_order_relaxed);
+}
 
 void sbr_compare_report_attribution() {
-    if (g_varAcc.empty()) return;
+    std::scoped_lock lock{g_scoreMutex};
+    if (g_varAcc.empty())
+        return;
+    if (g_attributionControl == nullptr || !g_attributionControl->table_allowed()) {
+        static bool reportedWaiting = false;
+        static bool reportedFailure = false;
+        if (g_attributionControl != nullptr &&
+            g_attributionControl->state() == sb::render_compare::ControlState::Failed) {
+            if (!reportedFailure) {
+                reportedFailure = true;
+                lucent::error("ab", "OPERATION ATTRIBUTION SUPPRESSED: control:no-op did not "
+                                    "byte-match its exact-frame baseline");
+            }
+        } else if (!reportedWaiting) {
+            reportedWaiting = true;
+            lucent::info("ab", "operation attribution withheld until control:no-op byte-matches "
+                               "its exact-frame baseline");
+        }
+        return;
+    }
     double bi = 0, bc = 0;
     const double n = (double)g_scored.size();
-    if (n <= 0) return;
-    for (const auto& s : g_scored) { bi += s.iou; bc += s.corr; }
-    bi /= n; bc /= n;
-    struct Row { std::string name; double iou, corr, d, dc; long n; };
+    if (n <= 0)
+        return;
+    for (const auto& s : g_scored) {
+        bi += s.iou;
+        bc += s.corr;
+    }
+    bi /= n;
+    bc /= n;
+    struct Row {
+        std::string name;
+        double iou, corr, d, dc;
+        long n;
+    };
     std::vector<Row> rows;
     for (const auto& [id, a] : g_varAcc) {
-        if (a.n == 0) continue;
+        if (a.n == 0)
+            continue;
         const double mi = a.iou / (double)a.n, mc = a.corr / (double)a.n;
         rows.push_back({a.name, mi, mc, a.dIou / (double)a.n, a.dCorr / (double)a.n, a.n});
     }
     std::sort(rows.begin(), rows.end(), [](const Row& x, const Row& y) { return x.d > y.d; });
-    if (g_variantDropped > 0)
-        lucent::info("ab", "   ({} variant samples dropped: their baseline was consumed by an "
-                           "aurora frame before the sweep finished)", g_variantDropped);
-    lucent::info("ab", "OPERATION ATTRIBUTION — baseline edgeIoU {:.1f}% lumaCorr {:+.3f} over {} "
-                       "scored frames. The delta is PAIRED (variant minus baseline on the same "
-                       "frame, same aurora capture), so it is not affected by the drift between "
-                       "frames. A POSITIVE delta means replacing that operation with a neutral "
-                       "reference moved the frame TOWARD aurora, i.e. this port gets it wrong.",
+    lucent::info("ab",
+                 "OPERATION ATTRIBUTION — baseline edgeIoU {:.1f}% lumaCorr {:+.3f} over {} "
+                 "scored frames. Each delta is PAIRED (variant minus baseline on one exact "
+                 "frame and Aurora capture). Different rows still sample different round-robin "
+                 "scene frames, so this is exploratory until their frame populations match.",
                  bi, bc, (long)n);
     int flat = 0;
     for (const Row& r : rows) {
-        if (r.d == 0.0 && r.dc == 0.0) ++flat;
-        lucent::info("ab", "   {:+6.1f}  {:<22} edgeIoU {:.1f}%  lumaCorr {:+.3f} (d {:+.3f})  "
-                           "(n={}){}",
+        if (r.d == 0.0 && r.dc == 0.0)
+            ++flat;
+        lucent::info("ab",
+                     "   {:+6.1f}  {:<22} edgeIoU {:.1f}%  lumaCorr {:+.3f} (d {:+.3f})  "
+                     "(n={}){}",
                      r.d, r.name, r.iou, r.corr, r.dc, r.n,
                      (r.d == 0.0 && r.dc == 0.0) ? "  <- IDENTICAL to baseline" : "");
     }
@@ -364,19 +490,22 @@ void sbr_compare_report_attribution() {
         int nmiss = 0;
         for (int a = 1; a < sbr_render_ablation_count(); ++a)
             if (g_varAcc.find(a) == g_varAcc.end() || g_varAcc[a].n == 0) {
-                if (!missing.empty()) missing += ", ";
+                if (!missing.empty())
+                    missing += ", ";
                 missing += sbr_render_ablation_name(a);
                 ++nmiss;
             }
         if (nmiss > 0)
-            lucent::info("ab", "   NOT YET SAMPLED ({} of {}): {} — this table is partial, not a "
-                               "finished ranking.",
+            lucent::info("ab",
+                         "   NOT YET SAMPLED ({} of {}): {} — this table is partial, not a "
+                         "finished ranking.",
                          nmiss, sbr_render_ablation_count() - 1, missing);
     }
     if (flat > 0)
-        lucent::info("ab", "   ({} of {} ablations scored EXACTLY 0.0 on both metrics. That is "
-                           "the signature of an operation the frame never performs, not of one "
-                           "this port already gets right — check that the frame exercises it "
-                           "before drawing any conclusion from the row.",
+        lucent::info("ab",
+                     "   ({} of {} ablations scored EXACTLY 0.0 on both metrics. That is "
+                     "the signature of an operation the frame never performs, not of one "
+                     "this port already gets right — check that the frame exercises it "
+                     "before drawing any conclusion from the row.",
                      flat, (int)rows.size());
 }
