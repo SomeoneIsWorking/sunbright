@@ -3,13 +3,13 @@ id: C067
 kind: claim
 status: holds
 created: 2026-08-24
-tags: gpu,renderer
+tags: gpu,renderer,gx-compat
 depends: sms-recomp/runtime/render/native_render.cpp#sbr_render_end, sms-recomp/runtime/render/native_gpu_admission.cpp
 ---
 
 ## Claim
 
-The native SDL3-GPU rate gate rejects a frame before any GPU work and the guarded sidecar completes without increasing the kernel amdgpu anomaly count
+The SDL3-GPU GX compatibility rate gate rejects a frame before any GPU work and the guarded sidecar completes without increasing the kernel amdgpu anomaly count
 
 ## Evidence
 

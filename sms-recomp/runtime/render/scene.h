@@ -1,7 +1,7 @@
 #pragma once
 
 #include "native_efb_copy_plan.h"
-// scene — the interpolated scene the native renderer draws.
+// scene — the interpolated GX compatibility scene reconstructed from guest rendering state.
 //
 // WHY THIS EXISTS (2026-07-23, user-directed): the previous 60fps attempt drove the RENDER from the
 // game's tick — replaying the captured GX stream twice per tick with the matrices patched. That can
@@ -10,7 +10,7 @@
 // changes), and the present cadence is chained to the guest's retrace counter. It was a hack
 // fighting the architecture, and it was abandoned rather than tuned.
 //
-// The correct shape, which the native renderer gets for free:
+// The correct shape, which the GX compatibility renderer gets for free:
 //
 //   * The GAME ticks at 30 Hz and produces SCENE STATE — one transform per drawable. That is all a
 //     tick contributes; the geometry itself does not change from tick to tick.

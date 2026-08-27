@@ -9,7 +9,7 @@ depends: sms-recomp/runtime/render/native_tev_uniform.cpp#sbr_native_pack_tev_un
 
 ## Claim
 
-The recomp native SDL3-GPU shader receives and applies GX TEV RAS/TEX swap selectors and all four component-remap rows before TEV argument evaluation
+The recomp SDL3-GPU GX compatibility shader receives and applies GX TEV RAS/TEX swap selectors and all four component-remap rows before TEV argument evaluation
 
 ## Evidence
 

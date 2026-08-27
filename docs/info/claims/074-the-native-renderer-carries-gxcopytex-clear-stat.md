@@ -3,13 +3,13 @@ id: C074
 kind: claim
 status: holds
 created: 2026-08-28
-tags: render,recomp,native,efb-copy,clear
+tags: render,recomp,gx-compat,efb-copy,clear
 depends: sms-recomp/runtime/render/native_efb_copy_plan.cpp, sms-recomp/runtime/render/native_efb_copy_clear_draw.cpp, sms-recomp/tests/native_efb_copy_plan_test.cpp
 ---
 
 ## Claim
 
-The recomp native renderer carries `GXCopyTex(clear=true)` colour, alpha, depth, update masks, and
+The recomp SDL3-GPU GX compatibility renderer carries `GXCopyTex(clear=true)` colour, alpha, depth, update masks, and
 clipped source rectangle through its typed copy plan and expresses the post-copy clear as the first
 ordered batch after the copy barrier.
 
@@ -24,4 +24,4 @@ copy epoch before/after the synthetic clear. The combined Clang build and focuse
 
 Any change to BP `0x40`, `0x41`, `0x4F`-`0x52` parsing, `NativeEfbCopyRequest`, scene copy ordering,
 the copy plan/clear-draw builder, batch merging, scissor application, or colour/depth write-mask
-translation requires the focused test and a live native/Aurora parity control to be rerun.
+translation requires the focused test and a live GX-compatibility/Aurora parity control to be rerun.

@@ -3,13 +3,13 @@ id: C075
 kind: claim
 status: holds
 created: 2026-08-28
-tags: render,native,parity
+tags: render,gx-compat,parity
 depends: sms-recomp/runtime/render/render_compare_join.cpp, sms-recomp/runtime/render/render_compare_metric.cpp, sms-recomp/runtime/render/native_render.cpp, extern/aurora
 ---
 
 ## Claim
 
-The exact-frame native/Aurora A/B join currently measures the recomp native SDL3-GPU renderer at edgeIoU 28.32% and luma correlation +0.4095 over N=3 matched frames in the guarded Delfino run.
+The exact-frame GX-compatibility/Aurora A/B join currently measures the recomp SDL3-GPU GX compatibility renderer at edgeIoU 28.32% and luma correlation +0.4095 over N=3 matched frames in the guarded Delfino run. This is compatibility-reference evidence only and does not measure progress toward the PC-native semantic renderer in G003/G004.
 
 ## Evidence
 
@@ -17,4 +17,4 @@ The exact-frame native/Aurora A/B join currently measures the recomp native SDL3
 
 ## What would falsify it
 
-Any change to native renderer output, Aurora sink scheduling/metadata, the exact-frame join, comparison metric, scene/camera, sample cadence/count, or renderer dimensions requires a same-contract rerun.
+Any change to GX compatibility renderer output, Aurora sink scheduling/metadata, the exact-frame join, comparison metric, scene/camera, sample cadence/count, or renderer dimensions requires a same-contract rerun.

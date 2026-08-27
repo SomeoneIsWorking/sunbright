@@ -35,15 +35,16 @@ into gameplay and cannot be cleanly bridged. The closure never closed.
 
 ## The architecture that REPLACED it (the one true path)
 **Same GameCube memory layout, everywhere.** Engine objects stay guest-RAM, GC-layout
-(32-bit big-endian pointers, GC offsets) in the shared 24 MB arena. **PC owns the engine
-code as native C++ that operates ON that guest layout** (the way `native_jas`,
-`sms_drawsync_lossproof`, `native_card`, and the native renderer in `runtime/render/` +
-`runtime/ngx/` already do — reading J3D objects straight from guest RAM). **Gameplay stays
+(32-bit big-endian pointers, GC offsets) in the shared 24 MB arena. **PC-owned recomp adapters
+operate ON that guest layout** (the way `native_jas`, `native_card`, and the J3D capture seam
+already do — reading objects straight from guest RAM). **Gameplay stays
 recompiled** and runs directly on the same memory, so `mMaterials[i]` is a plain guest load
 that Just Works. The boundary is **plain function-call overrides over shared guest memory** —
 no handles, no getters, no marshalling, no virtual-dispatch routing, because both sides see
-identical bytes. Goal: no Dolphin (own GPU/renderer/OS/audio natively). The live frontier is
-the native renderer (`docs/port/native_plan.md`, N5 per-material TEV combiner next).
+identical bytes. A renderer adapter copies semantic values into the renderer-neutral PC scene; it
+does not create host-layout game objects or expose them back to guest code. The SDL3-GPU FIFO/TEV
+path is GX Compatibility, not the PC-native renderer frontier. Current status and ownership live in
+`docs/project-state.md` and `docs/codemap.md`.
 
 ## What was deleted (commit that removed it; recover from history if ever needed)
 Removed wholesale: `port/` (host engine), `runtime/eng_handle.*`, `runtime/bridge.h`, the

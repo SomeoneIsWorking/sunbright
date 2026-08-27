@@ -2,8 +2,8 @@
 // state_oracle — per-DRAW state comparison between this port's FIFO parse and aurora's.
 //
 // Why this exists. Aurora renders Delfino correctly from the SAME command stream, in the SAME
-// process, reading the SAME guest memory. So when the native path draws something else, the
-// difference is in the STATE each side derived, and that difference is directly observable — no
+// process, reading the SAME guest memory. So when the GX compatibility path draws something else,
+// the difference is in the STATE each side derived, and that difference is directly observable — no
 // oracle capture, no pixel metric, no hypothesis. A whole-frame score can say something is wrong
 // but never WHERE; this says which draw, which field, and what each side thinks it is.
 //
@@ -21,12 +21,12 @@ struct SbrDrawState {
     // ordinal instead drifts through a frame (aurora records ~24 fewer draws per frame) and
     // silently compares unrelated draws — which is how a state oracle manufactures findings.
     uint32_t pos = 0;
-    uint8_t  numStages = 0;
-    uint8_t  numTexGens = 0;
+    uint8_t numStages = 0;
+    uint8_t numTexGens = 0;
     // Per stage: the map it names, the coordinate it names, and whether the texture is enabled.
-    uint8_t  texmap[16] = {};
-    uint8_t  texcoord[16] = {};
-    uint8_t  texEnable[16] = {};
+    uint8_t texmap[16] = {};
+    uint8_t texcoord[16] = {};
+    uint8_t texEnable[16] = {};
     // Per unit: the texture identity. On this side that is the TX_SETIMAGE3 address; on aurora's
     // it is texObjId, which this port sets to exactly that address — so they compare directly.
     uint32_t unitId[8] = {};
@@ -46,23 +46,23 @@ struct SbrDrawState {
     //   bit0 matSrcVtx | bit1 lightingEnabled | bit2 ambSrcVtx | bits3-4 diffuseFn |
     //   bits5-6 attnFn (0 none, 1 spec, 2 spot) | bits8-15 lightMask
     uint16_t chanCtrl[4] = {};
-    uint32_t ambColor[2] = {};   // RGBA8 (XF 0x100A/0x100B); the alpha channels share the register
-    uint32_t matColor[2] = {};   // RGBA8 (XF 0x100C/0x100D)
-    uint8_t  numChans = 0;
+    uint32_t ambColor[2] = {}; // RGBA8 (XF 0x100A/0x100B); the alpha channels share the register
+    uint32_t matColor[2] = {}; // RGBA8 (XF 0x100C/0x100D)
+    uint8_t numChans = 0;
     // Per stage: the rasterised channel it reads, CANONICALISED to {0=colour0a0, 1=colour1a1,
     // 5=alphabump, 6=alphabumpN, 7=zero} — the hardware raw values 2/3/4 alias 0/1 and aurora
     // stores only the canonical form, so both sides canonicalise before comparing.
-    uint8_t  rasChannel[16] = {};
+    uint8_t rasChannel[16] = {};
     // Per stage: the raw 24-bit combiner words (colour; alpha with the swap-select bits 0-3
     // zeroed, this port does not model swap tables) and the konst selectors.
     uint32_t cWord[16] = {};
     uint32_t aWord[16] = {};
-    uint16_t kSel[16] = {};      // kC | kA<<8
-    uint32_t konst[4] = {};      // RGBA8
-    uint64_t tevReg[4] = {};     // 4 x u16-wrapped signed S10 raw (r,g,b,a high..low)
+    uint16_t kSel[16] = {};  // kC | kA<<8
+    uint32_t konst[4] = {};  // RGBA8
+    uint64_t tevReg[4] = {}; // 4 x u16-wrapped signed S10 raw (r,g,b,a high..low)
     // Texgen types (raw XF: 2 = SRTG colour0, 3 = SRTG colour1) — filled only on this port's side
     // and NOT compared; used to know which colour channels a draw actually consumes.
-    uint8_t  tgType[8] = {};
+    uint8_t tgType[8] = {};
     // RASTER state — z, blend and cull. Never compared until now, and it is exactly the state that
     // decides whether a draw COVERS what is behind it. A draw whose texture and combiner agree
     // perfectly still blacks the background if it is depth-tested or blended differently, so
@@ -77,8 +77,8 @@ struct SbrDrawState {
     // about clipping, which is exactly the state that decides whether a far quad covers the sky.
     // OUR side is filled with what this renderer ACTUALLY rasterises with (full target, no cull),
     // not with a freshly parsed value — the comparison is aurora's clipping against our behaviour.
-    int32_t  scissor[4] = {0, 0, 0, 0};
-    uint8_t  cull = 0;
+    int32_t scissor[4] = {0, 0, 0, 0};
+    uint8_t cull = 0;
 };
 
 // Forward decls for the shared filler below.

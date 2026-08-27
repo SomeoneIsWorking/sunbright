@@ -10,7 +10,7 @@ falsified_on: 2026-08-27
 
 ## Claim
 
-no TEV-stage ablation recovers the native renderer's edgeIoU gap, and no draw in a plaza frame samples a texture unit above 0
+no TEV-stage ablation recovers the GX compatibility renderer's edgeIoU gap, and no draw in a plaza frame samples a texture unit above 0
 
 ## Evidence
 

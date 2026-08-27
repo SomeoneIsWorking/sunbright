@@ -9,7 +9,7 @@ depends: sms-recomp/runtime/render/native_render.cpp#sbr_render_tris, sms-recomp
 
 ## Claim
 
-The recomp native renderer drops GX_CULL_ALL triangle draws before any SDL GPU work while cull NONE, FRONT, and BACK remain submit-eligible
+The recomp SDL3-GPU GX compatibility renderer drops GX_CULL_ALL triangle draws before any SDL GPU work while cull NONE, FRONT, and BACK remain submit-eligible
 
 ## Evidence
 

@@ -9,7 +9,7 @@ falsified_on: 2026-08-27
 
 ## Claim
 
-The native SDL3-GPU renderer still scores edgeIoU 32.2% / lumaCorr +0.72 against the aurora oracle at N=59 — unchanged since 2026-07-23 despite everything landed since
+The SDL3-GPU GX compatibility renderer still scores edgeIoU 32.2% / lumaCorr +0.72 against the aurora oracle at N=59 — unchanged since 2026-07-23 despite everything landed since
 
 ## Evidence
 

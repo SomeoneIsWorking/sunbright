@@ -1,16 +1,12 @@
-# Renderer engineering reference (native GX → Vulkan)
+# Renderer engineering reference (game-semantic PC renderer)
 
-> **HISTORICAL — this is NOT the current architecture.** It describes an object-model renderer
-> reading engine objects from guest-layout RAM and drawing them with a bespoke Vulkan backend. The
-> live renderer is the opposite: it is driven from the **GX FIFO parse**
-> (`sms-recomp/runtime/devices/dev_gxfifo.cpp` -> `scene.cpp` -> `native_render.cpp`) on **SDL3 GPU**, with
-> aurora as the in-process parity oracle. See `docs/codemap.md` and `CLAUDE.md`'s renderer
-> doctrine. Kept ONLY for the GX/VAT vertex-decode spec in section 3a, which is still accurate;
-> treat the staging plan (N0-N8) and every architectural claim here as superseded. Contents: the stage breakdown (N0–N8), the GX/VAT vertex-decode spec (§3a),
-> the J3DShape draw-path RE, verification notes, and the progress log. The "render over
-> recomp-on-guest-memory" form is NOT transitional — it IS the target (engine objects stay
-> GC-layout; gameplay stays recompiled on the same memory). The earlier "subordinate to
-> ARCHITECTURE_TARGET / draws host objects" framing was part of the retired flip direction.
+> **PARTIALLY REACTIVATED 2026-08-28.** The object-model boundary in section 3 is again the current
+> direction: the renderer consumes game-semantic J3D/J2D/particle/material data above GX. The old
+> bespoke-Vulkan, Dolphin-era paths, file names, flags, N0-N8 status, and guest-memory implementation
+> details remain historical; the current backend API is SDL3 GPU and the authoritative ownership and
+> status are in `docs/codemap.md`, `docs/project-goals.md`, and `docs/project-state.md`. Section 3a is
+> still useful for decoding display lists embedded in assets at load time, never for consuming the
+> live FIFO as the shipping renderer interface.
 
 ## 1. Dolphin dependency surface (what the renderer/platform must replace)
 

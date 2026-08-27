@@ -83,34 +83,38 @@ an opaque override.
 
 ## G003 — Recomp Native Renderer
 
-**Outcome:** The recomp runtime renders faithfully through Sunbright's native SDL3-GPU renderer,
-with no Aurora dependency in the completed lane.
+**Outcome:** The recomp runtime renders through a PC-native, game-semantic renderer that does not
+consume or reproduce the GameCube GX/FIFO pipeline.
 
-**Why it matters:** Owning the renderer makes the GX-to-PC translation inspectable, testable, and
-modifiable without debugging final behavior through a third-party GX interpreter.
+**Why it matters:** A second implementation of GX is still GameCube rendering. The native renderer
+exists to own PC scene, material, lighting, effect, resource, and presentation semantics directly,
+making them understandable and extensible without a fixed-function compatibility layer.
 
 **Success conditions:**
 
-- The renderer consumes the authoritative shared parsed-FIFO representation rather than a second
-  ad hoc GX frontend.
-- Geometry, transforms, raster state, TEV, textures, lighting, copies, effects, and presentation
-  reach verified visual parity across representative scenes and stages.
-- Intermediate state and final frames are compared against Aurora with controlled instruments
-  while parity work remains.
-- After parity is demonstrated, the recomp native-renderer lane runs and presents without Aurora.
+- Runtime overrides at verified J3D, J2D, particle, camera/light, material/resource, and named-effect
+  seams emit renderer-neutral semantic scene data while retaining the original recomp bodies.
+- The renderer owns PC-native meshes, materials, shaders, passes, resources, and presentation; its
+  shipping input contains no FIFO commands, BP/XF register model, TEV program, or EFB-copy protocol.
+- Representative scenes preserve the game's authored content, ordering, visibility, animation, and
+  intended appearance without requiring pixel identity to GameCube fixed-function output.
+- The completed recomp native lane runs and presents without Aurora or the SDL3 GX compatibility
+  renderer.
 
 **Constraints and non-goals:**
 
-- Aurora remains the in-process parity oracle until the native path reaches parity; do not delete
-  the oracle to make a comparison green.
+- Aurora and the SDL3 GX compatibility renderer are coverage/reference tools, not target
+  architecture. Exact parity to either is neither necessary nor sufficient for this goal.
 - Keep guest layout end to end. Recomp-to-decomp object interop remains banned.
+- Native overrides keep their recompiled bodies available for controlled A/B and fallback; do not
+  delete game behavior merely because a semantic native pass supersedes its draw path.
 - The guest-code parity rule below applies to any renderer work that depends on game-owned guest
   behavior.
 
 ## G004 — Decomp Native Renderer
 
-**Outcome:** The decomp runtime renders faithfully through the same native SDL3-GPU renderer rather
-than Aurora.
+**Outcome:** The decomp runtime feeds the same PC-native, game-semantic renderer directly from native
+game code, without lowering its shipping draw path through GX.
 
 **Why it matters:** This gives the moddable native game path a fully project-owned renderer and
 keeps renderer behavior shared across both runtimes instead of creating two implementations that
@@ -118,21 +122,21 @@ drift.
 
 **Success conditions:**
 
-- The decomp GX path feeds the authoritative shared parsed-FIFO interface used by the native
-  renderer.
-- The renderer backend, GX state model, shaders, and verification tools are shared with the recomp
-  native-renderer lane wherever their semantics are the same.
-- Controlled comparisons against the existing decomp-plus-Aurora path establish parity across
-  representative scenes and stages.
-- The decomp native-renderer lane launches, renders, and presents without Aurora after parity is
-  demonstrated.
+- Native J3D, J2D, particle, camera/light, material/resource, and effect owners emit the same
+  renderer-neutral semantic schema as the recomp adapters.
+- The PC-native renderer implementation and semantic resource formats are shared between runtimes;
+  only their object-layout adapters differ.
+- Controlled comparisons against decomp-plus-Aurora establish content and behavior coverage without
+  making GameCube pixel identity the endpoint.
+- The completed decomp native lane launches, renders, and presents without Aurora or GX translation.
 
 **Constraints and non-goals:**
 
-- Do not build a second decomp-only renderer or copy the recomp frontend.
+- Do not build a second decomp-only renderer or copy the recomp layout adapter.
 - The decomp remains native game code; do not route it through recompiled guest objects or revive
   the retired flip/interoperability boundary.
-- Aurora remains available as the oracle until this lane independently reaches parity.
+- Do not route the native result back through GX calls, FIFO records, TEV emulation, or EFB-copy
+  emulation and call that native rendering.
 
 ## Cross-goal rule — guest-code parity
 

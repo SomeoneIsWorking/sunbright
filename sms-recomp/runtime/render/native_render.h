@@ -203,7 +203,8 @@ void sbr_gx_set_projection(const float m[16], bool is2d);
 const float* sbr_gx_current_projection(bool* is2d);
 
 // Startup selection is fixed for the process lifetime because a renderer switch transfers SDL
-// window/swapchain ownership. The host sets the window only when Native owns presentation.
+// window/swapchain ownership. The host sets the window only when GX Compatibility owns
+// presentation.
 bool sbr_render_enabled();
 void sbr_render_set_present_window(SDL_Window* window);
 void sbr_render_set_present_aspect(unsigned width, unsigned height);
@@ -212,8 +213,9 @@ void sbr_render_set_present_aspect(unsigned width, unsigned height);
 // no device could be created (the caller keeps using aurora).
 bool sbr_render_init(int w, int h);
 
-// Release every resource owned by the Native SDL3-GPU renderer, relinquish its window claim, and
-// destroy its device. Safe after a partial initialization and safe to call more than once.
+// Release every resource owned by the SDL3-GPU GX compatibility renderer, relinquish its window
+// claim, and destroy its device. Safe after a partial initialization and safe to call more than
+// once.
 void sbr_render_shutdown() noexcept;
 
 // One frame: begin (records the clear colour and drops last frame's geometry), submit triangles as
@@ -227,9 +229,9 @@ void sbr_render_tris(const SbrVertex* verts, int count, SbrDepthState depth,
 // Per-BP-register write counts, so the per-unit texture BIND RATE is measurable rather than
 // inferred (TX_SETIMAGE3 is 0x94+m for units 0-3).
 void sbr_gxfifo_report_bp_writes();
-// The FIFO 2D gate's own telemetry (SBR_FIFO_2D). Reported independently of the native renderer:
-// it describes the stream PARSE, and gating it behind the GPU path made it unreachable exactly
-// when the HUD-capture question needed answering.
+// The FIFO 2D gate's own telemetry (SBR_FIFO_2D). Reported independently of the GX compatibility
+// renderer: it describes the stream PARSE, and gating it behind the GPU path made it unreachable
+// exactly when the HUD-capture question needed answering.
 void sbr_gxfifo_report_2d_gate();
 
 // Re-decode every texture that cached black and report whether its guest bytes have since changed.

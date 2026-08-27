@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""compare_native.py — diff the native SDL3-GPU renderer's output against the aurora oracle.
+"""compare_native.py — diff the SDL3-GPU GX compatibility renderer against the aurora oracle.
 
 The native render arc (CLAUDE.md RENDERER DOCTRINE, 2026-07-23) is built alongside aurora
 specifically so every step has a known-good to diff against. This is that diff.

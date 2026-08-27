@@ -528,8 +528,8 @@ void final_reports() {
 // process submits GPU work: pace_fields() returns immediately, so aurora replayed the whole GX
 // stream and presented as fast as the CPU could drive it — thousands of frames a second, back to
 // back, leaving the graphics ring no gap for anyone else. On 2026-08-12 that was one of the two
-// ways this project made the machine unusable (the other was the native renderer's own passes).
-// Every automated run on this project sets SB_TURBO=1, so every automated run did this.
+// ways this project made the machine unusable (the other was the GX compatibility renderer's own
+// passes). Every automated run on this project sets SB_TURBO=1, so every automated run did this.
 //
 // Fast-forwarding does not require submitting a frame per CPU-microsecond. The ceiling is on
 // PRESENTS, so the guest keeps running unpaced between them and the run is still far faster than
@@ -798,9 +798,8 @@ void video_wait_for_retrace(CPUState& cpu) {
         interp_reports();
     }
 
-    // Native SDL3-GPU renderer: draw the interpolated scene from the game's own J3D geometry and
-    // present it through the swapchain Native owns. Aurora consumes the FIFO and renders offscreen
-    // in the same frame solely as the parity oracle.
+    // SDL3-GPU GX compatibility renderer: draw the reconstructed scene and present it through its
+    // swapchain. Aurora consumes the FIFO offscreen in the same frame solely as the reference.
     if (sbr_render_enabled() && sbr_render_init(640, 448)) {
         // Once per run, and only when asked for: proves the GPU safety guards can fire.
         static bool guardTested = false;

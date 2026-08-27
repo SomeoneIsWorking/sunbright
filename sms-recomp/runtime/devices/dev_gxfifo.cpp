@@ -85,8 +85,8 @@ u32 g_copy_dest = 0;
 u32 g_copy_yscale = 0x100;
 
 // Copy-clear registers and the write masks the PE applies after resolving. Aurora consumes these
-// from the raw BP stream; the native renderer needs the same state captured explicitly at the
-// typed copy handoff or it silently resumes with LOAD and leaves the pre-copy EFB intact.
+// from the raw BP stream; the GX compatibility renderer needs the same state captured explicitly at
+// the typed copy handoff or it silently resumes with LOAD and leaves the pre-copy EFB intact.
 u32 g_copy_clear_ar = 0x0000FF00u;
 u32 g_copy_clear_gb = 0;
 u32 g_copy_clear_depth = 0x00FFFFFFu;
@@ -1449,7 +1449,7 @@ void gxfifo_drain_pending() {
 }
 
 // The texture currently bound to a texmap, as the game's own display lists described it to the
-// hardware. This is the binding the native renderer must use.
+// hardware. This is the binding the GX compatibility renderer must use.
 SbrTexture sbr_gx_fifo_texture(unsigned texmap) {
     return g_fifoTex[texmap & 7];
 }

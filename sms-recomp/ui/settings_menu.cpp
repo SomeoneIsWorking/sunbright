@@ -25,7 +25,7 @@ const Rml::String kDocument = R"RML(
       <pane id="options-pane">
         <div class="section-heading">Renderer</div>
         <select-button id="renderer-aurora"><key>Aurora</key><value/></select-button>
-        <select-button id="renderer-native"><key>Native</key><value/></select-button>
+        <select-button id="renderer-gx-compat"><key>GX Compatibility</key><value/></select-button>
         <div class="section-heading">Framerate</div>
         <select-button id="fps-vanilla"><key>Vanilla</key><value/></select-button>
         <select-button id="fps-interpolated-60"><key>Interpolated 60 FPS</key><value/></select-button>
@@ -55,7 +55,7 @@ const Rml::String kDocument = R"RML(
 </rml>
 )RML";
 
-constexpr std::array kRendererValues{app::Renderer::Aurora, app::Renderer::Native};
+constexpr std::array kRendererValues{app::Renderer::Aurora, app::Renderer::GxCompatibility};
 constexpr std::array kFrameRateValues{
     app::FrameRateMode::Vanilla,
     app::FrameRateMode::Interpolated60,
@@ -63,7 +63,7 @@ constexpr std::array kFrameRateValues{
     app::FrameRateMode::Native60,
     app::FrameRateMode::NativeMatchRefresh,
 };
-constexpr std::array<const char*, 2> kRendererIds{"renderer-aurora", "renderer-native"};
+constexpr std::array<const char*, 2> kRendererIds{"renderer-aurora", "renderer-gx-compat"};
 constexpr std::array<const char*, 5> kFrameRateIds{"fps-vanilla", "fps-interpolated-60",
                                                    "fps-interpolated-match-refresh",
                                                    "fps-native-60", "fps-native-match-refresh"};
@@ -71,9 +71,10 @@ constexpr std::array<const char*, 5> kFrameRateIds{"fps-vanilla", "fps-interpola
 const char* renderer_detail(app::Renderer renderer) noexcept {
     if (renderer == app::Renderer::Aurora)
         return "Aurora translates and presents the game's GX command stream through WebGPU. "
-               "It is the default renderer and Native's parity oracle. Restart required.";
-    return "Native owns the SDL3 GPU device, window swapchain, and displayed picture. Aurora "
-           "renders offscreen only as its oracle. Restart with run-render.sh to apply.";
+               "It is the default renderer and GX compatibility reference. Restart required.";
+    return "GX Compatibility replays GameCube FIFO and TEV state through SDL3 GPU. It is a "
+           "diagnostic/reference renderer, not Sunbright's PC-native renderer goal. Restart with "
+           "run-render.sh to apply.";
 }
 
 const char* haze_detail(bool enabled) noexcept {

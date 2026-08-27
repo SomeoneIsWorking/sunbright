@@ -9,9 +9,9 @@
 // Its BACKEND (batches -> GPU) resurrects here; its FRONTEND (GX state -> transformed verts + TEV
 // shaders) has to be driven from dev_gxfifo's FIFO parse, which is the work ahead.
 //
-// The native path is selected with SBR_RENDERER=native. It owns the SDL3-GPU device, window
-// swapchain, and displayed picture. Aurora consumes the same FIFO offscreen as the oracle until
-// this renderer reaches parity.
+// The GX compatibility path is selected with the legacy SBR_RENDERER=native token. It owns the
+// SDL3-GPU device, window swapchain, and displayed picture. Aurora consumes the same FIFO offscreen
+// as the oracle until this renderer reaches parity.
 
 #include "native_render.h"
 
@@ -503,14 +503,14 @@ bool sbr_render_init(int w, int h) {
         return g_ok && g_w == w && g_h == h;
 
     if (g_presentWindow == nullptr) {
-        lucent::error("nrender", "native renderer selected without a presentation window");
+        lucent::error("nrender", "GX compatibility renderer has no presentation window");
         return false;
     }
     if (const char* approved = std::getenv("SBR_RENDER_APPROVED");
         approved == nullptr || std::strcmp(approved, "1") != 0) {
         g_tried = true;
-        lucent::error("nrender", "native renderer selected without SBR_RENDER_APPROVED=1; use "
-                                 "run-render.sh so its complete GPU safety policy is applied");
+        lucent::error("nrender", "GX compatibility renderer requires SBR_RENDER_APPROVED=1; use "
+                                 "run-render.sh for the complete GPU safety policy");
         return false;
     }
     if (w <= 0 || h <= 0 || static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4 > UINT32_MAX) {
@@ -1538,11 +1538,12 @@ void sbr_render_gpu_report() {
                  "submission (zero means this run did not exercise the fix).",
                  g_cullAllDrawsDropped, g_cullAllVerticesDropped);
     if (sbr_native_gpu_dead())
-        lucent::warn("nrender", "the native renderer was DISABLED mid-run after a GPU fault. Every "
-                                "native measurement after that point is missing, not zero.");
+        lucent::warn("nrender",
+                     "the GX compatibility renderer was DISABLED mid-run after a GPU fault. Every "
+                     "native measurement after that point is missing, not zero.");
     else if (g_ok)
         lucent::info("nrender",
-                     "native renderer ran to the end with no GPU fault; fence budget "
+                     "GX compatibility renderer ran to the end with no GPU fault; fence budget "
                      "{:.1f}s, at most {} offscreen passes per frame, rate limit "
                      "{:.1f} Hz ({} frame(s) skipped to stay under it — those are gaps "
                      "in the measurement, not zeroes).",

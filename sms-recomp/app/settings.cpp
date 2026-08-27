@@ -21,7 +21,9 @@ template <typename T> struct NamedValue {
 
 constexpr std::array kRenderers{
     NamedValue{Renderer::Aurora, "aurora", "Aurora"},
-    NamedValue{Renderer::Native, "native", "Native"},
+    // Keep the version-1 serialized token for existing configs and diagnostic launchers. It names
+    // the project-owned GX compatibility renderer, not the PC-native semantic renderer goal.
+    NamedValue{Renderer::GxCompatibility, "native", "GX Compatibility"},
 };
 
 constexpr std::array kFrameRates{

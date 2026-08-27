@@ -1,9 +1,9 @@
 ---
 id: 21
-title: Native renderer drops GX TEV swap tables before the shipping shader
+title: GX compatibility renderer drops GX TEV swap tables before the shipping shader
 status: resolved
-symptom: TEV CPU reference applies parsed RAS/TEX swap selectors but native SDL3-GPU shader consumes unswizzled raster and texture colors
-tags: render,recomp,native,tev,shader,parity
+symptom: TEV CPU reference applies parsed RAS/TEX swap selectors but SDL3-GPU GX compatibility shader consumes unswizzled raster and texture colors
+tags: render,recomp,gx-compat,tev,shader,parity
 created: 2026-08-27
 updated: 2026-08-27
 ---

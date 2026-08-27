@@ -1,9 +1,9 @@
 ---
 id: 13
-title: Native renderer submits GX_CULL_ALL triangles as back-face culled draws
+title: GX compatibility renderer submits GX_CULL_ALL triangles as back-face culled draws
 status: resolved
-symptom: recomp native SDL3-GPU path renders front faces for GX draws whose cull mode is ALL; Aurora and Dolphin emit no fragments
-tags: render,recomp,native,cull,parity
+symptom: recomp SDL3-GPU GX compatibility path renders front faces for GX draws whose cull mode is ALL; Aurora and Dolphin emit no fragments
+tags: render,recomp,gx-compat,cull,parity
 created: 2026-08-26
 updated: 2026-08-26
 ---
@@ -25,6 +25,6 @@ the old always-submit behavior, then passed after the predicate rejected mode 3.
 The native shipping submission path now applies the CPU-visible raster admission policy before it
 queues vertices, batches, textures, or GPU work.
 
-The guarded stage-1 native-renderer run on 2026-08-26 was GPU-clean but dropped zero cull-all draws.
+The guarded stage-1 GX-compatibility run on 2026-08-26 was GPU-clean but dropped zero cull-all draws.
 It therefore validates renderer health and the instrument's explicit no-coverage result, not live
 scene parity for this state.

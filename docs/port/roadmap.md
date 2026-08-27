@@ -1,5 +1,10 @@
 # Engine port roadmap — RE + native ownership of everything the game uses
 
+> **Historical implementation log.** Current goals and capability status live in
+> `docs/project-goals.md` and `docs/project-state.md`. In particular, entries below that call a live
+> GX command-stream/FIFO implementation a native renderer are superseded by the 2026-08-28
+> above-GX, game-semantic renderer doctrine.
+
 Standing directive (user, 2026-06-12): all engine code the game uses gets reverse-engineered
 and ported. This file is the tracker; nothing is "done" by vibe — each subsystem moves
 right-ward only with cited verification (oracle A/B, frame dumps, harness verdicts).

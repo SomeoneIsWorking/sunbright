@@ -159,13 +159,15 @@ void ov_pic_drawself(CPUState& cpu) {
         note("J2DPicture::drawSelf", cpu.gpr[3]);
     func_802cc758(cpu);
 }
-// SBR_J2D_CAPTURE=1 — emit each visible 2D pane to the native renderer as an orthographic quad.
+// SBR_J2D_CAPTURE=1 — emit each visible 2D pane to the GX compatibility renderer as an orthographic
+// quad.
 //
-// This is the 2D half of the frontend. The native renderer taps J3DShape::draw only, so it draws no
-// HUD at all (a projection census reports 0 orthographic drawables of ~885, every frame).
-// Everything needed is available HERE and nowhere earlier: mGlobalBounds (J2DPane+0x24) is the
-// screen-space rect with all parent transforms applied, and mColorAlpha (+0xCD) is live — both read
-// 0 at J2DPicture::draw entry, which is why the capture point is this overload and not that one.
+// This is the 2D half of that reference frontend. The compatibility renderer taps J3DShape::draw
+// only, so it draws no HUD at all (a projection census reports 0 orthographic drawables of ~885,
+// every frame). Everything needed is available HERE and nowhere earlier: mGlobalBounds
+// (J2DPane+0x24) is the screen-space rect with all parent transforms applied, and mColorAlpha
+// (+0xCD) is live — both read 0 at J2DPicture::draw entry, which is why the capture point is this
+// overload and not that one.
 //
 // The quad is emitted in the SAME 600x480 2D space the game composes in (J2DScreen's own root pane
 // reports exactly that), and handed an orthographic projection, so the existing batching, TEV,

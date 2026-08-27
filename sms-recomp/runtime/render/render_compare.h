@@ -1,5 +1,5 @@
 #pragma once
-// render_compare — score the native SDL3-GPU render against the aurora oracle IN PROCESS.
+// render_compare — score the SDL3-GPU GX compatibility render against the aurora oracle IN PROCESS.
 //
 // WHY IN-PROCESS (2026-07-23, user-directed). The file-based harness
 // (tools/render/compare_native.py) has three defects that no amount of care at the call site
@@ -16,8 +16,8 @@
 // In-process, both renderers are scored on the same frame with an exact background, every N
 // frames, as a time series.
 //
-// The metrics deliberately avoid colour parity, which does not exist yet (the native path draws
-// flat per-object colours while aurora draws the textured, TEV-shaded game):
+// The metrics deliberately avoid colour parity, which does not exist yet (the GX compatibility path
+// draws flat per-object colours while aurora draws the textured, TEV-shaded game):
 //
 //   geom%     fraction of native pixels differing from the KNOWN clear colour — "is geometry
 //             being drawn at all", exact rather than inferred.

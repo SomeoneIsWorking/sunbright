@@ -103,29 +103,32 @@ always native; when a native port faithfully reproduces a retail overflow/UB tha
 but corrupts on host (e.g. a 4x4 write into a 3x4 buffer), adapt to produce the same OBSERVABLE
 result without the host corruption, documented as such.
 
-## 🏛️ RENDERER DOCTRINE (2026-07-23, USER-DIRECTED reversal): the recomp gets its OWN native SDL3-GPU renderer
+## 🏛️ RENDERER DOCTRINE (2026-08-28): native means ABOVE GX, not GX on another API
 
-The 2026-07-10 "Aurora GX-replay stays, do NOT re-propose a native renderer" doctrine is
-**REMOVED by the user** (its author). The recomp render is to be **fully under our
-control — no Aurora, no Dolphin, a pure PC render on the SDL3 GPU API** — for the same
-anti-black-box reason that runs through the port: not debugging rendering through a
-third-party GX interpreter.
+USER 2026-08-28: "Native renderer doesn't mean anything if it'll be identical to Aurora meaning still using GameCube rendering"
 
-**Resurrect, don't rebuild.** The retired SDL3-GPU Path-B renderer is in git at
-`9283f44^:native/render/gx_sdlgpu.cpp` (reached P3 = real per-material TEV combiners). Its
-BACKEND (batches → GPU) resurrects; its FRONTEND (GX state → transformed verts + TEV
-shaders) was built for the decomp runtime's GX-call capture and must instead be driven from
-the recomp's FIFO parse (`sms-recomp/runtime/devices/dev_gxfifo.cpp`) — the job aurora's
-`command_processor.cpp` does today.
+The 2026-07-23 doctrine confused a native GPU **backend** with a native **renderer**. Replaying
+parsed FIFO state, reproducing TEV combiners, and matching EFB-copy behavior through SDL3 GPU is a
+project-owned GX compatibility renderer. It is useful as a diagnostic/reference path, but it does
+not satisfy either native-renderer goal and must not be described as progress toward their endpoint.
 
-**Aurora is the PARITY ORACLE during the build, not deleted early.** Build the native path
-ALONGSIDE aurora (both consume the parsed stream), diff every frame, delete aurora only at
-parity. The old doctrine's ONE correct point stands: parity is only debuggable when
-intermediate state is comparable to a known-good — so keep the oracle until the native path
-matches it. This IS the Path-B direction the old doctrine retired as harder; it is large
-(reimplementing the GX fixed-function pipeline), accepted with eyes open. Milestone ladder:
-device+clear+present → pass-through geom → vertex transform → TEV → textures → EFB, each
-A/B'd against aurora. Details: memory `[[native-sdl3gpu-render-pivot-2026-07-23]]`.
+The shipping PC-native renderer intercepts above GX at game-semantic boundaries: J3D models and
+skeletal poses, materials and textures, lights and cameras, particles, J2D/UI, and named screen
+effects. It owns PC-native scene, material, shader, pass, resource, and presentation semantics.
+Preserve the game's authored look and observable behavior; do **not** require GameCube fixed-function
+rounding, TEV stage structure, EFB-copy choreography, FIFO ordering, or pixel identity to Aurora.
+
+Both runtimes feed one renderer-neutral scene interface through separate layout adapters. The recomp
+adapter uses runtime overrides at verified high-level game entry points and keeps every recompiled
+body available for A/B and fallback. The decomp adapter calls the same interface from native source.
+They share copied semantic values and resource identities, never game objects, vtables, or layouts;
+recomp↔decomp object interop remains banned. Any guest-dependent semantic extraction still follows
+the cross-goal decomp rule.
+
+Aurora and the SDL3 GX compatibility path remain ground truth for content coverage, draw ordering,
+and intentional visual checks while a semantic pass is replaced. They are references, not the
+target pipeline. Once a native semantic owner is verified, its shipping path bypasses the
+corresponding GX emission rather than translating it again. Issue 24 owns the pivot.
 
 ## 🔄 UPSTREAM SYNC — rebase ~2x/week, and CONVERGE (don't fork)
 
@@ -136,10 +139,11 @@ upstream while we hand-ported them). **Check upstream before hand-porting a gap.
 Use `python3 tools/re/rebase_upstream.py` — `status` → `rebase` → `audit` (loop until
 green) → `converge`. Hard-won rules:
 
-- **The decomp development loop is rebase → expand → rename known unknowns.** Rebase first so
-  upstream implementations are not hand-ported twice; expand the remaining real gaps from binary
-  evidence; then replace `unk*` names only where the field/function semantics are established by
-  use sites or RE. A green rebase is synchronization, not completion of the decomp lane.
+- **The decomp development loop is rebase → rename known unknowns → expand.** Rebase first so
+  upstream implementations are not hand-ported twice; then replace `unk*` names where the
+  field/function semantics are established by use sites or binary evidence; then extend the
+  remaining real gaps from binary evidence. A green rebase is synchronization, not completion of
+  the decomp lane.
 
 - **Resolve FILE-level, never hunk-level, and move header+cpp TOGETHER.** A class whose
   `.hpp` and `.cpp` come from different sides will not build. Hunk-merging produces
@@ -160,7 +164,7 @@ green) → `converge`. Hard-won rules:
 - A build-green convergence is NOT proof: a file can compile yet drop a native LP64/BE fix
   that only shows at runtime. Runtime-verify before trusting a big convergence batch.
 
-## ⛔ THE NATIVE RENDERER RUNS UNDER GUARDS — AND IT IS MINE TO RUN
+## ⛔ THE GX COMPATIBILITY RENDERER RUNS UNDER GUARDS — AND IT IS MINE TO RUN
 
 On 2026-08-12 the SDL3-GPU render path hung this machine's graphics ring repeatedly and took the
 desktop session down twice, the second time hard enough to need a reboot. Every one of those runs
@@ -180,8 +184,8 @@ run the thing, and own what happens.
 - **Use `./run-render.sh`, never a hand-assembled command line.** That is the actual lesson of the
   incident: the script sets the six variables that must go together, and `run.sh` refuses to
   enable this path at all.
-- Native owns the SDL3-GPU device, Aurora's SDL window, the swapchain, and visible presentation.
-  Aurora still consumes the FIFO offscreen as the parity oracle. A Native device failure therefore
+- GX Compatibility owns the SDL3-GPU device, Aurora's SDL window, the swapchain, and visible presentation.
+  Aurora still consumes the FIFO offscreen as the parity oracle. An SDL3-GPU device failure therefore
   ends that startup session loudly; it must never fall back to an Aurora picture and disguise the
   ownership failure.
 

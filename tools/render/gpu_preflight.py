@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS
 ---------------
-On 2026-08-12 this project's native SDL3-GPU render path hung the graphics ring repeatedly.
+On 2026-08-12 this project's SDL3-GPU GX compatibility path hung the graphics ring repeatedly.
 amdgpu named `sms-recomp` on seven ring timeouts in one session, reset the device each time, and
 the desktop session went down with it — twice, the second time hard enough to need a reboot.
 

@@ -197,10 +197,10 @@ int main(int argc, char** argv) {
         runtimeOwner.set_ui_initialized();
         return ok ? 0 : 1;
     }
-    if (sb::app::settings().effective().renderer == sb::app::Renderer::Native) {
+    if (sb::app::settings().effective().renderer == sb::app::Renderer::GxCompatibility) {
         // Transfer WSI ownership before either renderer begins a frame. Aurora keeps its Dawn
-        // device and consumes the FIFO offscreen as the oracle; only Native claims the SDL window
-        // and swapchain.
+        // device and consumes the FIFO offscreen as the oracle; only GX Compatibility claims the
+        // SDL window and swapchain.
         aurora_set_presentation_enabled(false);
         sbr_render_set_present_window(ainfo.window);
         // aurora_initialize starts cached-pipeline compilation in the background. SDL's Vulkan
@@ -209,10 +209,11 @@ int main(int argc, char** argv) {
         // SetDebugUtilsObjectName. Closing this gate waits for an in-flight compile and prevents
         // the next one from starting until SDL_CreateGPUDevice has returned.
         aurora_pause_pipeline_compilation();
-        const bool nativeInitialized = sbr_render_init(640, 448);
+        const bool gxCompatibilityInitialized = sbr_render_init(640, 448);
         aurora_resume_pipeline_compilation();
-        if (!nativeInitialized) {
-            lucent::error("main", "native renderer selected but could not claim presentation");
+        if (!gxCompatibilityInitialized) {
+            lucent::error("main",
+                          "GX compatibility renderer selected but could not claim presentation");
             return 1;
         }
     }

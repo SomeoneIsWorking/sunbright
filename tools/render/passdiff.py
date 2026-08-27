@@ -3,7 +3,7 @@
 
 The file-select frame is a render-to-EFB-texture composite: pass1 renders the mirror off-screen
 (→ a 256x256 texture), pass2 renders the main scene off-screen (→ a 320x224 soft-focus texture),
-pass3 composites those into the visible frame. The native renderer (sms-boot) flattens all of this
+pass3 composites those into the visible frame. The GX compatibility renderer flattens all of this
 into one forward-composited framebuffer → overbright. The aggregate signature diff (gxstate_diff.py)
 can't say WHICH pass first diverges; this tool does, by comparing each engine's framebuffer at the
 SHARED pass boundaries (the EFB copies) as IMAGES.

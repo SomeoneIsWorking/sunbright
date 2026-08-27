@@ -42,7 +42,8 @@ sbr_native_presenter_acquire_availability(bool acquireSucceeded, bool hasTexture
 enum class NativePresentResult { Presented, WindowUnavailable, Failed };
 
 // Claims Aurora's SDL window for the native SDL GPU device. Aurora must release its WSI surface
-// before this is called; from that point the native path is the only operating-system presenter.
+// before this is called; from that point the GX compatibility path is the only operating-system
+// presenter.
 bool sbr_native_presenter_initialize(SDL_GPUDevice* device, SDL_Window* window) noexcept;
 void sbr_native_presenter_set_aspect(std::uint32_t width, std::uint32_t height) noexcept;
 NativePresentResult sbr_native_presenter_encode(SDL_GPUCommandBuffer* commandBuffer,

@@ -1,4 +1,5 @@
-// mtx_crosscheck.cpp — check the native renderer's reconstruction against GROUND TRUTH, per draw.
+// mtx_crosscheck.cpp — check the GX compatibility renderer's reconstruction against GROUND TRUTH,
+// per draw.
 //
 // WHY THIS EXISTS. The native path was debugged for a whole session by scoring the FINAL COMPOSITED
 // FRAME against aurora. A whole-frame number can say that something is wrong; it can never say
@@ -21,10 +22,10 @@
 // The same shape generalises — a projection cross-check belongs here too when it lands.
 //
 // The invariant checked is the matrix INDEX. An earlier version compared matrix VALUES against
-// GXLoadPosMtxImm and permanently reported ~13% agreement — a false alarm, because J3D only uses the
-// immediate load for its CPU-skinned pipelines, where it loads j3dSys.mViewMtx rather than a model
-// matrix. Comparing against the wrong ground truth is worse than no check: it reports a defect that
-// is not there, every frame.
+// GXLoadPosMtxImm and permanently reported ~13% agreement — a false alarm, because J3D only uses
+// the immediate load for its CPU-skinned pipelines, where it loads j3dSys.mViewMtx rather than a
+// model matrix. Comparing against the wrong ground truth is worse than no check: it reports a
+// defect that is not there, every frame.
 //
 //   SBR_MTX_CHECK=1   verify every element's matrix index against the game's own load
 
@@ -39,7 +40,7 @@
 #include <unordered_map>
 #include <vector>
 
-extern "C" void func_80362e48(CPUState&);   // GXLoadPosMtxIndx(u16 mtx_indx, u32 id)
+extern "C" void func_80362e48(CPUState&); // GXLoadPosMtxIndx(u16 mtx_indx, u32 id)
 
 namespace {
 
@@ -60,8 +61,6 @@ u32 g_currentShape = 0;
 // one element, J3DShapeMtxMulti loads id = 0,1,2,... one per bone, and a vertex's PNMTXIDX/3
 // selects among them. So this sequence is the complete slot -> matrix mapping the game used.
 std::vector<std::pair<u16, u16>> g_trueIdx;
-
-
 
 struct IdxStats {
     unsigned long compared = 0, agree = 0, noTruth = 0;
@@ -100,18 +99,26 @@ void sbr_mtx_begin_shape(u32 shape) {
     g_currentShape = shape;
     g_trueIdx.clear();
 }
-void sbr_mtx_end_shape() { g_currentShape = 0; }
+void sbr_mtx_end_shape() {
+    g_currentShape = 0;
+}
 
 // The loads the shape just performed, in order. Empty when the shape used J3DShapeMtxDL (matrices
 // baked into a display list), which is the documented case for falling back to the stored index.
-const std::vector<std::pair<u16, u16>>& sbr_mtx_loads() { return g_trueIdx; }
+const std::vector<std::pair<u16, u16>>& sbr_mtx_loads() {
+    return g_trueIdx;
+}
 
 // Compare the index this port derived for one element against the index the game actually loaded.
 // The truth comes from the PREVIOUS frame's draw of the same shape (the loads happen inside the
 // real draw, which runs after this capture) — the mapping is stable per shape, so that is sound.
 void sbr_mtx_check_index(u32 shape, int element, uint32_t mine, uint32_t truthIdx, bool haveTruth) {
-    if (!sbr_mtx_check_enabled()) return;
-    if (!haveTruth) { ++g_ix.noTruth; return; }
+    if (!sbr_mtx_check_enabled())
+        return;
+    if (!haveTruth) {
+        ++g_ix.noTruth;
+        return;
+    }
     ++g_ix.compared;
     const u16 truth = (u16)truthIdx;
     if ((u16)mine == truth) {
@@ -124,20 +131,22 @@ void sbr_mtx_check_index(u32 shape, int element, uint32_t mine, uint32_t truthId
 }
 
 void sbr_mtx_report_index() {
-    if (!sbr_mtx_check_enabled() || g_ix.compared == 0) return;
+    if (!sbr_mtx_check_enabled() || g_ix.compared == 0)
+        return;
     if (g_ix.agree == g_ix.compared) {
-        lucent::info("mtxcheck", "matrix INDEX matches the game for all {} elements ({} without "
-                                 "truth yet)", g_ix.compared, g_ix.noTruth);
+        lucent::info("mtxcheck",
+                     "matrix INDEX matches the game for all {} elements ({} without "
+                     "truth yet)",
+                     g_ix.compared, g_ix.noTruth);
     } else {
-        lucent::error("mtxcheck", "matrix INDEX: {}/{} match ({:.1f}%); e.g. shape 0x{:08x} we used "
-                                  "{}, the game loaded {}",
-                      g_ix.agree, g_ix.compared,
-                      100.0 * (double)g_ix.agree / (double)g_ix.compared, g_ix.worstShape,
-                      g_ix.worstMine, g_ix.worstTrue);
+        lucent::error("mtxcheck",
+                      "matrix INDEX: {}/{} match ({:.1f}%); e.g. shape 0x{:08x} we used "
+                      "{}, the game loaded {}",
+                      g_ix.agree, g_ix.compared, 100.0 * (double)g_ix.agree / (double)g_ix.compared,
+                      g_ix.worstShape, g_ix.worstMine, g_ix.worstTrue);
     }
     g_ix = IdxStats{};
 }
 
 SB_OVERRIDE(0x80362e48u, ov_gx_load_pos_mtx_indx, "GXLoadPosMtxIndx",
             "native render: record the ground-truth matrix INDEX per shape (real body runs)")
-

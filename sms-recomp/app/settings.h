@@ -8,7 +8,7 @@ namespace sb::app {
 
 enum class Renderer {
     Aurora,
-    Native,
+    GxCompatibility,
 };
 
 enum class FrameRateMode {

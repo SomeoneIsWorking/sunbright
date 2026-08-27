@@ -9,9 +9,9 @@
 // simulation step. Presentation replays that stream at one or more alphas without re-running SMS.
 //
 // GATED OFF BY DEFAULT (SBR_LERP60=1). With the flag off aurora records and presents exactly as it
-// did before, which matters because aurora is also the parity oracle the native SDL3-GPU renderer
-// is scored against — an interpolation that quietly altered the oracle would corrupt every A/B
-// number in the project.
+// did before, which matters because aurora is also the parity oracle the SDL3-GPU GX compatibility
+// renderer is scored against — an interpolation that quietly altered the oracle would corrupt every
+// A/B number in the project.
 //
 // Verify with SBR_SMOOTH=1 (runtime/frame_smoothness.h): it distinguishes a genuine interpolation
 // from the same picture presented twice, per screen cell, and is validated against both classes.
@@ -24,9 +24,9 @@ bool sbr_lerp_enabled();
 void sbr_prepare_interpolation_presentations();
 
 // True if the GAME warped the camera during the tick just ended, clearing the flag as it reads.
-// A warp (CPolarSubCamera::warpPosAndAt) sets position and target outright and zeroes the game's own
-// inbetween frame counter, so it is a discontinuity DECLARED by the code that caused it — not one
-// inferred from how far the eye moved, which the measured distribution cannot support (see
+// A warp (CPolarSubCamera::warpPosAndAt) sets position and target outright and zeroes the game's
+// own inbetween frame counter, so it is a discontinuity DECLARED by the code that caused it — not
+// one inferred from how far the eye moved, which the measured distribution cannot support (see
 // sms-recomp/overrides/camera_cut.cpp).
 bool sbr_camera_cut_take();
 
@@ -43,8 +43,8 @@ void sbr_camera_cut_report();
 // its own denominator: "not identified" and "no dash blur in this scene" are different answers.
 void sbr_afterimage_report();
 
-// Called from TAfterEffect::perform's existing override with the effect's `this`, to learn which EFB
-// copy destination feeds the trail. Identification only — it does not alter the effect.
+// Called from TAfterEffect::perform's existing override with the effect's `this`, to learn which
+// EFB copy destination feeds the trail. Identification only — it does not alter the effect.
 // `drawing` must be the effect's own enabled-and-drawing test. The texture only counts as a
 // cross-frame feedback source while the trail is actually being drawn; otherwise the same copy is
 // an ordinary intra-frame one that a later pass of the SAME frame reads.

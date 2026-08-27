@@ -80,7 +80,8 @@ int main() {
         out << "version=1\nrenderer=native\nframerate=native-60\n";
     }
     assert(sb::app::settings().load(path));
-    assert(sb::app::settings().effective().renderer == sb::app::Renderer::Native);
+    assert(sb::app::settings().effective().renderer == sb::app::Renderer::GxCompatibility);
+    assert(sb::app::display_name(sb::app::Renderer::GxCompatibility) == "GX Compatibility");
     assert(sb::app::settings().effective().hazeEnabled == true); // default when absent
     assert(sb::app::frame_rate::runs_native_game_rate());
     assert(sb::app::frame_rate::game_retrace_count(2) == 1);
@@ -176,28 +177,28 @@ int main() {
     assert(hazeOff.persisted().hazeEnabled == false);
 
     // The typed environment policy is a true two-way override. It can force Aurora even when the
-    // persisted choice requests Native, and changing the persisted setting during that session
+    // persisted choice requests GX Compatibility, and changing it during that session
     // cannot dislodge the override.
-    const auto nativeRendererPath = root / "renderer-native.ini";
+    const auto gxCompatibilityPath = root / "renderer-gx-compatibility.ini";
     {
-        std::ofstream out(nativeRendererPath);
+        std::ofstream out(gxCompatibilityPath);
         out << "version=1\nrenderer=native\nframerate=vanilla\nhaze=true\n";
     }
     rendererOverride.set("aurora");
     sb::app::SettingsStore forcedAurora;
-    require(forcedAurora.load(nativeRendererPath));
-    require(forcedAurora.persisted().renderer == sb::app::Renderer::Native);
+    require(forcedAurora.load(gxCompatibilityPath));
+    require(forcedAurora.persisted().renderer == sb::app::Renderer::GxCompatibility);
     require(forcedAurora.effective().renderer == sb::app::Renderer::Aurora);
-    forcedAurora.set_renderer(sb::app::Renderer::Native);
-    require(forcedAurora.persisted().renderer == sb::app::Renderer::Native);
+    forcedAurora.set_renderer(sb::app::Renderer::GxCompatibility);
+    require(forcedAurora.persisted().renderer == sb::app::Renderer::GxCompatibility);
     require(forcedAurora.effective().renderer == sb::app::Renderer::Aurora);
 
     // The other arm is parsed by the same renderer table and overrides an Aurora config.
     rendererOverride.set("native");
-    sb::app::SettingsStore forcedNative;
-    require(forcedNative.load(path));
-    require(forcedNative.persisted().renderer == sb::app::Renderer::Aurora);
-    require(forcedNative.effective().renderer == sb::app::Renderer::Native);
+    sb::app::SettingsStore forcedGxCompatibility;
+    require(forcedGxCompatibility.load(path));
+    require(forcedGxCompatibility.persisted().renderer == sb::app::Renderer::Aurora);
+    require(forcedGxCompatibility.effective().renderer == sb::app::Renderer::GxCompatibility);
 
     // A malformed selector fails at the settings boundary. Falling back to the persisted renderer
     // would turn a requested four-path run into a plausible-looking run of the wrong path.

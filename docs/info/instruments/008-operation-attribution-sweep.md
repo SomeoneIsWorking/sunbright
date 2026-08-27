@@ -9,7 +9,7 @@ distrusted_on: 2026-08-27
 
 ## Instrument
 
-`SBR_ABLATE=1` — per-operation attribution for the native SDL3-GPU render. Renders the frame once
+`SBR_ABLATE=1` — per-operation attribution for the SDL3-GPU GX compatibility render. Renders the frame once
 per ablated GX operation (texgen, texture fetch, ras selection, TEV chain, konst, alpha test,
 texmap routing) and scores every variant against THE SAME aurora frame as the baseline. Reports a
 ranked table; a positive delta means replacing that operation with a neutral reference moved the

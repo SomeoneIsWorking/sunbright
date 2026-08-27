@@ -45,7 +45,7 @@ std::vector<Score> g_scored;
 // SBR_AB_SELFTEST=1 scores aurora against ITSELF. A metric that cannot report a perfect match on
 // identical input is not measuring what it claims, and a bad score from it would be
 // indistinguishable from a bad render — so the instrument is validated against a known-positive
-// before its verdicts on the native path are believed.
+// before its verdicts on the GX compatibility path are believed.
 bool selftest() {
     static int v = -1;
     if (v < 0) {

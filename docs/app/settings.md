@@ -37,7 +37,9 @@ save immediately. `SBR_FRAME_RATE` accepts `vanilla`, `interpolated-60`,
 `SBR_LERP60` inputs select `interpolated-60`. `SBR_RENDERER` is the strict renderer override and
 accepts exactly `aurora` or `native`; any other value aborts at the settings boundary instead of
 silently running the wrong path. The override is two-way: `SBR_RENDERER=aurora` forces Aurora even
-when the persisted setting selects Native, while `SBR_RENDERER=native` forces Native presentation.
+when the persisted setting selects GX Compatibility, while the legacy serialized selector
+`SBR_RENDERER=native` forces the SDL3-GPU GX compatibility path. It does not select the missing
+PC-native semantic renderer.
 Environment input overrides the persisted effective value without rewriting the file. The
 persisted `*-unlocked` spellings remain for config compatibility; the UI calls those modes **Match
 Refresh**. `SBR_DISPLAY_HZ=<rate>` supplies the active display rate to windowless tests; normal
@@ -47,8 +49,8 @@ runs query the current SDL display mode and refresh it when the window moves.
 
 | Choice | Current behavior |
 |---|---|
-| Aurora | Default displayed GX command-stream renderer and parity authority. `play.sh` pins this path so a stale persisted Native setting cannot change the shipping launcher. |
-| Native | Explicit development path. Native owns the SDL3-GPU device, Aurora's SDL window, the swapchain, and the displayed picture. Aurora keeps rendering the same FIFO offscreen only as the parity oracle. Launch it through `run-render.sh`; its `SBR_RENDER_APPROVED=1` accident gate is checked again inside device initialization so a raw launcher cannot bypass it. |
+| Aurora | Default displayed GX command-stream renderer and compatibility authority. `play.sh` pins this path so a stale persisted GX Compatibility setting cannot change the shipping launcher. |
+| GX Compatibility | Explicit diagnostic path. It consumes GameCube FIFO/TEV/EFB semantics through SDL3 GPU and compares against Aurora. It is not the PC-native renderer described by G003/G004. Launch it through `run-render.sh`; its `SBR_RENDER_APPROVED=1` accident gate is checked again inside device initialization so a raw launcher cannot bypass it. |
 
 Renderer ownership is selected at process startup and a changed renderer setting takes effect after
 restart; transferring a live window between Dawn and SDL3-GPU devices mid-frame is not supported.
@@ -58,11 +60,11 @@ Supported framerate selections apply at the next simulation-tick boundary; rende
 immediately but require restart. Interpolation is not a one-way startup latch: switching it off disables Aurora replay;
 switching it on forces the first new tick exact before later ticks interpolate, so stale pairing
 history is never displayed. Environment overrides remain authoritative for diagnostic sessions.
-Declining native initialization leaves Aurora unavailable for presentation in that Native-startup
-session, so startup fails loudly rather than falling through to a different renderer.
-The per-draw FIFO/Aurora state-oracle report is scheduled outside native renderer initialization,
-so `SBR_STATE_DIFF` remains an Aurora-parser control even when the native device is disabled or
-fails to initialize.
+Declining GX-compatibility initialization leaves Aurora unavailable for presentation in that
+diagnostic session, so startup fails loudly rather than falling through to a different renderer.
+The per-draw FIFO/Aurora state-oracle report is scheduled outside GX-compatibility renderer
+initialization, so `SBR_STATE_DIFF` remains an Aurora-parser control even when the SDL3-GPU device
+is disabled or fails to initialize.
 
 ## Framerate choices
 
