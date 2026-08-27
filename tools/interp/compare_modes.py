@@ -241,7 +241,9 @@ def capture(short_mode: str, args: argparse.Namespace) -> None:
     clean_capture(short_mode)
     quit_after = args.after + args.count + 8
     command = [
-        str(REPO / "run-safe.sh"),
+        str(REPO / "run.sh"),
+        "--diagnostic",
+        "--",
         f"SBR_FRAME_RATE={frame_rate}",
         "SBR_DETERMINISTIC=1",
         f"SBR_STAGE={args.stage}",

@@ -7,10 +7,14 @@ import math
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from gpu_watch import MAX_GUARD_TIMEOUT_SECS, run_guarded
 from radv_hang_trace import configure_radv_hang_environment, radv_hang_enabled
-from run_safe import REPO, parse_arguments
+
+LAUNCH_TOOLS = Path(__file__).resolve().parents[1] / "launch"
+sys.path.insert(0, str(LAUNCH_TOOLS))
+from arguments import REPO, parse_arguments  # noqa: E402
 
 
 @dataclass(frozen=True)

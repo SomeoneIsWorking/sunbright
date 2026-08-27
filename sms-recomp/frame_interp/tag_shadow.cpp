@@ -34,31 +34,9 @@
 // cleared, disambiguates them in emission order — which IS stable here, because the passes iterate
 // the same list in the same order every tick.
 //
-// COVERAGE REACHED, AND WHAT IT COST — measured, because "0% untagged" is only good news if the
-// identities are right. Untagged INDEXED draws went 9.5% -> 0.0% (aurora's own counter) and
-// untagged display-list draws 6.6% -> 0.0% (this file's). Against a control with the tagging off,
-// the share of paired draws showing 10-100 units/tick of object motion — the instrument's own
-// mispairing signature — and the count in the 100-1k bucket:
-//
-//     no shadow tags (control)      [10,100) 24.4%    [100,1k)      4    mean 8.4
-//     fp only (genuine identity)    [10,100) 27.3%    [100,1k)  1,810    mean 12.3
-//     all three schemes             [10,100) 26.4%    [100,1k) 25,113    mean 51.8
-//
-// The two ORDINAL schemes carry ~93% of the added mispairing, which is what their design predicts:
-// an ordinal is a positional stand-in for identity and misaligns whenever a list changes length.
-// `fp`, a real object address, adds far less — and some of even that 1,810 is likely genuine, since
-// a shadow projected onto terrain jumps hundreds of units when the surface under it changes.
-// Separating genuine motion from mispairing needs the histogram split by tag KIND (these tags have
-// a small low word; J3DShape's is a heap pointer), which is one run's work and is the next step.
-//
-// Shipped with all three on, because an untagged shadow is wrong on EVERY frame its caster moves —
-// it receives the camera delta alone, so it follows the camera and not the thing casting it —
-// whereas a mispaired one is wrong on the frames where the list shifts. SBR_TAGSHADOW=fp keeps only
-// the identity that is beyond doubt; SBR_TAGSHADOW=0 disables the lot.
-
 #include "../overrides/overrides.h"
-#include "mark_exact.h"
 #include "graphics_db.h"
+#include "mark_exact.h"
 #include "populations.h"
 
 #include <intrinsics.h>
@@ -72,14 +50,18 @@
 #include <utility>
 #include <vector>
 
-namespace aurora::gfx::interp { long tick_index(); }
+namespace aurora::gfx::interp {
+long tick_index();
+}
 
-extern "C" void func_802305dc(CPUState&);   // TMBindShadowManager::drawShadowVolume(bool, TAlphaShadowQuad*)
-extern "C" void func_8027c67c(CPUState&);   // TModelWaterManager::drawShineShadowVolume(MtxPtr)
-extern "C" void func_80225c30(CPUState&);   // SMS_DrawShape(J3DModelData*, u16)
-extern "C" void func_80218020(CPUState&);   // TLiveActor::requestShadow()
-extern "C" void func_8022ecec(CPUState&);   // TMBindShadowManager::request(const TCircleShadowRequest&, u32)
-extern "C" void func_8022ebbc(CPUState&);   // TMBindShadowManager::forceRequest(...)
+extern "C" void
+func_802305dc(CPUState&); // TMBindShadowManager::drawShadowVolume(bool, TAlphaShadowQuad*)
+extern "C" void func_8027c67c(CPUState&); // TModelWaterManager::drawShineShadowVolume(MtxPtr)
+extern "C" void func_80225c30(CPUState&); // SMS_DrawShape(J3DModelData*, u16)
+extern "C" void func_80218020(CPUState&); // TLiveActor::requestShadow()
+extern "C" void
+func_8022ecec(CPUState&); // TMBindShadowManager::request(const TCircleShadowRequest&, u32)
+extern "C" void func_8022ebbc(CPUState&); // TMBindShadowManager::forceRequest(...)
 
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
@@ -94,7 +76,7 @@ namespace {
 // the instance, which is only as good as the assumption that each pass walks its list in the same
 // order every tick — so they are the ones to suspect when pairing goes wrong, and this makes that a
 // one-run question instead of an argument.
-enum class Scheme { Off, FpOnly, All };
+enum class Scheme : u8 { Off, FpOnly, All };
 Scheme scheme() {
     static const Scheme v = [] {
         const char* e = std::getenv("SBR_TAGSHADOW");
@@ -146,16 +128,24 @@ Scheme scheme() {
         // stand-in and still misaligns when a list changes length; it simply does not, measurably,
         // in this game — which is a fact about the scene that only became visible once the base key
         // was sound.
-        if (e == nullptr) return Scheme::All;
-        if (e[0] == '0') return Scheme::Off;
-        if (std::strcmp(e, "all") == 0) return Scheme::All;
-        if (std::strcmp(e, "fp") == 0) return Scheme::FpOnly;
+        if (e == nullptr)
+            return Scheme::All;
+        if (e[0] == '0')
+            return Scheme::Off;
+        if (std::strcmp(e, "all") == 0)
+            return Scheme::All;
+        if (std::strcmp(e, "fp") == 0)
+            return Scheme::FpOnly;
         return Scheme::FpOnly;
     }();
     return v;
 }
-bool enabled() { return scheme() != Scheme::Off; }
-bool ordinal_schemes_on() { return scheme() == Scheme::All; }
+bool enabled() {
+    return scheme() != Scheme::Off;
+}
+bool ordinal_schemes_on() {
+    return scheme() == Scheme::All;
+}
 
 // How many times each fp has been drawn in the tick so far, so repeated passes over the same list
 // get distinct identities. Cleared once per tick by the seam below.
@@ -170,9 +160,9 @@ unsigned long g_tagged = 0, g_ticks = 0;
 // shadow quad, and the function is entered once, so it cannot tag from its own frame.
 //
 // The identity is therefore (this call site, slice ordinal): slice k of the volume pairs with slice
-// k of the previous tick, which is what the geometry actually is. The ordinal resets per CALL rather
-// than per tick, because the volume is rebuilt from scratch each time it is drawn — a tick-scoped
-// ordinal would misalign every slice the moment the volume is drawn twice in one tick.
+// k of the previous tick, which is what the geometry actually is. The ordinal resets per CALL
+// rather than per tick, because the volume is rebuilt from scratch each time it is drawn — a
+// tick-scoped ordinal would misalign every slice the moment the volume is drawn twice in one tick.
 //
 // The scope is marked here and the tag is emitted by the GXCallDisplayList seam in tag_gap.cpp,
 // which is the one place that sees each individual replay. Two overrides cannot share an address,
@@ -180,7 +170,7 @@ unsigned long g_tagged = 0, g_ticks = 0;
 bool g_shineScope = false;
 u32 g_shineOrdinal = 0;
 unsigned long g_shineTagged = 0;
-constexpr u64 kShineId = 0x5417EULL;   // a fixed id; distinct from any guest pointer
+constexpr u64 kShineId = 0x5417EULL; // a fixed id; distinct from any guest pointer
 
 // ── SMS_DrawShape, the last of the population ───────────────────────────────────────────────────
 //
@@ -190,8 +180,8 @@ constexpr u64 kShineId = 0x5417EULL;   // a fixed id; distinct from any guest po
 // drawShadowVolume — pass 4's type-3 extras and the ship/boat shapes (mModels[0..3]).
 //
 // Those loops have the same shape as the volume ones: PSMTXConcat(view, fp->mMtx, fpMv);
-// GXLoadPosMtxImm(fpMv, PNMTX0); SMS_DrawShape(mModels[k], 0). But SMS_DrawShape is not handed `fp`,
-// so the per-instance object is not available in its frame and cannot be recovered from its
+// GXLoadPosMtxImm(fpMv, PNMTX0); SMS_DrawShape(mModels[k], 0). But SMS_DrawShape is not handed
+// `fp`, so the per-instance object is not available in its frame and cannot be recovered from its
 // arguments — mModels[k] is the shared shadow RESOURCE, and keying on it alone would collapse every
 // instance into one identity, which is the mispairing this file exists to avoid.
 //
@@ -232,7 +222,10 @@ struct PosKey {
 struct PosKeyHash {
     std::size_t operator()(const PosKey& k) const {
         std::size_t h = 1469598103934665603ull;
-        for (u32 v : {k.x, k.y, k.z}) { h ^= v; h *= 1099511628211ull; }
+        for (u32 v : {k.x, k.y, k.z}) {
+            h ^= v;
+            h *= 1099511628211ull;
+        }
         return h;
     }
 };
@@ -241,8 +234,8 @@ struct PosKeyHash {
 // 116 entries — populated, but not yet at the moment the draw needed it. The draw therefore has to
 // consult the PREVIOUS tick's requests, which is also the correct pairing: the quad being drawn was
 // built from them.
-std::unordered_map<PosKey, u32, PosKeyHash> g_posToActor;      // filling this tick
-std::unordered_map<PosKey, u32, PosKeyHash> g_posToActorPrev;  // what the draw reads
+std::unordered_map<PosKey, u32, PosKeyHash> g_posToActor;     // filling this tick
+std::unordered_map<PosKey, u32, PosKeyHash> g_posToActorPrev; // what the draw reads
 
 // ── KEYED BY THE REQUEST'S ADDRESS, which covers every shadow type ──────────────────────────────
 //
@@ -262,16 +255,16 @@ std::unordered_map<PosKey, u32, PosKeyHash> g_posToActorPrev;  // what the draw 
 // matching — a different manager, a layout change, a rejected request miscounted — it rescans
 // instead of silently keying on the wrong slot.
 constexpr u32 REQ_STRIDE = 0x24;
-u32 g_reqBase = 0;          // absolute address of mRequests[0]
+u32 g_reqBase = 0; // absolute address of mRequests[0]
 u32 g_acceptedThisTick = 0;
 std::unordered_map<u32, u32> g_addrToActor, g_addrToActorPrev;
 unsigned long g_addrHit = 0, g_addrMiss = 0, g_rescans = 0;
 
 // ── WHY PASS-4 SHADOW SHAPES ARE STILL UNKEYED — a route that was tried and is CLOSED ───────────
 //
-// Pass 4 of drawShadow draws the type-3 (ship) shapes through SMS_DrawShape, which receives only the
-// shared shadow MODEL; the per-instance quad lives in the enclosing loop and never reaches the call.
-// That population is the largest one still snapping.
+// Pass 4 of drawShadow draws the type-3 (ship) shapes through SMS_DrawShape, which receives only
+// the shared shadow MODEL; the per-instance quad lives in the enclosing loop and never reaches the
+// call. That population is the largest one still snapping.
 //
 // The decomp shows the loop doing `PSMTXConcat(view, fp->mMtx, fpMv)` immediately before the draw,
 // and mMtx is at quad+0x04 — so the quad looked recoverable as r4-4, verified by requiring its mReq
@@ -317,14 +310,14 @@ unsigned long g_addrHit = 0, g_addrMiss = 0, g_rescans = 0;
 // rule that came out of that is that identity changes are measured before they ship, and the GPU
 // this would be measured on is the one the renderer took down on 2026-08-12. The recipe above is
 // complete — what it needs is a run:
-//     ./run-safe.sh SBR_STAGE=1 SBR_LERP60=1 SBR_QUIT_AFTER=600
+//     ./run.sh --diagnostic -- SBR_STAGE=1 SBR_LERP60=1 SBR_QUIT_AFTER=600
 // and the gate is the mispairing count against the no-tagging control of 4, not the coverage %.
 // Defined further down, with the join it belongs to; declared here because the pass-4 site is the
 // first caller in file order.
 u32 owner_for(u32 req);
 
 constexpr u32 kPass4Return = 0x8022f3e8u;
-constexpr u32 kQuadReqOffset = 0x68u;   // TAlphaShadowQuad::mReq, confirmed by `lwz r3, 0x68(r24)`
+constexpr u32 kQuadReqOffset = 0x68u; // TAlphaShadowQuad::mReq, confirmed by `lwz r3, 0x68(r24)`
 
 unsigned long g_pass4Owned = 0, g_pass4NoOwner = 0, g_pass4Seen = 0;
 
@@ -361,7 +354,9 @@ unsigned long g_pass4Owned = 0, g_pass4NoOwner = 0, g_pass4Seen = 0;
 // SBR_TAGSHADOW=0 still disables everything. There is no switch to turn only this off, because a
 // wrong identity here is the failure this whole file is about and a half-disabled state is not one
 // anybody should be measuring in.
-bool pass4_owner_on() { return enabled(); }
+bool pass4_owner_on() {
+    return enabled();
+}
 
 u32 g_requestingActor = 0;
 unsigned long g_ownerTagged = 0, g_ownerMissed = 0;
@@ -376,14 +371,14 @@ unsigned long g_reqShadowCalls = 0, g_noteReqCalls = 0, g_noteReqWithActor = 0, 
 std::unordered_map<u32, unsigned long> g_reqNoActorSite;
 // IS THE UN-OWNED REQUEST'S OWN ADDRESS A USABLE IDENTITY? If the caller passes a request embedded
 // in a persistent object, the same address recurs every tick and can serve as a synthetic owner; if
-// it is a stack temporary, the address is meaningless and keying on it would invent an identity that
-// changes with the stack. That decides the fix, so it is measured rather than assumed.
+// it is a stack temporary, the address is meaningless and keying on it would invent an identity
+// that changes with the stack. That decides the fix, so it is measured rather than assumed.
 std::unordered_set<u32> g_noActorReqThisTick, g_noActorReqPrevTick;
 unsigned long g_noActorReqRecurred = 0, g_noActorReqNew = 0;
 unsigned long g_ownerGuardQuad = 0, g_ownerGuardReq = 0, g_ownerCalls = 0, g_lookupHit = 0;
 unsigned long g_mapMaxSize = 0;
 
-constexpr u32 REQ_UNK0 = 0x00;   // JGeometry::TVec3<f32> — the submitted position
+constexpr u32 REQ_UNK0 = 0x00; // JGeometry::TVec3<f32> — the submitted position
 
 // The shadow SET's size, per tick. Slots are only stable while it is.
 u32 g_thisTickQuadCount = 0, g_lastTickQuadCount = 0, g_prevTickQuadCount = 0;
@@ -394,7 +389,8 @@ unsigned long g_snappedForSetChange = 0;
 
 // Non-zero while the shine shadow volume is being drawn; each call returns the next slice's tag.
 u64 sbr_shine_shadow_next_tag() {
-    if (!g_shineScope || !ordinal_schemes_on() || !sbr_lerp_enabled()) return 0;
+    if (!g_shineScope || !ordinal_schemes_on() || !sbr_lerp_enabled())
+        return 0;
     ++g_shineTagged;
     return (kShineId << 32) | (u64)(g_shineOrdinal++);
 }
@@ -405,7 +401,8 @@ u64 sbr_shine_shadow_next_tag() {
 void sbr_tag_shadow_begin_tick() {
     g_seenThisTick.clear();
     g_modelSeenThisTick.clear();
-    if (g_posToActor.size() > g_mapMaxSize) g_mapMaxSize = g_posToActor.size();
+    if (g_posToActor.size() > g_mapMaxSize)
+        g_mapMaxSize = g_posToActor.size();
     g_posToActorPrev.swap(g_posToActor);
     g_posToActor.clear();
     g_addrToActorPrev.swap(g_addrToActor);
@@ -424,37 +421,41 @@ void sbr_tag_shadow_begin_tick() {
 }
 
 void sbr_tag_shadow_report() {
-    if (!enabled() || !sbr_lerp_enabled()) return;
-    lucent::info("taggap",
-                 "  owner join: requestShadow fired {} time(s); manager request() fired {} time(s), "
-                 "{} of them with an actor in scope; {} draw-time position lookups MISSED. All four "
-                 "are needed: a zero in the first two is a hook that never ran, a zero in the third "
-                 "means the request does not come through requestShadow, and misses in the fourth "
-                 "mean the position is not carried verbatim after all. owner_of ran {} time(s), "
-                 "refused {} on an unreadable quad and {} on an unreadable request; {} lookups "
-                 "HIT; the position map peaked at {} entries in a tick.",
-                 g_reqShadowCalls, g_noteReqCalls, g_noteReqWithActor, g_lookupMiss, g_ownerCalls,
-                 g_ownerGuardQuad, g_ownerGuardReq, g_lookupHit, g_mapMaxSize);
+    if (!enabled() || !sbr_lerp_enabled())
+        return;
+    lucent::info(
+        "taggap",
+        "  owner join: requestShadow fired {} time(s); manager request() fired {} time(s), "
+        "{} of them with an actor in scope; {} draw-time position lookups MISSED. All four "
+        "are needed: a zero in the first two is a hook that never ran, a zero in the third "
+        "means the request does not come through requestShadow, and misses in the fourth "
+        "mean the position is not carried verbatim after all. owner_of ran {} time(s), "
+        "refused {} on an unreadable quad and {} on an unreadable request; {} lookups "
+        "HIT; the position map peaked at {} entries in a tick.",
+        g_reqShadowCalls, g_noteReqCalls, g_noteReqWithActor, g_lookupMiss, g_ownerCalls,
+        g_ownerGuardQuad, g_ownerGuardReq, g_lookupHit, g_mapMaxSize);
     // The un-owned requests, BY CALL SITE. Printed whether or not there are any: "no site" and "the
     // histogram was never filled" are different facts, and only one of them means the join is
     // complete.
     if (g_reqNoActorSite.empty()) {
-        lucent::info("taggap", "shadow owner join: every request() this run arrived with an actor in "
-                               "scope — there is no un-owned call site left to find. (If the run "
-                               "drew no shadows at all this line says nothing; check the counts "
-                               "above.)");
+        lucent::info("taggap",
+                     "shadow owner join: every request() this run arrived with an actor in "
+                     "scope — there is no un-owned call site left to find. (If the run "
+                     "drew no shadows at all this line says nothing; check the counts "
+                     "above.)");
     } else {
         std::vector<std::pair<u32, unsigned long>> sites(g_reqNoActorSite.begin(),
                                                          g_reqNoActorSite.end());
         std::sort(sites.begin(), sites.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });
-        lucent::info("taggap",
-                     "shadow owner join: of the un-owned requests, {} arrived at an address seen on "
-                     "the PREVIOUS tick and {} at a fresh one. A large first number means the "
-                     "request lives in a persistent object and its address is a usable synthetic "
-                     "owner; a large second means it is a stack temporary and keying on it would "
-                     "invent an identity that changes with the stack.",
-                     g_noActorReqRecurred, g_noActorReqNew);
+        lucent::info(
+            "taggap",
+            "shadow owner join: of the un-owned requests, {} arrived at an address seen on "
+            "the PREVIOUS tick and {} at a fresh one. A large first number means the "
+            "request lives in a persistent object and its address is a usable synthetic "
+            "owner; a large second means it is a stack temporary and keying on it would "
+            "invent an identity that changes with the stack.",
+            g_noActorReqRecurred, g_noActorReqNew);
         for (const auto& [lr, n] : sites) {
             lucent::info("taggap",
                          "shadow owner join: {} request(s) came from return address {:#010x} ({}) "
@@ -481,26 +482,28 @@ void sbr_tag_shadow_report() {
     // run and print nothing is indistinguishable from one that never fired, and this one exists
     // precisely to be measured against the ordinal key it would replace.
     if (!pass4_owner_on()) {
-        lucent::info("taggap",
-                     "pass-4 owner join: OFF (default). The type-3 shadow shapes are keyed by the "
-                     "ordinal scheme. SBR_TAGSHADOW=pass4owner keys them by the OWNING ACTOR "
-                     "instead, read from the quad the loop keeps in r24 at LR {:#010x}. Judge it on "
-                     "the MISPAIRING count against the no-tagging control of 4, not on coverage — "
-                     "coverage is what made the slot key look acceptable before it was withdrawn.",
-                     kPass4Return);
+        lucent::info(
+            "taggap",
+            "pass-4 owner join: OFF (default). The type-3 shadow shapes are keyed by the "
+            "ordinal scheme. SBR_TAGSHADOW=pass4owner keys them by the OWNING ACTOR "
+            "instead, read from the quad the loop keeps in r24 at LR {:#010x}. Judge it on "
+            "the MISPAIRING count against the no-tagging control of 4, not on coverage — "
+            "coverage is what made the slot key look acceptable before it was withdrawn.",
+            kPass4Return);
         return;
     }
-    lucent::info("taggap",
-                 "pass-4 owner join ON: {} draw(s) arrived at the pass-4 call site, {} keyed by "
-                 "their OWNING ACTOR, {} fell through to snapping because the quad's request had no "
-                 "owner.{}",
-                 g_pass4Seen, g_pass4Owned, g_pass4NoOwner,
-                 g_pass4Seen == 0
-                     ? "   <-- ZERO ARRIVALS. The site discriminator (LR == the return address of "
-                       "the bl SMS_DrawShape at 0x8022f3e4) never matched. That is a broken hook, "
-                       "not a scene without ship shadows — check the address before reading "
-                       "anything into a mispairing count taken from this run."
-                     : "");
+    lucent::info(
+        "taggap",
+        "pass-4 owner join ON: {} draw(s) arrived at the pass-4 call site, {} keyed by "
+        "their OWNING ACTOR, {} fell through to snapping because the quad's request had no "
+        "owner.{}",
+        g_pass4Seen, g_pass4Owned, g_pass4NoOwner,
+        g_pass4Seen == 0
+            ? "   <-- ZERO ARRIVALS. The site discriminator (LR == the return address of "
+              "the bl SMS_DrawShape at 0x8022f3e4) never matched. That is a broken hook, "
+              "not a scene without ship shadows — check the address before reading "
+              "anything into a mispairing count taken from this run."
+            : "");
 }
 
 namespace {
@@ -513,7 +516,8 @@ namespace {
 void ov_sms_draw_shape(CPUState& cpu) {
     // Labelled always, tagged only under SBR_TAGSHADOW=all — see the note above.
     const bool label = sbr_lerp_enabled() && sbr_gxfifo_pending_tag() == 0;
-    if (label) sbr_gxfifo_draw_pop(SB_POP_SHADOW_MODEL);
+    if (label)
+        sbr_gxfifo_draw_pop(SB_POP_SHADOW_MODEL);
     // r3 = J3DModelData*, r4 = u16 shape index.
     const u32 model = (u32)cpu.gpr[3];
     const u32 shapeIdx = (u32)cpu.gpr[4] & 0xFFFF;
@@ -537,15 +541,16 @@ void ov_sms_draw_shape(CPUState& cpu) {
             ++g_pass4Owned;
             func_80225c30(cpu);
             sbr_gxfifo_draw_tag(0);
-            if (label) sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+            if (label)
+                sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
             sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
             return;
         }
-        ++g_pass4NoOwner;   // falls through and snaps, which is what it did before
+        ++g_pass4NoOwner; // falls through and snaps, which is what it did before
     }
 
-    const bool tag = ordinal_schemes_on() && sbr_lerp_enabled() && model != 0 &&
-                     sbr_gxfifo_pending_tag() == 0;
+    const bool tag =
+        ordinal_schemes_on() && sbr_lerp_enabled() && model != 0 && sbr_gxfifo_pending_tag() == 0;
     if (tag) {
         const u32 key = model ^ (shapeIdx << 24);
         const u32 nth = g_modelSeenThisTick[key]++;
@@ -554,8 +559,10 @@ void ov_sms_draw_shape(CPUState& cpu) {
         ++g_modelTagged;
     }
     func_80225c30(cpu);
-    if (tag) sbr_gxfifo_draw_tag(0);
-    if (label) sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+    if (tag)
+        sbr_gxfifo_draw_tag(0);
+    if (label)
+        sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
     sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
@@ -570,7 +577,8 @@ void ov_draw_shine_shadow_volume(CPUState& cpu) {
     // was deliberately withdrawn; unlabelled they would be indistinguishable from draws nobody has
     // looked at.
     const bool label = sbr_lerp_enabled();
-    if (label) sbr_gxfifo_draw_pop(SB_POP_SHADOW_SHINE);
+    if (label)
+        sbr_gxfifo_draw_pop(SB_POP_SHADOW_SHINE);
     const bool was = g_shineScope;
     const u32 wasOrd = g_shineOrdinal;
     g_shineScope = true;
@@ -578,33 +586,39 @@ void ov_draw_shine_shadow_volume(CPUState& cpu) {
     func_8027c67c(cpu);
     g_shineScope = was;
     g_shineOrdinal = wasOrd;
-    if (label) sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+    if (label)
+        sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
 // TAlphaShadowQuad::mReq (+0x68) -> TCircleShadowRequest. The fields below are the ones that stay
 // CONSTANT for a given caster across ticks: the two radii, the shadow type, a flag byte and the
 // request flags. The position is deliberately excluded — it changes every tick, which is the whole
 // point of interpolating it.
-constexpr u32 QUAD_MREQ   = 0x68;
-constexpr u32 REQ_UNKC    = 0x0C;   // f32
-constexpr u32 REQ_UNK10   = 0x10;   // f32
-constexpr u32 REQ_UNK1C   = 0x1C;   // u8  type
-constexpr u32 REQ_UNK1D   = 0x1D;   // u8
-constexpr u32 REQ_UNK20   = 0x20;   // u32 flags
+constexpr u32 QUAD_MREQ = 0x68;
+constexpr u32 REQ_UNKC = 0x0C;  // f32
+constexpr u32 REQ_UNK10 = 0x10; // f32
+constexpr u32 REQ_UNK1C = 0x1C; // u8  type
+constexpr u32 REQ_UNK1D = 0x1D; // u8
+constexpr u32 REQ_UNK20 = 0x20; // u32 flags
 
 // A fingerprint of what makes this shadow THIS shadow, rather than whoever held the slot before.
 u32 request_fingerprint(u32 fp) {
-    if (!sb_ram_fast(fp + QUAD_MREQ)) return 0;
+    if (!sb_ram_fast(fp + QUAD_MREQ))
+        return 0;
     const u32 req = sb_r32(fp + QUAD_MREQ);
-    if (!sb_ram_fast(req + REQ_UNK20)) return 0;
+    if (!sb_ram_fast(req + REQ_UNK20))
+        return 0;
     u32 h = 2166136261u;
-    auto mix = [&h](u32 v) { h ^= v; h *= 16777619u; };
+    auto mix = [&h](u32 v) {
+        h ^= v;
+        h *= 16777619u;
+    };
     mix(sb_r32(req + REQ_UNKC));
     mix(sb_r32(req + REQ_UNK10));
     mix(sb_r8(req + REQ_UNK1C));
     mix(sb_r8(req + REQ_UNK1D));
     mix(sb_r32(req + REQ_UNK20));
-    return h ? h : 1u;   // 0 is reserved for "could not read"
+    return h ? h : 1u; // 0 is reserved for "could not read"
 }
 
 // TLiveActor::requestShadow — r3 is the actor. Held only for the duration of the call, so a
@@ -618,36 +632,41 @@ void ov_request_shadow(CPUState& cpu) {
 }
 
 // ONE-OFF LAYOUT DISCOVERY. The join by POSITION cannot cover type-1 body shadows, because the calc
-// pass rewrites their position in place before the draw (ShadowUtil.cpp:288) and the submitted value
-// no longer matches. The request's ADDRESS does not change, so keying on that covers every type —
-// but it requires knowing where request() stores the copy, and the header's offset comments for
-// TMBindShadowManager are hand-written and demonstrably approximate (mRequests and mRequestCount are
-// commented +0x10 and +0x14, four bytes apart, for an ARRAY of 0x24-byte structs).
+// pass rewrites their position in place before the draw (ShadowUtil.cpp:288) and the submitted
+// value no longer matches. The request's ADDRESS does not change, so keying on that covers every
+// type — but it requires knowing where request() stores the copy, and the header's offset comments
+// for TMBindShadowManager are hand-written and demonstrably approximate (mRequests and
+// mRequestCount are commented +0x10 and +0x14, four bytes apart, for an ARRAY of 0x24-byte
+// structs).
 //
-// So it is measured instead of trusted: right after the real request() returns, scan the manager for
-// the triple that was just submitted and report where it landed. Two hits give the base and the
+// So it is measured instead of trusted: right after the real request() returns, scan the manager
+// for the triple that was just submitted and report where it landed. Two hits give the base and the
 // stride. Bounded to the first few requests and to a 32 KB window, and it only runs under
 // SBR_SHADOW_LAYOUT=1 — it exists to be run once and have its answer written down.
 void discover_layout(u32 manager, u32 req) {
     static const bool on = std::getenv("SBR_SHADOW_LAYOUT") != nullptr;
-    if (!on) return;
+    if (!on)
+        return;
     // SAMPLED LATE, NOT EARLY. The first version looked at the first six requests and reported "not
     // found" six times — those happen during boot, where the gate rejects them, so nothing was
     // stored and the scan was correct about a case that says nothing. Skipping into gameplay is the
     // difference between measuring the layout and measuring the title screen.
     static long seen = 0;
-    if (++seen < 200000) return;
-    // KEEP TRYING UNTIL SOMETHING IS FOUND, up to a bounded number of attempts. The previous version
-    // stopped after six ATTEMPTS and reported six "not found"s — but request() is GATED, and a
-    // rejected request stores nothing, so a handful of arbitrary samples is mostly measuring
+    if (++seen < 200000)
+        return;
+    // KEEP TRYING UNTIL SOMETHING IS FOUND, up to a bounded number of attempts. The previous
+    // version stopped after six ATTEMPTS and reported six "not found"s — but request() is GATED,
+    // and a rejected request stores nothing, so a handful of arbitrary samples is mostly measuring
     // rejections. Counting attempts and hits separately is what distinguishes "the layout is not
     // where I looked" from "I happened to look at requests the game threw away".
     static int hits = 0, attempts = 0;
-    if (hits >= 4 || attempts >= 400 || !sb_ram_fast(req + 8)) return;
+    if (hits >= 4 || attempts >= 400 || !sb_ram_fast(req + 8))
+        return;
     ++attempts;
     const u32 x = sb_r32(req), y = sb_r32(req + 4), z = sb_r32(req + 8);
     for (u32 off = 0; off < 0x40000; off += 4) {
-        if (!sb_ram_fast(manager + off + 8)) break;
+        if (!sb_ram_fast(manager + off + 8))
+            break;
         if (sb_r32(manager + off) == x && sb_r32(manager + off + 4) == y &&
             sb_r32(manager + off + 8) == z && (manager + off) != req) {
             ++hits;
@@ -659,11 +678,12 @@ void discover_layout(u32 manager, u32 req) {
         }
     }
     if (attempts == 400) {
-        lucent::info("taggap",
-                     "shadow layout: {} hit(s) in 400 attempts. request() is GATED, so a miss is "
-                     "usually a rejected request rather than a wrong base — but 0 hits in 400 means "
-                     "the manager is not r3, or the array is outside the scanned window.",
-                     hits);
+        lucent::info(
+            "taggap",
+            "shadow layout: {} hit(s) in 400 attempts. request() is GATED, so a miss is "
+            "usually a rejected request rather than a wrong base — but 0 hits in 400 means "
+            "the manager is not r3, or the array is outside the scanned window.",
+            hits);
     }
 }
 
@@ -681,7 +701,9 @@ void discover_layout(u32 manager, u32 req) {
 // This matters out of proportion to its size. An unresolvable member POISONS its whole shadow
 // group's membership key, so one un-owned map shadow made every group containing it snap its
 // alpha-restore box for that tick.
-u32 owner_for(u32 req) { return g_requestingActor != 0 ? g_requestingActor : req; }
+u32 owner_for(u32 req) {
+    return g_requestingActor != 0 ? g_requestingActor : req;
+}
 
 void note_request(CPUState& cpu) {
     ++g_noteReqCalls;
@@ -695,20 +717,25 @@ void note_request(CPUState& cpu) {
         }
         g_noActorReqThisTick.insert(req);
     }
-    if (!enabled() || !sbr_lerp_enabled()) return;
-    if (g_requestingActor != 0) ++g_noteReqWithActor;
+    if (!enabled() || !sbr_lerp_enabled())
+        return;
+    if (g_requestingActor != 0)
+        ++g_noteReqWithActor;
     const u32 req = (u32)cpu.gpr[4];
-    if (!sb_ram_fast(req + REQ_UNK0 + 8)) return;
+    if (!sb_ram_fast(req + REQ_UNK0 + 8))
+        return;
     g_posToActor[PosKey{sb_r32(req + REQ_UNK0), sb_r32(req + REQ_UNK0 + 4),
                         sb_r32(req + REQ_UNK0 + 8)}] = owner_for(req);
 }
 
 // After the real request() has run: work out WHERE it stored the copy, and record the owning actor
-// under that address. Returns quietly when the request was rejected by the gate, which is the common
-// case and not an error.
+// under that address. Returns quietly when the request was rejected by the gate, which is the
+// common case and not an error.
 void note_stored(u32 manager, u32 req) {
-    if (!enabled() || !sbr_lerp_enabled()) return;
-    if (!sb_ram_fast(req + 8)) return;
+    if (!enabled() || !sbr_lerp_enabled())
+        return;
+    if (!sb_ram_fast(req + 8))
+        return;
     const u32 owner = owner_for(req);
     const u32 x = sb_r32(req), y = sb_r32(req + 4), z = sb_r32(req + 8);
     auto stored_at = [&](u32 addr) {
@@ -730,10 +757,11 @@ void note_stored(u32 manager, u32 req) {
     ++g_rescans;
     for (u32 off = 0; off < 0x800; off += 4) {
         const u32 addr = manager + off;
-        if (!sb_ram_fast(addr + 8)) break;
+        if (!sb_ram_fast(addr + 8))
+            break;
         if (addr != req && stored_at(addr)) {
             if (g_acceptedThisTick == 0) {
-                g_reqBase = addr;   // first accepted request of a tick occupies slot 0
+                g_reqBase = addr; // first accepted request of a tick occupies slot 0
             }
             g_addrToActor[addr] = owner;
             ++g_acceptedThisTick;
@@ -741,7 +769,7 @@ void note_stored(u32 manager, u32 req) {
             return;
         }
     }
-    ++g_addrMiss;   // rejected by the gate: nothing was stored, nothing to record
+    ++g_addrMiss; // rejected by the gate: nothing was stored, nothing to record
 }
 
 void ov_request(CPUState& cpu) {
@@ -762,9 +790,15 @@ void ov_force_request(CPUState& cpu) {
 // The actor that owns the shadow drawn from `fp`, or 0 if it cannot be established.
 u32 owner_of(u32 fp) {
     ++g_ownerCalls;
-    if (!sb_ram_fast(fp + QUAD_MREQ)) { ++g_ownerGuardQuad; return 0; }
+    if (!sb_ram_fast(fp + QUAD_MREQ)) {
+        ++g_ownerGuardQuad;
+        return 0;
+    }
     const u32 req = sb_r32(fp + QUAD_MREQ);
-    if (!sb_ram_fast(req + REQ_UNK0 + 8)) { ++g_ownerGuardReq; return 0; }
+    if (!sb_ram_fast(req + REQ_UNK0 + 8)) {
+        ++g_ownerGuardReq;
+        return 0;
+    }
     // ADDRESS FIRST — it covers every type, including the body shadows whose position is rewritten
     // between the request and the draw.
     {
@@ -788,12 +822,14 @@ u32 owner_of(u32 fp) {
         // Fall back to this tick's map, in case a scene ever requests before it draws — the
         // ordering is a property of the director's list order, not a law.
         it = g_posToActor.find(key);
-        if (it == g_posToActor.end()) { ++g_lookupMiss; return 0; }
+        if (it == g_posToActor.end()) {
+            ++g_lookupMiss;
+            return 0;
+        }
     }
     ++g_lookupHit;
     return it->second;
 }
-
 
 // ── THE ALPHA-RESTORE CUBE (SMS_DrawCube from TMBindShadowManager::drawShadow) ──────────────────
 //
@@ -828,8 +864,8 @@ u32 owner_of(u32 fp) {
 // A member whose owner cannot be established poisons the fingerprint, because a key that ignored it
 // would claim two different groups were the same one.
 constexpr u32 GROUP_FPHEAD = 0x04;
-constexpr u32 QUAD_MNEXT   = 0x6c;
-constexpr u32 MGR_MGROUPS  = 0x1c;
+constexpr u32 QUAD_MNEXT = 0x6c;
+constexpr u32 MGR_MGROUPS = 0x1c;
 
 // The three call sites in TMBindShadowManager::drawShadow, as return addresses (the instruction
 // after each bl). Listed rather than range-checked: a range would silently adopt a fourth call site
@@ -860,7 +896,7 @@ bool cube_from_water_volume(u32 lr) {
 
 unsigned long g_cubeTagged = 0, g_cubeUnowned = 0, g_cubeForeign = 0;
 std::unordered_map<u64, long> g_cubeKeyTick;
-std::unordered_map<u64, u32> g_cubeNth;   // key -> how many cubes it has drawn THIS tick
+std::unordered_map<u64, u32> g_cubeNth; // key -> how many cubes it has drawn THIS tick
 long g_cubeNthTick = -1;
 u32 g_cubeNthMax = 0;
 unsigned long g_cubeKeyNew = 0, g_cubeKeyConsecutive = 0, g_cubeKeyGap = 0;
@@ -868,9 +904,11 @@ std::unordered_map<u32, unsigned long> g_cubeForeignSite;
 unsigned long g_cubeWater = 0;
 
 u64 group_membership_key(u32 mgr, u32 groupOff) {
-    if (!sb_ram_fast(mgr + MGR_MGROUPS)) return 0;
+    if (!sb_ram_fast(mgr + MGR_MGROUPS))
+        return 0;
     const u32 groups = sb_r32(mgr + MGR_MGROUPS);
-    if (groups == 0 || !sb_ram_fast(groups + groupOff + GROUP_FPHEAD)) return 0;
+    if (groups == 0 || !sb_ram_fast(groups + groupOff + GROUP_FPHEAD))
+        return 0;
     u32 fp = sb_r32(groups + groupOff + GROUP_FPHEAD);
     // ORDER-INDEPENDENT over the member owners — and it did NOT fix what it was written for, which
     // is worth saying at the code so nobody reads it as the fix.
@@ -882,10 +920,10 @@ u64 group_membership_key(u32 mgr, u32 groupOff) {
     // numbers by exactly zero (2,487 lerped of 5,162, both ways).
     //
     // What the churn actually is, measured afterwards by counting key lifetimes rather than
-    // theorising: the keys are STABLE. Over 290 ticks there were 62 first sightings, 2,538 keys seen
-    // again on the very next tick, and 2,664 seen again after a GAP. About sixty groups exist and
-    // each draws roughly every third or fourth tick — so the cubes are not changing identity, they
-    // are not drawing every tick, and pairing across a gap is a different question (whether an
+    // theorising: the keys are STABLE. Over 290 ticks there were 62 first sightings, 2,538 keys
+    // seen again on the very next tick, and 2,664 seen again after a GAP. About sixty groups exist
+    // and each draws roughly every third or fourth tick — so the cubes are not changing identity,
+    // they are not drawing every tick, and pairing across a gap is a different question (whether an
     // object that skipped a tick may interpolate across the skip) from the one this key answers.
     //
     // The order-independent form stays because it is the correct thing for a SET, and because the
@@ -897,13 +935,15 @@ u64 group_membership_key(u32 mgr, u32 groupOff) {
     int members = 0;
     while (fp != 0 && members < 64) {
         const u32 owner = owner_of(fp);
-        if (owner == 0) return 0;   // an unidentifiable member: refuse the whole key
+        if (owner == 0)
+            return 0; // an unidentifiable member: refuse the whole key
         u64 m = (1469598103934665603ull ^ (u64)owner) * 1099511628211ull;
         m ^= m >> 29;
         m *= 0xbf58476d1ce4e5b9ull;
         m ^= m >> 32;
         h += m;
-        if (!sb_ram_fast(fp + QUAD_MNEXT)) return 0;
+        if (!sb_ram_fast(fp + QUAD_MNEXT))
+            return 0;
         fp = sb_r32(fp + QUAD_MNEXT);
         ++members;
     }
@@ -920,11 +960,12 @@ void ov_draw_shadow_volume(CPUState& cpu) {
     // BOOLEAN: all near shadows collapsed into the single identity 1, and every far shadow had
     // "fp == 0" and was skipped entirely.
     //
-    // That is the real cause of the marukage rendering at the wrong place — not the slot-reuse story
-    // this file previously told, which was a correct description of ShadowUtil that happened to be
-    // about a pointer the code was never reading. Two of the counters said so and were not believed
-    // for a while: the request fingerprint "did nothing" and the owner join refused 445,840 of
-    // 445,840 lookups on an unreadable quad, both because 0x68 past a bool is not memory.
+    // That is the real cause of the marukage rendering at the wrong place — not the slot-reuse
+    // story this file previously told, which was a correct description of ShadowUtil that happened
+    // to be about a pointer the code was never reading. Two of the counters said so and were not
+    // believed for a while: the request fingerprint "did nothing" and the owner join refused
+    // 445,840 of 445,840 lookups on an unreadable quad, both because 0x68 past a bool is not
+    // memory.
     const u32 fp = (u32)cpu.gpr[5];
     // The ACTOR that owns this shadow, joined through the position the manager copied verbatim from
     // the request. 0 when it cannot be established (a type-1 body shadow, whose position the calc
@@ -998,7 +1039,8 @@ void ov_draw_shadow_volume(CPUState& cpu) {
     // Close it, exactly as j3d_capture does: anything drawn after this must not inherit a shadow's
     // identity, which would pair unrelated geometry with a shadow's transform — a wrong answer that
     // renders like a working one.
-    if (tag) sbr_gxfifo_draw_tag(0);
+    if (tag)
+        sbr_gxfifo_draw_tag(0);
     sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
@@ -1013,7 +1055,8 @@ u64 with_occurrence(u64 key) {
         g_cubeNthTick = tick;
     }
     const u32 nth = g_cubeNth[key]++;
-    if (nth > g_cubeNthMax) g_cubeNthMax = nth;
+    if (nth > g_cubeNthMax)
+        g_cubeNthMax = nth;
     return key ^ (0x9e3779b97f4a7c15ull * (u64)(nth + 1));
 }
 
@@ -1025,7 +1068,8 @@ u64 with_occurrence(u64 key) {
 // not drawn from TMBindShadowManager::drawShadow, or the group's membership could not be
 // established, and in both cases the camera delta alone is the honest answer.
 u64 sbr_shadow_cube_tag(const CPUState& cpu) {
-    if (!sbr_lerp_enabled()) return 0;
+    if (!sbr_lerp_enabled())
+        return 0;
     if (cube_from_water_volume((u32)cpu.lr)) {
         ++g_cubeWater;
         // Salted so a water-volume site can never collide with a group-membership key, which is a
@@ -1057,8 +1101,8 @@ u64 sbr_shadow_cube_tag(const CPUState& cpu) {
     //
     // HOW MANY is measured too, and it is not what I first assumed. I wrote "two, one before and
     // one after the shadow" from reading the pass; the counter says the most any group drew in one
-    // tick is FOUR. The index does not care — which is the point of counting occurrences rather than
-    // hard-coding a pair.
+    // tick is FOUR. The index does not care — which is the point of counting occurrences rather
+    // than hard-coding a pair.
     //
     // It IS an ordinal, which this project withdraws on sight, and it is sound here for the same
     // reason drawLower's two strips are: the sequence comes from the shadow pass's straight-line
@@ -1084,37 +1128,42 @@ u64 sbr_shadow_cube_tag(const CPUState& cpu) {
 }
 
 void sbr_shadow_cube_report() {
-    if (!sbr_lerp_enabled()) return;
-    lucent::info("taggap",
-                 "shadow alpha cube keys: {} first sighting(s), {} seen again on the NEXT tick "
-                 "(stable — these are the ones that can interpolate), {} seen again after a GAP of "
-                 "one or more ticks (the group did not draw, or its composition changed and changed "
-                 "back). A key that churns every tick and a group that draws every other tick both "
-                 "read as \"not consecutive\" in the vertex path; only this line separates them.",
-                 g_cubeKeyNew, g_cubeKeyConsecutive, g_cubeKeyGap);
-    lucent::info("taggap",
-                 "water-volume cube: {} draw(s) given an identity of (call site, repeat). All three "
-                 "sites draw the SAME world-space AABB under different render state, so the repeat "
-                 "count being data-dependent costs nothing — every repeat is the same box.{}",
-                 g_cubeWater,
-                 g_cubeWater == 0
-                     ? "   <-- none drew, which is scene-dependent (the water volume needs water in "
-                       "the scene) and is NOT evidence the seam works."
-                     : "");
+    if (!sbr_lerp_enabled())
+        return;
+    lucent::info(
+        "taggap",
+        "shadow alpha cube keys: {} first sighting(s), {} seen again on the NEXT tick "
+        "(stable — these are the ones that can interpolate), {} seen again after a GAP of "
+        "one or more ticks (the group did not draw, or its composition changed and changed "
+        "back). A key that churns every tick and a group that draws every other tick both "
+        "read as \"not consecutive\" in the vertex path; only this line separates them.",
+        g_cubeKeyNew, g_cubeKeyConsecutive, g_cubeKeyGap);
+    lucent::info(
+        "taggap",
+        "water-volume cube: {} draw(s) given an identity of (call site, repeat). All three "
+        "sites draw the SAME world-space AABB under different render state, so the repeat "
+        "count being data-dependent costs nothing — every repeat is the same box.{}",
+        g_cubeWater,
+        g_cubeWater == 0
+            ? "   <-- none drew, which is scene-dependent (the water volume needs water in "
+              "the scene) and is NOT evidence the seam works."
+            : "");
     for (const auto& kv : g_cubeForeignSite) {
-        lucent::info("taggap",
-                     "shadow alpha cube: {} draw(s) came from return address 0x{:08x} ({}), which is "
-                     "not one of TMBindShadowManager::drawShadow's three known call sites. Those get "
-                     "no identity and take the camera delta alone.",
-                     kv.second, kv.first, sbr_gfxdb_symbolize(kv.first));
+        lucent::info(
+            "taggap",
+            "shadow alpha cube: {} draw(s) came from return address 0x{:08x} ({}), which is "
+            "not one of TMBindShadowManager::drawShadow's three known call sites. Those get "
+            "no identity and take the camera delta alone.",
+            kv.second, kv.first, sbr_gfxdb_symbolize(kv.first));
     }
-    lucent::info("taggap",
-                 "shadow alpha cube: the most any single group drew in one tick was {} cube(s). The "
-                 "identity carries that occurrence index, so however many a group emits they get "
-                 "distinct identities rather than one wrong shared one. A number that keeps climbing "
-                 "run over run would mean the index is standing in for something structural that "
-                 "has not been found yet.",
-                 g_cubeNthMax + 1);
+    lucent::info(
+        "taggap",
+        "shadow alpha cube: the most any single group drew in one tick was {} cube(s). The "
+        "identity carries that occurrence index, so however many a group emits they get "
+        "distinct identities rather than one wrong shared one. A number that keeps climbing "
+        "run over run would mean the index is standing in for something structural that "
+        "has not been found yet.",
+        g_cubeNthMax + 1);
     lucent::info("taggap",
                  "shadow alpha cube: {} tagged by their group's MEMBERSHIP, {} refused because a "
                  "member's owner could not be established (those snap rather than pair with a "

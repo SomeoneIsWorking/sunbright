@@ -128,7 +128,7 @@ in the TShimmer override seam (`sms-recomp/frame_interp/effects_screen.cpp`).
 requires the shipping Aurora event route to open the in-game window, renders exactly `N` settings
 frames, checks the 1088x768 window and all eight choices have nonzero computed area inside the
 viewport, then pushes Escape again and requires the production modal loop to close. Run it through
-`run-safe.sh`, which keeps the window hidden and checks the kernel's GPU-reset log. The control must
+`run.sh --diagnostic`, which keeps the window hidden and watches the kernel's GPU-reset log. The control must
 name a Vulkan adapter; Aurora's sandbox-only Null fallback cannot allocate its staging buffers and
 is not a valid layout result. `SB_DUMP_FRAME` captures the game `present_source` before Rml overlay
 composition, so a black UI-only dump is expected and is not a UI pixel oracle.

@@ -8,7 +8,7 @@ inside `draw_prim`.
 ```sh
 gcc -shared -fPIC -O2 -o count_getenv.so tools/perf/count_getenv.c -ldl
 LD_PRELOAD=$PWD/count_getenv.so GETENV_REPORT=$PWD/scratch/getenv/report.txt \
-  SB_HEADLESS=1 SB_TURBO=1 SB_STAGE=1 timeout -s TERM -k 5 30 ./run.sh
+  ./run.sh --diagnostic --stage 1 --run-secs 30
 ```
 
 Two things it deliberately does not do:

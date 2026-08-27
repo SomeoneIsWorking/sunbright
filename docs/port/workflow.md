@@ -40,7 +40,7 @@ path that advances ownership, go. Never punt the decision to the user.
 - **Unit tests**: `ctest --test-dir build --output-on-failure` and
   `ctest --test-dir build-recomp --output-on-failure`; every extracted pure unit gets a spec-derived
   positive and a known-difference/negative control.
-- **Bounded runs**: `./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=<presents>`. The guarded runner is
+- **Bounded runs**: `./run.sh --diagnostic --stage 1 --quit-after <presents>`. The guarded runner is
   selected only by the launcher policy. This path enforces headless rendering, a
   submission ceiling, a wall-clock safety cap, and the kernel amdgpu fault check. Do not assemble a
   turbo command manually. If a launched process must be stopped, capture its PID and use the

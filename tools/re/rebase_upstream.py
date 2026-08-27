@@ -381,7 +381,7 @@ def cmd_converge(args):
 
 def runtime_smoke_passed(returncode, output):
     """A timeout is a pass only after the decomp runtime proved gameplay and frame progress."""
-    return (returncode in (0, 137)
+    return (returncode in (0, 124)
             and "APP_STATE_GAMEPLAY" in output
             and "[draw-stats] frame=" in output)
 
@@ -400,19 +400,20 @@ def runtime_gate():
     every native fix — only that the boot path still works. A clean result here is the floor, not
     the verification.
     """
-    runner = os.path.join(REPO, "run-safe.sh")
+    runner = os.path.join(REPO, "run.sh")
     if not os.path.exists(runner):
-        print("\n  RUNTIME GATE SKIPPED: run-safe.sh not found, so NOTHING was run. That is not a "
+        print("\n  RUNTIME GATE SKIPPED: run.sh not found, so NOTHING was run. That is not a "
               "pass — the adopted files are unverified at runtime.")
         return
     print("\n[converge] runtime smoke test (one short run of the decomp runtime) ...")
-    env = dict(os.environ, SB_RUNNER="run-decomp.sh", SB_RUN_SECS="30", SB_DRAW_STATS="1")
+    env = dict(os.environ)
     # errors="replace", NOT text=True: the boot log is Shift-JIS, and a strict utf-8 decode raises
     # UnicodeDecodeError from inside subprocess — the gate would abort with a traceback instead of
     # reporting on the run it just did, which is a gate that fails closed in the least useful way.
-    r = subprocess.run([runner, "SB_STAGE=1"], cwd=REPO, env=env,
+    r = subprocess.run([runner, "--diagnostic", "--runtime", "decomp", "--run-secs", "30",
+                        "--", "SB_STAGE=1", "SB_DRAW_STATS=1"], cwd=REPO, env=env,
                        capture_output=True, text=True, errors="replace")
-    # 137 is our own SIGKILL at the wall-clock cap: the run survived to the end of its budget.
+    # 124 is the guarded launcher's wall-clock cap: the run survived to the end of its budget.
     output = r.stdout + r.stderr
     if runtime_smoke_passed(r.returncode, output):
         print("[converge] runtime smoke test PASSED (the boot path still runs). This is a floor, "
@@ -436,10 +437,10 @@ def cmd_selftest(_args):
     good = "[fastboot] -> stage 1 scenario 0 (APP_STATE_GAMEPLAY)\n[draw-stats] frame=0"
     cases = (
         (0, good, True, "clean known-good"),
-        (137, good, True, "bounded known-good"),
+        (124, good, True, "bounded known-good"),
         (139, good, False, "crash"),
-        (137, "[draw-stats] frame=0", False, "startup hang"),
-        (137, "APP_STATE_GAMEPLAY", False, "no completed frame"),
+        (124, "[draw-stats] frame=0", False, "startup hang"),
+        (124, "APP_STATE_GAMEPLAY", False, "no completed frame"),
     )
     for returncode, output, expected, label in cases:
         actual = runtime_smoke_passed(returncode, output)

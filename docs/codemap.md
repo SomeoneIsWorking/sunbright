@@ -11,16 +11,16 @@ Legend: ✅ done (verified on real data) · 🟡 partial (documented gap) · �
 
 | Runtime | Aurora renderer | Native SDL3-GPU renderer |
 |---|---|---|
-| recomp | ✅ Default displayed path: parsed FIFO → Aurora → present; `play.sh` pins this target even when persisted settings are stale | 🟡 Explicit `run-render.sh` path: Native owns the SDL3-GPU device, window swapchain, and visible presentation. Aurora consumes the same FIFO offscreen as the parity oracle and does not present. |
+| recomp | ✅ Default displayed path: parsed FIFO → Aurora → present; `tools/launch/run.py` pins this target even when persisted settings are stale | 🟡 Explicit `run-render.sh` path: Native owns the SDL3-GPU device, window swapchain, and visible presentation. Aurora consumes the same FIFO offscreen as the parity oracle and does not present. |
 | decomp | ✅ Existing `sms-boot` oracle and moddable runtime | ⬜ No decomp/native consumer, launcher, or presentation path exists. Building it requires a shared parsed-FIFO interface first; it is not a hidden flag. |
 
 These are four requested lanes but only three executable combinations today, and only the two
-Aurora combinations are parity-complete. `run-safe.sh` owns the recomp/decomp Aurora smokes;
+Aurora combinations are parity-complete. `run.sh --diagnostic` owns the recomp/decomp Aurora smokes;
 `run-render.sh` owns the explicit recomp Native path while its parity work remains incomplete.
 
 ## Two runtimes (CLAUDE.md 🏛️ TWO RUNTIMES, 2026-07-21)
 
-1. **recomp + native overrides** (`sms-recomp/`, `run.sh` → `play.sh` → `run-recomp.sh`) — the game's real PPC statically
+1. **recomp + native overrides** (`sms-recomp/`, `run.sh` → `tools/launch/run.py` → `run-recomp.sh`) — the game's real PPC statically
    recompiled, native C++ overrides only at HW/OS seams. **The primary active runtime.** Boots into
    Delfino Plaza and renders it; title + file-select render; 16:9 widescreen; 60fps interpolation.
    **ALL 24 STAGES BOOT AND RENDER** (1-15, 20-28; verified 2026-08-11 by sweep, 400 presents each
@@ -155,7 +155,7 @@ blocked on the absent Japanese Rev-0 disc. Rendering-affecting code is always na
 | `tools/gfx/graphics_db.py` | the graphics registry's worklist + curation (`docs/graphics/`) |
 | `tools/interp/cadence.py` | ALTERNATION/JUDDER at the PIXEL level — the metric that decides which 60fps mechanism ships |
 | `tools/oracle/capture.sh`, `record_fifo.sh` | pixel + FIFO ground truth from the Dolphin FORK (`extern/dolphin_fork`); both print WHICH binary they picked, because a stock Dolphin has none of the hooks and its capture looks identical |
-| `tools/render/run_safe.py`, `run_render.py`, `gpu_events.py`, `gpu_preflight.py`, `gpu_watch.py`, `gpu_watch_selftest.py`, `radv_hang_trace.py` | locked-Python owners of the stable guarded launcher CLIs; one GPU-kernel fault definition; boot-monotonic cooldown refusal; live fail-fast watcher that kills only its guarded process group before persisting incident + submit-flight evidence, then preserves a PCI-correlated Linux device coredump through a parent-bounded, killable reader process when readable. `gpu_watch_selftest.py` owns the process/signal fixtures rather than growing the production guard. Explicit `SBR_RADV_HANG_DIAG=1` adds the independent exact-child RADV progress trace; direct ambient `RADV_DEBUG=hang` is rejected, and the lane is never default because driver synchronization can mask the defect (I034). Both `run-safe.sh` and `run-render.sh` use the same watcher |
+| `tools/launch/run.py`, `arguments.py`; `tools/render/run_render.py`, `gpu_events.py`, `gpu_preflight.py`, `gpu_watch.py`, `gpu_watch_selftest.py`, `radv_hang_trace.py` | locked-Python owners of the default and native-preview launcher policies; one GPU-kernel fault definition; boot-monotonic cooldown refusal; live fail-fast watcher that kills only its guarded process group before persisting incident + submit-flight evidence, then preserves a PCI-correlated Linux device coredump through a parent-bounded, killable reader process when readable. `gpu_watch_selftest.py` owns the process/signal fixtures rather than growing the production guard. Explicit `SBR_RADV_HANG_DIAG=1` adds the independent exact-child RADV progress trace; direct ambient `RADV_DEBUG=hang` is rejected, and the lane is never default because driver synchronization can mask the defect (I034). Both `run.sh` and `run-render.sh` use the same watcher |
 | `tools/perf/count_getenv.c` | validated `LD_PRELOAD` interposer that counts environment lookups by name; reports an explicit broken-instrument result when it intercepts nothing |
 | `tools/info/registry_paths.py` | no live registry entry may name a file the tree does not have |
 | `tools/info/stale_triage.py` | splits the rot check's STALE list into "code EDITED" (needs a run) vs "file MOVED" (bookkeeping) |
@@ -241,13 +241,13 @@ docs/             docs/README.md is the index; codemap.md is the map
 debug_journal/    dated findings, dead ends included. NOT a place for current state
 ```
 
-Repo root launch ownership: `run.sh` is the default product and delegates to `play.sh` so the two
-cannot drift; `run-decomp.sh` explicitly launches the decomp oracle. `play.sh` owns convenience
-flags, `run-recomp.sh` is the raw product harness, `run-render.sh` is the guarded native-preview
-harness, and
-`run-safe.sh` (the way to run a DIAGNOSTIC — conservative GPU settings, names whether the run is
-headless or windowed, refuses during the GPU cooldown, and stops its exact process group on the
-first new kernel GPU fault while preserving an incident bundle).
+Repo root launch ownership: `run.sh` is the slim default-product shim into
+`tools/launch/run.py`, which owns convenience flags and the live GPU watcher for both unlimited
+interactive play and bounded `--diagnostic` runs. `play.sh` is a policy-free compatibility shim;
+`run-recomp.sh` is the raw product/build harness, `run-decomp.sh` is the raw decomp oracle harness,
+and `run-render.sh` is the guarded native-preview harness. The default launcher refuses during the
+GPU cooldown and stops its exact process group on the first new kernel GPU fault while preserving
+an incident bundle.
 `run-render.sh` additionally requires the explicit per-session `SBR_RENDER_APPROVED=1` accident
 gate, which Native device initialization checks again.
 

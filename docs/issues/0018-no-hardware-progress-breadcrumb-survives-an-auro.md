@@ -46,3 +46,10 @@ Partial implementation 2026-08-27: guarded launchers accept only explicit
 before launch then captures only a new exact-child-PID dump after stopping the process. I034
 validates positive/negative collection and trace parsing. Real `RADV_DEBUG=hang` activation and
 hardware trace production remain unverified, so this issue is not resolved.
+
+The default `run.sh` path now owns the live watcher too. Normal windowed play has no diagnostic
+time or present-count cap, but it still preflights the kernel journal, watches through the final
+post-exit barrier, stops the exact game process group on the first GPU fault, and preserves the
+incident evidence. `run.sh --diagnostic` adds the former conservative headless, muted, 60 Hz,
+present-count, and wall-clock defaults. This closes the launcher-coverage gap; it does not close the
+missing hardware-progress breadcrumb described by this issue.

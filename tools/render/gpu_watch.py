@@ -549,7 +549,7 @@ def _journal_command(cursor: str) -> list[str]:
 
 def run_guarded(
     command: list[str],
-    timeout_secs: float,
+    timeout_secs: float | None,
     output_log: Path | None = None,
     incident_dir: Path = DEFAULT_INCIDENT_DIR,
     stamp: Path = DEFAULT_STAMP,
@@ -581,7 +581,7 @@ def run_guarded(
 
 def _run_guarded_protected(
     command: list[str],
-    timeout_secs: float,
+    timeout_secs: float | None,
     output_log: Path | None,
     incident_dir: Path,
     stamp: Path,
@@ -679,7 +679,7 @@ def _run_guarded_protected(
         assert child.stdout is not None
         pump = OutputPump(child.stdout, output_log)
         pump.start()
-        deadline = time.monotonic() + timeout_secs
+        deadline = time.monotonic() + timeout_secs if timeout_secs is not None else None
         leader_exit_deadline: float | None = None
 
         def fault_result(
@@ -784,7 +784,8 @@ def _run_guarded_protected(
                 if note:
                     print(f"[gpu-watch] {note}", file=sys.stderr)
                 return GuardResult(128 + signal_protection.received)
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
+                assert timeout_secs is not None
                 print(
                     f"[gpu-watch] wall-clock cap {timeout_secs:g}s reached; killing pid/pgid "
                     f"{pgid}.",

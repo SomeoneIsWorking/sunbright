@@ -272,7 +272,7 @@ the decomp source, not your own header comment.
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --target sms-boot -j$(nproc)
 ./run.sh [--rom rom.rvz]  # ROM via $SUNBRIGHT_ROM / .env / rom.rvz drop-in
-./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=400   # PREFER THIS for any automated/diagnostic run
+./run.sh --diagnostic --stage 1 --quit-after 400   # bounded automated/diagnostic run
 ```
 
 **Debug is a playable configuration, not an `-O0` diagnostic mode.**
@@ -282,14 +282,14 @@ for millions of machine-generated locals. Both launchers configure Debug by defa
 validation, robustness, and labels are selected explicitly by `AURORA_GPU_DIAGNOSTICS`, never by
 `NDEBUG`, so Release remains an optional packaging profile rather than the only fast path.
 
-**Use `./run-safe.sh` rather than assembling a command line.** Every run that made this machine
-unusable was hand-assembled, and the common ingredient was `SB_TURBO=1` with nothing bounding the
-present rate. It picks a 60 Hz submission ceiling, headless, no native renderer and a wall-clock
-cap, and then reads the KERNEL's opinion of the run: it counts amdgpu ring timeouts and resets
-across the run and exits non-zero if the run disturbed the card, even when the game exits cleanly.
-That check is external to the process being checked, and it is validated against both classes
-(instrument I022) — 108 on the session that reset the card, 0 on an idle window, UNKNOWN (never 0)
-when the log cannot be read.
+**Use `./run.sh`; never assemble a game command line around `run-recomp.sh`.** The default interactive
+path and `--diagnostic` path both run inside the same live kernel GPU watcher. On the first new
+illegal-command-stream, GPUVM, ring-timeout, or reset event it stops the exact game process group
+and preserves the incident, submit-flight tail, and device-coredump disposition. The watcher fails
+closed when the Linux kernel journal cannot be read. `--diagnostic` additionally forces headless,
+muted Aurora rendering with a 60 Hz submission ceiling, 400-present cap, and 240-second wall cap;
+override those bounds only through the launcher's named flags. Instrument I022 validates harmless
+and planted-fault answers independently of the game.
 
 Env vars: `SB_W`/`SB_H` (window), `SB_HEADLESS` (never show the window — REQUIRED for all
 automated/diagnostic runs, agents included), `SB_TURBO` (unpaced), `SB_WATCHDOG_SECS`,

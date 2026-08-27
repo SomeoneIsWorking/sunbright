@@ -155,3 +155,20 @@ pending, and no record was corrupt or out of bounds. The external post-run prefl
 illegal-command-stream, timeout, reset, or fault line. This verifies that the combined queue-owner,
 replay-validator, recorder, and watcher path can run the live workload without disturbing the card.
 It is a bounded negative control, not proof that the nondeterministic reset is resolved.
+
+## Default-launch integration (2026-08-27)
+
+The split between ordinary play and guarded diagnostics was itself a reporting hole: `run.sh`
+armed the in-process flight recorder but did not run the external kernel watcher, so a user-observed
+hard reset could lose the transient device-coredump opportunity. The separate `run-safe.sh` entry
+point is removed. `run.sh` is now a slim locked-Python shim into `tools/launch/run.py`; both normal
+unlimited windowed play and bounded `--diagnostic` runs use the same watcher. The compatibility
+`play.sh` contains no policy and delegates to `run.sh`. This makes the first user-facing launch the
+instrumented path rather than requiring the user to predict a crash and choose a diagnostic binary.
+
+The integrated control used that exact entry point with `--diagnostic --stage 1 --quit-after 60
+--run-secs 90`. It configured Clang optimized Debug, armed flight session
+`18cecd6e47a7b756`, completed all 60 Aurora submits successfully with 0 pending/error callbacks and
+0 corrupt/bounds records, exited 0, and crossed the watcher's final kernel barrier without a GPU
+fault. This is a clean-path control for the unified launcher, not evidence that the nondeterministic
+fault cannot recur.

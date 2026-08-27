@@ -13,7 +13,7 @@ new run looked exactly like the first. A GPU hang is not a crash you can iterate
 fault belongs to the whole card, and the process that loses is whichever one is drawing the
 user's desktop.
 
-So this is an INTERLOCK, not advice. `run-safe.sh` and `run-render.sh` call it and exit if it says
+So this is an INTERLOCK, not advice. `run.sh` and `run-render.sh` call it and exit if it says
 no.
 
 WHAT IT CHECKS

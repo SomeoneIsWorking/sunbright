@@ -123,7 +123,7 @@ def selftest() -> int:
         ]
         clean = run_guarded(
             clean_child,
-            5,
+            None,
             incident_dir=temp / "incidents",
             stamp=temp / "stamp",
             kernel_command=clean_kernel,
@@ -526,6 +526,7 @@ def selftest() -> int:
     print(
         "  known-negative harmless journal line: command exits normally, no cooldown stamp"
     )
+    print("  unlimited interactive guard accepts a clean child exit")
     print(
         "  known-positive illegal-register line: exact group killed before durable incident writes"
     )

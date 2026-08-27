@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Sunbright's shipping entry point. No arguments boot the game immediately; Escape opens RmlUi
-# settings during play. Development runtimes stay behind explicit script names.
-set -eo pipefail
+# Stable shipping shim. Locked Python owns argument parsing, launch policy, and the live GPU guard.
+set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$HERE/play.sh" "$@"
+exec uv run --frozen --project "$HERE" python "$HERE/tools/launch/run.py" "$@"

@@ -45,9 +45,10 @@ CODE_DIRS = [
     "decomp/sms/src",
     "decomp/sms/include",
     "extern/aurora/lib",
+    "tools/launch",
     "tools/render",
 ]
-CODE_SCRIPTS = ["run.sh", "run-decomp.sh", "run-recomp.sh", "run-safe.sh", "play.sh"]
+CODE_SCRIPTS = ["run.sh", "run-decomp.sh", "run-recomp.sh", "play.sh"]
 BUILD_DEFINITION_PATHS = [
     "CMakeLists.txt",
     "cmake",
@@ -63,7 +64,6 @@ DOC_PATHS = [
     "run.sh",
     "run-decomp.sh",
     "run-recomp.sh",
-    "run-safe.sh",
     "play.sh",
 ]
 
@@ -190,7 +190,7 @@ def scan_code():
                     (os.path.relpath(path, ROOT), i, gated)
                 )
     # Launch scripts own real runtime policy switches too. The original scanner ignored shell
-    # readers entirely, so SB_RUNNER was reported as a phantom while run-safe.sh visibly consumed
+    # readers entirely, so SB_RUNNER was reported as a phantom while the launcher visibly consumed
     # `${SB_RUNNER:-run-recomp.sh}`. Shell sites are behavior selection, not gated-print debt.
     for path in tracked_files(CODE_SCRIPTS):
         if not path.endswith(".sh"):

@@ -8,7 +8,7 @@
 // the shipping event route rather than by showing the document directly is the point — a probe that
 // called SettingsMenu::show() would prove nothing about the path the player takes.
 //
-//   SBR_PROBE=1 ./run-safe.sh ...
+//   ./run.sh --diagnostic -- SBR_PROBE=1 ...
 //   curl -s '127.0.0.1:17654/ui?want=open'
 //
 // ONE-WAY, and that is a property of the pause loop rather than an omission here: while the menu is

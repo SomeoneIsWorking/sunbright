@@ -62,7 +62,7 @@ logger — that is debt to convert, not a feature.
 | `SB_DRAW_DUMP_ALL` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_DRAW_DUMP_FRAME` | 2 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_DRAW_STATS` | 4 | `sms-recomp/runtime/devices/dev_gxfifo.cpp` |  |
-| `SB_DUMP_FRAME` | 3 | `extern/aurora/lib/aurora.cpp` |  |
+| `SB_DUMP_FRAME` | 2 | `extern/aurora/lib/aurora.cpp` |  |
 | `SB_DUMP_FRAME_AFTER` | 1 | `extern/aurora/lib/aurora.cpp` |  |
 | `SB_DUMP_FRAME_COUNT` | 1 | `extern/aurora/lib/aurora.cpp` |  |
 | `SB_DUMP_FRAME_EVERY` | 1 | `extern/aurora/lib/aurora.cpp` |  |
@@ -107,7 +107,7 @@ logger — that is debt to convert, not a feature.
 | `SB_MAPXLU_DBG` | 1 | `decomp/sms/src/Map/Map.cpp` |  |
 | `SB_MARIO_ANIM_DBG` | 1 | `decomp/sms/src/Player/MarioMain.cpp` | gated print |
 | `SB_MARIO_DBG` | 4 | `decomp/sms/src/Player/MarioCap.cpp` | gated print |
-| `SB_MAX_PRESENT_HZ` | 2 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SB_MAX_PRESENT_HZ` | 3 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SB_MIRRORBUF_DBG` | 1 | `decomp/sms/src/Map/MapMirror.cpp` | gated print |
 | `SB_MODEL_TRACE` | 5 | `decomp/sms/src/JSystem/J3D/J3DGraphLoader/J3DModelLoader.cpp` | gated print |
 | `SB_MSG_DBG` | 1 | `decomp/sms/src/GC2D/MessageUtil.cpp` | gated print |
@@ -156,8 +156,8 @@ logger — that is debt to convert, not a feature.
 | `SB_RDOC` | 1 | `extern/aurora/lib/aurora.cpp` |  |
 | `SB_RDOC_PATH` | 1 | `extern/aurora/lib/aurora.cpp` |  |
 | `SB_ROOTMTX_DBG` | 1 | `decomp/sms/src/Strategic/liveactor.cpp` | gated print |
-| `SB_RUNNER` | 1 | `tools/render/run_safe.py` |  |
-| `SB_RUN_SECS` | 1 | `tools/render/run_safe.py` |  |
+| `SB_RUNNER` | 1 | `tools/launch/run.py` |  |
+| `SB_RUN_SECS` | 1 | `tools/launch/run.py` |  |
 | `SB_SCENARIO` | 2 | `decomp/sms/src/System/Application.cpp` |  |
 | `SB_SCENECMN_DUMP` | 1 | `decomp/sms/src/System/MarDirectorLoadResource.cpp` | gated print |
 | `SB_SCENE_DUMP` | 1 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
@@ -239,7 +239,7 @@ logger — that is debt to convert, not a feature.
 
 | switch | sites | first read in | |
 |---|---|---|---|
-| `SBR_60FPS` | 1 | `sms-recomp/app/settings.cpp` |  |
+| `SBR_60FPS` | 2 | `sms-recomp/app/settings.cpp` |  |
 | `SBR_AB` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
 | `SBR_ABLATE` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
 | `SBR_AB_AT` | 1 | `sms-recomp/runtime/render/render_compare.cpp` |  |
@@ -338,7 +338,7 @@ logger — that is debt to convert, not a feature.
 | `SBR_PROBE_PORT` | 1 | `sms-recomp/runtime/probe_server.cpp` |  |
 | `SBR_PTIME_HI` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_PTIME_LO` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
-| `SBR_QUIT_AFTER` | 1 | `sms-recomp/overrides/native_frame.cpp` |  |
+| `SBR_QUIT_AFTER` | 2 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SBR_RADV_HANG_DIAG` | 1 | `tools/render/radv_hang_trace.py` |  |
 | `SBR_RASTER_SRC` | 1 | `sms-recomp/overrides/j3d_capture.cpp` |  |
 | `SBR_RENDERER` | 2 | `sms-recomp/app/settings.cpp` |  |
