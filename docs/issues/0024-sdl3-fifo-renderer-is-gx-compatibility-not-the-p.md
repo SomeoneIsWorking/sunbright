@@ -2,8 +2,8 @@
 id: 24
 title: SDL3 FIFO renderer is GX compatibility, not the PC-native renderer goal
 status: open
-state_items: S003, S004, S005
 symptom: The path labeled Native consumes GX/FIFO state and reproduces TEV, EFB-copy, and fixed-function semantics, so matching Aurora would only produce a second GameCube renderer rather than a renderer designed around PC-native scene, material, lighting, and effect semantics.
+state_items: S003, S004, S005
 tags: renderer,architecture,recomp,decomp
 created: 2026-08-28
 updated: 2026-08-28
@@ -55,15 +55,28 @@ test proves its semantic scissor, decoded 2x2 texture quadrants, half-alpha blen
 and a changed-content/revision hash without consulting GX state. C077 records the combined adapter
 and GPU evidence with its falsifier.
 
+`native-render/src/image_decode.cpp` now owns the asset-input conversion shared by both future
+runtime producers: all eleven tiled image encodings and IA8/RGB565/RGB5A3 palettes become ordinary
+RGBA8 before the renderer sees them. It accepts byte spans rather than guest addresses or GX state,
+validates the complete source and palette range, refuses out-of-range indices, uses bit-replicated
+component expansion and GX CMPR interpolation, and derives a revision from the exact consumed
+content. The recomp GX compatibility path reuses this implementation through a guest-memory adapter;
+that reuse does not move FIFO/GX ownership into `native-render/` or count as semantic rendering.
+C078 records the CPU controls and its falsifier.
+
 This is a rendered offscreen semantic slice, not live game presentation. Runtime producers do not
 yet own decoded/versioned RGBA payloads or install a frame sink. They also deliberately carry
 `clip.enabled=false`: clip enable, logical canvas/projection, and ordering belong to an enclosing J2D
 traversal context and cannot be inferred from this function's stale pane scissor fields.
 
-Next: own decoded/versioned RGBA resources, establish the J2D context stack, and extract one shared
-SDL3 device/presenter owner for separate GX-compatibility and semantic targets. Then install the live
-sink and render captured J2D pictures visibly while retaining the original bodies for A/B.
+Next: publish decoded/versioned RGBA resources atomically with each semantic command, establish the
+J2D context stack, and extract one shared SDL3 device/presenter owner for separate GX-compatibility
+and semantic targets. Then install the live sink and render captured J2D pictures visibly while
+retaining the original bodies for A/B.
 
 ## Exit condition
 
 The project goal, doctrine, UI vocabulary, codemap, and first implementation seam all distinguish GX compatibility from PC-native rendering; the native lane renders one representative semantic pass without consuming FIFO/TEV state, with the original guest/decomp draw body retained as a selectable reference.
+
+### Note (2026-08-28)
+Added the shared renderer-neutral texture asset decoder: all eleven tiled encodings, three palette encodings, exact range/index checks, hardware component expansion and CMPR interpolation, mip sizing, and content revisions. The GX compatibility adapter now reuses it while retaining guest/GX ownership. This enables semantic resource publication but does not count as a live PC-native render pass (C078).

@@ -32,3 +32,18 @@ decoded content and rendered a watched 16x16 control: known texture quadrants, c
 repeat determinism, and changed revision/content all produced the required answers without a kernel
 GPU fault. The game adapters are not connected to that pass yet, so this milestone proves the shared
 above-GX producer boundary and an offscreen semantic consumer, not a visible PC-native game frame.
+
+## Asset decoding is not the renderer boundary
+
+Game-authored textures still use GameCube tiled storage. Converting those files to ordinary RGBA8 is
+an input codec, just as decoding PNG would be; it does not make the PC renderer a GX renderer.
+`native-render/src/image_decode.cpp` therefore owns only span-based content decoding and revisioning.
+It has no guest address, FIFO, GX command, TEV, Aurora, SDL, or GPU type. Runtime layout adapters own
+where the bytes came from, and the semantic renderer owns only decoded image values.
+
+The extraction also corrected two inaccuracies in the old compatibility decoder before reuse:
+RGB565/RGB5A3 components expand by hardware bit replication, and CMPR uses the GX 3/8 blend while
+retaining the midpoint RGB for its alpha-zero selector. Focused controls cover all eleven image
+encodings, all three palette encodings, tiling and mip sizes, exact bounds, invalid indices, both
+CMPR branches, and source/palette changes that must alter the content revision. This is enabling
+resource work, not a claim that the game is visibly rendering through the PC-native path.

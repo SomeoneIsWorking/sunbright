@@ -54,10 +54,18 @@ alpha, repeat determinism, and a changed-content/revision result. No FIFO, BP/XF
 program, EFB operation, Aurora type, or GX compatibility type crosses this interface. C077 records
 the falsifiable combined evidence.
 
-Gap: the live runtime does not yet install the sink or supply decoded/versioned resources and the
-enclosing J2D canvas/projection/clip/order context, so the pass remains an offscreen verified slice
-rather than visible presentation. Other semantic families (J3D, particles, lights, effects) are
-still missing. Issue 24 owns this work.
+The same core now owns renderer-neutral decoding of all eleven tiled game-asset image encodings and
+all three palette encodings. Its CPU controls cover tile order and edge rounding, exact source and
+palette ranges, palette-index refusal, bit-replicated colour expansion, GX CMPR's 3/8 interpolation
+and transparent midpoint RGB, mip-chain sizing, and content revision changes. The legacy recomp GX
+compatibility texture adapter consumes this same decoder but retains guest addresses and GX names on
+its side of the boundary. C078 records this narrower asset-input result; it is not counted as a
+rendering pass.
+
+Gap: the live runtime does not yet install the sink or publish decoded/versioned resources from its
+JUT objects, and it lacks the enclosing J2D canvas/projection/clip/order context. The pass therefore
+remains an offscreen verified slice rather than visible presentation. Other semantic families (J3D,
+particles, lights, effects) are still missing. Issue 24 owns this work.
 
 ### S005 — Decomp PC-native semantic renderer
 

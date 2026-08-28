@@ -154,6 +154,7 @@ target_link_options(sms-recomp PRIVATE -rdynamic)
 target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
                       sms-recomp-overrides sms-recomp-frame-interp sms-recomp-bse
                       sms-recomp-app sms-recomp-ui
+                      sunbright-native-render-core
                       lucent::lucent
                       # aurora_core and aurora_gx reference each other, so both must be on
                       # the link line together for the static archives to resolve.
