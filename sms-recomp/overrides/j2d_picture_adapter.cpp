@@ -172,6 +172,59 @@ bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_
 
 } // namespace
 
+J2DContextCaptureResult capture_j2d_context(const GuestByteReader& byteReader, std::uint32_t screen,
+                                            std::uint32_t grafContext,
+                                            native_render::PictureContext& context) noexcept {
+    if (screen == 0)
+        return J2DContextCaptureResult::Invalid;
+    const Reader reader(byteReader);
+    std::uint8_t clipEnabled = 0;
+    if (!reader.u8(screen + 0xec, clipEnabled))
+        return J2DContextCaptureResult::Invalid;
+
+    native_render::PictureContext result{};
+    result.clipEnabled = clipEnabled != 0;
+    if (grafContext == 0) {
+        result.canvas = {.origin = {0, 0}, .extent = {640, 480}, .viewport = {0, 0, 640, 480}};
+    } else {
+        std::uint32_t type = 0;
+        if (!reader.u32(grafContext + 0x04, type))
+            return J2DContextCaptureResult::Invalid;
+        if (type != 1)
+            return J2DContextCaptureResult::NonOrthographic;
+
+        std::int32_t viewportX1 = 0;
+        std::int32_t viewportY1 = 0;
+        std::int32_t viewportX2 = 0;
+        std::int32_t viewportY2 = 0;
+        std::int32_t logicalX1 = 0;
+        std::int32_t logicalY1 = 0;
+        std::int32_t logicalX2 = 0;
+        std::int32_t logicalY2 = 0;
+        if (!reader.s32(grafContext + 0x08, viewportX1) ||
+            !reader.s32(grafContext + 0x0c, viewportY1) ||
+            !reader.s32(grafContext + 0x10, viewportX2) ||
+            !reader.s32(grafContext + 0x14, viewportY2) ||
+            !reader.s32(grafContext + 0xd8, logicalX1) ||
+            !reader.s32(grafContext + 0xdc, logicalY1) ||
+            !reader.s32(grafContext + 0xe0, logicalX2) ||
+            !reader.s32(grafContext + 0xe4, logicalY2) || viewportX2 <= viewportX1 ||
+            viewportY2 <= viewportY1 || logicalX2 <= logicalX1 || logicalY2 <= logicalY1) {
+            return J2DContextCaptureResult::Invalid;
+        }
+        result.canvas = {.origin = {static_cast<float>(logicalX1), static_cast<float>(logicalY1)},
+                         .extent = {static_cast<float>(logicalX2 - logicalX1),
+                                    static_cast<float>(logicalY2 - logicalY1)},
+                         .viewport = {viewportX1, viewportY1,
+                                      static_cast<std::uint32_t>(viewportX2 - viewportX1),
+                                      static_cast<std::uint32_t>(viewportY2 - viewportY1)}};
+    }
+    if (!native_render::valid(result.canvas))
+        return J2DContextCaptureResult::Invalid;
+    context = result;
+    return J2DContextCaptureResult::Success;
+}
+
 void CapturedPicture::refresh_image_views() noexcept {
     for (std::size_t index = 0; index < imageCount; ++index) {
         const native_render::PictureTexture& texture = command.material.textures[index];

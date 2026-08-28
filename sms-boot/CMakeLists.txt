@@ -376,6 +376,8 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/native_picture_adapter_test.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DGrafContext.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DOrthoGraph.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DPane.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DPicture.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/JSupport/JSUList.cpp"

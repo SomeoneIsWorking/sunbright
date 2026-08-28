@@ -75,14 +75,23 @@ transient-span copying, and allocation-gate depth. C079 records the temporal con
 
 This is a rendered offscreen semantic slice, not live game presentation. Runtime producers now own
 decoded/versioned RGBA for the duration of an atomic submission, but no frame sink is installed.
-They also deliberately carry `clip.enabled=false`: clip enable, logical canvas/projection, and
-ordering belong to an enclosing J2D traversal context and cannot be inferred from this function's
-stale pane scissor fields. Mipmapped resources are refused rather than silently represented as a
-single level.
+The enclosing context is now taken from each retained `J2DScreen::draw`: logical `mOrtho`, physical
+`mBounds` viewport, `mbClipToParent`, and the exact null-context 640x480 default. The picture leaf
+attaches its final hierarchy `mClipRect`; it never uses physical/stale `mScissorBounds`. Mipmapped
+resources are refused rather than silently represented as a single level.
 
-Next: establish the J2D context stack and bounded frame collector, then extract one shared SDL3
-device/presenter owner for separate GX-compatibility and semantic targets. Install the live sink and
-render captured J2D pictures visibly while retaining the original bodies for A/B.
+`native-render/src/frame.cpp` now supplies the renderer-neutral storage owner: it bounds draws,
+unique images, and decoded bytes; copies transient pixels; preserves submission order and each
+draw's distinct canvas/viewport;
+coalesces only exact resource/revision/content matches; rejects conflicting identities; and seals a
+stable semantic frame for a renderer client. Its changed revision, multiple-canvas, and every
+limit/lifecycle refusal control run through the production collector. A guarded GPU control maps the
+same logical picture into a nonzero sub-viewport and must differ from the full-canvas frame (C080).
+
+Next: install the bounded collector at each exact frame seam, then extract one shared SDL3
+device/presenter owner for separate GX-compatibility and semantic targets. Expand the unified order
+stream to text/windows/fills before bypassing GX; picture-only overlay cannot preserve their
+interleaving. Retain the original bodies for A/B.
 
 ## Exit condition
 
@@ -93,3 +102,6 @@ Added the shared renderer-neutral texture asset decoder: all eleven tiled encodi
 
 ### Note (2026-08-28)
 Both J2DPicture adapters now decode exact JUT texel/palette bytes and atomically submit matching versioned RGBA images with each semantic command before the retained GX body. Recomp and production-linked decomp controls cover exact pixels, changed revisions, refusal paths, transient lifetime, and the decomp host-allocation gate (C079).
+
+### Note (2026-08-28)
+Added the bounded SDL-free semantic frame collector and rejected a frame-wide canvas during its control review. Both runtimes now scope the retained J2DScreen body and attach its copied logical ortho rectangle, physical viewport, clip-enable state, and the leaf's final hierarchy clip to every ordered draw. The collector owns decoded image bytes, coalesces only identical resource revisions, rejects conflicting keys and every configured limit, and preserves multiple canvases per frame; a nonzero sub-viewport GPU control proves the distinction (C080).

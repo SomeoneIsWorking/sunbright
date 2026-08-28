@@ -7,8 +7,8 @@
 
 namespace sb::native_render {
 
-using PictureSubmit = bool (*)(const PictureCommand& command,
-                               std::span<const DecodedImageView> images, void* context);
+using PictureSubmit = bool (*)(const PictureDraw& draw, std::span<const DecodedImageView> images,
+                               void* context);
 
 struct PictureSink {
     PictureSubmit submit = nullptr;
@@ -22,7 +22,7 @@ void set_picture_sink(PictureSink sink) noexcept;
 // A command and every decoded resource it references are accepted as one operation. This prevents
 // a deferred collector from observing a command whose guest/native pixel storage was reused before
 // the image was copied.
-[[nodiscard]] bool submit_picture(const PictureCommand& command,
+[[nodiscard]] bool submit_picture(const PictureDraw& draw,
                                   std::span<const DecodedImageView> images) noexcept;
 
 } // namespace sb::native_render

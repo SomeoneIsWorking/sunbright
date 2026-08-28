@@ -1,8 +1,11 @@
 #include <sunbright/native_render/image.h>
 #include <sunbright/native_render/image_decode.h>
 #include <sunbright/native_render/picture.h>
+#include <sunbright/native_render/picture_context.h>
 #include <sunbright/native_render/picture_sink.h>
 
+#include <JSystem/J2D/J2DGrafContext.hpp>
+#include <JSystem/J2D/J2DOrthoGraph.hpp>
 #include <JSystem/J2D/J2DPicture.hpp>
 #include <JSystem/JUtility/JUTPalette.hpp>
 #include <JSystem/JUtility/JUTTexture.hpp>
@@ -21,6 +24,11 @@ extern "C" void sb_host_alloc_pop(void);
 
 namespace {
 
+constexpr std::size_t kContextScopeCapacity = 16;
+sb::native_render::PictureContextStack g_pictureContexts{};
+std::array<bool, kContextScopeCapacity> g_contextScopeHasValue{};
+std::size_t g_contextScopeDepth = 0;
+
 class HostAllocationScope {
   public:
     HostAllocationScope() { sb_host_alloc_push(); }
@@ -38,7 +46,58 @@ sb::native_render::Color color(std::uint32_t rgba) noexcept {
             static_cast<float>(rgba & 0xffU) * kScale};
 }
 
+const sb::native_render::PictureContext* current_picture_context() noexcept {
+    if (g_contextScopeDepth == 0 || !g_contextScopeHasValue[g_contextScopeDepth - 1])
+        return nullptr;
+    return g_pictureContexts.current();
+}
+
 } // namespace
+
+extern "C" void sb_native_picture_context_push(const void* contextPointer, int clipEnabled) {
+    if (g_contextScopeDepth == g_contextScopeHasValue.size()) {
+        OSPanic(__FILE__, __LINE__, "semantic J2D context stack overflow");
+        return;
+    }
+
+    bool pushed = false;
+    if (!sb::native_render::has_picture_sink()) {
+        g_contextScopeHasValue[g_contextScopeDepth++] = false;
+        return;
+    }
+    const auto* context = static_cast<const J2DGrafContext*>(contextPointer);
+    if (context != nullptr && context->unk4 == 1) {
+        const auto& graph = *static_cast<const J2DOrthoGraph*>(context);
+        const JUTRect& logical = graph.getOrtho();
+        const JUTRect& viewport = graph.mBounds;
+        if (logical.getWidth() <= 0 || logical.getHeight() <= 0 || viewport.getWidth() <= 0 ||
+            viewport.getHeight() <= 0) {
+            OSPanic(__FILE__, __LINE__, "semantic J2D context has invalid extents");
+            return;
+        }
+        const sb::native_render::PictureContext value{
+            {.origin = {static_cast<float>(logical.x1), static_cast<float>(logical.y1)},
+             .extent = {static_cast<float>(logical.getWidth()),
+                        static_cast<float>(logical.getHeight())},
+             .viewport = {viewport.x1, viewport.y1, static_cast<std::uint32_t>(viewport.getWidth()),
+                          static_cast<std::uint32_t>(viewport.getHeight())}},
+            clipEnabled != 0};
+        pushed = g_pictureContexts.push(value);
+        if (!pushed)
+            OSPanic(__FILE__, __LINE__, "semantic J2D context rejected ortho graph");
+    }
+    g_contextScopeHasValue[g_contextScopeDepth++] = pushed;
+}
+
+extern "C" void sb_native_picture_context_pop(void) {
+    if (g_contextScopeDepth == 0) {
+        OSPanic(__FILE__, __LINE__, "semantic J2D context stack underflow");
+        return;
+    }
+    const bool hadValue = g_contextScopeHasValue[--g_contextScopeDepth];
+    if (hadValue && !g_pictureContexts.pop())
+        OSPanic(__FILE__, __LINE__, "semantic J2D context value stack underflow");
+}
 
 extern "C" void sb_native_picture_submit(const void* picturePointer, const void* matrixPointer) {
     if (!sb::native_render::has_picture_sink())
@@ -58,6 +117,11 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
 
     const auto& picture = *static_cast<const J2DPicture*>(picturePointer);
     const auto& parent = *static_cast<const Mtx*>(matrixPointer);
+    const sb::native_render::PictureContext* context = current_picture_context();
+    if (context == nullptr) {
+        fail("missing or non-orthographic J2D screen context");
+        return;
+    }
     if (picture.mTextureNum == 0 || picture.mTextureNum > 4 || picture.mTextures[0] == nullptr) {
         fail("invalid texture count or texture zero");
         return;
@@ -172,6 +236,14 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
         fail("layout resolution refused the picture");
         return;
     }
-    if (!sb::native_render::submit_picture(command, std::span(images).first(picture.mTextureNum)))
+    if (context->clipEnabled) {
+        command.clip = {.enabled = true,
+                        .x = picture.mClipRect.x1,
+                        .y = picture.mClipRect.y1,
+                        .width = static_cast<std::uint32_t>(picture.mClipRect.getWidth()),
+                        .height = static_cast<std::uint32_t>(picture.mClipRect.getHeight())};
+    }
+    const sb::native_render::PictureDraw draw{context->canvas, command};
+    if (!sb::native_render::submit_picture(draw, std::span(images).first(picture.mTextureNum)))
         fail("sink rejected a validated command");
 }

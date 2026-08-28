@@ -28,19 +28,21 @@ struct ClipRect {
     std::uint32_t height = 0;
 };
 
-struct Canvas {
-    Vec2 origin{};
-    Vec2 extent{};
-    std::uint32_t targetWidth = 0;
-    std::uint32_t targetHeight = 0;
-};
-
 struct PixelRect {
     std::int32_t x = 0;
     std::int32_t y = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     bool operator==(const PixelRect&) const = default;
+};
+
+// One J2D screen's logical coordinate system and its physical placement inside the native target.
+// A game frame may contain several distinct canvases, so this value travels with each draw.
+struct Canvas {
+    Vec2 origin{};
+    Vec2 extent{};
+    PixelRect viewport{};
+    bool operator==(const Canvas&) const = default;
 };
 
 enum class AddressMode : std::uint8_t { Clamp, Repeat, Mirror };
@@ -91,6 +93,11 @@ struct PictureCommand {
     PictureMaterial material{};
 };
 
+struct PictureDraw {
+    Canvas canvas{};
+    PictureCommand picture{};
+};
+
 struct Matrix3x4 {
     std::array<float, 12> value{};
 };
@@ -121,10 +128,13 @@ struct PictureVertex {
 using PictureMesh = std::array<PictureVertex, 6>;
 
 [[nodiscard]] bool valid(const PictureCommand& picture) noexcept;
+[[nodiscard]] bool valid(const Canvas& canvas) noexcept;
+[[nodiscard]] bool valid(const PictureDraw& draw) noexcept;
 [[nodiscard]] bool resolve_picture_layout(const PictureLayout& layout,
                                           std::array<Vec2, 4>& positions,
                                           std::array<Vec2, 4>& uv) noexcept;
 [[nodiscard]] bool resolve_scissor(const Canvas& canvas, const ClipRect& clip,
+                                   std::uint32_t targetWidth, std::uint32_t targetHeight,
                                    PixelRect& scissor) noexcept;
 [[nodiscard]] PictureMesh make_mesh(const PictureCommand& picture) noexcept;
 

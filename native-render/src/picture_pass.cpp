@@ -233,14 +233,15 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     output = {};
     if (!initialize(error))
         return false;
-    PixelRect fullScissor{};
-    if (!resolve_scissor(frame.canvas, {}, fullScissor)) {
-        error = "picture frame has an invalid canvas";
+    if (frame.targetWidth == 0 || frame.targetHeight == 0) {
+        error = "picture frame has an invalid target";
         return false;
     }
-    for (const PictureCommand& command : frame.commands) {
-        if (!valid(command)) {
-            error = "picture frame contains an invalid command";
+    for (const PictureDraw& draw : frame.draws) {
+        PixelRect viewport{};
+        if (!valid(draw) ||
+            !resolve_scissor(draw.canvas, {}, frame.targetWidth, frame.targetHeight, viewport)) {
+            error = "picture frame contains an invalid draw context or command";
             return false;
         }
     }
@@ -255,7 +256,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
             return false;
         }
     }
-    for (const PictureCommand& command : frame.commands) {
+    for (const PictureDraw& draw : frame.draws) {
+        const PictureCommand& command = draw.picture;
         for (std::size_t index = 0; index < command.material.textureCount; ++index) {
             const PictureTexture& texture = command.material.textures[index];
             const auto found = sourceImages.find({texture.resource, texture.revision});
@@ -268,9 +270,9 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     }
 
     std::vector<GpuVertex> vertices;
-    vertices.reserve(frame.commands.size() * 6);
-    for (const PictureCommand& command : frame.commands) {
-        for (const PictureVertex& source : make_mesh(command)) {
+    vertices.reserve(frame.draws.size() * 6);
+    for (const PictureDraw& draw : frame.draws) {
+        for (const PictureVertex& source : make_mesh(draw.picture)) {
             vertices.push_back({{source.position.x, source.position.y},
                                 {source.uv.x, source.uv.y},
                                 {source.color.r, source.color.g, source.color.b, source.color.a}});
@@ -294,7 +296,7 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         return false;
     }
     std::size_t readbackBytes = 0;
-    if (!multiplication_fits(frame.canvas.targetWidth, frame.canvas.targetHeight, readbackBytes)) {
+    if (!multiplication_fits(frame.targetWidth, frame.targetHeight, readbackBytes)) {
         error = "picture target exceeds SDL GPU limits";
         return false;
     }
@@ -303,8 +305,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     targetInfo.type = SDL_GPU_TEXTURETYPE_2D;
     targetInfo.format = kColorFormat;
     targetInfo.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-    targetInfo.width = frame.canvas.targetWidth;
-    targetInfo.height = frame.canvas.targetHeight;
+    targetInfo.width = frame.targetWidth;
+    targetInfo.height = frame.targetHeight;
     targetInfo.layer_count_or_depth = 1;
     targetInfo.num_levels = 1;
     targetInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
@@ -334,8 +336,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     std::vector<SDL_GPUSampler*> samplers;
     std::vector<std::array<SDL_GPUTextureSamplerBinding, 4>> drawBindings;
     gpuImages.reserve(frame.images.size());
-    samplers.reserve(frame.commands.size() * 4);
-    drawBindings.reserve(frame.commands.size());
+    samplers.reserve(frame.draws.size() * 4);
+    drawBindings.reserve(frame.draws.size());
     bool resourcesValid =
         target != nullptr && download != nullptr &&
         (vertexBytes == 0 || (vertexBuffer != nullptr && vertexUpload != nullptr)) &&
@@ -380,7 +382,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         release_resources();
         return false;
     }
-    for (const PictureCommand& command : frame.commands) {
+    for (const PictureDraw& draw : frame.draws) {
+        const PictureCommand& command = draw.picture;
         std::array<SDL_GPUTextureSamplerBinding, 4> bindings{};
         for (std::size_t index = 0; index < bindings.size(); ++index) {
             const PictureTexture& texture =
@@ -489,14 +492,14 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         const SDL_GPUBufferBinding binding{vertexBuffer, 0};
         SDL_BindGPUVertexBuffers(render, 0, &binding, 1);
     }
-    const CanvasUniform canvas{{frame.canvas.origin.x, frame.canvas.origin.y},
-                               {frame.canvas.extent.x, frame.canvas.extent.y}};
     std::size_t firstVertex = 0;
     std::size_t drawIndex = 0;
-    for (const PictureCommand& command : frame.commands) {
+    for (const PictureDraw& draw : frame.draws) {
+        const PictureCommand& command = draw.picture;
         const auto& bindings = drawBindings[drawIndex++];
         PixelRect semanticScissor{};
-        if (!resolve_scissor(frame.canvas, command.clip, semanticScissor)) {
+        if (!resolve_scissor(draw.canvas, command.clip, frame.targetWidth, frame.targetHeight,
+                             semanticScissor)) {
             // A valid picture may be wholly outside its active clip. It contributes no pixels but
             // remains part of ordering, so consume its vertices without treating it as malformed.
             firstVertex += 6;
@@ -505,6 +508,13 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         const SDL_Rect scissor{semanticScissor.x, semanticScissor.y,
                                static_cast<int>(semanticScissor.width),
                                static_cast<int>(semanticScissor.height)};
+        const SDL_GPUViewport viewport{static_cast<float>(draw.canvas.viewport.x),
+                                       static_cast<float>(draw.canvas.viewport.y),
+                                       static_cast<float>(draw.canvas.viewport.width),
+                                       static_cast<float>(draw.canvas.viewport.height),
+                                       0.0f,
+                                       1.0f};
+        SDL_SetGPUViewport(render, &viewport);
         SDL_SetGPUScissor(render, &scissor);
 
         SDL_BindGPUFragmentSamplers(render, 0, bindings.data(), bindings.size());
@@ -521,6 +531,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         style.control[0] = command.material.textureCount;
         style.control[1] = alphaMask;
         style.opacity[0] = command.opacity;
+        const CanvasUniform canvas{{draw.canvas.origin.x, draw.canvas.origin.y},
+                                   {draw.canvas.extent.x, draw.canvas.extent.y}};
         SDL_PushGPUVertexUniformData(commandBuffer, 0, &canvas, sizeof(canvas));
         SDL_PushGPUFragmentUniformData(commandBuffer, 0, &style, sizeof(style));
         SDL_DrawGPUPrimitives(render, 6, 1, firstVertex, 0);
@@ -529,10 +541,10 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     SDL_EndGPURenderPass(render);
 
     SDL_GPUCopyPass* downloadPass = SDL_BeginGPUCopyPass(commandBuffer);
-    const SDL_GPUTextureRegion source{
-        target, 0, 0, 0, 0, 0, frame.canvas.targetWidth, frame.canvas.targetHeight, 1};
-    const SDL_GPUTextureTransferInfo destination{download, 0, frame.canvas.targetWidth,
-                                                 frame.canvas.targetHeight};
+    const SDL_GPUTextureRegion source{target, 0, 0, 0, 0, 0, frame.targetWidth, frame.targetHeight,
+                                      1};
+    const SDL_GPUTextureTransferInfo destination{download, 0, frame.targetWidth,
+                                                 frame.targetHeight};
     SDL_DownloadFromGPUTexture(downloadPass, &source, &destination);
     SDL_EndGPUCopyPass(downloadPass);
 
@@ -556,8 +568,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         release_resources();
         return false;
     }
-    output.width = frame.canvas.targetWidth;
-    output.height = frame.canvas.targetHeight;
+    output.width = frame.targetWidth;
+    output.height = frame.targetHeight;
     output.rgba8.resize(readbackBytes);
     std::memcpy(output.rgba8.data(), mapped, readbackBytes);
     SDL_UnmapGPUTransferBuffer(impl_->device, download);

@@ -14,6 +14,7 @@ namespace {
 using sb::native_render::Color;
 using sb::native_render::DecodedImageView;
 using sb::native_render::PictureCommand;
+using sb::native_render::PictureDraw;
 using sb::native_render::PictureFrame;
 using sb::native_render::PictureFramePixels;
 using sb::native_render::PicturePass;
@@ -79,10 +80,11 @@ int main() {
                                       0,   0, 255, 255, 255, 255, 255, 128};
     DecodedImageView image{.resource = 9, .width = 2, .height = 2, .rgba8 = rgba};
     PictureCommand picture = command();
-    const PictureFrame frame{
-        .canvas = {.origin = {0, 0}, .extent = {16, 16}, .targetWidth = 16, .targetHeight = 16},
-        .commands = std::span<const PictureCommand>(&picture, 1),
-        .images = std::span<const DecodedImageView>(&image, 1)};
+    PictureDraw draw{{.origin = {0, 0}, .extent = {16, 16}, .viewport = {0, 0, 16, 16}}, picture};
+    const PictureFrame frame{.targetWidth = 16,
+                             .targetHeight = 16,
+                             .draws = std::span<const PictureDraw>(&draw, 1),
+                             .images = std::span<const DecodedImageView>(&image, 1)};
 
     {
         // The renderer client must release its pipeline/shaders before the host destroys the one
@@ -108,19 +110,32 @@ int main() {
         PictureCommand clipped = picture;
         clipped.instance = 2;
         clipped.clip = {.enabled = true, .x = 32, .y = 32, .width = 4, .height = 4};
-        const std::array clippedCommands{picture, clipped};
+        const std::array clippedDraws{draw, PictureDraw{draw.canvas, clipped}};
         PictureFrame clippedFrame = frame;
-        clippedFrame.commands = clippedCommands;
+        clippedFrame.draws = clippedDraws;
         PictureFramePixels clippedResult{};
         assert(pass.render_and_readback(clippedFrame, clippedResult, error) && error.empty());
         assert(hash(clippedResult) == hash(first));
+
+        // Known-different per-draw canvas: the same logical picture is mapped into a centered
+        // physical sub-viewport. This catches a backend that incorrectly treats canvas as one
+        // frame-wide value or drops the viewport origin.
+        PictureDraw inset = draw;
+        inset.canvas.viewport = {4, 4, 8, 8};
+        PictureFrame insetFrame = frame;
+        insetFrame.draws = std::span<const PictureDraw>(&inset, 1);
+        PictureFramePixels insetResult{};
+        assert(pass.render_and_readback(insetFrame, insetResult, error) && error.empty());
+        assert(hash(insetResult) != hash(first));
+        require_color(pixel(insetResult, 5, 5), {});
+        assert(pixel(insetResult, 7, 7).a > 0.9f);
 
         // Known-different control: revision and decoded bytes change together. A stale upload or
         // stale readback would incorrectly reproduce the baseline hash.
         rgba[0] = 0;
         rgba[2] = 255;
         image.revision = 1;
-        picture.material.textures[0].revision = 1;
+        draw.picture.material.textures[0].revision = 1;
         PictureFramePixels changed{};
         assert(pass.render_and_readback(frame, changed, error) && error.empty());
         assert(hash(changed) != hash(first));

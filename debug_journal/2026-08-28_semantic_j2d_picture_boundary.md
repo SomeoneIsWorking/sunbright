@@ -21,10 +21,13 @@ fields previously named `unk104`, `unk114`, and `unk130` are now named `mBlendCo
 
 ## Boundary limits
 
-This entry does not carry active clip enable, logical canvas/projection, or a semantic ordering
-context. `mScissorBounds` may be stale when clipping is disabled, so the command explicitly leaves
-clipping disabled rather than manufacturing a plausible rectangle. Those values must come from an
-enclosing J2D traversal/context seam.
+The leaf entry alone does not carry active clip enable or logical canvas/projection. Those values
+now come from an enclosing scope around the retained `J2DScreen::draw`: its supplied
+`J2DOrthoGraph::mOrtho` is the logical rectangle, base `mBounds` is the physical viewport, and
+`mbClipToParent` controls clipping. The null-context branch contributes its exact constructed
+640x480 graph. At the leaf, the producer attaches `mClipRect`, which already contains hierarchy
+intersection. It deliberately never uses `mScissorBounds`, which is physical/GX-oriented and can be
+stale when clipping is disabled.
 
 Texture identity, sampler state, and decoded/versioned RGBA content are now captured together at
 draw entry. The sink receives the command and every matching image as one synchronous operation, so
@@ -57,3 +60,17 @@ JUTTexture, and JUTPalette objects, verifies the allocation depth in the sink ca
 transient spans, and checks exact C4+IA8 and I8 output. That test also exposed the native default
 `JUTTexture()` constructor leaving seventeen fields indeterminate; the native-only empty state now
 initializes them, while the non-native decomp constructor remains unchanged.
+
+## Frame ownership
+
+`native-render/src/frame.cpp` now owns the lifetime boundary after atomic submission. Its collector
+is independent of SDL and both game runtimes: it stores ordered `PictureDraw` values, including
+each screen's distinct canvas/viewport, and copies new decoded RGBA resources into configured
+draw/image/byte bounds. Resource/revision pairs are
+coalesced only when dimensions and bytes agree; disagreement is a producer error, not a cache miss.
+Seal exposes stable spans until the next frame begins. Controls mutate the caller's source after
+submission, exercise duplicate and changed-revision answers, and force every capacity and lifecycle
+failure. A guarded SDL3 control uses a nonzero physical sub-viewport and must differ from the same
+logical draw on the full canvas. Neither runtime installs the collector yet: direct
+`J2DPicture::draw` calls bypass the screen scope, and a picture-only overlay would lose ordering
+against J2D text, windows, fills, and 3D passes.

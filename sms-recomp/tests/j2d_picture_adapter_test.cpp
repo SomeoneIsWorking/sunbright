@@ -94,6 +94,8 @@ int main() {
     constexpr std::uint32_t texture1 = kBase + 0x3100;
     constexpr std::uint32_t texels0 = kBase + 0x6000;
     constexpr std::uint32_t texels1 = kBase + 0x9000;
+    constexpr std::uint32_t screen = kBase + 0xa000;
+    constexpr std::uint32_t graf = kBase + 0xa100;
     GuestMemory memory(0xc000);
 
     memory.s32(self + 0x14, 40);
@@ -125,6 +127,33 @@ int main() {
     memory.u8(texels0 + 1, 10);
     memory.u8(texels0 + 32, 20);
     memory.u8(texels0 + 33, 30);
+
+    memory.u8(screen + 0xec, 1);
+    memory.u32(graf + 0x04, 1);
+    memory.s32(graf + 0x08, 20);
+    memory.s32(graf + 0x0c, 30);
+    memory.s32(graf + 0x10, 340);
+    memory.s32(graf + 0x14, 270);
+    memory.s32(graf + 0xd8, 100);
+    memory.s32(graf + 0xdc, 50);
+    memory.s32(graf + 0xe0, 740);
+    memory.s32(graf + 0xe4, 530);
+
+    sb::native_render::PictureContext context{};
+    assert(sb::recomp::capture_j2d_context(memory.reader(), screen, graf, context) ==
+           sb::recomp::J2DContextCaptureResult::Success);
+    assert(context.clipEnabled);
+    assert((context.canvas.origin == sb::native_render::Vec2{100, 50}));
+    assert((context.canvas.extent == sb::native_render::Vec2{640, 480}));
+    assert((context.canvas.viewport == sb::native_render::PixelRect{20, 30, 320, 240}));
+
+    assert(sb::recomp::capture_j2d_context(memory.reader(), screen, 0, context) ==
+           sb::recomp::J2DContextCaptureResult::Success);
+    assert((context.canvas.viewport == sb::native_render::PixelRect{0, 0, 640, 480}));
+    memory.u32(graf + 0x04, 0);
+    assert(sb::recomp::capture_j2d_context(memory.reader(), screen, graf, context) ==
+           sb::recomp::J2DContextCaptureResult::NonOrthographic);
+    memory.u32(graf + 0x04, 1);
 
     sb::recomp::CapturedPicture capture{};
     assert(sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, capture));

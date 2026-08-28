@@ -70,11 +70,24 @@ short palette refusal. The decomp production-linked control uses real J2DPicture
 JUTPalette objects, verifies C4+IA8 and I8 output, stable and changed revisions, span copying during
 the callback, and the required host-allocation gate. C079 records this temporal/lifetime contract.
 
-Gap: the live runtime does not yet install a frame-collecting sink and lacks the enclosing J2D
-canvas/projection/clip/order context. The pass therefore remains an offscreen verified slice rather
-than visible presentation. Authored mip chains are explicitly refused until the semantic image
-contract carries levels. Other semantic families (J3D, particles, lights, effects) are still
-missing. Issue 24 owns this work.
+The shared core also owns a bounded, SDL-free semantic frame collector and fixed-depth J2D context
+stack. Each picture carries its own logical ortho rectangle and physical viewport because one game
+frame can draw multiple J2DScreens with different graphs. The collector copies transient decoded
+pixels, preserves draw order, coalesces only byte-identical resource/revision pairs, rejects a key
+whose bytes disagree, and refuses command/image/byte overflow or invalid lifecycle transitions.
+The sealed frame contains only target extent, clear colour, ordered picture draws, and owned RGBA
+views; it still contains no runtime or GX representation. C080 records these controls.
+
+Both recomp and decomp now scope the semantic producer around the retained `J2DScreen::draw` body.
+They copy the supplied ortho graph's logical rectangle and viewport (or the exact null-context
+640x480 default), carry `mbClipToParent`, and attach the leaf pane's final hierarchy `mClipRect`.
+The GPU control includes a nonzero sub-viewport known-different answer.
+
+Gap: the live runtime does not yet install the frame-collecting sink at its frame seam, so the pass
+remains an offscreen verified slice rather than visible presentation. Direct `J2DPicture::draw`
+callers bypass the screen scope, and interleaving with text/windows/fills/3D requires a unified
+semantic order stream before GX can be bypassed. Authored mip chains and other semantic families
+(J3D, particles, lights, effects) are still missing. Issue 24 owns this work.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -87,10 +100,11 @@ production-linked native-layout control proves the gate is balanced and that the
 transient spans before return. The native-only `JUTTexture()` empty state is now fully initialized,
 instead of leaving seventeen fields indeterminate before `storeTIMG`.
 
-Gap: J2D context/frame ownership and live sink/device/presentation integration are missing, so decomp
-output still presents through Aurora GX even though its commands and image values are accepted by
-the same independent SDL3 semantic pass in isolation. The remainder of the semantic renderer is
-also absent.
+The decomp now scopes each retained `J2DScreen::draw`, copies the real J2DOrthoGraph values without
+retaining its stack pointer, and publishes the final logical pane clip at picture entry. Gap: live
+sink/device/presentation integration and non-picture semantic ordering remain missing, so decomp
+output still presents through Aurora GX even though its values are accepted by the same bounded
+collector and independent SDL3 semantic pass in isolation.
 
 ### S006 — Lerp coverage
 

@@ -1,5 +1,6 @@
 #include <sunbright/native_render/picture_sink.h>
 
+#include <JSystem/J2D/J2DOrthoGraph.hpp>
 #include <JSystem/J2D/J2DPicture.hpp>
 #include <JSystem/JUtility/JUTPalette.hpp>
 #include <JSystem/JUtility/JUTTexture.hpp>
@@ -16,6 +17,8 @@
 #include <vector>
 
 extern "C" void sb_native_picture_submit(const void* picture, const void* parentMatrix);
+extern "C" void sb_native_picture_context_push(const void* grafContext, int clipEnabled);
+extern "C" void sb_native_picture_context_pop(void);
 
 namespace {
 
@@ -31,17 +34,17 @@ struct ReceivedImage {
 
 struct Receiver {
     std::size_t calls = 0;
-    sb::native_render::PictureCommand command{};
+    sb::native_render::PictureDraw draw{};
     std::array<ReceivedImage, 4> images{};
     std::size_t imageCount = 0;
 };
 
-bool receive(const sb::native_render::PictureCommand& command,
+bool receive(const sb::native_render::PictureDraw& draw,
              std::span<const sb::native_render::DecodedImageView> images, void* context) {
     assert(g_hostAllocationDepth == 1);
     auto& receiver = *static_cast<Receiver*>(context);
     ++receiver.calls;
-    receiver.command = command;
+    receiver.draw = draw;
     receiver.imageCount = images.size();
     for (std::size_t index = 0; index < images.size(); ++index) {
         const auto& source = images[index];
@@ -121,6 +124,7 @@ int main() {
 
     J2DPicture picture;
     picture.mBounds.set(0, 0, 8, 8);
+    picture.mClipRect.set(1, 2, 7, 6);
     identity(picture.mGlobalMtx);
     picture.mColorAlpha = 128;
     picture.mTextureNum = 2;
@@ -146,16 +150,22 @@ int main() {
     Mtx parent{};
     identity(parent);
     Receiver receiver{};
+    J2DOrthoGraph graph(10, 20, 320, 240);
     sb::native_render::set_picture_sink({});
     sb_native_picture_submit(&picture, &parent);
     assert(g_hostAllocationDepth == 0);
     assert(receiver.calls == 0);
 
     sb::native_render::set_picture_sink({receive, &receiver});
+    sb_native_picture_context_push(&graph, 1);
     sb_native_picture_submit(&picture, &parent);
     assert(g_hostAllocationDepth == 0);
     assert(receiver.calls == 1);
-    assert(receiver.command.material.textureCount == 2);
+    assert(receiver.draw.picture.material.textureCount == 2);
+    assert((receiver.draw.canvas.viewport == sb::native_render::PixelRect{10, 20, 320, 240}));
+    assert(receiver.draw.picture.clip.enabled);
+    assert(receiver.draw.picture.clip.x == 1 && receiver.draw.picture.clip.y == 2);
+    assert(receiver.draw.picture.clip.width == 6 && receiver.draw.picture.clip.height == 4);
     assert(receiver.imageCount == 2);
     assert(receiver.images[0].resource == reinterpret_cast<std::uintptr_t>(&identity0));
     assert(receiver.images[0].revision != 0);
@@ -183,4 +193,5 @@ int main() {
     assert(g_hostAllocationDepth == 0);
 
     sb::native_render::set_picture_sink({});
+    sb_native_picture_context_pop();
 }

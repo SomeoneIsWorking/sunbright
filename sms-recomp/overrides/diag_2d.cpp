@@ -19,7 +19,9 @@
 #include "../runtime/probe_server.h"
 #include "../runtime/render/scene.h"
 #include "../runtime/sb_assert.h"
+#include "guest_byte_reader.h"
 #include "j2d_picture_adapter.h"
+#include "semantic_j2d_context.h"
 
 #include <sunbright/native_render/picture_sink.h>
 
@@ -214,28 +216,34 @@ PaneQuad read_pane(CPUState& cpu) {
     return q;
 }
 
-bool read_guest_bytes(void*, std::uint32_t address, void* destination, std::size_t size) {
-    if (size == 0)
-        return true;
-    if (address > UINT32_MAX - static_cast<std::uint32_t>(size - 1))
-        return false;
-    u8* first = sb_ram_fast(address);
-    u8* last = sb_ram_fast(address + static_cast<std::uint32_t>(size - 1));
-    if (first == nullptr || last != first + size - 1)
-        return false;
-    std::memcpy(destination, first, size);
-    return true;
-}
-
 void submit_semantic_picture(CPUState& cpu) {
     if (!sb::native_render::has_picture_sink())
         return;
     sb::recomp::CapturedPicture capture{};
-    const sb::recomp::GuestByteReader reader{.read = read_guest_bytes};
+    const sb::recomp::GuestByteReader reader = sb::recomp::live_guest_byte_reader();
     SB_ASSERT(sb::recomp::capture_j2d_picture(reader, cpu.gpr[3], cpu.gpr[6], capture),
               "semantic J2DPicture capture failed: self=%08x parent_matrix=%08x", cpu.gpr[3],
               cpu.gpr[6]);
-    SB_ASSERT(sb::native_render::submit_picture(capture.command, capture.image_views()),
+    const sb::native_render::PictureContext* context = sb::recomp::current_semantic_j2d_context();
+    SB_ASSERT(context != nullptr,
+              "semantic J2DPicture capture has no enclosing orthographic J2DScreen: self=%08x",
+              cpu.gpr[3]);
+    if (context->clipEnabled) {
+        const std::int32_t x1 = static_cast<std::int32_t>(sb_r32(cpu.gpr[3] + 0x34));
+        const std::int32_t y1 = static_cast<std::int32_t>(sb_r32(cpu.gpr[3] + 0x38));
+        const std::int32_t x2 = static_cast<std::int32_t>(sb_r32(cpu.gpr[3] + 0x3c));
+        const std::int32_t y2 = static_cast<std::int32_t>(sb_r32(cpu.gpr[3] + 0x40));
+        SB_ASSERT(x2 > x1 && y2 > y1,
+                  "semantic J2DPicture has empty active clip: self=%08x clip=%d,%d..%d,%d",
+                  cpu.gpr[3], x1, y1, x2, y2);
+        capture.command.clip = {.enabled = true,
+                                .x = x1,
+                                .y = y1,
+                                .width = static_cast<std::uint32_t>(x2 - x1),
+                                .height = static_cast<std::uint32_t>(y2 - y1)};
+    }
+    const sb::native_render::PictureDraw draw{context->canvas, capture.command};
+    SB_ASSERT(sb::native_render::submit_picture(draw, capture.image_views()),
               "semantic J2DPicture sink rejected a validated command: self=%08x", cpu.gpr[3]);
 }
 

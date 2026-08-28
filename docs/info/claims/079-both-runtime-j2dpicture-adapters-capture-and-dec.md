@@ -5,6 +5,8 @@ status: holds
 created: 2026-08-28
 tags: renderer,resources,recomp,decomp
 depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit, native-render/src/picture_sink.cpp#submit_picture
+reconfirmed: 2026-08-28
+verified_at: 2026-08-28 03:58:27
 ---
 
 ## Claim
@@ -18,3 +20,7 @@ Recomp j2d_picture_adapter controls cover RGBA8, C4+IA8, changed revisions, and 
 ## What would falsify it
 
 Either adapter reads texture bytes after its retained GX body, a sink can accept a command without matching image content, a source/palette mutation is missed by the revision, or the decomp callback occurs outside the host-allocation gate.
+
+## Re-confirmed 2026-08-28
+
+Reconfirmed after contextual PictureDraw submission: production-linked decomp adapter test and recomp guest adapter test pass exact decoded pixels, stable/changed revisions, transient copying, host-allocation depth, and canvas/clip attachment.

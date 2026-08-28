@@ -137,13 +137,14 @@ int main() {
     assert((transposedUv == std::array<Vec2, 4>{Vec2{1, 0}, Vec2{1, 1}, Vec2{0, 0}, Vec2{0, 1}}));
 
     sb::native_render::PixelRect scissor{};
-    const Canvas canvas{
-        .origin = {100, 50}, .extent = {200, 100}, .targetWidth = 400, .targetHeight = 200};
-    assert(sb::native_render::resolve_scissor(canvas, {}, scissor));
-    assert((scissor == sb::native_render::PixelRect{0, 0, 400, 200}));
+    const Canvas canvas{.origin = {100, 50}, .extent = {200, 100}, .viewport = {50, 25, 200, 100}};
+    assert(sb::native_render::valid(canvas));
+    assert(sb::native_render::resolve_scissor(canvas, {}, 400, 200, scissor));
+    assert((scissor == sb::native_render::PixelRect{50, 25, 200, 100}));
     assert(sb::native_render::resolve_scissor(
-        canvas, {.enabled = true, .x = 90, .y = 75, .width = 60, .height = 50}, scissor));
-    assert((scissor == sb::native_render::PixelRect{0, 50, 100, 100}));
+        canvas, {.enabled = true, .x = 90, .y = 75, .width = 60, .height = 50}, 400, 200, scissor));
+    assert((scissor == sb::native_render::PixelRect{40, 50, 60, 50}));
     assert(!sb::native_render::resolve_scissor(
-        canvas, {.enabled = true, .x = 400, .y = 400, .width = 10, .height = 10}, scissor));
+        canvas, {.enabled = true, .x = 400, .y = 400, .width = 10, .height = 10}, 400, 200,
+        scissor));
 }
