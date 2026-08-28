@@ -70,14 +70,18 @@ bool close(float actual, float expected) {
 }
 
 void write_texture(GuestMemory& memory, std::uint32_t texture, std::uint32_t resource,
-                   std::uint16_t width, std::uint16_t height, bool alpha) {
+                   std::uint32_t texels, std::uint16_t width, std::uint16_t height, bool alpha,
+                   std::uint32_t format = 6) {
     memory.u32(texture + 0x20, resource);
+    memory.u32(texture + 0x24, texels);
+    memory.u32(texture + 0x2c, 0);
+    memory.u32(texture + 0x34, format);
     memory.u32(texture + 0x38, alpha ? 1 : 0);
     memory.u16(texture + 0x3c, width);
     memory.u16(texture + 0x3e, height);
     memory.u8(texture + 0x40, 1); // repeat
     memory.u8(texture + 0x41, 2); // mirror
-    memory.u8(texture + 0x42, 5); // linear + linear mip
+    memory.u8(texture + 0x42, 1); // linear, no mip chain
     memory.u8(texture + 0x43, 1); // linear
 }
 
@@ -88,7 +92,9 @@ int main() {
     constexpr std::uint32_t parentMatrix = kBase + 0x2000;
     constexpr std::uint32_t texture0 = kBase + 0x3000;
     constexpr std::uint32_t texture1 = kBase + 0x3100;
-    GuestMemory memory(0x5000);
+    constexpr std::uint32_t texels0 = kBase + 0x6000;
+    constexpr std::uint32_t texels1 = kBase + 0x9000;
+    GuestMemory memory(0xc000);
 
     memory.s32(self + 0x14, 40);
     memory.s32(self + 0x18, 70);
@@ -113,18 +119,23 @@ int main() {
     memory.u32(self + 0x158, 0x00000040);
     memory.matrix(self + 0x84, {1, 0, 0, 10, 0, 1, 0, 20, 0, 0, 1, 0});
     memory.matrix(parentMatrix, {1, 0, 0, 3, 0, 1, 0, 4, 0, 0, 1, 0});
-    write_texture(memory, texture0, kBase + 0x4000, 64, 32, true);
-    write_texture(memory, texture1, kBase + 0x4200, 32, 16, false);
+    write_texture(memory, texture0, kBase + 0x4000, texels0, 64, 32, true);
+    write_texture(memory, texture1, kBase + 0x4200, texels1, 32, 16, false);
+    memory.u8(texels0, 128);
+    memory.u8(texels0 + 1, 10);
+    memory.u8(texels0 + 32, 20);
+    memory.u8(texels0 + 33, 30);
 
-    sb::native_render::PictureCommand command{};
-    assert(sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, command));
+    sb::recomp::CapturedPicture capture{};
+    assert(sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, capture));
+    const auto& command = capture.command;
     assert(command.instance == self);
     assert(command.material.textureCount == 2);
     assert(command.material.textures[0].resource == kBase + 0x4000);
     assert(command.material.textures[0].addressU == sb::native_render::AddressMode::Repeat);
     assert(command.material.textures[0].addressV == sb::native_render::AddressMode::Mirror);
     assert(command.material.textures[0].minFilter == sb::native_render::FilterMode::Linear);
-    assert(command.material.textures[0].mipFilter == sb::native_render::MipFilter::Linear);
+    assert(command.material.textures[0].mipFilter == sb::native_render::MipFilter::None);
     assert(command.material.textures[0].hasAlpha);
     assert(!command.material.textures[1].hasAlpha);
     assert(close(command.material.textures[1].colorMix, 128.0f / 255.0f));
@@ -138,13 +149,51 @@ int main() {
     assert((command.uv == std::array<sb::native_render::Vec2, 4>{
                               sb::native_render::Vec2{0, 0}, sb::native_render::Vec2{1, 0},
                               sb::native_render::Vec2{0, 1}, sb::native_render::Vec2{1, 1}}));
+    assert(capture.imageCount == 2);
+    assert(capture.image_views().size() == 2);
+    assert(capture.images[0].resource == kBase + 0x4000);
+    assert(capture.images[0].revision != 0);
+    assert(capture.images[0].rgba8.size() == 64U * 32U * 4U);
+    assert((std::array<std::uint8_t, 4>{capture.images[0].rgba8[0], capture.images[0].rgba8[1],
+                                        capture.images[0].rgba8[2], capture.images[0].rgba8[3]} ==
+            std::array<std::uint8_t, 4>{10, 20, 30, 128}));
+
+    const std::uint64_t firstRevision = capture.images[0].revision;
+    memory.u8(texels0 + 1, 11);
+    assert(sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, capture));
+    assert(capture.images[0].revision != firstRevision);
+    assert(capture.images[0].rgba8[0] == 11);
 
     // Known-negative control: an invalid GameCube sampler value must refuse the entire command,
     // proving this parser does not silently turn unread/unsupported state into a plausible draw.
     memory.u8(texture0 + 0x42, 9);
-    assert(!sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, command));
+    assert(!sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, capture));
+    memory.u8(texture0 + 0x42, 1);
+
+    // Indexed known-positive control: the adapter resolves the active palette object and publishes
+    // decoded RGBA rather than deferring a guest pointer to the frame sink.
+    constexpr std::uint32_t indexedTexels = kBase + 0xb000;
+    constexpr std::uint32_t paletteObject = kBase + 0xb100;
+    constexpr std::uint32_t paletteData = kBase + 0xb200;
+    memory.u8(self + 0xfc, 1);
+    write_texture(memory, texture0, kBase + 0x4000, indexedTexels, 8, 8, true, 8);
+    memory.u32(texture0 + 0x2c, paletteObject);
+    memory.u32(paletteObject + 0x10, 0); // IA8
+    memory.u32(paletteObject + 0x14, paletteData);
+    memory.u16(paletteObject + 0x18, 16);
+    memory.u8(indexedTexels, 0xf0);
+    memory.u8(paletteData + 30, 64);
+    memory.u8(paletteData + 31, 32);
+    assert(sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, capture));
+    assert(capture.imageCount == 1);
+    assert((std::array<std::uint8_t, 4>{capture.images[0].rgba8[0], capture.images[0].rgba8[1],
+                                        capture.images[0].rgba8[2], capture.images[0].rgba8[3]} ==
+            std::array<std::uint8_t, 4>{32, 32, 32, 64}));
+
+    memory.u32(paletteObject + 0x14, kBase + 0xbfff);
+    assert(!sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, capture));
 
     // An unmapped matrix must fail too; the retained game body can still run, but no semantic draw
     // is published from incomplete data.
-    assert(!sb::recomp::capture_j2d_picture(memory.reader(), self, kBase + 0x6000, command));
+    assert(!sb::recomp::capture_j2d_picture(memory.reader(), self, kBase + 0xd000, capture));
 }

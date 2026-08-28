@@ -1,4 +1,4 @@
-add_library(sunbright-native-render-core STATIC src/image_decode.cpp src/picture.cpp
+add_library(sunbright-native-render-core STATIC src/image.cpp src/image_decode.cpp src/picture.cpp
                                                  src/picture_sink.cpp)
 target_include_directories(sunbright-native-render-core PUBLIC include)
 

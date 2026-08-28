@@ -1,9 +1,13 @@
 #include "j2d_picture_adapter.h"
 
+#include <sunbright/native_render/image_decode.h>
+
 #include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <utility>
 
 namespace sb::recomp {
 namespace {
@@ -78,8 +82,11 @@ native_render::Color color(std::uint32_t rgba) noexcept {
 
 bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_t textureIndex,
                   std::uint32_t colorBlend, std::uint32_t alphaBlend,
-                  native_render::PictureTexture& texture) noexcept {
+                  native_render::PictureTexture& texture,
+                  std::vector<std::uint8_t>& rgba8) noexcept {
     std::uint32_t resource = 0;
+    std::uint32_t texelAddress = 0;
+    std::uint32_t rawFormat = 0;
     std::uint32_t hasAlpha = 0;
     std::uint16_t width = 0;
     std::uint16_t height = 0;
@@ -88,6 +95,9 @@ bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_
     std::uint8_t min = 0;
     std::uint8_t mag = 0;
     if (textureAddress == 0 || !reader.u32(textureAddress + 0x20, resource) || resource == 0 ||
+        !reader.u32(textureAddress + 0x24, texelAddress) || texelAddress == 0 ||
+        !reader.u32(textureAddress + 0x34, rawFormat) ||
+        rawFormat > std::numeric_limits<std::uint8_t>::max() ||
         !reader.u32(textureAddress + 0x38, hasAlpha) || !reader.u16(textureAddress + 0x3c, width) ||
         !reader.u16(textureAddress + 0x3e, height) || !reader.u8(textureAddress + 0x40, wrapU) ||
         !reader.u8(textureAddress + 0x41, wrapV) || !reader.u8(textureAddress + 0x42, min) ||
@@ -103,24 +113,85 @@ bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_
         !native_render::decode_min_filter(min, texture.minFilter, texture.mipFilter) ||
         !native_render::decode_mag_filter(mag, texture.magFilter))
         return false;
+    // The current semantic GPU resource has one decoded level. Refuse authored mip sampling rather
+    // than silently advertising a chain that was not captured.
+    if (texture.mipFilter != native_render::MipFilter::None)
+        return false;
     if (textureIndex != 0 &&
         (!native_render::decode_blend_factor(colorBlend, textureIndex, texture.colorMix) ||
          !native_render::decode_blend_factor(alphaBlend, textureIndex, texture.alphaMix)))
+        return false;
+
+    native_render::EncodedImageFormat format{};
+    std::size_t sourceBytes = 0;
+    std::size_t outputBytes = 0;
+    if (!native_render::decode_image_format(static_cast<std::uint8_t>(rawFormat), format) ||
+        !native_render::encoded_image_data_size(width, height, format, sourceBytes) ||
+        !native_render::decoded_image_data_size(width, height, outputBytes)) {
+        return false;
+    }
+    std::vector<std::uint8_t> encoded(sourceBytes);
+    if (!reader.bytes(texelAddress, encoded.data(), encoded.size()))
+        return false;
+
+    native_render::PaletteFormat paletteFormat = native_render::PaletteFormat::Rgb5A3;
+    std::uint32_t paletteEntries = 0;
+    std::vector<std::uint8_t> palette;
+    if (format == native_render::EncodedImageFormat::Indexed4 ||
+        format == native_render::EncodedImageFormat::Indexed8 ||
+        format == native_render::EncodedImageFormat::Indexed14) {
+        std::uint32_t paletteObject = 0;
+        std::uint32_t rawPaletteFormat = 0;
+        std::uint32_t paletteAddress = 0;
+        std::uint16_t paletteEntryCount = 0;
+        if (!reader.u32(textureAddress + 0x2c, paletteObject) || paletteObject == 0 ||
+            !reader.u32(paletteObject + 0x10, rawPaletteFormat) ||
+            rawPaletteFormat > std::numeric_limits<std::uint8_t>::max() ||
+            !native_render::decode_palette_format(static_cast<std::uint8_t>(rawPaletteFormat),
+                                                  paletteFormat) ||
+            !reader.u32(paletteObject + 0x14, paletteAddress) || paletteAddress == 0 ||
+            !reader.u16(paletteObject + 0x18, paletteEntryCount) || paletteEntryCount == 0) {
+            return false;
+        }
+        paletteEntries = paletteEntryCount;
+        palette.resize(static_cast<std::size_t>(paletteEntries) * 2U);
+        if (!reader.bytes(paletteAddress, palette.data(), palette.size()))
+            return false;
+    }
+
+    const native_render::EncodedImageView source{format,        width,          height, encoded,
+                                                 paletteFormat, paletteEntries, palette};
+    rgba8.resize(outputBytes);
+    if (native_render::decode_image_rgba8(source, rgba8) != native_render::ImageDecodeError::None) {
+        return false;
+    }
+    if (!native_render::image_content_revision(source, texture.revision))
         return false;
     return true;
 }
 
 } // namespace
 
+void CapturedPicture::refresh_image_views() noexcept {
+    for (std::size_t index = 0; index < imageCount; ++index) {
+        const native_render::PictureTexture& texture = command.material.textures[index];
+        images[index] = {texture.resource, texture.revision, texture.width, texture.height,
+                         rgba8[index]};
+    }
+}
+
+std::span<const native_render::DecodedImageView> CapturedPicture::image_views() const noexcept {
+    return std::span(images).first(imageCount);
+}
+
 bool capture_j2d_picture(const GuestByteReader& byteReader, std::uint32_t self,
-                         std::uint32_t parentMatrix,
-                         native_render::PictureCommand& command) noexcept {
+                         std::uint32_t parentMatrix, CapturedPicture& capture) noexcept {
     if (self == 0 || parentMatrix == 0)
         return false;
     const Reader reader(byteReader);
 
-    native_render::PictureCommand result{};
-    result.instance = self;
+    CapturedPicture result{};
+    result.command.instance = self;
 
     std::int32_t x1 = 0;
     std::int32_t y1 = 0;
@@ -147,29 +218,30 @@ bool capture_j2d_picture(const GuestByteReader& byteReader, std::uint32_t self,
         !reader.u32(self + 0x154, colorBlend) || !reader.u32(self + 0x158, alphaBlend))
         return false;
 
-    result.opacity = static_cast<float>(opacity) / 255.0f;
-    result.material.textureCount = textureCount;
-    result.material.black = color(black);
-    result.material.white = color(white);
-    for (std::size_t index = 0; index < result.corner.size(); ++index) {
+    result.command.opacity = static_cast<float>(opacity) / 255.0f;
+    result.command.material.textureCount = textureCount;
+    result.command.material.black = color(black);
+    result.command.material.white = color(white);
+    for (std::size_t index = 0; index < result.command.corner.size(); ++index) {
         std::uint32_t rgba = 0;
         if (!reader.u32(self + 0x144 + static_cast<std::uint32_t>(index * 4), rgba))
             return false;
-        result.corner[index] = color(rgba);
+        result.command.corner[index] = color(rgba);
     }
     for (std::size_t index = 0; index < textureCount; ++index) {
         std::uint32_t textureAddress = 0;
         if (!reader.u32(self + 0xec + static_cast<std::uint32_t>(index * 4), textureAddress) ||
             !read_texture(reader, textureAddress, index, colorBlend, alphaBlend,
-                          result.material.textures[index]))
+                          result.command.material.textures[index], result.rgba8[index]))
             return false;
     }
+    result.imageCount = textureCount;
 
     native_render::PictureLayout layout{};
     layout.width = x2 - x1;
     layout.height = y2 - y1;
-    layout.textureWidth = result.material.textures[0].width;
-    layout.textureHeight = result.material.textures[0].height;
+    layout.textureWidth = result.command.material.textures[0].width;
+    layout.textureHeight = result.command.material.textures[0].height;
     layout.binding = binding;
     layout.mirror = mirror;
     layout.transpose = transpose != 0;
@@ -177,11 +249,13 @@ bool capture_j2d_picture(const GuestByteReader& byteReader, std::uint32_t self,
     layout.verticalWrap = verticalWrap;
     if (!read_matrix(reader, parentMatrix, layout.parentTransform) ||
         !read_matrix(reader, self + 0x84, layout.globalTransform) ||
-        !native_render::resolve_picture_layout(layout, result.positions, result.uv) ||
-        !native_render::valid(result))
+        !native_render::resolve_picture_layout(layout, result.command.positions,
+                                               result.command.uv) ||
+        !native_render::valid(result.command))
         return false;
 
-    command = result;
+    capture = std::move(result);
+    capture.refresh_image_views();
     return true;
 }
 

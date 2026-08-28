@@ -1,15 +1,34 @@
+#include <sunbright/native_render/image.h>
+#include <sunbright/native_render/image_decode.h>
 #include <sunbright/native_render/picture.h>
 #include <sunbright/native_render/picture_sink.h>
 
 #include <JSystem/J2D/J2DPicture.hpp>
+#include <JSystem/JUtility/JUTPalette.hpp>
 #include <JSystem/JUtility/JUTTexture.hpp>
 #include <dolphin/os.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <span>
+#include <vector>
+
+extern "C" void sb_host_alloc_push(void);
+extern "C" void sb_host_alloc_pop(void);
 
 namespace {
+
+class HostAllocationScope {
+  public:
+    HostAllocationScope() { sb_host_alloc_push(); }
+    ~HostAllocationScope() { sb_host_alloc_pop(); }
+
+    HostAllocationScope(const HostAllocationScope&) = delete;
+    HostAllocationScope& operator=(const HostAllocationScope&) = delete;
+};
 
 sb::native_render::Color color(std::uint32_t rgba) noexcept {
     constexpr float kScale = 1.0f / 255.0f;
@@ -33,6 +52,10 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
         return;
     }
 
+    // This seam runs on the game thread, where ordinary new routes through JKR. Decoding owns host
+    // vectors only for the duration of the atomic sink call, so route those allocations explicitly.
+    const HostAllocationScope hostAllocations;
+
     const auto& picture = *static_cast<const J2DPicture*>(picturePointer);
     const auto& parent = *static_cast<const Mtx*>(matrixPointer);
     if (picture.mTextureNum == 0 || picture.mTextureNum > 4 || picture.mTextures[0] == nullptr) {
@@ -49,9 +72,12 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
     for (std::size_t index = 0; index < command.corner.size(); ++index)
         command.corner[index] = color(static_cast<u32>(picture.mCornerColor[index]));
 
+    std::array<std::vector<std::uint8_t>, 4> decodedPixels{};
+    std::array<sb::native_render::DecodedImageView, 4> images{};
     for (std::size_t index = 0; index < picture.mTextureNum; ++index) {
         const JUTTexture* source = picture.mTextures[index];
-        if (source == nullptr || source->mTexInfo == nullptr) {
+        if (source == nullptr || source->mTexInfo == nullptr || source->mTexData == nullptr ||
+            source->mFormat > std::numeric_limits<std::uint8_t>::max()) {
             fail("missing texture metadata");
             return;
         }
@@ -67,6 +93,10 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
             fail("unsupported sampler state");
             return;
         }
+        if (texture.mipFilter != sb::native_render::MipFilter::None) {
+            fail("mipmapped semantic picture resource is not implemented");
+            return;
+        }
         texture.hasAlpha = source->mAlphaEnabled != 0;
         if (index != 0 &&
             (!sb::native_render::decode_blend_factor(static_cast<u32>(picture.mBlendKonstColor),
@@ -76,6 +106,54 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
             fail("invalid blend-factor layer");
             return;
         }
+
+        sb::native_render::EncodedImageFormat format{};
+        std::size_t sourceBytes = 0;
+        std::size_t outputBytes = 0;
+        if (!sb::native_render::decode_image_format(static_cast<std::uint8_t>(source->mFormat),
+                                                    format) ||
+            !sb::native_render::encoded_image_data_size(source->mWidth, source->mHeight, format,
+                                                        sourceBytes) ||
+            !sb::native_render::decoded_image_data_size(source->mWidth, source->mHeight,
+                                                        outputBytes)) {
+            fail("unsupported texture encoding or extent");
+            return;
+        }
+
+        sb::native_render::PaletteFormat paletteFormat = sb::native_render::PaletteFormat::Rgb5A3;
+        std::uint32_t paletteEntries = 0;
+        std::span<const std::uint8_t> palette{};
+        if (format == sb::native_render::EncodedImageFormat::Indexed4 ||
+            format == sb::native_render::EncodedImageFormat::Indexed8 ||
+            format == sb::native_render::EncodedImageFormat::Indexed14) {
+            const JUTPalette* activePalette = source->field_0x2c;
+            if (activePalette == nullptr || activePalette->getColorTable() == nullptr ||
+                !sb::native_render::decode_palette_format(activePalette->getFormat(),
+                                                          paletteFormat)) {
+                fail("missing or unsupported active palette");
+                return;
+            }
+            paletteEntries = activePalette->getNumColors();
+            palette = {reinterpret_cast<const std::uint8_t*>(activePalette->getColorTable()),
+                       static_cast<std::size_t>(paletteEntries) * 2U};
+        }
+
+        const sb::native_render::EncodedImageView encoded{
+            format,          source->mWidth,
+            source->mHeight, {static_cast<const std::uint8_t*>(source->mTexData), sourceBytes},
+            paletteFormat,   paletteEntries,
+            palette,
+        };
+        decodedPixels[index].resize(outputBytes);
+        const sb::native_render::ImageDecodeError decodeError =
+            sb::native_render::decode_image_rgba8(encoded, decodedPixels[index]);
+        if (decodeError != sb::native_render::ImageDecodeError::None ||
+            !sb::native_render::image_content_revision(encoded, texture.revision)) {
+            fail(sb::native_render::image_decode_error_name(decodeError));
+            return;
+        }
+        images[index] = {texture.resource, texture.revision, texture.width, texture.height,
+                         decodedPixels[index]};
     }
 
     sb::native_render::PictureLayout layout{};
@@ -94,6 +172,6 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
         fail("layout resolution refused the picture");
         return;
     }
-    if (!sb::native_render::submit_picture(command))
+    if (!sb::native_render::submit_picture(command, std::span(images).first(picture.mTextureNum)))
         fail("sink rejected a validated command");
 }

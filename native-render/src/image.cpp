@@ -1,0 +1,16 @@
+#include <sunbright/native_render/image.h>
+
+#include <limits>
+
+namespace sb::native_render {
+
+bool valid(const DecodedImageView& image) noexcept {
+    if (image.resource == 0 || image.width == 0 || image.height == 0)
+        return false;
+    const std::uint64_t pixels = static_cast<std::uint64_t>(image.width) * image.height;
+    if (pixels > std::numeric_limits<std::size_t>::max() / 4U)
+        return false;
+    return image.rgba8.size() == static_cast<std::size_t>(pixels * 4U);
+}
+
+} // namespace sb::native_render

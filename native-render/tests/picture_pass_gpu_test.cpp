@@ -12,10 +12,10 @@
 namespace {
 
 using sb::native_render::Color;
+using sb::native_render::DecodedImageView;
 using sb::native_render::PictureCommand;
 using sb::native_render::PictureFrame;
 using sb::native_render::PictureFramePixels;
-using sb::native_render::PictureImage;
 using sb::native_render::PicturePass;
 using sb::native_render::PictureTexture;
 using sb::native_render::Vec2;
@@ -77,12 +77,12 @@ int main() {
     // unmistakable known-positive; the clip rectangle proves the production scissor conversion.
     std::array<std::uint8_t, 16> rgba{255, 0, 0,   255, 0,   255, 0,   255,
                                       0,   0, 255, 255, 255, 255, 255, 128};
-    PictureImage image{.resource = 9, .width = 2, .height = 2, .rgba8 = rgba};
+    DecodedImageView image{.resource = 9, .width = 2, .height = 2, .rgba8 = rgba};
     PictureCommand picture = command();
     const PictureFrame frame{
         .canvas = {.origin = {0, 0}, .extent = {16, 16}, .targetWidth = 16, .targetHeight = 16},
         .commands = std::span<const PictureCommand>(&picture, 1),
-        .images = std::span<const PictureImage>(&image, 1)};
+        .images = std::span<const DecodedImageView>(&image, 1)};
 
     {
         // The renderer client must release its pipeline/shaders before the host destroys the one

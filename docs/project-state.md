@@ -62,10 +62,19 @@ compatibility texture adapter consumes this same decoder but retains guest addre
 its side of the boundary. C078 records this narrower asset-input result; it is not counted as a
 rendering pass.
 
-Gap: the live runtime does not yet install the sink or publish decoded/versioned resources from its
-JUT objects, and it lacks the enclosing J2D canvas/projection/clip/order context. The pass therefore
-remains an offscreen verified slice rather than visible presentation. Other semantic families (J3D,
-particles, lights, effects) are still missing. Issue 24 owns this work.
+Both runtime adapters now resolve `JUTTexture::mTexData` and the active `JUTPalette` at
+`J2DPicture::drawSelf` entry, decode the exact byte ranges immediately, derive nonzero content
+revisions, and submit the command plus all referenced images as one synchronous operation. The
+recomp adapter control covers direct RGBA8 and C4+IA8 guest layouts, changed-content revisions, and
+short palette refusal. The decomp production-linked control uses real J2DPicture/JUTTexture/
+JUTPalette objects, verifies C4+IA8 and I8 output, stable and changed revisions, span copying during
+the callback, and the required host-allocation gate. C079 records this temporal/lifetime contract.
+
+Gap: the live runtime does not yet install a frame-collecting sink and lacks the enclosing J2D
+canvas/projection/clip/order context. The pass therefore remains an offscreen verified slice rather
+than visible presentation. Authored mip chains are explicitly refused until the semantic image
+contract carries levels. Other semantic families (J3D, particles, lights, effects) are still
+missing. Issue 24 owns this work.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -73,10 +82,15 @@ The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic 
 J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only
 values and the renderer-neutral resolver with recomp; there is no recomp/decomp object interop.
 Established picture fields at `0x104`, `0x114`, and `0x130` are named for blend weights and flip.
+It also publishes decoded/versioned images inside an explicit host-allocation gate; a
+production-linked native-layout control proves the gate is balanced and that the sink copies its
+transient spans before return. The native-only `JUTTexture()` empty state is now fully initialized,
+instead of leaving seventeen fields indeterminate before `storeTIMG`.
 
-Gap: J2D context/resource ownership and live sink/device/presentation integration are missing, so
-decomp output still presents through Aurora GX even though its commands are accepted by the same
-independent SDL3 semantic pass in isolation. The remainder of the semantic renderer is also absent.
+Gap: J2D context/frame ownership and live sink/device/presentation integration are missing, so decomp
+output still presents through Aurora GX even though its commands and image values are accepted by
+the same independent SDL3 semantic pass in isolation. The remainder of the semantic renderer is
+also absent.
 
 ### S006 — Lerp coverage
 

@@ -230,12 +230,12 @@ bool read_guest_bytes(void*, std::uint32_t address, void* destination, std::size
 void submit_semantic_picture(CPUState& cpu) {
     if (!sb::native_render::has_picture_sink())
         return;
-    sb::native_render::PictureCommand command{};
+    sb::recomp::CapturedPicture capture{};
     const sb::recomp::GuestByteReader reader{.read = read_guest_bytes};
-    SB_ASSERT(sb::recomp::capture_j2d_picture(reader, cpu.gpr[3], cpu.gpr[6], command),
+    SB_ASSERT(sb::recomp::capture_j2d_picture(reader, cpu.gpr[3], cpu.gpr[6], capture),
               "semantic J2DPicture capture failed: self=%08x parent_matrix=%08x", cpu.gpr[3],
               cpu.gpr[6]);
-    SB_ASSERT(sb::native_render::submit_picture(command),
+    SB_ASSERT(sb::native_render::submit_picture(capture.command, capture.image_views()),
               "semantic J2DPicture sink rejected a validated command: self=%08x", cpu.gpr[3]);
 }
 

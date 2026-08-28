@@ -544,7 +544,7 @@ bool image_content_revision(const EncodedImageView& source, std::uint64_t& revis
         for (std::uint8_t byte : source.palette.first(paletteBytes))
             hash_byte(hash, byte);
     }
-    revision = hash;
+    revision = hash == 0 ? 1 : hash;
     return true;
 }
 

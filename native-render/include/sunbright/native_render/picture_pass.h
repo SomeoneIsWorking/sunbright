@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sunbright/native_render/image.h>
 #include <sunbright/native_render/picture.h>
 
 #include <SDL3/SDL_gpu.h>
@@ -11,18 +12,10 @@
 
 namespace sb::native_render {
 
-struct PictureImage {
-    std::uint64_t resource = 0;
-    std::uint64_t revision = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::span<const std::uint8_t> rgba8{};
-};
-
 struct PictureFrame {
     Canvas canvas{};
     std::span<const PictureCommand> commands{};
-    std::span<const PictureImage> images{};
+    std::span<const DecodedImageView> images{};
     Color clear{};
 };
 

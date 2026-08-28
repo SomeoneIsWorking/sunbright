@@ -64,15 +64,25 @@ content. The recomp GX compatibility path reuses this implementation through a g
 that reuse does not move FIFO/GX ownership into `native-render/` or count as semantic rendering.
 C078 records the CPU controls and its falsifier.
 
-This is a rendered offscreen semantic slice, not live game presentation. Runtime producers do not
-yet own decoded/versioned RGBA payloads or install a frame sink. They also deliberately carry
-`clip.enabled=false`: clip enable, logical canvas/projection, and ordering belong to an enclosing J2D
-traversal context and cannot be inferred from this function's stale pane scissor fields.
+The two game-layout adapters now complete the resource handoff at the high-level draw entry. Recomp
+copies exact big-endian guest texel/palette ranges through `GuestByteReader`; decomp reads native JUT
+fields while a balanced host-allocation gate owns its temporary vectors. Both decode and hash before
+the retained GX body runs, then atomically submit the command with one matching image per texture
+layer. A sink cannot accept a command with absent, short, or mismatched image content. Production
+controls cover recomp RGBA8 and C4+IA8 layouts plus changed revisions/short-palette refusal, and real
+decomp J2DPicture/JUTTexture/JUTPalette objects with C4+IA8/I8 pixels, stable/changed revisions,
+transient-span copying, and allocation-gate depth. C079 records the temporal contract.
 
-Next: publish decoded/versioned RGBA resources atomically with each semantic command, establish the
-J2D context stack, and extract one shared SDL3 device/presenter owner for separate GX-compatibility
-and semantic targets. Then install the live sink and render captured J2D pictures visibly while
-retaining the original bodies for A/B.
+This is a rendered offscreen semantic slice, not live game presentation. Runtime producers now own
+decoded/versioned RGBA for the duration of an atomic submission, but no frame sink is installed.
+They also deliberately carry `clip.enabled=false`: clip enable, logical canvas/projection, and
+ordering belong to an enclosing J2D traversal context and cannot be inferred from this function's
+stale pane scissor fields. Mipmapped resources are refused rather than silently represented as a
+single level.
+
+Next: establish the J2D context stack and bounded frame collector, then extract one shared SDL3
+device/presenter owner for separate GX-compatibility and semantic targets. Install the live sink and
+render captured J2D pictures visibly while retaining the original bodies for A/B.
 
 ## Exit condition
 
@@ -80,3 +90,6 @@ The project goal, doctrine, UI vocabulary, codemap, and first implementation sea
 
 ### Note (2026-08-28)
 Added the shared renderer-neutral texture asset decoder: all eleven tiled encodings, three palette encodings, exact range/index checks, hardware component expansion and CMPR interpolation, mip sizing, and content revisions. The GX compatibility adapter now reuses it while retaining guest/GX ownership. This enables semantic resource publication but does not count as a live PC-native render pass (C078).
+
+### Note (2026-08-28)
+Both J2DPicture adapters now decode exact JUT texel/palette bytes and atomically submit matching versioned RGBA images with each semantic command before the retained GX body. Recomp and production-linked decomp controls cover exact pixels, changed revisions, refusal paths, transient lifetime, and the decomp host-allocation gate (C079).

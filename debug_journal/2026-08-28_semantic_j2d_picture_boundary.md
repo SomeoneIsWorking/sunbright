@@ -26,12 +26,14 @@ context. `mScissorBounds` may be stale when clipping is disabled, so the command
 clipping disabled rather than manufacturing a plausible rectangle. Those values must come from an
 enclosing J2D traversal/context seam.
 
-Texture identity and sampler state are captured, but decoded immutable/versioned RGBA content is not
-yet owned by the live semantic resource layer. The independent SDL3 `PicturePass` accepts such
-decoded content and rendered a watched 16x16 control: known texture quadrants, clipping, half-alpha,
-repeat determinism, and changed revision/content all produced the required answers without a kernel
-GPU fault. The game adapters are not connected to that pass yet, so this milestone proves the shared
-above-GX producer boundary and an offscreen semantic consumer, not a visible PC-native game frame.
+Texture identity, sampler state, and decoded/versioned RGBA content are now captured together at
+draw entry. The sink receives the command and every matching image as one synchronous operation, so
+it must copy the transient views before return and cannot defer a guest-pointer read until frame end.
+Both runtimes decode before their retained GX body runs. The independent SDL3 `PicturePass` rendered
+a watched 16x16 control: known texture quadrants, clipping, half-alpha, repeat determinism, and
+changed revision/content all produced the required answers without a kernel GPU fault. No live frame
+collector is installed yet, so this still proves an above-GX producer boundary and offscreen
+semantic consumer, not visible PC-native game presentation.
 
 ## Asset decoding is not the renderer boundary
 
@@ -47,3 +49,11 @@ retaining the midpoint RGB for its alpha-zero selector. Focused controls cover a
 encodings, all three palette encodings, tiling and mip sizes, exact bounds, invalid indices, both
 CMPR branches, and source/palette changes that must alter the content revision. This is enabling
 resource work, not a claim that the game is visibly rendering through the PC-native path.
+
+The decomp adapter's temporary decoded buffers require special ownership because it runs on the game
+thread, where ordinary C++ allocation routes to JKR. Its entire decode-and-submit lifetime is now
+inside `sb_host_alloc_push/pop`. A production-linked test constructs real native J2DPicture,
+JUTTexture, and JUTPalette objects, verifies the allocation depth in the sink callback, copies the
+transient spans, and checks exact C4+IA8 and I8 output. That test also exposed the native default
+`JUTTexture()` constructor leaving seventeen fields indeterminate; the native-only empty state now
+initializes them, while the non-native decomp constructor remains unchanged.

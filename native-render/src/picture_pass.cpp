@@ -58,7 +58,7 @@ struct ImageKeyHash {
 };
 
 struct GpuImage {
-    PictureImage source{};
+    DecodedImageView source{};
     std::size_t uploadOffset = 0;
     SDL_GPUTexture* texture = nullptr;
 };
@@ -245,8 +245,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         }
     }
 
-    std::unordered_map<ImageKey, const PictureImage*, ImageKeyHash> sourceImages;
-    for (const PictureImage& image : frame.images) {
+    std::unordered_map<ImageKey, const DecodedImageView*, ImageKeyHash> sourceImages;
+    for (const DecodedImageView& image : frame.images) {
         std::size_t bytes = 0;
         if (image.resource == 0 || !multiplication_fits(image.width, image.height, bytes) ||
             image.rgba8.size() != bytes ||
@@ -284,7 +284,7 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
 
     std::size_t imageUploadBytes = 0;
     std::unordered_map<ImageKey, std::size_t, ImageKeyHash> imageOffsets;
-    for (const PictureImage& image : frame.images) {
+    for (const DecodedImageView& image : frame.images) {
         imageUploadBytes = aligned(imageUploadBytes, 512);
         imageOffsets.emplace(ImageKey{image.resource, image.revision}, imageUploadBytes);
         imageUploadBytes += image.rgba8.size();
@@ -340,7 +340,7 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         target != nullptr && download != nullptr &&
         (vertexBytes == 0 || (vertexBuffer != nullptr && vertexUpload != nullptr)) &&
         (imageUploadBytes == 0 || imageUpload != nullptr);
-    for (const PictureImage& image : frame.images) {
+    for (const DecodedImageView& image : frame.images) {
         SDL_GPUTextureCreateInfo info{};
         info.type = SDL_GPU_TEXTURETYPE_2D;
         info.format = kColorFormat;

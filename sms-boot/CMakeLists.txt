@@ -270,7 +270,7 @@ file(GLOB SMS_RUNTIME_TESTS CONFIGURE_DEPENDS
 # hx_wipe.cpp + aurora::mtx. They get dedicated targets further down, gated on
 # aurora_core like sms-boot itself.
 list(FILTER SMS_RUNTIME_TESTS EXCLUDE REGEX
-     "/sms-boot/runtime/tests/(jaudio_release_test|gx_yscale_test|mapobjtree_initeach_test|bathtub_tumble_test)\\.cpp$")
+     "/sms-boot/runtime/tests/(jaudio_release_test|gx_yscale_test|mapobjtree_initeach_test|bathtub_tumble_test|native_picture_adapter_test)\\.cpp$")
 foreach(_test ${SMS_RUNTIME_TESTS})
     get_filename_component(_name "${_test}" NAME_WE)
     add_executable(platform-${_name} "${_test}"
@@ -368,6 +368,36 @@ if(TARGET aurora_core)
         aurora::ms
         sunbright-native-render-core
         Threads::Threads)
+
+    # Production-linked semantic J2D resource test. It uses the real native-layout adapter and
+    # actual J2DPicture/JUTTexture/JUTPalette lifetimes while keeping the link narrow enough to use
+    # a counting host-allocation gate instead of the full game's global-new routing.
+    add_executable(platform-native_picture_adapter_test
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/native_picture_adapter_test.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DPane.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DPicture.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/JSupport/JSUList.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/JUtility/JUTRect.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/JUtility/JUTTexture.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/JUtility/JUTPalette.cpp")
+    add_dependencies(platform-native_picture_adapter_test sms-native-sjis)
+    set_target_properties(platform-native_picture_adapter_test PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(platform-native_picture_adapter_test PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims"
+        "${SMS_INCLUDE_STAGED}")
+    target_compile_definitions(platform-native_picture_adapter_test PRIVATE
+        TARGET_PC=1 SMS_NATIVE_PLATFORM=1 SMS_AURORA=1)
+    target_compile_options(platform-native_picture_adapter_test PRIVATE
+        "SHELL:-include ${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
+        -w -fcommon -ffunction-sections -fdata-sections)
+    target_link_options(platform-native_picture_adapter_test PRIVATE -Wl,--gc-sections)
+    target_link_libraries(platform-native_picture_adapter_test PRIVATE
+        sunbright-native-render-core aurora::gx aurora::mtx aurora::vi)
+    add_test(NAME platform_native_picture_adapter_test COMMAND platform-native_picture_adapter_test)
 
     # -----------------------------------------------------------------------
     # jaudio_release_test — links the REAL JAIBasic/JAISound code (same
