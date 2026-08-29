@@ -8,16 +8,17 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp renders through a PC-native game-semantic renderer above GX | partial | S001 | G003 |
-| S005 | The decomp renders through the shared PC-native game-semantic renderer above GX | partial | S002, S004 | G004 |
+| S004 | The recomp feeds real game-frame J2D pictures to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S005 | The native decomp feeds real game-frame J2D pictures to the same shared PC-native semantic renderer above GX | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
 
 ## Current focus
 
 S004 is the current focus. The path previously counted toward it is now classified separately as
-compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. Issue 24
-owns the semantic boundary.
+compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. The current
+atomic gap is the missing unified text/window/fill ordering required before semantic output can own
+visible presentation.
 
 ## Capability details
 
@@ -84,23 +85,26 @@ They copy the supplied ortho graph's logical rectangle and viewport (or the exac
 640x480 default), carry `mbClipToParent`, and attach the leaf pane's final hierarchy `mClipRect`.
 The GPU control includes a nonzero sub-viewport known-different answer.
 
-The shared core now also owns the one process-level semantic frame bridge and SDL GPU platform. The
-bridge claims the guarded picture sink by lease, begins and seals the bounded collector at the exact
-runtime frame boundaries, and remains inert until host composition explicitly activates it. In the
-recomp, seal occurs after retained wait/scheduler work and immediately before `gxfifo_build()`;
-begin occurs after the optional subframe presentations. The shared platform owns the SDL GPU device,
-window claim, presenter, and target-lifetime refusal. `PicturePass` borrows a caller-owned command
-buffer and target, then commits or rolls back its resource transaction only after the caller reports
-submission. The GX compatibility client now uses this same platform and a separate target, removing
-the former second device/presenter implementation. CPU lifecycle controls, the watched sRGB picture
-GPU control, and a 130-present GX/Aurora run all pass without a GPU fault. C081 records the exact
-dormant bridge contract and C082 records the shared GPU/submission ownership contract.
+The shared core also owns the one process-level semantic frame bridge, one SDL GPU platform, and the
+offscreen semantic-frame client. The bridge claims the guarded picture sink by lease and brackets
+the bounded collector at the exact runtime frame boundaries. `SdlSemanticFrameClient` consumes each
+sealed sequence once, owns a 640x480 no-depth target and `PicturePass`, submits with a fence, and
+reads back until it observes pixels different from its controlled black clear. Device-only platform
+initialization creates no SDL window claim; the optional presenter remains the sole window owner for
+GX compatibility. `PicturePass` commits or rolls back its image-cache transaction only after the
+caller reports submission.
 
-Gap: neither host composition activates the bridge or encodes/presents its sealed semantic frame,
-so this remains an offscreen verified slice rather than visible semantic presentation. Direct
-`J2DPicture::draw` callers bypass the screen scope, and interleaving with text/windows/fills/3D
-requires a unified semantic order stream before GX can be bypassed. Authored mip chains and other
-semantic families (J3D, particles, lights, effects) are still missing. Issue 24 owns this work.
+With `SB_SEMANTIC_PICTURE_AUDIT=1`, recomp host composition now activates that client while Aurora
+continues to present the visible GX frame. A guarded 100-present title run completed all 50 semantic
+simulation frames, carrying 1,302 picture draws and images; frame 9 produced 14,181 pixels distinct
+from clear. The production GPU control independently proves an empty semantic frame stays exactly
+clear, a planted picture produces a different non-clear hash, and a duplicate sequence is refused.
+
+Gap: this remains offscreen liveness and ownership evidence, not visual-correctness, completeness,
+cross-runtime-parity, or visible-presentation evidence. Direct `J2DPicture::draw` callers bypass the
+screen scope. Text, windows, fills, 3D, authored mip chains, J3D, particles, lights, and effects are
+not in one semantic order stream, so a picture-only result must not be overlaid or presented as the
+game frame.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -113,13 +117,16 @@ production-linked native-layout control proves the gate is balanced and that the
 transient spans before return. The native-only `JUTTexture()` empty state is now fully initialized,
 instead of leaving seventeen fields indeterminate before `storeTIMG`.
 
-The decomp now scopes each retained `J2DScreen::draw`, copies the real J2DOrthoGraph values without
-retaining its stack pointer, and publishes the final logical pane clip at picture entry. Gap: live
-frame boundaries now call the same inert semantic bridge: begin at `sb_frame_seam_start`, seal at
-`sb_frame_present` while the host-allocation gate is active, and begin the next frame after Aurora.
-No decomp host composition activates or consumes the bridge, and non-picture semantic ordering
-remains missing, so decomp output still presents through Aurora GX even though its values are
-accepted by the same bounded collector and independent SDL3 semantic pass in isolation.
+The decomp scopes each retained `J2DScreen::draw`, copies the real J2DOrthoGraph values without
+retaining its stack pointer, and publishes the final logical pane clip at picture entry. Its host
+composition activates the same offscreen client. Frame begin, seal, consume, and next begin remain
+inside the host-allocation boundary where required, and semantic GPU teardown completes before
+Aurora teardown. A guarded 400-present title run completed all 400 semantic frames; 297 carried
+draws, totaling 9,207 pictures and images, and semantic frame 104 produced 158,038 pixels distinct
+from clear. Aurora remains the visible GX renderer.
+
+Gap: the same missing unified ordering and semantic families described above prevent visible decomp
+semantic presentation.
 
 ### S006 — Lerp coverage
 

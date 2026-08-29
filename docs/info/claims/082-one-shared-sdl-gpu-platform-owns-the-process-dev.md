@@ -4,12 +4,14 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: renderer,gpu,architecture
-depends: native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::initialize, native-render/src/sdl_gpu_frame_target.cpp#SdlGpuFrameTarget::shutdown, native-render/src/picture_pass.cpp#PicturePass::encode, native-render/src/picture_pass.cpp#PicturePass::complete_encode, sms-recomp/runtime/render/native_render.cpp#sbr_render_init
+depends: native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::initialize_device, native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::attach_presenter, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::shutdown, sms-recomp/host/render_composition.cpp#RenderComposition::initialize, sms-boot/runtime/semantic_render.cpp#sb_semantic_render_initialize
+reconfirmed: 2026-08-30
+verified_at: 2026-08-30 02:49:26
 ---
 
 ## Claim
 
-One shared SDL GPU platform owns the process device, window claim, presenter, and independent client targets; PicturePass publishes image-cache state only after the caller confirms submission.
+One shared SDL GPU platform owns the process SDL device, optional sole window claim/presenter, and independent client targets; PicturePass publishes image-cache state only after the caller confirms submission.
 
 ## Evidence
 
@@ -18,3 +20,7 @@ The SDL platform CPU control proves copied call-table lifetime, host-owned SDL-v
 ## What would falsify it
 
 A second device/window claim is created by a renderer client, platform shutdown succeeds while a live target references its device, a canceled/failed PicturePass encode enters the resident cache, an old revision remains resident after a submitted replacement frame, or the guarded GPU controls fault.
+
+## Re-confirmed 2026-08-30
+
+Device-only CPU controls prove one process SDL device can exist without a window claim and can attach the optional sole presenter later. The watched GPU client control proves fenced submit, exactly-clear empty output, a nonclear planted picture, duplicate-consume refusal, and reverse teardown. Both runtime audit runs completed without a kernel GPU fault.

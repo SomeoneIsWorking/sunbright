@@ -1,5 +1,7 @@
 #include <sunbright/native_render/picture_pass.h>
+#include <sunbright/native_render/picture_sink.h>
 #include <sunbright/native_render/sdl_gpu_frame_target.h>
+#include <sunbright/native_render/sdl_semantic_frame_client.h>
 
 #include <SDL3/SDL.h>
 
@@ -236,6 +238,54 @@ int main() {
 
     target.shutdown();
     assert(platform.shutdown(platformError));
+
+    // Exercise the production live-client path, including the exact bridge lease, offscreen
+    // device-only platform, fenced submission, readback, and duplicate-consume refusal. The empty
+    // frame is the required negative control; the known picture must produce the other answer.
+    auto& sharedPlatform = sb::native_render::sdl_gpu_platform();
+    auto& bridge = sb::native_render::semantic_frame_bridge();
+    auto& client = sb::native_render::sdl_semantic_frame_client();
+    assert(sb::native_render::parse_semantic_picture_audit(nullptr) ==
+           sb::native_render::SemanticPictureAuditSetting::Disabled);
+    assert(sb::native_render::parse_semantic_picture_audit("0") ==
+           sb::native_render::SemanticPictureAuditSetting::Disabled);
+    assert(sb::native_render::parse_semantic_picture_audit("1") ==
+           sb::native_render::SemanticPictureAuditSetting::Enabled);
+    assert(sb::native_render::parse_semantic_picture_audit("") ==
+           sb::native_render::SemanticPictureAuditSetting::Invalid);
+    assert(sb::native_render::parse_semantic_picture_audit("yes") ==
+           sb::native_render::SemanticPictureAuditSetting::Invalid);
+    assert(sharedPlatform.initialize_device({}, platformError));
+    assert(!sharedPlatform.presenter_ready());
+    assert(client.initialize(sharedPlatform, bridge,
+                             {.width = 16,
+                              .height = 16,
+                              .readback = sb::native_render::SemanticReadbackMode::EveryFrame},
+                             platformError));
+    assert(bridge.begin());
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    const std::uint64_t clearHash = client.stats().lastSampleHash;
+    assert(client.stats().sampledFrames == 1);
+    assert(client.stats().lastSampleNonClearPixels == 0);
+    assert(!client.validate_audit(platformError));
+    assert(platformError.find("never observed picture pixels") != std::string::npos);
+
+    assert(bridge.begin());
+    assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    assert(client.stats().submittedFrames == 2 && client.stats().completedFrames == 2);
+    assert(client.stats().nonEmptyFrames == 1 && client.stats().submittedDraws == 1);
+    assert(client.stats().lastSampleNonClearPixels != 0);
+    assert(client.stats().lastSampleHash != clearHash);
+    assert(client.validate_audit(platformError));
+    assert(!client.encode_last_sealed(platformError));
+    assert(platformError.find("already consumed") != std::string::npos);
+
+    assert(client.shutdown(platformError));
+    assert(!bridge.active() && !client.ready());
+    assert(sharedPlatform.shutdown(platformError));
     SDL_DestroyWindow(window);
     SDL_Quit();
 }

@@ -37,6 +37,12 @@ enum class Event : std::uint8_t {
     EndRenderPass,
     Blit,
     ReleaseWindow,
+    AcquireCommandBuffer,
+    SubmitCommandBuffer,
+    CancelCommandBuffer,
+    WaitIdle,
+    QueryFence,
+    ReleaseFence,
     DestroyDevice,
 };
 
@@ -67,6 +73,7 @@ struct FakeSdl {
     SDL_GPUTexture* swapchain = reinterpret_cast<SDL_GPUTexture*>(0x300);
     SDL_GPURenderPass* renderPass = reinterpret_cast<SDL_GPURenderPass*>(0x400);
     SDL_GPUCommandBuffer* commandBuffer = reinterpret_cast<SDL_GPUCommandBuffer*>(0x500);
+    SDL_GPUFence* fence = reinterpret_cast<SDL_GPUFence*>(0x600);
     std::vector<Event> events{};
     std::vector<SDL_GPUDevice*> textureDevices{};
     std::vector<SDL_GPUTextureCreateInfo> textureInfos{};
@@ -96,6 +103,13 @@ struct FakeSdl {
             .blitTexture = &fake_blit,
             .createTexture = &fake_create_texture,
             .releaseTexture = &fake_release_texture,
+            .acquireCommandBuffer = &fake_acquire_command_buffer,
+            .submitCommandBuffer = &fake_submit_command_buffer,
+            .submitAndAcquireFence = &fake_submit_and_acquire_fence,
+            .cancelCommandBuffer = &fake_cancel_command_buffer,
+            .queryFence = &fake_query_fence,
+            .releaseFence = &fake_release_fence,
+            .waitForIdle = &fake_wait_idle,
             .getError = &fake_get_error,
         };
     }
@@ -211,6 +225,48 @@ struct FakeSdl {
         active->events.push_back(Event::ReleaseTexture);
     }
 
+    static SDL_GPUCommandBuffer* SDLCALL fake_acquire_command_buffer(SDL_GPUDevice* device) {
+        require(device == active->device);
+        active->events.push_back(Event::AcquireCommandBuffer);
+        return active->commandBuffer;
+    }
+
+    static bool SDLCALL fake_submit_command_buffer(SDL_GPUCommandBuffer* commandBuffer) {
+        require(commandBuffer == active->commandBuffer);
+        active->events.push_back(Event::SubmitCommandBuffer);
+        return true;
+    }
+
+    static SDL_GPUFence* SDLCALL
+    fake_submit_and_acquire_fence(SDL_GPUCommandBuffer* commandBuffer) {
+        require(commandBuffer == active->commandBuffer);
+        active->events.push_back(Event::SubmitCommandBuffer);
+        return active->fence;
+    }
+
+    static bool SDLCALL fake_cancel_command_buffer(SDL_GPUCommandBuffer* commandBuffer) {
+        require(commandBuffer == active->commandBuffer);
+        active->events.push_back(Event::CancelCommandBuffer);
+        return true;
+    }
+
+    static bool SDLCALL fake_query_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) {
+        require(device == active->device && fence == active->fence);
+        active->events.push_back(Event::QueryFence);
+        return true;
+    }
+
+    static void SDLCALL fake_release_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) {
+        require(device == active->device && fence == active->fence);
+        active->events.push_back(Event::ReleaseFence);
+    }
+
+    static bool SDLCALL fake_wait_idle(SDL_GPUDevice* device) {
+        require(device == active->device);
+        active->events.push_back(Event::WaitIdle);
+        return true;
+    }
+
     static const char* SDLCALL fake_get_error() { return "planted SDL failure"; }
 };
 
@@ -229,7 +285,7 @@ void platform_and_two_clients_share_one_owner() {
     SdlGpuPlatformConfig config{.debugMode = false, .driverName = "planted-driver"};
     require(platform.initialize(fake.window, config, error));
     require(error.empty());
-    require(platform.ready() && platform.device() == fake.device &&
+    require(platform.ready() && platform.presenter_ready() && platform.device() == fake.device &&
             platform.window() == fake.window);
     require(fake.createdShaderFormats == SDL_GPU_SHADERFORMAT_SPIRV);
     require(!fake.createdDebugMode && fake.createdDriver == "planted-driver");
@@ -280,6 +336,33 @@ void platform_and_two_clients_share_one_owner() {
     require(lastTextureRelease < event_index(fake.events, Event::ReleaseWindow));
     require(event_index(fake.events, Event::ReleaseWindow) <
             event_index(fake.events, Event::DestroyDevice));
+}
+
+void device_only_platform_does_not_claim_presentation() {
+    FakeSdl fake;
+    std::string error;
+    SdlGpuPlatform platform(fake.calls());
+    require(platform.initialize_device({}, error));
+    require(platform.ready() && !platform.presenter_ready());
+    require(platform.window() == nullptr);
+    require(std::count(fake.events.begin(), fake.events.end(), Event::CreateDevice) == 1);
+    require(std::count(fake.events.begin(), fake.events.end(), Event::ClaimWindow) == 0);
+
+    SdlGpuFrameTarget target;
+    require(target.initialize(platform, {.width = 64, .height = 64, .hasDepth = false}, error));
+    require(platform.encode_present(fake.commandBuffer, target.color(), 64, 64, error) ==
+            PresentResult::Failed);
+    require(error.find("not ready to present") != std::string::npos);
+    require(platform.acquire_command_buffer(error) == fake.commandBuffer);
+    require(platform.cancel_command_buffer(fake.commandBuffer, error));
+    require(platform.wait_idle(error));
+
+    require(platform.attach_presenter(fake.window, {}, error));
+    require(platform.presenter_ready());
+    require(std::count(fake.events.begin(), fake.events.end(), Event::ClaimWindow) == 1);
+    target.shutdown();
+    require(platform.shutdown(error));
+    require(std::count(fake.events.begin(), fake.events.end(), Event::ReleaseWindow) == 1);
 }
 
 void initialization_failures_unwind_exact_ownership() {
@@ -375,11 +458,27 @@ void controls_reject_an_incomplete_call_table() {
     SdlGpuCalls calls = fake.calls();
     require(sb::native_render::valid(calls));
     calls.createGpuDevice = nullptr;
+    require(!sb::native_render::valid_device_calls(calls));
     require(!sb::native_render::valid(calls));
     SdlGpuPlatform platform(calls);
     std::string error;
     require(!platform.initialize(fake.window, {}, error));
     require(fake.events.empty());
+}
+
+void device_only_validation_does_not_require_presenter_calls() {
+    FakeSdl fake;
+    SdlGpuCalls calls = fake.calls();
+    calls.claimWindow = nullptr;
+    calls.blitTexture = nullptr;
+    require(sb::native_render::valid_device_calls(calls));
+    require(!sb::native_render::valid_presenter_calls(calls));
+    SdlGpuPlatform platform(calls);
+    std::string error;
+    require(platform.initialize_device({}, error));
+    require(!platform.attach_presenter(fake.window, {}, error));
+    require(error.find("presenter call table") != std::string::npos);
+    require(platform.shutdown(error));
 }
 
 void viewport_policy_controls() {
@@ -395,10 +494,12 @@ void viewport_policy_controls() {
 
 int main() {
     viewport_policy_controls();
+    device_only_validation_does_not_require_presenter_calls();
     controls_reject_an_incomplete_call_table();
     initialization_failures_unwind_exact_ownership();
     frame_target_failure_releases_partial_allocation();
     presenter_reports_unavailable_and_failed_states();
+    device_only_platform_does_not_claim_presentation();
     platform_and_two_clients_share_one_owner();
     return 0;
 }

@@ -19,6 +19,8 @@
 
 #include <System/Application.hpp>
 
+#include "runtime/semantic_render.h"
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -26,40 +28,67 @@ extern TApplication gpApplication;
 
 // FIFO parity harness (SB_FIFO_REPLAY=<path.dff>): replay a captured Dolphin GX
 // FIFO through aurora and dump the frame(s), instead of booting the game.
-extern "C" int sb_fifo_replay_run(const char* dffPath);  // runtime/fifo_player.cpp
+extern "C" int sb_fifo_replay_run(const char* dffPath); // runtime/fifo_player.cpp
 
 // JKRHeap host-vs-JKR routing (decomp/sms/src/JSystem/JKernel/JKRHeap.cpp):
 // plain `new` on a thread not marked as THE game thread falls back to host
 // malloc. The main thread is marked just before game code starts; host-side
 // work inside the frame/DVD seams runs under sb_host_alloc_push/pop.
 extern "C" void sb_mark_game_thread(void);
+extern "C" void sb_host_alloc_push(void);
+extern "C" void sb_host_alloc_pop(void);
 extern "C" void sb_watchdog_install(void);
+extern "C" void sb_frame_seam_configure(void);
 extern "C" void sb_frame_seam_start(void);
-extern "C" void sb_pad_script_install(void);  // headless scripted input (SB_PAD_SCRIPT)
+extern "C" void sb_pad_script_install(void); // headless scripted input (SB_PAD_SCRIPT)
 
-static void log_callback(AuroraLogLevel level, const char* module,
-                         const char* message, unsigned int) {
-    const char* tag = "?";
+static void log_callback(AuroraLogLevel level, const char* module, const char* message,
+                         unsigned int) {
+    const char* tag;
     FILE* out = stdout;
     switch (level) {
-        case LOG_DEBUG:   tag = "DEBUG";   break;
-        case LOG_INFO:    tag = "INFO";    break;
-        case LOG_WARNING: tag = "WARN";    break;
-        case LOG_ERROR:   tag = "ERROR";   out = stderr; break;
-        case LOG_FATAL:   tag = "FATAL";   out = stderr; break;
+    case LOG_DEBUG:
+        tag = "DEBUG";
+        break;
+    case LOG_INFO:
+        tag = "INFO";
+        break;
+    case LOG_WARNING:
+        tag = "WARN";
+        break;
+    case LOG_ERROR:
+        tag = "ERROR";
+        out = stderr;
+        break;
+    case LOG_FATAL:
+        tag = "FATAL";
+        out = stderr;
+        break;
+    default:
+        tag = "?";
+        break;
     }
     std::fprintf(out, "[aurora %s %s] %s\n", tag, module, message);
-    if (level == LOG_FATAL) { std::fflush(out); std::abort(); }
+    if (level == LOG_FATAL) {
+        std::fflush(out);
+        std::abort();
+    }
 }
 
 int main(int argc, char* argv[]) {
+    if (!sb_semantic_render_configure()) {
+        std::fprintf(stderr, "[sms-boot] semantic renderer configuration failed: %s\n",
+                     sb_semantic_render_last_error());
+        return 1;
+    }
+    sb_frame_seam_configure();
     AuroraConfig config = {};
-    config.appName        = "Sunbright";
+    config.appName = "Sunbright";
     config.desiredBackend = BACKEND_VULKAN;
-    config.logCallback    = &log_callback;
-    config.logLevel       = LOG_INFO;
-    config.msaa           = 1;
-    config.vsync          = true;
+    config.logCallback = &log_callback;
+    config.logLevel = LOG_INFO;
+    config.msaa = 1;
+    config.vsync = true;
     // Default window size — small enough that first-frame render / swapchain
     // acquire doesn't cost a minute at the default 3200x1975 the aurora hi-DPI
     // fallback picks. Env SB_W / SB_H override. GC native is 640x480; give it
@@ -67,19 +96,19 @@ int main(int argc, char* argv[]) {
     {
         const char* ew = std::getenv("SB_W");
         const char* eh = std::getenv("SB_H");
-        config.windowWidth  = ew ? (uint32_t)std::strtoul(ew, nullptr, 0) : 1280u;
+        config.windowWidth = ew ? (uint32_t)std::strtoul(ew, nullptr, 0) : 1280u;
         config.windowHeight = eh ? (uint32_t)std::strtoul(eh, nullptr, 0) : 960u;
     }
     // Boost MEM1 well past the GC's 24 MB. On PC there's no reason to
     // pretend we're memory-constrained; the game fills the JKRSolidHeap
     // that ate ~14 MB in scene setup (mesh + shape packets + matrices)
     // and OOMs on the FIRST J3D shape draw with only 24 MB.
-    config.mem1Size       = 256 * 1024 * 1024;
-    config.mem2Size       = 64 * 1024 * 1024;
+    config.mem1Size = 256 * 1024 * 1024;
+    config.mem2Size = 64 * 1024 * 1024;
 
     AuroraInfo info = aurora_initialize(argc, argv, &config);
-    std::fprintf(stdout, "[sms-boot] aurora up: backend=%d fb=%ux%u\n",
-                 (int)info.backend, info.windowSize.fb_width, info.windowSize.fb_height);
+    std::fprintf(stdout, "[sms-boot] aurora up: backend=%d fb=%ux%u\n", (int)info.backend,
+                 info.windowSize.fb_width, info.windowSize.fb_height);
     std::fflush(stdout);
 
     OSInit();
@@ -100,13 +129,22 @@ int main(int argc, char* argv[]) {
     }
 
     const char* rom = std::getenv("SUNBRIGHT_ROM");
-    if (!rom || !*rom) rom = "rom.rvz";
+    if (!rom || !*rom)
+        rom = "rom.rvz";
     if (!aurora_dvd_open(rom)) {
         std::fprintf(stderr, "[sms-boot] aurora_dvd_open failed for %s\n", rom);
+        aurora_shutdown();
         return 1;
     }
     std::fprintf(stdout, "[sms-boot] DVD mounted: %s\n", rom);
     std::fflush(stdout);
+
+    if (!sb_semantic_render_initialize()) {
+        std::fprintf(stderr, "[sms-boot] semantic renderer initialization failed: %s\n",
+                     sb_semantic_render_last_error());
+        aurora_shutdown();
+        return 1;
+    }
 
     // Keyboard drives pad 0 unless a physical gamepad takes over.
     PADSetKeyboardActive(0, TRUE);
@@ -124,6 +162,14 @@ int main(int argc, char* argv[]) {
     gpApplication.proc();
     gpApplication.finalize();
 
+    sb_host_alloc_push();
+    const bool semanticShutdown = sb_semantic_render_shutdown();
+    if (!semanticShutdown) {
+        std::fprintf(stderr, "[sms-boot] semantic renderer shutdown failed: %s\n",
+                     sb_semantic_render_last_error());
+        std::abort();
+    }
     aurora_shutdown();
+    sb_host_alloc_pop();
     return 0;
 }

@@ -78,6 +78,7 @@ bool SemanticFrameBridge::seal() noexcept {
     if (!collector_->seal(sealedFrame_))
         return fail_collector(collector_->error());
     hasSealedFrame_ = true;
+    ++sealedSequence_;
     error_ = "none";
     return true;
 }
@@ -92,6 +93,10 @@ const char* SemanticFrameBridge::last_error() const noexcept {
 
 bool SemanticFrameBridge::active() const noexcept {
     return collector_.has_value();
+}
+
+std::uint64_t SemanticFrameBridge::sealed_sequence() const noexcept {
+    return sealedSequence_;
 }
 
 bool SemanticFrameBridge::fail(const char* error) noexcept {

@@ -59,7 +59,6 @@ uint64_t g_cullAllDrawsDropped = 0;
 uint64_t g_cullAllVerticesDropped = 0;
 bool g_tried = false, g_ok = false;
 SDL_Window* g_presentWindow = nullptr;
-sb::native_render::SdlGpuPlatform g_gpuPlatform;
 sb::native_render::SdlGpuFrameTarget g_frameTarget;
 
 std::vector<uint8_t> g_cpu; // last frame read back, top-left origin RGBA8
@@ -496,7 +495,7 @@ void sbr_render_set_present_window(SDL_Window* window) {
 }
 
 void sbr_render_set_present_aspect(unsigned width, unsigned height) {
-    g_gpuPlatform.set_present_aspect(width, height);
+    sb::native_render::sdl_gpu_platform().set_present_aspect(width, height);
 }
 
 bool sbr_render_init(int w, int h) {
@@ -537,11 +536,12 @@ bool sbr_render_init(int w, int h) {
     // The shared platform is the one SDL GPU device/window/presenter authority used by both the GX
     // compatibility client and the semantic client. Aurora owns SDL video and lends its window.
     std::string platformError;
-    if (!g_gpuPlatform.initialize(g_presentWindow, {}, platformError)) {
+    auto& gpuPlatform = sb::native_render::sdl_gpu_platform();
+    if (!gpuPlatform.initialize(g_presentWindow, {}, platformError)) {
         lucent::error("nrender", "SDL GPU platform initialization failed: {}", platformError);
         return false;
     }
-    g_dev = g_gpuPlatform.device();
+    g_dev = gpuPlatform.device();
     sbr_native_gpu_guard_set_device(g_dev);
     const sb::native_render::SdlGpuFrameTargetDesc targetDesc{
         .width = static_cast<std::uint32_t>(w),
@@ -549,7 +549,7 @@ bool sbr_render_init(int w, int h) {
         .colorFormat = kNativeColorFormat,
         .depthFormat = kNativeDepthFormat,
     };
-    if (!g_frameTarget.initialize(g_gpuPlatform, targetDesc, platformError)) {
+    if (!g_frameTarget.initialize(gpuPlatform, targetDesc, platformError)) {
         lucent::error("nrender", "GX compatibility target initialization failed: {}",
                       platformError);
         return false;
@@ -1042,8 +1042,9 @@ bool render_pass(uint32_t ablation, bool download, bool present) {
 
     if (present) {
         std::string presentError;
-        const sb::native_render::PresentResult result = g_gpuPlatform.encode_present(
-            cmd, g_color, static_cast<unsigned>(g_w), static_cast<unsigned>(g_h), presentError);
+        const sb::native_render::PresentResult result =
+            sb::native_render::sdl_gpu_platform().encode_present(
+                cmd, g_color, static_cast<unsigned>(g_w), static_cast<unsigned>(g_h), presentError);
         if (result == sb::native_render::PresentResult::Failed) {
             SDL_CancelGPUCommandBuffer(cmd);
             sbr_native_gpu_disable(presentError.c_str());
@@ -1656,10 +1657,6 @@ void sbr_render_shutdown() noexcept {
     sbr_native_gpu_pipeline_shutdown();
     g_frameTarget.shutdown();
     sbr_native_gpu_guard_set_device(nullptr);
-    std::string platformError;
-    if (!g_gpuPlatform.shutdown(platformError))
-        lucent::error("nrender", "SDL GPU platform shutdown refused: {}", platformError);
-
     g_dev = nullptr;
     g_color = nullptr;
     g_depth = nullptr;

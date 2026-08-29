@@ -50,6 +50,7 @@ int main() {
     assert(bridge.activate({.targetWidth = 1280, .targetHeight = 960}));
     assert(bridge.active());
     assert(bridge.begin());
+    const std::uint64_t sequenceBeforeSeal = bridge.sealed_sequence();
     assert(has_picture_sink());
     assert(!bridge.begin());
     assert(std::strcmp(bridge.last_error(), "frame already collecting") == 0);
@@ -61,6 +62,7 @@ int main() {
     pixel[0] = 0;
 
     assert(bridge.seal());
+    assert(bridge.sealed_sequence() == sequenceBeforeSeal + 1);
     assert(!has_picture_sink());
     const auto* sealed = bridge.last_sealed_frame();
     assert(sealed != nullptr);

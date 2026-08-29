@@ -15,6 +15,7 @@
 #include "../frame_interp/graphics_db.h"
 #include "../frame_interp/presentation_label.h"
 #include "../frame_interp/stream_interp.h"
+#include "../host/render_composition.h"
 #include "../runtime/probe_server.h"
 #include "../runtime/render/native_render.h"
 #include "../runtime/render/scene.h"
@@ -49,6 +50,7 @@ long tick_index();
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <string>
 #include <vector>
 
 extern "C" void func_802fc9a4(CPUState&); // JDrama::TVideo::waitForRetrace
@@ -723,8 +725,17 @@ void present_and_reopen(bool& frameActive) {
         // the first frame, while the same run had in fact lerped thousands of rope and grass
         // vertices. A cadence-only instrument reports whatever last happened to line up.
         final_reports();
+        std::string renderError;
+        if (g_quit_requested == kQuitAfterReached &&
+            !sb::host::render_composition().validate_semantic_audit(renderError)) {
+            lucent::error("semantic", "bounded semantic audit failed: {}", renderError);
+            std::abort();
+        }
+        if (!sb::host::render_composition().shutdown(renderError)) {
+            lucent::error("semantic", "render composition shutdown failed: {}", renderError);
+            std::abort();
+        }
         sb::ui::runtime().shutdown();
-        sbr_render_shutdown();
         aurora_shutdown();
         std::_Exit(0);
     }
@@ -998,6 +1009,11 @@ void present_tail(CPUState& cpu) {
     auto& semanticFrame = sb::native_render::semantic_frame_bridge();
     if (!semanticFrame.seal()) {
         lucent::error("frame", "semantic frame seal failed: {}", semanticFrame.last_error());
+        std::abort();
+    }
+    std::string semanticError;
+    if (!sb::host::render_composition().encode_semantic_frame(semanticError)) {
+        lucent::error("semantic", "offscreen semantic frame failed: {}", semanticError);
         std::abort();
     }
     // Close only after the view-matrix extension is emitted. Building first put that command at

@@ -1,7 +1,7 @@
 ---
 id: 24
 title: SDL3 FIFO renderer is GX compatibility, not the PC-native renderer goal
-status: open
+status: resolved
 symptom: The path labeled Native consumes GX/FIFO state and reproduces TEV, EFB-copy, and fixed-function semantics, so matching Aurora would only produce a second GameCube renderer rather than a renderer designed around PC-native scene, material, lighting, and effect semantics.
 state_items: S003, S004, S005
 tags: renderer,architecture,recomp,decomp
@@ -74,8 +74,8 @@ decomp J2DPicture/JUTTexture/JUTPalette objects with C4+IA8/I8 pixels, stable/ch
 transient-span copying, and allocation-gate depth. C079 records the temporal contract.
 
 This is a rendered offscreen semantic slice, not live game presentation. Runtime producers now own
-decoded/versioned RGBA for the duration of an atomic submission, but no host activates the frame
-sink.
+decoded/versioned RGBA for the duration of an atomic submission, and both hosts can explicitly
+activate the frame sink without replacing Aurora's visible GX frame.
 The enclosing context is now taken from each retained `J2DScreen::draw`: logical `mOrtho`, physical
 `mBounds` viewport, `mbClipToParent`, and the exact null-context 640x480 default. The picture leaf
 attaches its final hierarchy `mClipRect`; it never uses physical/stale `mScissorBounds`. Mipmapped
@@ -93,9 +93,9 @@ same logical picture into a nonzero sub-viewport and must differ from the full-c
 runtime-local copies. Both runtimes call the bridge at their exact frame boundaries. The recomp
 seals after retained wait/scheduler work and immediately before `gxfifo_build()`, then begins after
 optional subframe presentations; the decomp begins at `sb_frame_seam_start` and seals inside the
-host-allocation gate at `sb_frame_present`. The bridge is deliberately inert until host composition
-activates it, so these calls cannot steal the sink or change live output. Its sink lease refuses a
-second owner and prevents an unrelated caller from clearing the active sink.
+host-allocation gate at `sb_frame_present`. The bridge remains inert unless host composition
+explicitly activates the audit, so ordinary output does not change. Its sink lease refuses a second
+owner and prevents an unrelated caller from clearing the active sink.
 
 The SDL platform copies its dispatch table, requires host-owned SDL video initialization, owns the
 only GPU device/window claim/presenter, and refuses shutdown while client frame targets remain. The
@@ -104,13 +104,13 @@ this shared platform with its own target. `PicturePass` encodes into a borrowed 
 target, and its image-cache transaction is committed only after the caller reports submission or
 rolled back after cancellation. Current-frame residency is bounded instead of retaining every
 historical revision. CPU lifecycle controls, the watched sRGB picture GPU control, and a bounded
-130-present GX/Aurora run pass. C081 records the exact dormant bridge and C082 the shared
-GPU/submission ownership contract.
+130-present GX/Aurora run pass. C081 records the exact explicitly activated bridge and C082 the
+shared GPU/submission ownership contract.
 
-Next: add host composition that activates the bridge and encodes/presents its sealed frame through a
-semantic target on the shared platform. Expand the unified order stream to text/windows/fills before
-bypassing GX; a picture-only overlay cannot preserve their interleaving. Retain the original bodies
-for A/B.
+Host composition now activates the bridge and encodes its sealed frame through an offscreen semantic
+target. The remaining visible-presentation gap is tracked separately: expand the unified order
+stream to text/windows/fills before bypassing GX, because a picture-only overlay cannot preserve
+their interleaving. Retain the original bodies for A/B.
 
 ## Exit condition
 
@@ -126,4 +126,7 @@ Both J2DPicture adapters now decode exact JUT texel/palette bytes and atomically
 Added the bounded SDL-free semantic frame collector and rejected a frame-wide canvas during its control review. Both runtimes now scope the retained J2DScreen body and attach its copied logical ortho rectangle, physical viewport, clip-enable state, and the leaf's final hierarchy clip to every ordered draw. The collector owns decoded image bytes, coalesces only identical resource revisions, rejects conflicting keys and every configured limit, and preserves multiple canvases per frame; a nonzero sub-viewport GPU control proves the distinction (C080).
 
 ### Note (2026-08-30)
-Added one shared semantic frame bridge at the exact recomp and decomp frame boundaries and one shared SDL GPU platform for the device, window claim, presenter, and independent client targets. The bridge remains inactive until a host semantic renderer is composed, so this is verified ownership and lifecycle infrastructure rather than visible semantic presentation. The GX compatibility renderer was migrated to the shared platform and its duplicate presenter/device owner was removed.
+Added one shared semantic frame bridge at the exact recomp and decomp frame boundaries and one shared SDL GPU platform for the device, optional window presenter, and independent client targets. Explicit host audit composition now activates the bridge offscreen; ordinary output remains inert. The GX compatibility renderer was migrated to the shared platform and its duplicate presenter/device owner was removed.
+
+### Resolution (2026-08-30)
+Root cause was the old doctrine equating a native GPU backend with a native renderer. The project now classifies FIFO/TEV reproduction as GX compatibility, keeps it as a reference, and implements a retained-body above-GX J2DPicture pass shared by recomp and decomp. Both runtime hosts activate and submit that pass offscreen; visible presentation remains separate atomic work.

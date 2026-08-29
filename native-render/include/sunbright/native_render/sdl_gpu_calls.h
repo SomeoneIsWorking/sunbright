@@ -23,10 +23,19 @@ struct SdlGpuCalls {
     decltype(&SDL_BlitGPUTexture) blitTexture = nullptr;
     decltype(&SDL_CreateGPUTexture) createTexture = nullptr;
     decltype(&SDL_ReleaseGPUTexture) releaseTexture = nullptr;
+    decltype(&SDL_AcquireGPUCommandBuffer) acquireCommandBuffer = nullptr;
+    decltype(&SDL_SubmitGPUCommandBuffer) submitCommandBuffer = nullptr;
+    decltype(&SDL_SubmitGPUCommandBufferAndAcquireFence) submitAndAcquireFence = nullptr;
+    decltype(&SDL_CancelGPUCommandBuffer) cancelCommandBuffer = nullptr;
+    decltype(&SDL_QueryGPUFence) queryFence = nullptr;
+    decltype(&SDL_ReleaseGPUFence) releaseFence = nullptr;
+    decltype(&SDL_WaitForGPUIdle) waitForIdle = nullptr;
     decltype(&SDL_GetError) getError = nullptr;
 };
 
 [[nodiscard]] const SdlGpuCalls& production_sdl_gpu_calls() noexcept;
+[[nodiscard]] bool valid_device_calls(const SdlGpuCalls& calls) noexcept;
+[[nodiscard]] bool valid_presenter_calls(const SdlGpuCalls& calls) noexcept;
 [[nodiscard]] bool valid(const SdlGpuCalls& calls) noexcept;
 
 } // namespace sb::native_render

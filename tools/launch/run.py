@@ -176,10 +176,9 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
                     raise ValueError("--runtime must be 'recomp' or 'decomp'")
                 runner = value
             elif argument == "--quit-after":
-                set_explicit(
-                    "SBR_QUIT_AFTER",
-                    str(_positive_integer(value, argument, MAX_QUIT_AFTER)),
-                )
+                quit_after = str(_positive_integer(value, argument, MAX_QUIT_AFTER))
+                set_explicit("SBR_QUIT_AFTER", quit_after)
+                set_explicit("SB_QUIT_AFTER", quit_after)
             elif argument == "--run-secs":
                 timeout_option = value
             else:
@@ -214,6 +213,7 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
             ("SBR_FASTBOOT", "1"),
             ("SBR_SCENARIO", "0"),
             ("SBR_QUIT_AFTER", "400"),
+            ("SB_QUIT_AFTER", "400"),
         ):
             _set_default(environment, name, value)
             explicit_names.add(name)
@@ -238,6 +238,8 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
         _positive_float(environment["SB_MAX_PRESENT_HZ"], "--max-present-hz", maximum)
     if environment.get("SBR_QUIT_AFTER"):
         _positive_integer(environment["SBR_QUIT_AFTER"], "--quit-after", MAX_QUIT_AFTER)
+    if environment.get("SB_QUIT_AFTER"):
+        _positive_integer(environment["SB_QUIT_AFTER"], "--quit-after", MAX_QUIT_AFTER)
 
     runner_args = [rom] if rom else []
     return Invocation(
@@ -470,8 +472,10 @@ def selftest() -> int:
     assert diagnostic.environment["SBR_MUTE"] == "1"
     assert diagnostic.environment["SB_MAX_PRESENT_HZ"] == "60"
     assert diagnostic.environment["SBR_QUIT_AFTER"] == "400"
+    assert diagnostic.environment["SB_QUIT_AFTER"] == "400"
     assert diagnostic.explicit_environment["SB_TURBO"] == "1"
     assert diagnostic.explicit_environment["SBR_QUIT_AFTER"] == "400"
+    assert diagnostic.explicit_environment["SB_QUIT_AFTER"] == "400"
 
     selected = parse_invocation(
         [

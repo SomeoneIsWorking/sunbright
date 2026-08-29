@@ -34,7 +34,8 @@ add_library(sunbright-native-render-sdl3 STATIC src/picture_pass.cpp src/sdl_gpu
                                                 src/sdl_gpu_error.cpp
                                                 src/sdl_gpu_frame_target.cpp
                                                 src/sdl_gpu_platform.cpp
-                                                src/sdl_gpu_presenter.cpp)
+                                                src/sdl_gpu_presenter.cpp
+                                                src/sdl_semantic_frame_client.cpp)
 target_include_directories(sunbright-native-render-sdl3 PUBLIC include)
 target_link_libraries(sunbright-native-render-sdl3 PUBLIC sunbright-native-render-core SDL3::SDL3)
 

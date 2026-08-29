@@ -34,8 +34,8 @@ SdlGpuPresenter::~SdlGpuPresenter() {
 bool SdlGpuPresenter::initialize(SDL_GPUDevice* device, SDL_Window* window,
                                  const SdlGpuPresenterConfig& config, std::string& error) {
     error.clear();
-    if (!valid(calls_)) {
-        error = "SDL GPU call table is incomplete";
+    if (!valid_presenter_calls(calls_)) {
+        error = "SDL GPU presenter call table is incomplete";
         return false;
     }
     if (device == nullptr || window == nullptr || config.allowedFramesInFlight < 1 ||

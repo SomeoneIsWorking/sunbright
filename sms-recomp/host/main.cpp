@@ -17,6 +17,7 @@
 #include "intrinsics.h"
 #include "native_render.h"
 #include "overrides/native_frame.h"
+#include "render_composition.h"
 #include "ui/runtime.h"
 #include "ui/ui.h"
 #include <sunbright/native_render/semantic_frame_bridge.h>
@@ -47,11 +48,19 @@ namespace {
 class AuroraRuntimeOwner {
   public:
     ~AuroraRuntimeOwner() {
+        std::string renderError;
+        if (!sb::host::render_composition().stop_semantic_collection(renderError)) {
+            lucent::error("semantic", "semantic collection stop failed: {}", renderError);
+            std::abort();
+        }
         if (m_frameActive)
             aurora_discard_frame();
         if (m_uiInitialized)
             sb::ui::runtime().shutdown();
-        sbr_render_shutdown();
+        if (!sb::host::render_composition().shutdown(renderError)) {
+            lucent::error("semantic", "render composition shutdown failed: {}", renderError);
+            std::abort();
+        }
         aurora_shutdown();
     }
 
@@ -139,6 +148,12 @@ int main(int argc, char** argv) {
     if (userPath.empty() || resourcesPath.empty() ||
         !sb::app::settings().load(std::filesystem::path(userPath) / "sunbright.ini"))
         return 1;
+    std::string renderCompositionError;
+    if (!sb::host::render_composition().configure(sb::app::settings().effective().renderer,
+                                                  renderCompositionError)) {
+        lucent::error("main", "{}", renderCompositionError);
+        return 1;
+    }
 
     // Aurora provides the GX implementation. mem1Size/mem2Size are 0: this runtime owns its
     // guest memory (rt_mem_init), and aurora is handed real host pointers for anything it
@@ -198,25 +213,10 @@ int main(int argc, char** argv) {
         runtimeOwner.set_ui_initialized();
         return ok ? 0 : 1;
     }
-    if (sb::app::settings().effective().renderer == sb::app::Renderer::GxCompatibility) {
-        // Transfer WSI ownership before either renderer begins a frame. Aurora keeps its Dawn
-        // device and consumes the FIFO offscreen as the oracle; only GX Compatibility claims the
-        // SDL window and swapchain.
-        aurora_set_presentation_enabled(false);
-        sbr_render_set_present_window(ainfo.window);
-        // aurora_initialize starts cached-pipeline compilation in the background. SDL's Vulkan
-        // device creation must not overlap that worker: both implementations enter the process-wide
-        // Vulkan loader and debug-utils dispatch, and the overlap reproduced a startup SIGSEGV in
-        // SetDebugUtilsObjectName. Closing this gate waits for an in-flight compile and prevents
-        // the next one from starting until SDL_CreateGPUDevice has returned.
-        aurora_pause_pipeline_compilation();
-        const bool gxCompatibilityInitialized = sbr_render_init(640, 448);
-        aurora_resume_pipeline_compilation();
-        if (!gxCompatibilityInitialized) {
-            lucent::error("main",
-                          "GX compatibility renderer selected but could not claim presentation");
-            return 1;
-        }
+    if (!sb::host::render_composition().initialize(ainfo.window, renderCompositionError)) {
+        lucent::error("main", "render composition initialization failed: {}",
+                      renderCompositionError);
+        return 1;
     }
     // The game is the product's startup surface. RmlUi is initialized here so Escape can open the
     // persistent settings document later, but no document is shown before guest execution begins.

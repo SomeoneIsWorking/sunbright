@@ -297,6 +297,7 @@ if(TARGET aurora_core)
     add_executable(sms-boot
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/main.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/frame_seam.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/semantic_render.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/trace_seq.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/audio_out.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/jas_kernel_native.cpp"
@@ -366,7 +367,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
-        sunbright-native-render-core
+        sunbright-native-render-sdl3
         Threads::Threads)
 
     # Production-linked semantic J2D resource test. It uses the real native-layout adapter and

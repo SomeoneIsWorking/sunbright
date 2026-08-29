@@ -30,6 +30,7 @@ class SemanticFrameBridge {
     [[nodiscard]] const PictureFrame* last_sealed_frame() const noexcept;
     [[nodiscard]] const char* last_error() const noexcept;
     [[nodiscard]] bool active() const noexcept;
+    [[nodiscard]] std::uint64_t sealed_sequence() const noexcept;
 
   private:
     [[nodiscard]] bool fail(const char* error) noexcept;
@@ -42,6 +43,7 @@ class SemanticFrameBridge {
     const char* error_ = "none";
     bool collecting_ = false;
     bool hasSealedFrame_ = false;
+    std::uint64_t sealedSequence_ = 0;
 };
 
 // Each runtime is a distinct process, so this is its one semantic-frame owner.

@@ -23,8 +23,8 @@ SdlGpuFrameTarget::~SdlGpuFrameTarget() {
 bool SdlGpuFrameTarget::initialize(SdlGpuPlatform& platform, const SdlGpuFrameTargetDesc& desc,
                                    std::string& error) {
     error.clear();
-    if (!valid(platform.calls_)) {
-        error = "SDL GPU call table is incomplete";
+    if (!valid_device_calls(platform.calls_)) {
+        error = "SDL GPU device call table is incomplete";
         return false;
     }
     if (!platform.ready() || !valid_desc(desc)) {

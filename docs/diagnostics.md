@@ -151,6 +151,7 @@ logger — that is debt to convert, not a feature.
 | `SB_PROJ_DBG` | 1 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp` |  |
 | `SB_PROJ_DBG_AFTER` | 2 | `extern/aurora/lib/dolphin/gx/GXTransform.cpp` |  |
 | `SB_QUAD_RECT` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
+| `SB_QUIT_AFTER` | 2 | `sms-boot/runtime/frame_seam.cpp` |  |
 | `SB_RAL_DBG` | 2 | `decomp/sms/src/System/MarDirectorSetupObjects.cpp` | gated print |
 | `SB_RASC_VIZ` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
 | `SB_RDOC` | 1 | `extern/aurora/lib/aurora.cpp` |  |
@@ -167,6 +168,7 @@ logger — that is debt to convert, not a feature.
 | `SB_SEL_DUMP_SETTLED` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_SEL_PICK` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_SEL_POS` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
+| `SB_SEMANTIC_PICTURE_AUDIT` | 2 | `sms-recomp/host/render_composition.cpp` |  |
 | `SB_SHADER_CHECK` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
 | `SB_SHADER_DUMP` | 2 | `extern/aurora/lib/gx/shader.cpp` |  |
 | `SB_SHADER_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |
@@ -381,4 +383,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**360 switches; 62 still gate a raw print.**
+**362 switches; 62 still gate a raw print.**

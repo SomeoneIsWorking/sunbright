@@ -144,7 +144,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # member out of a static archive — nothing strongly references sb_log.o, so from a library it is
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
-add_executable(sms-recomp host/main.cpp host/aurora_config.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/gpu_incident_recorder.cpp runtime/gpu_incident_report.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
+add_executable(sms-recomp host/main.cpp host/aurora_config.cpp host/dol_loader.cpp host/render_composition.cpp runtime/sb_log.cpp runtime/gpu_incident_recorder.cpp runtime/gpu_incident_report.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
                            runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_efb_copy_clear_draw.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
                            runtime/render/render_compare.cpp runtime/render/render_compare_join.cpp runtime/render/render_compare_metric.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can

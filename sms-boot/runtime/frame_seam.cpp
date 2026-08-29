@@ -26,6 +26,9 @@
 
 #include <sunbright/native_render/semantic_frame_bridge.h>
 
+#include "semantic_render.h"
+
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -66,9 +69,32 @@ namespace {
 
 // NTSC field period: 60000/1001 fields per second.
 constexpr int64_t kFieldNs = 1000000000LL * 1001 / 60000;
+constexpr std::uint64_t kMaxQuitAfter = 10'000;
 
 bool s_frameOpen = false;
 int64_t s_nextDeadlineNs = 0;
+std::uint64_t s_presentCount = 0;
+
+std::uint64_t quit_after() {
+    static const std::uint64_t value = [] {
+        const char* text = std::getenv("SB_QUIT_AFTER");
+        if (text == nullptr || text[0] == '\0')
+            return std::uint64_t{0};
+        const char* end = text;
+        while (*end != '\0')
+            ++end;
+        std::uint64_t parsed = 0;
+        const auto result = std::from_chars(text, end, parsed, 10);
+        if (result.ec != std::errc{} || result.ptr != end || parsed == 0 ||
+            parsed > kMaxQuitAfter) {
+            std::fprintf(stderr,
+                         "[sms-boot] SB_QUIT_AFTER requires an integer from 1 through 10000\n");
+            std::abort();
+        }
+        return parsed;
+    }();
+    return value;
+}
 
 int64_t now_ns() {
     timespec ts;
@@ -98,6 +124,11 @@ bool trace_seq_on() {
 
 extern "C" {
 
+void sb_frame_seam_configure(void) {
+    // Force strict run-limit parsing before Aurora or either GPU device is initialized.
+    (void)quit_after();
+}
+
 // Open the first Aurora frame. Called once from main() after aurora_initialize,
 // before any game code runs.
 void sb_frame_seam_start(void) {
@@ -124,9 +155,18 @@ void sb_frame_present(unsigned retraces) {
                      semanticFrame.last_error());
         std::abort();
     }
+    // The semantic target is offscreen and independent of Aurora surface availability. Every
+    // sealed simulation frame must be consumed exactly once even while the visible window is
+    // unavailable; otherwise a minimized audit could report success after encoding nothing.
+    if (!sb_semantic_render_consume()) {
+        std::fprintf(stderr, "[sms-boot] offscreen semantic frame failed: %s\n",
+                     sb_semantic_render_last_error());
+        std::abort();
+    }
 
     if (s_frameOpen) {
         aurora_end_frame();
+        ++s_presentCount;
         if (trace_seq_on()) {
             std::fprintf(stderr, "[trace] seq=%lu aurora-end-frame retrace=%u\n",
                          (unsigned long)sb_trace_seq(), VIGetRetraceCount());
@@ -149,8 +189,21 @@ void sb_frame_present(unsigned retraces) {
         }
         ++event;
     }
+    const bool quitAfterReached = quit_after() != 0 && s_presentCount >= quit_after();
+    exit_requested = exit_requested || quitAfterReached;
     if (exit_requested) {
-        std::fprintf(stderr, "[sms-boot] window closed, exiting\n");
+        std::fprintf(stderr, "[sms-boot] %s, exiting\n",
+                     quitAfterReached ? "SB_QUIT_AFTER reached" : "window closed");
+        if (quitAfterReached && !sb_semantic_render_validate()) {
+            std::fprintf(stderr, "[sms-boot] bounded semantic audit failed: %s\n",
+                         sb_semantic_render_last_error());
+            std::abort();
+        }
+        if (!sb_semantic_render_shutdown()) {
+            std::fprintf(stderr, "[sms-boot] semantic renderer shutdown failed: %s\n",
+                         sb_semantic_render_last_error());
+            std::abort();
+        }
         aurora_shutdown();
         _exit(0); // no static-dtor teardown: game/Dawn statics are not unwind-safe
     }

@@ -32,6 +32,12 @@ class SdlGpuPlatform {
 
     [[nodiscard]] bool initialize(SDL_Window* window, const SdlGpuPlatformConfig& config,
                                   std::string& error);
+    // Device-only initialization for offscreen clients. Presentation can be attached later without
+    // creating a second SDL GPU device or claiming a hidden window. Aurora's independent WebGPU
+    // device remains the visible GX reference while this diagnostic client runs.
+    [[nodiscard]] bool initialize_device(const SdlGpuPlatformConfig& config, std::string& error);
+    [[nodiscard]] bool attach_presenter(SDL_Window* window, const SdlGpuPresenterConfig& config,
+                                        std::string& error);
     void set_present_aspect(std::uint32_t width, std::uint32_t height) noexcept;
     // Encodes swapchain acquisition, clear, and source blit into the borrowed command buffer. The
     // caller must submit after Presented and cancel or submit its other work after
@@ -39,10 +45,21 @@ class SdlGpuPlatform {
     [[nodiscard]] PresentResult encode_present(SDL_GPUCommandBuffer* commandBuffer,
                                                SDL_GPUTexture* source, std::uint32_t sourceWidth,
                                                std::uint32_t sourceHeight, std::string& error);
+    [[nodiscard]] SDL_GPUCommandBuffer* acquire_command_buffer(std::string& error) const noexcept;
+    [[nodiscard]] bool submit_command_buffer(SDL_GPUCommandBuffer* commandBuffer,
+                                             std::string& error) const noexcept;
+    [[nodiscard]] SDL_GPUFence* submit_and_acquire_fence(SDL_GPUCommandBuffer* commandBuffer,
+                                                         std::string& error) const noexcept;
+    [[nodiscard]] bool cancel_command_buffer(SDL_GPUCommandBuffer* commandBuffer,
+                                             std::string& error) const noexcept;
+    [[nodiscard]] bool wait_idle(std::string& error) const noexcept;
+    [[nodiscard]] bool fence_signaled(SDL_GPUFence* fence) const noexcept;
+    void release_fence(SDL_GPUFence* fence) const noexcept;
     // Refuses while client targets remain alive, preserving the device they still reference.
     [[nodiscard]] bool shutdown(std::string& error) noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] bool presenter_ready() const noexcept;
     [[nodiscard]] SDL_GPUDevice* device() const noexcept;
     [[nodiscard]] SDL_Window* window() const noexcept;
 
@@ -56,5 +73,9 @@ class SdlGpuPlatform {
     SdlGpuPlatformConfig config_{};
     std::size_t liveTargets_ = 0;
 };
+
+// Each runtime is a separate process. This is the one SDL GPU device/presenter owner shared by
+// every renderer client inside that process.
+[[nodiscard]] SdlGpuPlatform& sdl_gpu_platform() noexcept;
 
 } // namespace sb::native_render
