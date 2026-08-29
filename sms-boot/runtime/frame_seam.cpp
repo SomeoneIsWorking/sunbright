@@ -24,6 +24,8 @@
 #include <aurora/aurora.h>
 #include <aurora/event.h>
 
+#include <sunbright/native_render/semantic_frame_bridge.h>
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -100,6 +102,12 @@ extern "C" {
 // before any game code runs.
 void sb_frame_seam_start(void) {
     s_frameOpen = aurora_begin_frame();
+    auto& semanticFrame = sb::native_render::semantic_frame_bridge();
+    if (!semanticFrame.begin()) {
+        std::fprintf(stderr, "[sms-boot] semantic frame begin failed: %s\n",
+                     semanticFrame.last_error());
+        std::abort();
+    }
     s_nextDeadlineNs = now_ns() + kFieldNs;
 }
 
@@ -109,6 +117,13 @@ void sb_frame_present(unsigned retraces) {
                      (unsigned long)sb_trace_seq(), VIGetRetraceCount(), retraces);
     }
     sb_host_alloc_push();
+
+    auto& semanticFrame = sb::native_render::semantic_frame_bridge();
+    if (!semanticFrame.seal()) {
+        std::fprintf(stderr, "[sms-boot] semantic frame seal failed: %s\n",
+                     semanticFrame.last_error());
+        std::abort();
+    }
 
     if (s_frameOpen) {
         aurora_end_frame();
@@ -144,6 +159,11 @@ void sb_frame_present(unsigned retraces) {
     if (trace_seq_on()) {
         std::fprintf(stderr, "[trace] seq=%lu aurora-begin-frame retrace=%u\n",
                      (unsigned long)sb_trace_seq(), VIGetRetraceCount());
+    }
+    if (!semanticFrame.begin()) {
+        std::fprintf(stderr, "[sms-boot] semantic frame begin failed: %s\n",
+                     semanticFrame.last_error());
+        std::abort();
     }
     sb_host_alloc_pop();
 

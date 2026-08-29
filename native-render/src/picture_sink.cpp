@@ -4,11 +4,33 @@ namespace sb::native_render {
 namespace {
 
 PictureSink g_sink{};
+PictureSinkLease g_lease{};
+std::uint64_t g_nextLease = 1;
 
 } // namespace
 
-void set_picture_sink(PictureSink sink) noexcept {
+bool claim_picture_sink(PictureSink sink, PictureSinkLease& lease) noexcept {
+    lease = {};
+    if (sink.submit == nullptr || g_sink.submit != nullptr)
+        return false;
     g_sink = sink;
+    g_lease.value = g_nextLease++;
+    if (g_nextLease == 0)
+        g_nextLease = 1;
+    lease = g_lease;
+    return true;
+}
+
+bool release_picture_sink(PictureSinkLease lease) noexcept {
+    if (!lease || lease != g_lease)
+        return false;
+    g_sink = {};
+    g_lease = {};
+    return true;
+}
+
+bool owns_picture_sink(PictureSinkLease lease) noexcept {
+    return lease && lease == g_lease;
 }
 
 bool has_picture_sink() noexcept {

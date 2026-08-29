@@ -6,17 +6,18 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cmath>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace sb::native_render {
 namespace {
 
-constexpr SDL_GPUTextureFormat kColorFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB;
+constexpr SDL_GPUTextureFormat kImageFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB;
 constexpr auto kFenceTimeout = std::chrono::seconds(5);
 
 struct GpuVertex {
@@ -57,10 +58,37 @@ struct ImageKeyHash {
     }
 };
 
-struct GpuImage {
-    DecodedImageView source{};
-    std::size_t uploadOffset = 0;
+struct SamplerKey {
+    AddressMode addressU = AddressMode::Clamp;
+    AddressMode addressV = AddressMode::Clamp;
+    FilterMode minFilter = FilterMode::Nearest;
+    FilterMode magFilter = FilterMode::Nearest;
+    MipFilter mipFilter = MipFilter::None;
+
+    bool operator==(const SamplerKey&) const = default;
+};
+
+struct SamplerKeyHash {
+    std::size_t operator()(SamplerKey key) const noexcept {
+        return static_cast<std::size_t>(key.addressU) |
+               (static_cast<std::size_t>(key.addressV) << 2U) |
+               (static_cast<std::size_t>(key.minFilter) << 4U) |
+               (static_cast<std::size_t>(key.magFilter) << 5U) |
+               (static_cast<std::size_t>(key.mipFilter) << 6U);
+    }
+};
+
+struct CachedImage {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
     SDL_GPUTexture* texture = nullptr;
+    SDL_GPUTransferBuffer* upload = nullptr;
+};
+
+struct VertexStorage {
+    SDL_GPUBuffer* buffer = nullptr;
+    SDL_GPUTransferBuffer* upload = nullptr;
+    std::size_t capacity = 0;
 };
 
 SDL_GPUShader* make_shader(SDL_GPUDevice* device, const void* code, std::size_t bytes,
@@ -105,6 +133,11 @@ SDL_GPUSamplerAddressMode address_mode(AddressMode value) noexcept {
     return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
 }
 
+SamplerKey sampler_key(const PictureTexture& texture) noexcept {
+    return {texture.addressU, texture.addressV, texture.minFilter, texture.magFilter,
+            texture.mipFilter};
+}
+
 bool wait_for_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) noexcept {
     const auto deadline = std::chrono::steady_clock::now() + kFenceTimeout;
     while (!SDL_QueryGPUFence(device, fence)) {
@@ -115,10 +148,6 @@ bool wait_for_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) noexcept {
     return true;
 }
 
-std::size_t aligned(std::size_t value, std::size_t alignment) noexcept {
-    return (value + alignment - 1U) & ~(alignment - 1U);
-}
-
 bool multiplication_fits(std::uint32_t width, std::uint32_t height, std::size_t& bytes) noexcept {
     const std::uint64_t total = static_cast<std::uint64_t>(width) * height * 4U;
     if (width == 0 || height == 0 || total > std::numeric_limits<Uint32>::max())
@@ -127,53 +156,66 @@ bool multiplication_fits(std::uint32_t width, std::uint32_t height, std::size_t&
     return true;
 }
 
+std::size_t next_capacity(std::size_t required) noexcept {
+    std::size_t capacity = 256;
+    while (capacity < required && capacity <= std::numeric_limits<Uint32>::max() / 2U)
+        capacity *= 2U;
+    return std::max(capacity, required);
+}
+
 } // namespace
 
-struct PicturePass::Impl {
-    explicit Impl(SDL_GPUDevice* value) noexcept : device(value) {}
+struct PicturePassImpl {
+    explicit PicturePassImpl(SDL_GPUDevice* value) noexcept : device(value) {}
 
     SDL_GPUDevice* device = nullptr;
     SDL_GPUShader* vertexShader = nullptr;
     SDL_GPUShader* fragmentShader = nullptr;
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    std::unordered_map<SDL_GPUTextureFormat, SDL_GPUGraphicsPipeline*> pipelines{};
+    std::unordered_map<ImageKey, CachedImage, ImageKeyHash> images{};
+    std::unordered_map<ImageKey, CachedImage, ImageKeyHash> pendingImages{};
+    std::vector<ImageKey> currentImages{};
+    std::unordered_map<SamplerKey, SDL_GPUSampler*, SamplerKeyHash> samplers{};
+    VertexStorage vertices{};
+    std::vector<VertexStorage> retiredVertexStorage{};
+    bool encodeActive = false;
+    bool encodeSucceeded = false;
 };
 
-PicturePass::PicturePass(SDL_GPUDevice* device) : impl_(new Impl(device)) {}
+namespace {
 
-PicturePass::~PicturePass() {
-    if (impl_ != nullptr && impl_->device != nullptr) {
-        if (impl_->pipeline != nullptr)
-            SDL_ReleaseGPUGraphicsPipeline(impl_->device, impl_->pipeline);
-        if (impl_->fragmentShader != nullptr)
-            SDL_ReleaseGPUShader(impl_->device, impl_->fragmentShader);
-        if (impl_->vertexShader != nullptr)
-            SDL_ReleaseGPUShader(impl_->device, impl_->vertexShader);
-    }
-    delete impl_;
+void release_vertex_storage(SDL_GPUDevice* device, VertexStorage storage) noexcept {
+    if (storage.upload != nullptr)
+        SDL_ReleaseGPUTransferBuffer(device, storage.upload);
+    if (storage.buffer != nullptr)
+        SDL_ReleaseGPUBuffer(device, storage.buffer);
 }
 
-bool PicturePass::initialize(std::string& error) {
-    error.clear();
-    if (impl_ == nullptr || impl_->device == nullptr) {
-        error = "picture pass requires a host-owned SDL GPU device";
-        return false;
-    }
-    if (impl_->pipeline != nullptr)
-        return true;
+void release_image(SDL_GPUDevice* device, CachedImage image) noexcept {
+    if (image.upload != nullptr)
+        SDL_ReleaseGPUTransferBuffer(device, image.upload);
+    if (image.texture != nullptr)
+        SDL_ReleaseGPUTexture(device, image.texture);
+}
 
-    impl_->vertexShader = make_shader(impl_->device, kPictureVertSpv, sizeof(kPictureVertSpv),
-                                      SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-    impl_->fragmentShader = make_shader(impl_->device, kPictureFragSpv, sizeof(kPictureFragSpv),
-                                        SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
-    if (impl_->vertexShader == nullptr || impl_->fragmentShader == nullptr) {
-        error = std::string("picture shader creation failed: ") + SDL_GetError();
-        if (impl_->fragmentShader != nullptr)
-            SDL_ReleaseGPUShader(impl_->device, impl_->fragmentShader);
-        if (impl_->vertexShader != nullptr)
-            SDL_ReleaseGPUShader(impl_->device, impl_->vertexShader);
-        impl_->fragmentShader = nullptr;
-        impl_->vertexShader = nullptr;
-        return false;
+const CachedImage* find_image(const PicturePassImpl& impl, ImageKey key) noexcept {
+    if (const auto resident = impl.images.find(key); resident != impl.images.end())
+        return &resident->second;
+    if (const auto pending = impl.pendingImages.find(key); pending != impl.pendingImages.end())
+        return &pending->second;
+    return nullptr;
+}
+
+SDL_GPUGraphicsPipeline* ensure_pipeline(PicturePassImpl& impl, SDL_GPUTextureFormat format,
+                                         std::string& error) {
+    const auto existing = impl.pipelines.find(format);
+    if (existing != impl.pipelines.end())
+        return existing->second;
+    if (format == SDL_GPU_TEXTUREFORMAT_INVALID ||
+        !SDL_GPUTextureSupportsFormat(impl.device, format, SDL_GPU_TEXTURETYPE_2D,
+                                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET)) {
+        error = "picture target format is not a supported SDL GPU color target";
+        return nullptr;
     }
 
     SDL_GPUVertexBufferDescription vertexBuffer{};
@@ -189,7 +231,7 @@ bool PicturePass::initialize(std::string& error) {
     };
 
     SDL_GPUColorTargetDescription colorTarget{};
-    colorTarget.format = kColorFormat;
+    colorTarget.format = format;
     colorTarget.blend_state.enable_blend = true;
     colorTarget.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
     colorTarget.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
@@ -203,8 +245,8 @@ bool PicturePass::initialize(std::string& error) {
     colorTarget.blend_state.enable_color_write_mask = true;
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = impl_->vertexShader;
-    info.fragment_shader = impl_->fragmentShader;
+    info.vertex_shader = impl.vertexShader;
+    info.fragment_shader = impl.fragmentShader;
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.vertex_input_state.vertex_buffer_descriptions = &vertexBuffer;
     info.vertex_input_state.num_vertex_buffers = 1;
@@ -215,11 +257,116 @@ bool PicturePass::initialize(std::string& error) {
     info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.target_info.color_target_descriptions = &colorTarget;
     info.target_info.num_color_targets = 1;
-    impl_->pipeline = SDL_CreateGPUGraphicsPipeline(impl_->device, &info);
-    if (impl_->pipeline == nullptr) {
+    SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(impl.device, &info);
+    if (pipeline == nullptr) {
         error = std::string("picture pipeline creation failed: ") + SDL_GetError();
-        SDL_ReleaseGPUShader(impl_->device, impl_->fragmentShader);
-        SDL_ReleaseGPUShader(impl_->device, impl_->vertexShader);
+        return nullptr;
+    }
+    impl.pipelines.emplace(format, pipeline);
+    return pipeline;
+}
+
+bool ensure_vertex_storage(PicturePassImpl& impl, std::size_t required, std::string& error) {
+    if (required == 0 || required <= impl.vertices.capacity)
+        return true;
+    const std::size_t capacity = next_capacity(required);
+    if (capacity > std::numeric_limits<Uint32>::max()) {
+        error = "picture vertex upload exceeds SDL GPU limits";
+        return false;
+    }
+    const SDL_GPUBufferCreateInfo bufferInfo{SDL_GPU_BUFFERUSAGE_VERTEX,
+                                             static_cast<Uint32>(capacity), 0};
+    const SDL_GPUTransferBufferCreateInfo uploadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                                                     static_cast<Uint32>(capacity), 0};
+    VertexStorage replacement{SDL_CreateGPUBuffer(impl.device, &bufferInfo),
+                              SDL_CreateGPUTransferBuffer(impl.device, &uploadInfo), capacity};
+    if (replacement.buffer == nullptr || replacement.upload == nullptr) {
+        release_vertex_storage(impl.device, replacement);
+        error = std::string("picture vertex resource allocation failed: ") + SDL_GetError();
+        return false;
+    }
+    if (impl.vertices.buffer != nullptr)
+        impl.retiredVertexStorage.push_back(impl.vertices);
+    impl.vertices = replacement;
+    return true;
+}
+
+SDL_GPUSampler* ensure_sampler(PicturePassImpl& impl, const PictureTexture& texture,
+                               std::string& error) {
+    const SamplerKey key = sampler_key(texture);
+    const auto existing = impl.samplers.find(key);
+    if (existing != impl.samplers.end())
+        return existing->second;
+    SDL_GPUSamplerCreateInfo info{};
+    info.min_filter = filter(texture.minFilter);
+    info.mag_filter = filter(texture.magFilter);
+    info.mipmap_mode = mip_filter(texture.mipFilter);
+    info.address_mode_u = address_mode(texture.addressU);
+    info.address_mode_v = address_mode(texture.addressV);
+    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    info.max_lod = 0.0f;
+    SDL_GPUSampler* sampler = SDL_CreateGPUSampler(impl.device, &info);
+    if (sampler == nullptr) {
+        error = std::string("picture sampler creation failed: ") + SDL_GetError();
+        return nullptr;
+    }
+    impl.samplers.emplace(key, sampler);
+    return sampler;
+}
+
+} // namespace
+
+PicturePass::PicturePass(SDL_GPUDevice* device) : impl_(new PicturePassImpl(device)) {}
+
+PicturePass::~PicturePass() {
+    if (impl_ != nullptr && impl_->encodeActive)
+        std::terminate();
+    if (impl_ != nullptr && impl_->device != nullptr) {
+        for (const auto& [key, sampler] : impl_->samplers) {
+            (void)key;
+            SDL_ReleaseGPUSampler(impl_->device, sampler);
+        }
+        for (const auto& [key, image] : impl_->images) {
+            (void)key;
+            release_image(impl_->device, image);
+        }
+        for (const auto& [key, image] : impl_->pendingImages) {
+            (void)key;
+            release_image(impl_->device, image);
+        }
+        release_vertex_storage(impl_->device, impl_->vertices);
+        for (VertexStorage storage : impl_->retiredVertexStorage)
+            release_vertex_storage(impl_->device, storage);
+        for (const auto& [format, pipeline] : impl_->pipelines) {
+            (void)format;
+            SDL_ReleaseGPUGraphicsPipeline(impl_->device, pipeline);
+        }
+        if (impl_->fragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->fragmentShader);
+        if (impl_->vertexShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->vertexShader);
+    }
+    delete impl_;
+}
+
+bool PicturePass::initialize(std::string& error) {
+    error.clear();
+    if (impl_ == nullptr || impl_->device == nullptr) {
+        error = "picture pass requires a host-owned SDL GPU device";
+        return false;
+    }
+    if (impl_->vertexShader != nullptr && impl_->fragmentShader != nullptr)
+        return true;
+    impl_->vertexShader = make_shader(impl_->device, kPictureVertSpv, sizeof(kPictureVertSpv),
+                                      SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+    impl_->fragmentShader = make_shader(impl_->device, kPictureFragSpv, sizeof(kPictureFragSpv),
+                                        SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    if (impl_->vertexShader == nullptr || impl_->fragmentShader == nullptr) {
+        error = std::string("picture shader creation failed: ") + SDL_GetError();
+        if (impl_->fragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->fragmentShader);
+        if (impl_->vertexShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->vertexShader);
         impl_->fragmentShader = nullptr;
         impl_->vertexShader = nullptr;
         return false;
@@ -227,16 +374,52 @@ bool PicturePass::initialize(std::string& error) {
     return true;
 }
 
-bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePixels& output,
-                                      std::string& error) {
+bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& target,
+                         std::string& error) {
     error.clear();
-    output = {};
-    if (!initialize(error))
-        return false;
-    if (frame.targetWidth == 0 || frame.targetHeight == 0) {
-        error = "picture frame has an invalid target";
+    if (impl_ == nullptr || impl_->encodeActive) {
+        error = "previous picture encode has not been completed";
         return false;
     }
+    impl_->encodeActive = true;
+    impl_->encodeSucceeded = false;
+    impl_->pendingImages.clear();
+    impl_->currentImages.clear();
+    if (!initialize(error))
+        return false;
+    if (target.commandBuffer == nullptr || target.colorTexture == nullptr) {
+        error = "picture encode requires borrowed command-buffer and color-target handles";
+        return false;
+    }
+    if (frame.targetWidth == 0 || frame.targetHeight == 0) {
+        error = "picture frame has an invalid target extent";
+        return false;
+    }
+    SDL_GPUGraphicsPipeline* pipeline = ensure_pipeline(*impl_, target.colorFormat, error);
+    if (pipeline == nullptr)
+        return false;
+
+    std::unordered_map<ImageKey, const DecodedImageView*, ImageKeyHash> sources;
+    impl_->currentImages.reserve(frame.images.size());
+    for (const DecodedImageView& image : frame.images) {
+        std::size_t bytes = 0;
+        const ImageKey key{image.resource, image.revision};
+        if (image.resource == 0 || !multiplication_fits(image.width, image.height, bytes) ||
+            image.rgba8.size() != bytes || !sources.emplace(key, &image).second) {
+            error = "picture frame contains an invalid or duplicate decoded image";
+            return false;
+        }
+        impl_->currentImages.push_back(key);
+        const auto cached = impl_->images.find(key);
+        if (cached != impl_->images.end() &&
+            (cached->second.width != image.width || cached->second.height != image.height)) {
+            error = "picture image revision changed dimensions without changing its semantic key";
+            return false;
+        }
+    }
+
+    std::vector<GpuVertex> vertices;
+    vertices.reserve(frame.draws.size() * 6U);
     for (const PictureDraw& draw : frame.draws) {
         PixelRect viewport{};
         if (!valid(draw) ||
@@ -244,241 +427,134 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
             error = "picture frame contains an invalid draw context or command";
             return false;
         }
-    }
-
-    std::unordered_map<ImageKey, const DecodedImageView*, ImageKeyHash> sourceImages;
-    for (const DecodedImageView& image : frame.images) {
-        std::size_t bytes = 0;
-        if (image.resource == 0 || !multiplication_fits(image.width, image.height, bytes) ||
-            image.rgba8.size() != bytes ||
-            !sourceImages.emplace(ImageKey{image.resource, image.revision}, &image).second) {
-            error = "picture frame contains an invalid or duplicate image";
-            return false;
-        }
-    }
-    for (const PictureDraw& draw : frame.draws) {
-        const PictureCommand& command = draw.picture;
-        for (std::size_t index = 0; index < command.material.textureCount; ++index) {
-            const PictureTexture& texture = command.material.textures[index];
-            const auto found = sourceImages.find({texture.resource, texture.revision});
-            if (found == sourceImages.end() || found->second->width != texture.width ||
-                found->second->height != texture.height) {
-                error = "picture command references an absent or mismatched decoded image";
-                return false;
-            }
-        }
-    }
-
-    std::vector<GpuVertex> vertices;
-    vertices.reserve(frame.draws.size() * 6);
-    for (const PictureDraw& draw : frame.draws) {
         for (const PictureVertex& source : make_mesh(draw.picture)) {
             vertices.push_back({{source.position.x, source.position.y},
                                 {source.uv.x, source.uv.y},
                                 {source.color.r, source.color.g, source.color.b, source.color.a}});
         }
-    }
-    const std::size_t vertexBytes = vertices.size() * sizeof(GpuVertex);
-    if (vertexBytes > std::numeric_limits<Uint32>::max()) {
-        error = "picture vertex upload exceeds SDL GPU limits";
-        return false;
-    }
-
-    std::size_t imageUploadBytes = 0;
-    std::unordered_map<ImageKey, std::size_t, ImageKeyHash> imageOffsets;
-    for (const DecodedImageView& image : frame.images) {
-        imageUploadBytes = aligned(imageUploadBytes, 512);
-        imageOffsets.emplace(ImageKey{image.resource, image.revision}, imageUploadBytes);
-        imageUploadBytes += image.rgba8.size();
-    }
-    if (imageUploadBytes > std::numeric_limits<Uint32>::max()) {
-        error = "picture image upload exceeds SDL GPU limits";
-        return false;
-    }
-    std::size_t readbackBytes = 0;
-    if (!multiplication_fits(frame.targetWidth, frame.targetHeight, readbackBytes)) {
-        error = "picture target exceeds SDL GPU limits";
-        return false;
-    }
-
-    SDL_GPUTextureCreateInfo targetInfo{};
-    targetInfo.type = SDL_GPU_TEXTURETYPE_2D;
-    targetInfo.format = kColorFormat;
-    targetInfo.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-    targetInfo.width = frame.targetWidth;
-    targetInfo.height = frame.targetHeight;
-    targetInfo.layer_count_or_depth = 1;
-    targetInfo.num_levels = 1;
-    targetInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* target = SDL_CreateGPUTexture(impl_->device, &targetInfo);
-
-    SDL_GPUBuffer* vertexBuffer = nullptr;
-    SDL_GPUTransferBuffer* vertexUpload = nullptr;
-    if (vertexBytes != 0) {
-        const SDL_GPUBufferCreateInfo bufferInfo{SDL_GPU_BUFFERUSAGE_VERTEX,
-                                                 static_cast<Uint32>(vertexBytes), 0};
-        vertexBuffer = SDL_CreateGPUBuffer(impl_->device, &bufferInfo);
-        const SDL_GPUTransferBufferCreateInfo uploadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                                                         static_cast<Uint32>(vertexBytes), 0};
-        vertexUpload = SDL_CreateGPUTransferBuffer(impl_->device, &uploadInfo);
-    }
-    SDL_GPUTransferBuffer* imageUpload = nullptr;
-    if (imageUploadBytes != 0) {
-        const SDL_GPUTransferBufferCreateInfo uploadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                                                         static_cast<Uint32>(imageUploadBytes), 0};
-        imageUpload = SDL_CreateGPUTransferBuffer(impl_->device, &uploadInfo);
-    }
-    const SDL_GPUTransferBufferCreateInfo downloadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
-                                                       static_cast<Uint32>(readbackBytes), 0};
-    SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(impl_->device, &downloadInfo);
-
-    std::vector<GpuImage> gpuImages;
-    std::vector<SDL_GPUSampler*> samplers;
-    std::vector<std::array<SDL_GPUTextureSamplerBinding, 4>> drawBindings;
-    gpuImages.reserve(frame.images.size());
-    samplers.reserve(frame.draws.size() * 4);
-    drawBindings.reserve(frame.draws.size());
-    bool resourcesValid =
-        target != nullptr && download != nullptr &&
-        (vertexBytes == 0 || (vertexBuffer != nullptr && vertexUpload != nullptr)) &&
-        (imageUploadBytes == 0 || imageUpload != nullptr);
-    for (const DecodedImageView& image : frame.images) {
-        SDL_GPUTextureCreateInfo info{};
-        info.type = SDL_GPU_TEXTURETYPE_2D;
-        info.format = kColorFormat;
-        info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        info.width = image.width;
-        info.height = image.height;
-        info.layer_count_or_depth = 1;
-        info.num_levels = 1;
-        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        const auto offset = imageOffsets.find({image.resource, image.revision});
-        GpuImage gpuImage{image, offset->second, SDL_CreateGPUTexture(impl_->device, &info)};
-        resourcesValid = resourcesValid && gpuImage.texture != nullptr;
-        gpuImages.push_back(gpuImage);
-    }
-    const auto release_resources = [&] {
-        for (SDL_GPUSampler* sampler : samplers) {
-            if (sampler != nullptr)
-                SDL_ReleaseGPUSampler(impl_->device, sampler);
+        for (std::size_t index = 0; index < draw.picture.material.textureCount; ++index) {
+            const PictureTexture& texture = draw.picture.material.textures[index];
+            const ImageKey key{texture.resource, texture.revision};
+            const auto source = sources.find(key);
+            const auto cached = impl_->images.find(key);
+            const std::uint32_t width = source != sources.end()         ? source->second->width
+                                        : cached != impl_->images.end() ? cached->second.width
+                                                                        : 0;
+            const std::uint32_t height = source != sources.end()         ? source->second->height
+                                         : cached != impl_->images.end() ? cached->second.height
+                                                                         : 0;
+            if (width != texture.width || height != texture.height) {
+                error = "picture command references an absent or mismatched decoded image";
+                return false;
+            }
+            if (std::find(impl_->currentImages.begin(), impl_->currentImages.end(), key) ==
+                impl_->currentImages.end()) {
+                impl_->currentImages.push_back(key);
+            }
         }
-        for (const GpuImage& image : gpuImages) {
+    }
+
+    const std::size_t vertexBytes = vertices.size() * sizeof(GpuVertex);
+    if (!ensure_vertex_storage(*impl_, vertexBytes, error))
+        return false;
+    if (vertexBytes != 0) {
+        void* mapped = SDL_MapGPUTransferBuffer(impl_->device, impl_->vertices.upload, true);
+        if (mapped == nullptr) {
+            error = std::string("picture vertex upload map failed: ") + SDL_GetError();
+            return false;
+        }
+        std::memcpy(mapped, vertices.data(), vertexBytes);
+        SDL_UnmapGPUTransferBuffer(impl_->device, impl_->vertices.upload);
+    }
+
+    for (const auto& [key, source] : sources) {
+        if (impl_->images.contains(key))
+            continue;
+        std::size_t bytes = 0;
+        (void)multiplication_fits(source->width, source->height, bytes);
+        SDL_GPUTextureCreateInfo textureInfo{};
+        textureInfo.type = SDL_GPU_TEXTURETYPE_2D;
+        textureInfo.format = kImageFormat;
+        textureInfo.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        textureInfo.width = source->width;
+        textureInfo.height = source->height;
+        textureInfo.layer_count_or_depth = 1;
+        textureInfo.num_levels = 1;
+        textureInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        const SDL_GPUTransferBufferCreateInfo uploadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                                                         static_cast<Uint32>(bytes), 0};
+        CachedImage image{source->width, source->height,
+                          SDL_CreateGPUTexture(impl_->device, &textureInfo),
+                          SDL_CreateGPUTransferBuffer(impl_->device, &uploadInfo)};
+        if (image.texture == nullptr || image.upload == nullptr) {
+            if (image.upload != nullptr)
+                SDL_ReleaseGPUTransferBuffer(impl_->device, image.upload);
             if (image.texture != nullptr)
                 SDL_ReleaseGPUTexture(impl_->device, image.texture);
+            error = std::string("picture image resource allocation failed: ") + SDL_GetError();
+            return false;
         }
-        if (download != nullptr)
-            SDL_ReleaseGPUTransferBuffer(impl_->device, download);
-        if (imageUpload != nullptr)
-            SDL_ReleaseGPUTransferBuffer(impl_->device, imageUpload);
-        if (vertexUpload != nullptr)
-            SDL_ReleaseGPUTransferBuffer(impl_->device, vertexUpload);
-        if (vertexBuffer != nullptr)
-            SDL_ReleaseGPUBuffer(impl_->device, vertexBuffer);
-        if (target != nullptr)
-            SDL_ReleaseGPUTexture(impl_->device, target);
-    };
-    if (!resourcesValid) {
-        error = std::string("picture resource allocation failed: ") + SDL_GetError();
-        release_resources();
-        return false;
+        void* mapped = SDL_MapGPUTransferBuffer(impl_->device, image.upload, false);
+        if (mapped == nullptr) {
+            SDL_ReleaseGPUTransferBuffer(impl_->device, image.upload);
+            SDL_ReleaseGPUTexture(impl_->device, image.texture);
+            error = std::string("picture image upload map failed: ") + SDL_GetError();
+            return false;
+        }
+        std::memcpy(mapped, source->rgba8.data(), bytes);
+        SDL_UnmapGPUTransferBuffer(impl_->device, image.upload);
+        impl_->pendingImages.emplace(key, image);
     }
+
+    std::vector<std::array<SDL_GPUTextureSamplerBinding, 4>> drawBindings;
+    drawBindings.reserve(frame.draws.size());
     for (const PictureDraw& draw : frame.draws) {
-        const PictureCommand& command = draw.picture;
         std::array<SDL_GPUTextureSamplerBinding, 4> bindings{};
         for (std::size_t index = 0; index < bindings.size(); ++index) {
-            const PictureTexture& texture =
-                command.material
-                    .textures[std::min<std::size_t>(index, command.material.textureCount - 1U)];
-            const auto gpu =
-                std::find_if(gpuImages.begin(), gpuImages.end(), [&](const GpuImage& image) {
-                    return image.source.resource == texture.resource &&
-                           image.source.revision == texture.revision;
-                });
-            if (gpu == gpuImages.end()) {
-                error = "picture image disappeared during binding";
-                release_resources();
+            const PictureTexture& texture = draw.picture.material.textures[std::min<std::size_t>(
+                index, draw.picture.material.textureCount - 1U)];
+            SDL_GPUSampler* sampler = ensure_sampler(*impl_, texture, error);
+            if (sampler == nullptr)
+                return false;
+            const CachedImage* image = find_image(*impl_, {texture.resource, texture.revision});
+            if (image == nullptr) {
+                error = "picture image cache lost a validated semantic resource";
                 return false;
             }
-            SDL_GPUSamplerCreateInfo info{};
-            info.min_filter = filter(texture.minFilter);
-            info.mag_filter = filter(texture.magFilter);
-            info.mipmap_mode = mip_filter(texture.mipFilter);
-            info.address_mode_u = address_mode(texture.addressU);
-            info.address_mode_v = address_mode(texture.addressV);
-            info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-            info.max_lod = 0.0f;
-            SDL_GPUSampler* sampler = SDL_CreateGPUSampler(impl_->device, &info);
-            if (sampler == nullptr) {
-                error = std::string("picture sampler creation failed: ") + SDL_GetError();
-                release_resources();
-                return false;
-            }
-            samplers.push_back(sampler);
-            bindings[index] = {gpu->texture, sampler};
+            bindings[index] = {image->texture, sampler};
         }
         drawBindings.push_back(bindings);
     }
 
-    if (vertexBytes != 0) {
-        void* mapped = SDL_MapGPUTransferBuffer(impl_->device, vertexUpload, false);
-        if (mapped == nullptr) {
-            error = std::string("picture vertex upload map failed: ") + SDL_GetError();
-            release_resources();
+    if (vertexBytes != 0 || !impl_->pendingImages.empty()) {
+        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(target.commandBuffer);
+        if (copy == nullptr) {
+            error = std::string("picture upload pass creation failed: ") + SDL_GetError();
             return false;
         }
-        std::memcpy(mapped, vertices.data(), vertexBytes);
-        SDL_UnmapGPUTransferBuffer(impl_->device, vertexUpload);
-    }
-    if (imageUploadBytes != 0) {
-        auto* mapped =
-            static_cast<std::uint8_t*>(SDL_MapGPUTransferBuffer(impl_->device, imageUpload, false));
-        if (mapped == nullptr) {
-            error = std::string("picture image upload map failed: ") + SDL_GetError();
-            release_resources();
-            return false;
-        }
-        for (const GpuImage& image : gpuImages) {
-            std::memcpy(mapped + image.uploadOffset, image.source.rgba8.data(),
-                        image.source.rgba8.size());
-        }
-        SDL_UnmapGPUTransferBuffer(impl_->device, imageUpload);
-    }
-
-    SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(impl_->device);
-    if (commandBuffer == nullptr) {
-        error = std::string("picture command acquisition failed: ") + SDL_GetError();
-        release_resources();
-        return false;
-    }
-    if (vertexBytes != 0 || imageUploadBytes != 0) {
-        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commandBuffer);
         if (vertexBytes != 0) {
-            const SDL_GPUTransferBufferLocation source{vertexUpload, 0};
-            const SDL_GPUBufferRegion destination{vertexBuffer, 0,
+            const SDL_GPUTransferBufferLocation source{impl_->vertices.upload, 0};
+            const SDL_GPUBufferRegion destination{impl_->vertices.buffer, 0,
                                                   static_cast<Uint32>(vertexBytes)};
-            SDL_UploadToGPUBuffer(copy, &source, &destination, false);
+            SDL_UploadToGPUBuffer(copy, &source, &destination, true);
         }
-        for (const GpuImage& image : gpuImages) {
-            const SDL_GPUTextureTransferInfo source{
-                imageUpload,
-                static_cast<Uint32>(image.uploadOffset),
-                image.source.width,
-                image.source.height,
-            };
-            const SDL_GPUTextureRegion destination{
-                image.texture, 0, 0, 0, 0, 0, image.source.width, image.source.height, 1};
+        for (const auto& [key, image] : impl_->pendingImages) {
+            (void)key;
+            const SDL_GPUTextureTransferInfo source{image.upload, 0, image.width, image.height};
+            const SDL_GPUTextureRegion destination{image.texture, 0, 0, 0, 0, 0, image.width,
+                                                   image.height,  1};
             SDL_UploadToGPUTexture(copy, &source, &destination, false);
         }
         SDL_EndGPUCopyPass(copy);
     }
 
     const SDL_GPUColorTargetInfo colorTarget{
-        target,
+        target.colorTexture,
         0,
         0,
         {frame.clear.r, frame.clear.g, frame.clear.b, frame.clear.a},
-        SDL_GPU_LOADOP_CLEAR,
-        SDL_GPU_STOREOP_STORE,
+        target.loadOp,
+        target.storeOp,
         nullptr,
         0,
         0,
@@ -486,12 +562,18 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         false,
         0,
         0};
-    SDL_GPURenderPass* render = SDL_BeginGPURenderPass(commandBuffer, &colorTarget, 1, nullptr);
-    SDL_BindGPUGraphicsPipeline(render, impl_->pipeline);
+    SDL_GPURenderPass* render =
+        SDL_BeginGPURenderPass(target.commandBuffer, &colorTarget, 1, nullptr);
+    if (render == nullptr) {
+        error = std::string("picture render pass creation failed: ") + SDL_GetError();
+        return false;
+    }
+    SDL_BindGPUGraphicsPipeline(render, pipeline);
     if (vertexBytes != 0) {
-        const SDL_GPUBufferBinding binding{vertexBuffer, 0};
+        const SDL_GPUBufferBinding binding{impl_->vertices.buffer, 0};
         SDL_BindGPUVertexBuffers(render, 0, &binding, 1);
     }
+
     std::size_t firstVertex = 0;
     std::size_t drawIndex = 0;
     for (const PictureDraw& draw : frame.draws) {
@@ -500,9 +582,7 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         PixelRect semanticScissor{};
         if (!resolve_scissor(draw.canvas, command.clip, frame.targetWidth, frame.targetHeight,
                              semanticScissor)) {
-            // A valid picture may be wholly outside its active clip. It contributes no pixels but
-            // remains part of ordering, so consume its vertices without treating it as malformed.
-            firstVertex += 6;
+            firstVertex += 6U;
             continue;
         }
         const SDL_Rect scissor{semanticScissor.x, semanticScissor.y,
@@ -516,8 +596,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
                                        1.0f};
         SDL_SetGPUViewport(render, &viewport);
         SDL_SetGPUScissor(render, &scissor);
-
         SDL_BindGPUFragmentSamplers(render, 0, bindings.data(), bindings.size());
+
         PictureStyleUniform style{};
         assign(style.black, command.material.black);
         assign(style.white, command.material.white);
@@ -533,14 +613,122 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
         style.opacity[0] = command.opacity;
         const CanvasUniform canvas{{draw.canvas.origin.x, draw.canvas.origin.y},
                                    {draw.canvas.extent.x, draw.canvas.extent.y}};
-        SDL_PushGPUVertexUniformData(commandBuffer, 0, &canvas, sizeof(canvas));
-        SDL_PushGPUFragmentUniformData(commandBuffer, 0, &style, sizeof(style));
+        SDL_PushGPUVertexUniformData(target.commandBuffer, 0, &canvas, sizeof(canvas));
+        SDL_PushGPUFragmentUniformData(target.commandBuffer, 0, &style, sizeof(style));
         SDL_DrawGPUPrimitives(render, 6, 1, firstVertex, 0);
-        firstVertex += 6;
+        firstVertex += 6U;
     }
     SDL_EndGPURenderPass(render);
+    impl_->encodeSucceeded = true;
+    return true;
+}
+
+bool PicturePass::complete_encode(bool submitted, std::string& error) noexcept {
+    error.clear();
+    if (impl_ == nullptr || !impl_->encodeActive) {
+        error = "no picture encode is awaiting completion";
+        return false;
+    }
+    if (submitted && !impl_->encodeSucceeded) {
+        error = "failed picture encode cannot be committed as submitted";
+        return false;
+    }
+
+    if (submitted) {
+        for (auto& [key, image] : impl_->pendingImages) {
+            (void)key;
+            SDL_ReleaseGPUTransferBuffer(impl_->device, image.upload);
+            image.upload = nullptr;
+        }
+        impl_->images.merge(impl_->pendingImages);
+        for (auto it = impl_->images.begin(); it != impl_->images.end();) {
+            if (std::find(impl_->currentImages.begin(), impl_->currentImages.end(), it->first) !=
+                impl_->currentImages.end()) {
+                ++it;
+                continue;
+            }
+            release_image(impl_->device, it->second);
+            it = impl_->images.erase(it);
+        }
+    } else {
+        for (const auto& [key, image] : impl_->pendingImages) {
+            (void)key;
+            release_image(impl_->device, image);
+        }
+        impl_->pendingImages.clear();
+    }
+    impl_->currentImages.clear();
+    impl_->encodeActive = false;
+    impl_->encodeSucceeded = false;
+    return true;
+}
+
+std::size_t PicturePass::resident_image_count() const noexcept {
+    return impl_ != nullptr ? impl_->images.size() : 0;
+}
+
+bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePixels& output,
+                                      std::string& error) {
+    error.clear();
+    output = {};
+    if (!initialize(error))
+        return false;
+    std::size_t readbackBytes = 0;
+    if (!multiplication_fits(frame.targetWidth, frame.targetHeight, readbackBytes)) {
+        error = "picture target exceeds SDL GPU limits";
+        return false;
+    }
+
+    SDL_GPUTextureCreateInfo targetInfo{};
+    targetInfo.type = SDL_GPU_TEXTURETYPE_2D;
+    targetInfo.format = kImageFormat;
+    targetInfo.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    targetInfo.width = frame.targetWidth;
+    targetInfo.height = frame.targetHeight;
+    targetInfo.layer_count_or_depth = 1;
+    targetInfo.num_levels = 1;
+    targetInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* target = SDL_CreateGPUTexture(impl_->device, &targetInfo);
+    const SDL_GPUTransferBufferCreateInfo downloadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+                                                       static_cast<Uint32>(readbackBytes), 0};
+    SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(impl_->device, &downloadInfo);
+    if (target == nullptr || download == nullptr) {
+        if (download != nullptr)
+            SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+        if (target != nullptr)
+            SDL_ReleaseGPUTexture(impl_->device, target);
+        error = std::string("picture readback resource allocation failed: ") + SDL_GetError();
+        return false;
+    }
+
+    SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(impl_->device);
+    if (commandBuffer == nullptr) {
+        SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+        SDL_ReleaseGPUTexture(impl_->device, target);
+        error = std::string("picture command acquisition failed: ") + SDL_GetError();
+        return false;
+    }
+    const PicturePassTarget passTarget{commandBuffer, target, kImageFormat, SDL_GPU_LOADOP_CLEAR,
+                                       SDL_GPU_STOREOP_STORE};
+    if (!encode(frame, passTarget, error)) {
+        SDL_CancelGPUCommandBuffer(commandBuffer);
+        std::string completionError;
+        (void)complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+        SDL_ReleaseGPUTexture(impl_->device, target);
+        return false;
+    }
 
     SDL_GPUCopyPass* downloadPass = SDL_BeginGPUCopyPass(commandBuffer);
+    if (downloadPass == nullptr) {
+        error = std::string("picture readback pass creation failed: ") + SDL_GetError();
+        SDL_CancelGPUCommandBuffer(commandBuffer);
+        std::string completionError;
+        (void)complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+        SDL_ReleaseGPUTexture(impl_->device, target);
+        return false;
+    }
     const SDL_GPUTextureRegion source{target, 0, 0, 0, 0, 0, frame.targetWidth, frame.targetHeight,
                                       1};
     const SDL_GPUTextureTransferInfo destination{download, 0, frame.targetWidth,
@@ -551,21 +739,34 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
     if (fence == nullptr) {
         error = std::string("picture submit failed: ") + SDL_GetError();
-        release_resources();
+        std::string completionError;
+        (void)complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+        SDL_ReleaseGPUTexture(impl_->device, target);
+        return false;
+    }
+    std::string completionError;
+    if (!complete_encode(true, completionError)) {
+        error = std::string("picture cache commit failed after submit: ") + completionError;
+        SDL_ReleaseGPUFence(impl_->device, fence);
+        SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+        SDL_ReleaseGPUTexture(impl_->device, target);
         return false;
     }
     const bool completed = wait_for_fence(impl_->device, fence);
     SDL_ReleaseGPUFence(impl_->device, fence);
     if (!completed) {
-        error = "picture pass GPU fence did not signal within five seconds";
-        // A non-progressing device owns resource reclamation; do not issue further calls here.
-        return false;
+        // A non-progressing device owns reclamation. Returning would run this pass's destructor
+        // and issue more SDL GPU calls against the same stuck device, so fail at the observed
+        // boundary and let the guarded launcher terminate the exact process.
+        std::terminate();
     }
 
     void* mapped = SDL_MapGPUTransferBuffer(impl_->device, download, false);
     if (mapped == nullptr) {
         error = std::string("picture readback map failed: ") + SDL_GetError();
-        release_resources();
+        SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+        SDL_ReleaseGPUTexture(impl_->device, target);
         return false;
     }
     output.width = frame.targetWidth;
@@ -573,7 +774,8 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     output.rgba8.resize(readbackBytes);
     std::memcpy(output.rgba8.data(), mapped, readbackBytes);
     SDL_UnmapGPUTransferBuffer(impl_->device, download);
-    release_resources();
+    SDL_ReleaseGPUTransferBuffer(impl_->device, download);
+    SDL_ReleaseGPUTexture(impl_->device, target);
     return true;
 }
 

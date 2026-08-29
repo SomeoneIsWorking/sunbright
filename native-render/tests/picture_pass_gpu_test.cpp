@@ -1,4 +1,5 @@
 #include <sunbright/native_render/picture_pass.h>
+#include <sunbright/native_render/sdl_gpu_frame_target.h>
 
 #include <SDL3/SDL.h>
 
@@ -6,8 +7,10 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -19,6 +22,8 @@ using sb::native_render::PictureFrame;
 using sb::native_render::PictureFramePixels;
 using sb::native_render::PicturePass;
 using sb::native_render::PictureTexture;
+using sb::native_render::SdlGpuFrameTarget;
+using sb::native_render::SdlGpuPlatform;
 using sb::native_render::Vec2;
 
 Color pixel(const PictureFramePixels& frame, std::uint32_t x, std::uint32_t y) {
@@ -60,6 +65,81 @@ PictureCommand command() {
     return picture;
 }
 
+bool encode_and_readback(PicturePass& pass, const PictureFrame& frame,
+                         const SdlGpuFrameTarget& target, PictureFramePixels& output,
+                         std::string& error) {
+    SDL_GPUDevice* device = target.device();
+    SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(device);
+    const std::size_t byteCount =
+        static_cast<std::size_t>(frame.targetWidth) * frame.targetHeight * 4;
+    const SDL_GPUTransferBufferCreateInfo downloadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+                                                       static_cast<Uint32>(byteCount), 0};
+    SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(device, &downloadInfo);
+    if (commandBuffer == nullptr || download == nullptr) {
+        if (commandBuffer != nullptr)
+            SDL_CancelGPUCommandBuffer(commandBuffer);
+        if (download != nullptr)
+            SDL_ReleaseGPUTransferBuffer(device, download);
+        error = std::string("GPU control resource creation failed: ") + SDL_GetError();
+        return false;
+    }
+    const sb::native_render::PicturePassTarget passTarget{
+        commandBuffer, target.color(), target.desc().colorFormat, SDL_GPU_LOADOP_CLEAR,
+        SDL_GPU_STOREOP_STORE};
+    if (!pass.encode(frame, passTarget, error)) {
+        SDL_CancelGPUCommandBuffer(commandBuffer);
+        std::string completionError;
+        (void)pass.complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        return false;
+    }
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commandBuffer);
+    if (copy == nullptr) {
+        SDL_CancelGPUCommandBuffer(commandBuffer);
+        std::string completionError;
+        (void)pass.complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        error = std::string("GPU control copy pass failed: ") + SDL_GetError();
+        return false;
+    }
+    const SDL_GPUTextureRegion source{target.color(),     0, 0, 0, 0, 0, frame.targetWidth,
+                                      frame.targetHeight, 1};
+    const SDL_GPUTextureTransferInfo destination{download, 0, frame.targetWidth,
+                                                 frame.targetHeight};
+    SDL_DownloadFromGPUTexture(copy, &source, &destination);
+    SDL_EndGPUCopyPass(copy);
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
+    if (fence == nullptr) {
+        std::string completionError;
+        (void)pass.complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        error = std::string("GPU control submit failed: ") + SDL_GetError();
+        return false;
+    }
+    if (!pass.complete_encode(true, error)) {
+        SDL_ReleaseGPUFence(device, fence);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        return false;
+    }
+    SDL_GPUFence* fences[] = {fence};
+    const bool waited = SDL_WaitForGPUFences(device, true, fences, 1);
+    SDL_ReleaseGPUFence(device, fence);
+    if (!waited) {
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        return false;
+    }
+    void* mapped = SDL_MapGPUTransferBuffer(device, download, false);
+    if (mapped == nullptr) {
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        return false;
+    }
+    output = {frame.targetWidth, frame.targetHeight, std::vector<std::uint8_t>(byteCount)};
+    std::memcpy(output.rgba8.data(), mapped, byteCount);
+    SDL_UnmapGPUTransferBuffer(device, download);
+    SDL_ReleaseGPUTransferBuffer(device, download);
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -67,12 +147,22 @@ int main() {
         std::cerr << "SKIP: SDL video unavailable: " << SDL_GetError() << '\n';
         return 77;
     }
-    SDL_GPUDevice* device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, nullptr);
-    if (device == nullptr) {
-        std::cerr << "SKIP: SDL GPU device unavailable: " << SDL_GetError() << '\n';
+    SDL_Window* window =
+        SDL_CreateWindow("Sunbright semantic GPU control", 64, 64, SDL_WINDOW_HIDDEN);
+    SdlGpuPlatform platform;
+    std::string platformError;
+    if (window == nullptr || !platform.initialize(window, {}, platformError)) {
+        std::cerr << "SKIP: SDL GPU platform unavailable: "
+                  << (platformError.empty() ? SDL_GetError() : platformError) << '\n';
+        if (window != nullptr)
+            SDL_DestroyWindow(window);
         SDL_Quit();
         return 77;
     }
+    SdlGpuFrameTarget target;
+    assert(
+        target.initialize(platform, {.width = 16, .height = 16, .hasDepth = false}, platformError));
+    SDL_GPUDevice* device = platform.device();
 
     // 2x2 RGBA: red, green / blue, half-alpha white. Nearest sampling makes each quadrant an
     // unmistakable known-positive; the clip rectangle proves the production scissor conversion.
@@ -92,7 +182,8 @@ int main() {
         PicturePass pass(device);
         std::string error;
         PictureFramePixels first{};
-        assert(pass.render_and_readback(frame, first, error) && error.empty());
+        assert(encode_and_readback(pass, frame, target, first, error) && error.empty());
+        assert(pass.resident_image_count() == 1);
         require_color(pixel(first, 1, 1), {});
         require_color(pixel(first, 5, 5), {1, 0, 0, 1});
         require_color(pixel(first, 10, 5), {0, 1, 0, 1});
@@ -138,10 +229,13 @@ int main() {
         draw.picture.material.textures[0].revision = 1;
         PictureFramePixels changed{};
         assert(pass.render_and_readback(frame, changed, error) && error.empty());
+        assert(pass.resident_image_count() == 1);
         assert(hash(changed) != hash(first));
         require_color(pixel(changed, 5, 5), {0, 0, 1, 1});
     }
 
-    SDL_DestroyGPUDevice(device);
+    target.shutdown();
+    assert(platform.shutdown(platformError));
+    SDL_DestroyWindow(window);
     SDL_Quit();
 }

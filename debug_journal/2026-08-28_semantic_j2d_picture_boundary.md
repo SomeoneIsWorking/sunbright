@@ -71,6 +71,36 @@ coalesced only when dimensions and bytes agree; disagreement is a producer error
 Seal exposes stable spans until the next frame begins. Controls mutate the caller's source after
 submission, exercise duplicate and changed-revision answers, and force every capacity and lifecycle
 failure. A guarded SDL3 control uses a nonzero physical sub-viewport and must differ from the same
-logical draw on the full canvas. Neither runtime installs the collector yet: direct
-`J2DPicture::draw` calls bypass the screen scope, and a picture-only overlay would lose ordering
-against J2D text, windows, fills, and 3D passes.
+logical draw on the full canvas. Direct `J2DPicture::draw` calls bypass the screen scope, and a
+picture-only overlay would lose ordering against J2D text, windows, fills, and 3D passes.
+
+## Exact frame seams and shared GPU ownership (2026-08-30)
+
+Both runtimes now call a common `SemanticFrameBridge` at their real frame boundaries. The first
+recomp attempt sealed before the retained `JDrama::TVideo::waitForRetrace` body. That was not the
+frame boundary: retained wait and guest-scheduler work can still publish draws. Seal now happens in
+`present_tail` immediately before `gxfifo_build()`, after that work, and the next begin happens only
+after optional subframe presentations. The decomp begins at `sb_frame_seam_start`, seals inside the
+host-allocation gate at `sb_frame_present`, and begins again after Aurora starts the next frame.
+
+The bridge owns the picture sink through a lease instead of a raw setter. This fixes two authority
+failures in the initial design: a second owner could silently steal the collector, and an unrelated
+caller could clear it. Begin/seal remain successful no-ops while inactive; no runtime activates the
+bridge yet. Consequently this is an exact frame/lifetime seam, not evidence that a semantic frame is
+visible.
+
+The initial SDL host split also had multiple lifetime defects: it retained pointers to caller-owned
+dispatch tables, initialized SDL video behind the host's back, exposed an unsupported sample-count
+knob, allowed platform shutdown while targets still referenced the device, and duplicated the
+recomp compatibility presenter's device/window authority. The shared platform now copies its call
+table, requires host-owned SDL video initialization, fixes semantic targets at sample count one,
+refuses shutdown with live targets, and owns the sole window claim/presenter. The compatibility
+renderer consumes the same platform with its own target; the old presenter implementation is gone.
+
+`PicturePass::encode` now borrows the host command buffer and target. Resource publication is a
+transaction: newly staged textures enter the resident cache only after the caller confirms submit,
+and cancellation rolls them back. Entries not referenced by the submitted current frame are
+evicted, preventing every historical content revision from accumulating forever. A watched sRGB
+GPU control exercises submit and changed-revision residency, and the migrated GX compatibility path
+completed 130 presents plus four exact-frame Aurora joins without a kernel GPU fault. Neither result
+activates or presents a semantic runtime frame; host composition is the next ownership step.

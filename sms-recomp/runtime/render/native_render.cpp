@@ -20,12 +20,13 @@
 #include "native_gpu_admission.h"
 #include "native_gpu_guard.h"
 #include "native_gpu_pipeline.h"
-#include "native_presenter.h"
 #include "native_raster_state.h"
 #include "native_render_pass.h"
 #include "native_tev_uniform.h"
 
 #include "app/settings.h"
+
+#include <sunbright/native_render/sdl_gpu_frame_target.h>
 
 #include <lucent/log.h>
 
@@ -58,6 +59,8 @@ uint64_t g_cullAllDrawsDropped = 0;
 uint64_t g_cullAllVerticesDropped = 0;
 bool g_tried = false, g_ok = false;
 SDL_Window* g_presentWindow = nullptr;
+sb::native_render::SdlGpuPlatform g_gpuPlatform;
+sb::native_render::SdlGpuFrameTarget g_frameTarget;
 
 std::vector<uint8_t> g_cpu; // last frame read back, top-left origin RGBA8
 
@@ -493,7 +496,7 @@ void sbr_render_set_present_window(SDL_Window* window) {
 }
 
 void sbr_render_set_present_aspect(unsigned width, unsigned height) {
-    sbr_native_presenter_set_aspect(width, height);
+    g_gpuPlatform.set_present_aspect(width, height);
 }
 
 bool sbr_render_init(int w, int h) {
@@ -531,43 +534,28 @@ bool sbr_render_init(int w, int h) {
         bool committed = false;
     } attempt;
 
-    // Aurora has already SDL_Init'd video (it owns the window); this reuses that. SDL3 GPU runs its
-    // own Vulkan instance independent of aurora's Dawn, so the two devices coexist in the process.
-    if (!SDL_WasInit(SDL_INIT_VIDEO) && !SDL_InitSubSystem(SDL_INIT_VIDEO)) {
-        lucent::error("nrender", "SDL_InitSubSystem(VIDEO) failed: {}", SDL_GetError());
+    // The shared platform is the one SDL GPU device/window/presenter authority used by both the GX
+    // compatibility client and the semantic client. Aurora owns SDL video and lends its window.
+    std::string platformError;
+    if (!g_gpuPlatform.initialize(g_presentWindow, {}, platformError)) {
+        lucent::error("nrender", "SDL GPU platform initialization failed: {}", platformError);
         return false;
     }
-    g_dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, /*debug=*/true, nullptr);
-    if (g_dev == nullptr) {
-        lucent::error("nrender", "SDL_CreateGPUDevice failed: {}", SDL_GetError());
-        return false;
-    }
+    g_dev = g_gpuPlatform.device();
     sbr_native_gpu_guard_set_device(g_dev);
-    if (!sbr_native_presenter_initialize(g_dev, g_presentWindow)) {
-        lucent::error("nrender", "native swapchain claim failed: {}", SDL_GetError());
+    const sb::native_render::SdlGpuFrameTargetDesc targetDesc{
+        .width = static_cast<std::uint32_t>(w),
+        .height = static_cast<std::uint32_t>(h),
+        .colorFormat = kNativeColorFormat,
+        .depthFormat = kNativeDepthFormat,
+    };
+    if (!g_frameTarget.initialize(g_gpuPlatform, targetDesc, platformError)) {
+        lucent::error("nrender", "GX compatibility target initialization failed: {}",
+                      platformError);
         return false;
     }
-
-    SDL_GPUTextureCreateInfo cci{};
-    cci.type = SDL_GPU_TEXTURETYPE_2D;
-    cci.format = kNativeColorFormat;
-    cci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    cci.width = (Uint32)w;
-    cci.height = (Uint32)h;
-    cci.layer_count_or_depth = 1;
-    cci.num_levels = 1;
-    cci.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    g_color = SDL_CreateGPUTexture(g_dev, &cci);
-
-    SDL_GPUTextureCreateInfo dci = cci;
-    dci.format = kNativeDepthFormat;
-    dci.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-    g_depth = SDL_CreateGPUTexture(g_dev, &dci);
-
-    if (g_color == nullptr || g_depth == nullptr) {
-        lucent::error("nrender", "target texture create failed: {}", SDL_GetError());
-        return false;
-    }
+    g_color = g_frameTarget.color();
+    g_depth = g_frameTarget.depth();
 
     SDL_GPUTransferBufferCreateInfo tbci{};
     tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
@@ -1053,12 +1041,12 @@ bool render_pass(uint32_t ablation, bool download, bool present) {
     }
 
     if (present) {
-        const NativePresentResult result = sbr_native_presenter_encode(
-            cmd, g_color, static_cast<unsigned>(g_w), static_cast<unsigned>(g_h));
-        if (result == NativePresentResult::Failed) {
+        std::string presentError;
+        const sb::native_render::PresentResult result = g_gpuPlatform.encode_present(
+            cmd, g_color, static_cast<unsigned>(g_w), static_cast<unsigned>(g_h), presentError);
+        if (result == sb::native_render::PresentResult::Failed) {
             SDL_CancelGPUCommandBuffer(cmd);
-            sbr_native_gpu_disable(
-                std::string("native swapchain acquire failed: ").append(SDL_GetError()).c_str());
+            sbr_native_gpu_disable(presentError.c_str());
             return false;
         }
     }
@@ -1519,8 +1507,8 @@ void sbr_render_guard_selftest() {
     //
     //     SBR_GPU_FENCE_TIMEOUT=0 SBR_RENDERER=native ...
     //
-    // which must print "the GPU has not signalled its fence in 0.0s" followed by "NATIVE RENDERER
-    // DISABLED FOR THE REST OF THIS RUN", and must then complete normally with aurora presenting.
+    // which must print the 0.0s fence timeout followed by "GX COMPATIBILITY RENDERER DISABLED FOR
+    // THE REST OF THIS RUN", and must then complete normally with aurora presenting.
     // Verified on 2026-08-12; see debug_journal/2026-08-12_gpu_hang_guards.md.
     lucent::info("nrender", "GUARD SELF-TEST fence: NOT COVERED by this test — the budget is "
                             "cached before this point. Run with SBR_GPU_FENCE_TIMEOUT=0 to "
@@ -1663,17 +1651,14 @@ void sbr_render_shutdown() noexcept {
             SDL_ReleaseGPUBuffer(g_dev, g_vbuf);
         if (g_dl != nullptr)
             SDL_ReleaseGPUTransferBuffer(g_dev, g_dl);
-        if (g_depth != nullptr)
-            SDL_ReleaseGPUTexture(g_dev, g_depth);
-        if (g_color != nullptr)
-            SDL_ReleaseGPUTexture(g_dev, g_color);
     }
 
     sbr_native_gpu_pipeline_shutdown();
-    sbr_native_presenter_shutdown();
+    g_frameTarget.shutdown();
     sbr_native_gpu_guard_set_device(nullptr);
-    if (g_dev != nullptr)
-        SDL_DestroyGPUDevice(g_dev);
+    std::string platformError;
+    if (!g_gpuPlatform.shutdown(platformError))
+        lucent::error("nrender", "SDL GPU platform shutdown refused: {}", platformError);
 
     g_dev = nullptr;
     g_color = nullptr;

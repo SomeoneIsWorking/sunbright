@@ -37,11 +37,12 @@ void sbr_native_gpu_disable(const char* reason) {
         std::fprintf(stamp, "%s\n", reason);
         std::fclose(stamp);
     }
-    lucent::error("nrender",
-                  "NATIVE RENDERER DISABLED FOR THE REST OF THIS RUN: {}. Everything this path "
-                  "would submit from here is dropped. It renders offscreen and is only scored "
-                  "against aurora, so the displayed frame is unaffected.",
-                  reason);
+    lucent::error(
+        "nrender",
+        "GX COMPATIBILITY RENDERER DISABLED FOR THE REST OF THIS RUN: {}. Everything this path "
+        "would submit from here is dropped. It renders offscreen and is only scored "
+        "against aurora, so the displayed frame is unaffected.",
+        reason);
 }
 
 bool sbr_native_gpu_dead() noexcept {

@@ -145,7 +145,7 @@ target_link_libraries(sms-recomp-rt PUBLIC lucent::lucent nod::nod aurora::gx au
 # never extracted and the weak symbol silently stays null. That is precisely the failure it was
 # added to fix, so it must be linked unconditionally.
 add_executable(sms-recomp host/main.cpp host/aurora_config.cpp host/dol_loader.cpp runtime/sb_log.cpp runtime/gpu_incident_recorder.cpp runtime/gpu_incident_report.cpp runtime/render/tev_eval.cpp runtime/probe_server.cpp
-                           runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_efb_copy_clear_draw.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_presenter.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
+                           runtime/render/native_render.cpp runtime/render/native_efb_copy_plan.cpp runtime/render/native_efb_copy_clear_draw.cpp runtime/render/native_gpu_admission.cpp runtime/render/native_gpu_guard.cpp runtime/render/native_gpu_pipeline.cpp runtime/render/native_tev_uniform.cpp runtime/render/scene.cpp runtime/render/scene_geometry.cpp runtime/render/gx_light.cpp runtime/render/gx_texgen.cpp runtime/render/j3d_decode.cpp runtime/render/gx_texture.cpp runtime/render/state_oracle.cpp
                            runtime/render/render_compare.cpp runtime/render/render_compare_join.cpp runtime/render/render_compare_metric.cpp runtime/render/frame_smoothness.cpp)
 # -rdynamic puts func_<addr> into the dynamic symbol table so rt_dump_guest_stack can
 # name the guest frames. Recompiled bodies nest on the host stack, so the host backtrace
@@ -154,7 +154,7 @@ target_link_options(sms-recomp PRIVATE -rdynamic)
 target_link_libraries(sms-recomp PRIVATE sms-recomp-rt sms-recomp-guest
                       sms-recomp-overrides sms-recomp-frame-interp sms-recomp-bse
                       sms-recomp-app sms-recomp-ui
-                      sunbright-native-render-core
+                      sunbright-native-render-sdl3
                       lucent::lucent
                       # aurora_core and aurora_gx reference each other, so both must be on
                       # the link line together for the static archives to resolve.
@@ -234,12 +234,6 @@ add_executable(native_efb_copy_plan_test tests/native_efb_copy_plan_test.cpp
                                          runtime/render/native_efb_copy_clear_draw.cpp)
 target_include_directories(native_efb_copy_plan_test PRIVATE runtime/render)
 add_test(NAME native_efb_copy_plan COMMAND native_efb_copy_plan_test)
-
-add_executable(native_presenter_test tests/native_presenter_test.cpp
-                                     runtime/render/native_presenter.cpp)
-target_link_libraries(native_presenter_test PRIVATE SDL3::SDL3)
-target_include_directories(native_presenter_test PRIVATE runtime/render)
-add_test(NAME native_presenter COMMAND native_presenter_test)
 
 add_executable(native_tev_uniform_test tests/native_tev_uniform_test.cpp
                                        runtime/render/native_tev_uniform.cpp

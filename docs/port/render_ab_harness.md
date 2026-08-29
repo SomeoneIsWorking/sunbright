@@ -1,65 +1,61 @@
-# Native-renderer A/B harness (ngx vs Dolphin-GX), same game state
+# GX-compatibility/Aurora exact-frame A/B harness
 
-The only trustworthy way to judge native-renderer (ngx) fidelity is **rendered pixels from the
-same game state**, ngx vs an oracle. This doc is the canonical recipe + why it's valid.
+This harness scores the retained SDL3-GPU GX compatibility renderer against Aurora's rendering of
+the same recomp GX stream. It is reference tooling. It does not exercise or score the PC-native
+semantic renderer owned by `native-render/`, and compatibility parity is not a G003/G004 success
+condition.
 
-## TL;DR — use `tools/render/gpshot`
+## Bounded control run
+
+Run through the guarded launcher; it supplies the required headless, muted, fastboot, capture, and
+texture settings as one invariant policy:
+
+```bash
+SBR_RENDER_APPROVED=1 ./run-render.sh \
+  SBR_FRAME_RATE=native-60 \
+  SBR_AB=1 \
+  SBR_AB_EVERY=30 \
+  SBR_AB_SELFTEST=1 \
+  SBR_AB_AT=3 \
+  SBR_QUIT_AFTER=130 \
+  SBR_LUCENT_DEBUG=ab
 ```
-tools/render/gpshot                 # FASTBOOT -> Delfino gameplay, zero-drift GX-vs-ngx A/B + region delta
-tools/render/gpshot --fs            # AUTOSTART -> file-select (the shredded skinned-Mario case)
-tools/render/gpshot --fs '/ngxskip?ti=10'   # apply probe cmds before the capture (isolate a material)
+
+`run-render.sh` delegates policy to `tools/render/run_render.py`, which forces the compatibility
+renderer, headless output, muted audio, Delfino fastboot, J3D capture, texture publication, a
+60-Hz submission ceiling, and the kernel GPU watcher. It refuses to start without the explicit
+`SBR_RENDER_APPROVED=1` acknowledgement.
+
+## What makes a result valid
+
+The Aurora frame sink publishes an exact frame ID. The join reserves that ID before closing the
+Aurora packet, then accepts the compatibility baseline and delayed Aurora readback only under that
+same key. Unknown, duplicate, missing, or capacity-exhausted IDs are refusals; callback order is not
+used as identity.
+
+With `SBR_AB_SELFTEST=1`, the metric must first score a non-degenerate Aurora image against itself
+at edgeIoU 100% and luma correlation +1.000. Until that control passes, A/B verdicts are suppressed.
+The useful per-frame lines are `[ab] #N frame=...`; compare aggregate runs only on:
+
+```text
+=== COMPARABLE @ N=... === exact Aurora frame IDs (compare runs on THIS line)
 ```
-Output: `scratch/screenshots/ab2.gx.png` (oracle) + `ab2.ngx.png` (native) + a per-region mean
-pixel delta. Both PNGs are the **same present**.
 
-## Why `/abshot2` is a VALID same-state comparison (not a desync confound)
-`/abshot2` arms a dual capture in `Present.cpp::ProcessFrameDumping`: in ONE present it writes the
-Dolphin GX XFB (`ab2.gx.ppm`) and the native ngx texture (`ab2.ngx.ppm`).
+`SBR_AB_AT` fixes the sample count for that line. Running means at different sample counts cover
+different scene frames and are not comparable.
 
-1. **Single core.** One recomp CPU produces the frame; both renderers consume the SAME frame. A
-   single core cannot drift from itself — this is strictly better than syncing two processes (the
-   old `gp launch both` + `pad start` method drifted in animation phase = the "wash confound").
-2. **Untainted oracle (code-proven).** The ngx capture is pure-observer: `J3DShape::draw`
-   (0x802e0390) runs the **real draw first** then observes; every GX-state override
-   (`gxloadposmtximm`, `gxloadposmtxindx`, `gxsetchanctrl`, `gxsetchanmatcolor`, `gxsetchanambcolor`,
-   …) captures for ngx and then **super-calls the real recomp function** (`o(cpu)`). So Dolphin's GX
-   command stream is identical to a pure run; `ab2.gx.ppm` == what vanilla Dolphin-GX would render.
-3. **Atomic same present.** Both PPMs are written in the same `ProcessFrameDumping` call.
-4. **Self-certifying liveness.** `/abshot2` reports `ngx_frame=N` (the published ngx snapshot id).
-   Two successive live captures should show N advancing; if N is stuck, the snapshot is stale (a
-   no-3D frame kept the last buffer) — distrust that A/B.
+## Operation attribution
 
-`/ngxfreeze?on=1` latches the snapshot so you can flip debug modes/isolation on the SAME geometry
-across many probe calls (it holds the GX XFB captured at freeze + re-renders ngx from the frozen
-J3D snapshot).
+`SBR_ABLATE=1` additionally renders one round-robin neutral-operation variant per selected frame.
+Each delta is variant-minus-baseline against the same Aurora frame. The named `control:no-op`
+variant must byte-match its exact-frame baseline before any attribution table is published. Rows
+still sample different scene frames until their populations match, and the table names variants it
+has not sampled; treat cross-row ranking as exploratory.
 
-### What abshot2 does NOT answer
-The GX oracle renders **our recomp's** GX stream. So abshot2 tests *ngx renderer vs Dolphin-GX of
-the same recomp output*. It does NOT tell you whether the **recomp** computed the right geometry in
-the first place. If `ab2.gx.ppm` ALSO shows the defect (e.g. shredded Mario), the bug is in the
-recomp (game logic), not the renderer — switch to a recomp-vs-JIT comparison
-(`SUNBRIGHT_DISABLE_RECOMP` oracle / `SUNBRIGHT_DIFF`).
+## Coverage limits
 
-## Sandboxed-Bash gotchas (these broke every naive launch attempt)
-The game binary + probe HTTP both need network/GPU, which the Claude Bash **sandbox blocks
-silently** (curl returns empty, launch exits 1 with NO output). Rules that actually work:
-- Run launches/curls with the Bash sandbox **disabled** (`dangerouslyDisableSandbox`).
-- The game must run in the **foreground** of the call — launching it with `&` aborts the call.
-  `gpshot` runs the game foreground and puts the *capturer* (poll → freeze → abshot2 → kill) in a
-  background subshell.
-- **Never** `pkill -f "build/sunbright"` — that substring matches the driving shell and kills the
-  whole call. Kill ONLY by exact name: `pkill -x sunbright`.
-- A new foreground Bash call **kills a prior `run_in_background` game task**, so do launch + wait +
-  capture all in ONE call (that's what `gpshot` is).
-- Stale instances squat probe port 17654 and serve the OLD binary — `gpshot` pkills first.
-
-## Two-process / save-state sync (the "both cores" ask) — status
-A genuinely independent second core synced via save-state is the canonical "two cores, same state"
-tool, but on the native path it is currently blocked:
-- `State::LoadAs` from the SDL thread deadlocks against the governor-parked CPU thread; the in-code
-  fix is to run the load on the CPU thread (but `Core::RunOnCPUThread` jobs aren't serviced by our
-  recomp loop — it doesn't poll the CPU job queue).
-- A Dolphin save-state does NOT contain our recomp execution state (native call stack / nthr
-  scheduler), so a loaded state can't be cleanly resumed to render a frame.
-For render fidelity, `/abshot2` (single core) is the correct and superior mechanism. A two-process
-save-state sync's real value is recomp-vs-JIT *game-state* comparison, not renderer comparison.
+This instrument answers whether the project-owned GX compatibility implementation reproduces the
+structure of Aurora's rendering of the same recomp command stream. It does not prove that guest game
+logic emitted the right scene, does not compare recomp state with the decomp runtime, and does not
+cover the semantic renderer. A field or operation absent from the sampled scene is unmeasured, not
+correct. A clean launcher exit also requires the GPU watcher to report no new kernel fault.

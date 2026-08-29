@@ -22,6 +22,7 @@
 #include "app/frame_rate.h"
 #include "overrides.h"
 #include "ui/runtime.h"
+#include <sunbright/native_render/semantic_frame_bridge.h>
 
 // Declared rather than included: aurora's gfx headers are internal to the library, and the recomp
 // links it statically so the symbol resolves directly. Same approach lerp60.cpp uses for aurora's
@@ -991,6 +992,14 @@ void present_tail(CPUState& cpu) {
         sbr_afterimage_tick();
     if (sbr_lerp_enabled())
         sbr_gxfifo_view_matrix();
+    // Seal at the real simulation-frame close. The retained wait body above can drain guest work
+    // through VIWaitForRetrace, so sealing before that body would omit semantic commands which the
+    // corresponding GX stream still includes. Interpolation re-entry never reaches present_tail.
+    auto& semanticFrame = sb::native_render::semantic_frame_bridge();
+    if (!semanticFrame.seal()) {
+        lucent::error("frame", "semantic frame seal failed: {}", semanticFrame.last_error());
+        std::abort();
+    }
     // Close only after the view-matrix extension is emitted. Building first put that command at
     // the front of the next frame, so camera state and geometry came from different ticks.
     gxfifo_build();
@@ -1079,6 +1088,13 @@ void present_tail(CPUState& cpu) {
             aurora_replay_midpoint();
             present_and_reopen(*s_active);
         });
+    }
+
+    // Sub-frame redraws are presentation samples of the sealed simulation tick, not new semantic
+    // frames. Open the next collector only after every optional interpolation redraw is complete.
+    if (!semanticFrame.begin()) {
+        lucent::error("frame", "semantic frame begin failed: {}", semanticFrame.last_error());
+        std::abort();
     }
 
     // Sampled AFTER the present, and stamped with aurora's OWN tick counter rather than one

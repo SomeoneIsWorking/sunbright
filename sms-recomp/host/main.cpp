@@ -19,6 +19,7 @@
 #include "overrides/native_frame.h"
 #include "ui/runtime.h"
 #include "ui/ui.h"
+#include <sunbright/native_render/semantic_frame_bridge.h>
 
 #include <aurora/aurora.h>
 
@@ -294,6 +295,11 @@ int main(int argc, char** argv) {
     }
     sbr_frame_set_initial_active(true);
     runtimeOwner.set_frame_active();
+    auto& semanticFrame = sb::native_render::semantic_frame_bridge();
+    if (!semanticFrame.begin()) {
+        lucent::error("frame", "semantic frame begin failed: {}", semanticFrame.last_error());
+        return 1;
+    }
 
     lucent::info("rt", "entering recompiled code at 0x{:08x}", dol.entry);
     // Run on the scheduler's copy, not the local one: gsched_create seeds new threads with

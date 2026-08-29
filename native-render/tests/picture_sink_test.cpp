@@ -39,12 +39,12 @@ int main() {
     const std::array<std::uint8_t, 4> rgba{1, 2, 3, 4};
     const sb::native_render::DecodedImageView image{
         .resource = 1, .width = 1, .height = 1, .rgba8 = rgba};
-    sb::native_render::set_picture_sink({});
     assert(!sb::native_render::has_picture_sink());
     assert(!sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
 
     std::uint64_t received = 0;
-    sb::native_render::set_picture_sink({receive, &received});
+    sb::native_render::PictureSinkLease lease;
+    assert(sb::native_render::claim_picture_sink({receive, &received}, lease));
     assert(sb::native_render::has_picture_sink());
     assert(sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
     assert(received == 7);
@@ -65,8 +65,9 @@ int main() {
     assert(!sb::native_render::submit_picture(valid_draw(), std::span(&shortImage, 1)));
     assert(received == 0);
 
-    sb::native_render::set_picture_sink({reject, nullptr});
+    assert(sb::native_render::release_picture_sink(lease));
+    assert(sb::native_render::claim_picture_sink({reject, nullptr}, lease));
     assert(!sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
 
-    sb::native_render::set_picture_sink({});
+    assert(sb::native_render::release_picture_sink(lease));
 }

@@ -130,6 +130,13 @@ and intentional visual checks while a semantic pass is replaced. They are refere
 target pipeline. Once a native semantic owner is verified, its shipping path bypasses the
 corresponding GX emission rather than translating it again. Issue 24 owns the pivot.
 
+The shared `native-render` SDL platform is the one owner of the GPU device, window claim, and
+presenter. Renderer clients own only their passes and targets, and host composition destroys those
+clients and targets before the platform and Aurora shut down. Runtime frame seams publish
+renderer-neutral frames but never acquire a second device or presenter. This follows Dusklight's
+cohesive host owners and explicit reverse teardown rather than growing
+`sms-recomp/host/main.cpp`.
+
 ## 🔄 UPSTREAM SYNC — rebase ~2x/week, and CONVERGE (don't fork)
 
 Upstream `doldecomp/sms` moves fast and is actively implementing the same actors we
@@ -317,8 +324,9 @@ stale or when a switch named in CLAUDE.md / `docs/` / a run script is read by NO
 that had `SB_SKIP_GHOST` cited in these instructions while absent from the source. A deliberate
 always-loud stderr write is marked `LOGGER-EXEMPT` in a comment BESIDE the print.
 
-**Reproducing a native-renderer frame: use `./run-render.sh`.** The renderer needs six env vars set
-together and omitting any one fails silently and plausibly (no native render, or 0 drawables, or an
+**Reproducing a GX-compatibility frame: use `./run-render.sh`.** The compatibility path needs six
+env vars set together and omitting any one fails silently and plausibly (no compatibility output,
+or 0 drawables, or an
 untextured frame, or an empty scene because plain fastboot derives a non-rendering episode from the
 save). Compare runs ONLY on the harness's `=== COMPARABLE @ N=... ===` line — the running mean
 drifts several points with frame COUNT alone, so means taken at different N are not comparable.

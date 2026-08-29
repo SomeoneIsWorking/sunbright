@@ -151,12 +151,13 @@ int main() {
     identity(parent);
     Receiver receiver{};
     J2DOrthoGraph graph(10, 20, 320, 240);
-    sb::native_render::set_picture_sink({});
+    assert(!sb::native_render::has_picture_sink());
     sb_native_picture_submit(&picture, &parent);
     assert(g_hostAllocationDepth == 0);
     assert(receiver.calls == 0);
 
-    sb::native_render::set_picture_sink({receive, &receiver});
+    sb::native_render::PictureSinkLease sinkLease;
+    assert(sb::native_render::claim_picture_sink({receive, &receiver}, sinkLease));
     sb_native_picture_context_push(&graph, 1);
     sb_native_picture_submit(&picture, &parent);
     assert(g_hostAllocationDepth == 0);
@@ -192,6 +193,6 @@ int main() {
     assert(receiver.images[1].revision == firstIntensityRevision);
     assert(g_hostAllocationDepth == 0);
 
-    sb::native_render::set_picture_sink({});
+    assert(sb::native_render::release_picture_sink(sinkLease));
     sb_native_picture_context_pop();
 }
