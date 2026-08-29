@@ -37,7 +37,8 @@ flow and remains the readable game-behavior oracle. Its boot/runtime ownership i
 
 The explicit `run-render.sh` path owns an SDL3-GPU device and presentation while consuming parsed
 GX/FIFO state. It reconstructs geometry and reproduces GX raster, TEV, texture, and EFB-copy
-semantics. C075 records an exact-frame Aurora comparison and its working identity control.
+semantics. C083 records the current exact-frame Aurora comparison and its working identity control;
+C075 is the expired prior measurement.
 
 Gap: visual compatibility is incomplete, but completing it still would not satisfy a native-renderer
 goal because the shipping abstraction remains GameCube GX. This path is retained as reference and

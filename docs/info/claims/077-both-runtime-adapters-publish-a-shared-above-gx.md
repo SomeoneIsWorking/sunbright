@@ -4,9 +4,9 @@ kind: claim
 status: holds
 created: 2026-08-28
 tags: renderer,semantic
-depends: native-render/src/picture_pass.cpp#PicturePass::render_and_readback, sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit
-reconfirmed: 2026-08-28
-verified_at: 2026-08-28 03:58:27
+depends: native-render/src/picture_pass.cpp#PicturePass::encode, sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit
+reconfirmed: 2026-08-30
+verified_at: 2026-08-30 02:07:19
 ---
 
 ## Claim
@@ -28,3 +28,7 @@ Clang builds passed for sms-boot and sms-recomp; 38/38 root tests and 28/28 reco
 ## Re-confirmed 2026-08-28
 
 Reconfirmed after per-draw canvas/viewport schema: root 40/40 tests, recomp 28/28 tests, and guarded full-canvas/sub-viewport picture GPU controls pass without a kernel GPU fault.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after the shared-platform and caller-owned encode refactor: Clang sms-boot/sms-recomp builds pass, root 42/42 and recomp 27/27 tests pass, both J2DPicture adapter controls pass, and the watched semantic GPU test proves the sRGB picture pass, changed revision, and current-revision residency without a kernel GPU fault.

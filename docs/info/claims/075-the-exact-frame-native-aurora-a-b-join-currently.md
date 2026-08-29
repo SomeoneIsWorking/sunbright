@@ -1,10 +1,11 @@
 ---
 id: C075
 kind: claim
-status: holds
+status: falsified
 created: 2026-08-28
 tags: render,gx-compat,parity
 depends: sms-recomp/runtime/render/render_compare_join.cpp, sms-recomp/runtime/render/render_compare_metric.cpp, sms-recomp/runtime/render/native_render.cpp, extern/aurora
+falsified_on: 2026-08-30
 ---
 
 ## Claim
@@ -18,3 +19,9 @@ The exact-frame GX-compatibility/Aurora A/B join currently measures the recomp S
 ## What would falsify it
 
 Any change to GX compatibility renderer output, Aurora sink scheduling/metadata, the exact-frame join, comparison metric, scene/camera, sample cadence/count, or renderer dimensions requires a same-contract rerun.
+
+## FALSIFIED 2026-08-30
+
+The 2026-08-30 same-contract rerun produced edgeIoU 28.17% and luma correlation +0.4110 at N=3, not 28.32%/+0.4095. The exact-number claim expired as designed; the instrument identity control still passed at 100%/+1.000 and the replacement measurement is C083.
+
+> Anything that cited this claim as proof must be re-checked. Grep the repo for it.

@@ -5,8 +5,8 @@ status: holds
 created: 2026-08-28
 tags: renderer,resources,recomp,decomp
 depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit, native-render/src/picture_sink.cpp#submit_picture
-reconfirmed: 2026-08-28
-verified_at: 2026-08-28 03:58:27
+reconfirmed: 2026-08-30
+verified_at: 2026-08-30 02:07:19
 ---
 
 ## Claim
@@ -24,3 +24,7 @@ Either adapter reads texture bytes after its retained GX body, a sink can accept
 ## Re-confirmed 2026-08-28
 
 Reconfirmed after contextual PictureDraw submission: production-linked decomp adapter test and recomp guest adapter test pass exact decoded pixels, stable/changed revisions, transient copying, host-allocation depth, and canvas/clip attachment.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after exclusive sink leases and frame-bridge integration: recomp j2d_picture_adapter and production-linked decomp native_picture_adapter controls pass exact pixels, revisions, refusal paths, transient copying, and host-allocation depth; root 42/42 and recomp 27/27 tests pass, and the watched GPU control remains fault-free.
