@@ -13,6 +13,7 @@ void sb_native_picture_submit_direct(const void* picture, const void* position_m
 void sb_native_picture_context_push(const void* graf_context, int clip_enabled);
 void sb_native_picture_context_pop(void);
 void sb_native_picture_context_activate(const void* graf_context);
+void sb_native_j2d_fill_box_submit(const void* graf_context, const void* rect);
 
 void sb_native_text_context_push(const void* clip_rect, const void* transform);
 void sb_native_text_context_pop(void);

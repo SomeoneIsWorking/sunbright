@@ -323,6 +323,14 @@ target_include_directories(j2d_picture_adapter_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
 add_test(NAME j2d_picture_adapter COMMAND j2d_picture_adapter_test)
 
+add_executable(j2d_fill_box_adapter_test tests/j2d_fill_box_adapter_test.cpp
+                                         overrides/big_endian_guest_reader.cpp
+                                         overrides/j2d_fill_box_adapter.cpp)
+target_link_libraries(j2d_fill_box_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(j2d_fill_box_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME j2d_fill_box_adapter COMMAND j2d_fill_box_adapter_test)
+
 add_executable(resource_font_glyph_adapter_test
                tests/resource_font_glyph_adapter_test.cpp
                overrides/big_endian_guest_reader.cpp

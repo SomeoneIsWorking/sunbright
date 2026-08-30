@@ -299,6 +299,7 @@ if(TARGET aurora_core)
     # library lets the static linker select only the seams that executable actually reaches.
     add_library(sms-native-semantic-2d STATIC
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_context.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_fill_box_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp")
@@ -397,6 +398,7 @@ if(TARGET aurora_core)
     add_executable(platform-native_picture_adapter_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/native_picture_adapter_test.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_context.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_fill_box_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp"

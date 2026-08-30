@@ -6,7 +6,7 @@ created: 2026-08-30
 tags: renderer,semantic,j2d,ordering,recomp,decomp
 depends: native-render/src/frame.cpp#SemanticFrameCollector::append, native-render/src/semantic_2d_pass.cpp#Semantic2dPass::encode, sms-recomp/overrides/widescreen_effects.cpp#run_fill_rect, sms-boot/runtime/native_solid_rectangle_adapter.cpp#sb_native_solid_rectangle_submit, decomp/sms/src/GC2D/ScrnFader.cpp#fill_rect
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 05:45:16
+verified_at: 2026-08-30 06:16:41
 ---
 
 ## Claim
@@ -24,3 +24,7 @@ Falsified if either runtime publishes different final fill_rect bounds/colour th
 ## Re-confirmed 2026-08-30
 
 Reverified through the expanded mixed-family collector/GPU controls and guarded Delfino run: nine real GC2D solid rectangles remained ordered among 160 pictures and 1,040 glyphs; both retained solid bodies and adapter controls pass.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after labelling GC2D rectangles separately from J2D filled boxes: both GC2D adapters retain the same values and bodies; their controls pass in the 43/43 root/decomp and 30/30 recomp suites.

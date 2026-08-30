@@ -54,6 +54,7 @@ SolidRectangleDraw solid(std::uint64_t instance, Canvas canvas = kCanvas) {
     return {
         canvas,
         {.instance = instance,
+         .source = sb::native_render::SolidRectangleSource::Gc2dFillRect,
          .positions = {Vec2{2, 2}, Vec2{14, 2}, Vec2{2, 14}, Vec2{14, 14}},
          .corner = {Color{1, 0, 0, 1}, Color{0, 1, 0, 1}, Color{0, 0, 1, 1}, Color{1, 1, 1, 1}}}};
 }

@@ -6,7 +6,7 @@ created: 2026-08-30
 tags: renderer,semantic,j2d,recomp,decomp
 depends: native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::encode_last_sealed, sms-recomp/host/render_composition.cpp#RenderComposition::encode_semantic_frame, sms-recomp/overrides/native_frame.cpp#present_tail, sms-boot/runtime/semantic_render.cpp#sb_semantic_render_consume, sms-boot/runtime/frame_seam.cpp#sb_frame_present
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 05:45:16
+verified_at: 2026-08-30 06:16:41
 ---
 
 ## Claim
@@ -28,3 +28,7 @@ Reverified bounded live semantic collection after direct-picture integration: re
 ## Re-confirmed 2026-08-30
 
 Reverified after glyph integration: the production GPU control passes; the guarded recomp Delfino run completed 90/90 semantic frames with 1,209 real operations and no kernel GPU fault; the bounded decomp title/stage-one runs and production-linked native adapter control remain green, with live decomp glyph coverage explicitly unmeasured.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after adding J2D filled-box statistics and adapters: the existing bounded-run claim remains unchanged; a new guarded 180-present recomp safety run exited zero, while no new live fillBox-use claim is made.

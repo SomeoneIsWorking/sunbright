@@ -175,6 +175,10 @@ J2DContextCaptureResult capture_graph_context(const BigEndianGuestReader& reader
         std::int32_t logicalY1 = 0;
         std::int32_t logicalX2 = 0;
         std::int32_t logicalY2 = 0;
+        std::int32_t scissorX1 = 0;
+        std::int32_t scissorY1 = 0;
+        std::int32_t scissorX2 = 0;
+        std::int32_t scissorY2 = 0;
         if (!reader.s32(grafContext + 0x08, viewportX1) ||
             !reader.s32(grafContext + 0x0c, viewportY1) ||
             !reader.s32(grafContext + 0x10, viewportX2) ||
@@ -182,7 +186,11 @@ J2DContextCaptureResult capture_graph_context(const BigEndianGuestReader& reader
             !reader.s32(grafContext + 0xd8, logicalX1) ||
             !reader.s32(grafContext + 0xdc, logicalY1) ||
             !reader.s32(grafContext + 0xe0, logicalX2) ||
-            !reader.s32(grafContext + 0xe4, logicalY2) || viewportX2 <= viewportX1 ||
+            !reader.s32(grafContext + 0xe4, logicalY2) ||
+            !reader.s32(grafContext + 0x18, scissorX1) ||
+            !reader.s32(grafContext + 0x1c, scissorY1) ||
+            !reader.s32(grafContext + 0x20, scissorX2) ||
+            !reader.s32(grafContext + 0x24, scissorY2) || viewportX2 <= viewportX1 ||
             viewportY2 <= viewportY1 || logicalX2 <= logicalX1 || logicalY2 <= logicalY1) {
             return J2DContextCaptureResult::Invalid;
         }
@@ -192,6 +200,8 @@ J2DContextCaptureResult capture_graph_context(const BigEndianGuestReader& reader
                          .viewport = {viewportX1, viewportY1,
                                       static_cast<std::uint32_t>(viewportX2 - viewportX1),
                                       static_cast<std::uint32_t>(viewportY2 - viewportY1)}};
+        result.scissor =
+            native_render::j2d_target_scissor(scissorX1, scissorY1, scissorX2, scissorY2);
     }
     if (!native_render::valid(result.canvas))
         return J2DContextCaptureResult::Invalid;

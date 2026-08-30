@@ -6,7 +6,7 @@ created: 2026-08-28
 tags: renderer,resources,recomp,decomp
 depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit, native-render/src/semantic_sink.cpp#submit_picture
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 05:45:15
+verified_at: 2026-08-30 06:16:40
 ---
 
 ## Claim
@@ -36,3 +36,7 @@ Reverified decoded-image ownership after shared material capture was reused by t
 ## Re-confirmed 2026-08-30
 
 Reverified after extracting BigEndianGuestReader and the shared native J2D bridge: both picture adapter controls still distinguish valid/short/changed image content, the full Clang suites pass, and the guarded Delfino run completed without image capture refusal.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after extending the shared J2D context with target-pixel scissor state: picture decode/lifetime controls remain green in 43/43 root/decomp and 30/30 recomp tests.

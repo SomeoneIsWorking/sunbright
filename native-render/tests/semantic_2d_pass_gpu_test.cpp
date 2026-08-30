@@ -76,6 +76,7 @@ SolidRectangleDraw solid(std::uint64_t instance, float left, float top, float ri
     return {
         {.origin = {0, 0}, .extent = {16, 16}, .viewport = {0, 0, 16, 16}},
         {.instance = instance,
+         .source = sb::native_render::SolidRectangleSource::Gc2dFillRect,
          .positions = {Vec2{left, top}, Vec2{right, top}, Vec2{left, bottom}, Vec2{right, bottom}},
          .corner = {color, color, color, color}}};
 }
@@ -352,7 +353,9 @@ int main() {
                                   .atlas = draw.picture.material.textures[0]};
     assert(sb::native_render::submit_glyph(GlyphDraw{draw.canvas, auditGlyph},
                                            std::span<const DecodedImageView>(&image, 1)));
-    assert(sb::native_render::submit_solid_rectangle(solid(99, 12, 12, 16, 16, {1, 1, 1, 1})));
+    SolidRectangleDraw auditFill = solid(99, 12, 12, 16, 16, {1, 1, 1, 1});
+    auditFill.rectangle.source = sb::native_render::SolidRectangleSource::J2dGrafContextFillBox;
+    assert(sb::native_render::submit_solid_rectangle(auditFill));
     assert(bridge.seal());
     assert(client.encode_last_sealed(platformError));
     assert(client.stats().submittedFrames == 2 && client.stats().completedFrames == 2);
@@ -360,6 +363,7 @@ int main() {
     assert(client.stats().submittedOperations == 3);
     assert(client.stats().submittedPictures == 1 && client.stats().submittedGlyphs == 1 &&
            client.stats().submittedSolidRectangles == 1);
+    assert(client.stats().submittedJ2dFillBoxes == 1);
     assert(client.stats().lastSampleNonClearPixels != 0);
     assert(client.stats().lastSampleHash != clearHash);
     assert(client.validate_audit(platformError));

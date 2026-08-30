@@ -6,7 +6,7 @@ created: 2026-08-28
 tags: renderer,j2d,recomp,decomp
 depends: native-render/src/frame.cpp#SemanticFrameCollector::append, native-render/src/semantic_2d_pass.cpp#Semantic2dPass::encode, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::encode_last_sealed, sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_context, sms-boot/runtime/native_j2d_context.cpp#sb_native_picture_context_push
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 05:45:15
+verified_at: 2026-08-30 06:16:40
 ---
 
 ## Claim
@@ -37,3 +37,7 @@ Reverified canvas, clip, order, and image lifetime after adding the active setup
 ## Re-confirmed 2026-08-30
 
 Reverified after adding GlyphDraw and extracting the decomp J2D context owner: frame, sink, context, mixed-order GPU, recomp adapter, and production-linked decomp controls pass; the guarded Delfino run preserved one ordered picture/glyph/solid stream.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after adding source-labelled J2D filled boxes and target-pixel clip space to the ordered frame: 43/43 root/decomp and 30/30 recomp tests plus the watched mixed-family GPU control pass.

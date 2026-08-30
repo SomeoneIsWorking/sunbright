@@ -35,6 +35,7 @@ struct SdlSemanticFrameStats {
     std::uint64_t submittedPictures = 0;
     std::uint64_t submittedGlyphs = 0;
     std::uint64_t submittedSolidRectangles = 0;
+    std::uint64_t submittedJ2dFillBoxes = 0;
     std::uint64_t submittedImages = 0;
     std::uint64_t sampledFrames = 0;
     std::uint64_t firstNonClearFrame = 0;

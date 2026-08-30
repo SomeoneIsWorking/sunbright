@@ -6,7 +6,7 @@ created: 2026-08-30
 tags: renderer,architecture
 depends: native-render/src/semantic_frame_bridge.cpp#SemanticFrameBridge::begin, native-render/src/semantic_frame_bridge.cpp#SemanticFrameBridge::seal, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::encode_last_sealed, sms-recomp/host/render_composition.cpp#RenderComposition::encode_semantic_frame, sms-recomp/overrides/native_frame.cpp#present_tail, sms-boot/runtime/semantic_render.cpp#sb_semantic_render_consume, sms-boot/runtime/frame_seam.cpp#sb_frame_present
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 05:45:15
+verified_at: 2026-08-30 06:16:41
 ---
 
 ## Claim
@@ -36,3 +36,7 @@ Reverified unchanged frame-bridge boundaries after direct-picture integration: r
 ## Re-confirmed 2026-08-30
 
 Reverified after glyph statistics and host-composition changes: frame-bridge controls and both full Clang suites pass; the guarded 180-present run submitted and completed all 90 semantic frames and exited through the live GPU watcher.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after the semantic statistics and decomp composition gained the J2D fill family: both full test suites pass and a guarded 180-present recomp run crossed the final kernel barrier with exit zero.

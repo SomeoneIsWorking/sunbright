@@ -223,9 +223,31 @@ int main() {
                 sb::native_render::Vec2{1, 0}, sb::native_render::Vec2{0, 0},
                 sb::native_render::Vec2{1, 1}, sb::native_render::Vec2{0, 1}}));
 
+    // Generic J2D filled-box control: drive the production-linked native-layout adapter with a
+    // transform and four distinct colours. The coordinate values deliberately exceed signed 16-bit
+    // range so this proves the retail GXPosition3s16 narrowing rather than merely matching floats.
+    identity(graph.mPosMtx);
+    graph.mPosMtx[0][3] = 5.0f;
+    graph.mPosMtx[1][3] = -4.0f;
+    graph.setColor(JUtility::TColor(0xff0000ff), JUtility::TColor(0x00ff00ff),
+                   JUtility::TColor(0x0000ffff), JUtility::TColor(0xffffffff));
+    JUTRect gradientFill(65537, -65534, 65546, 65556);
+    sb_native_j2d_fill_box_submit(&graph, &gradientFill);
+    assert(receiver.calls == 5);
+    assert(receiver.imageCount == 0);
+    assert(receiver.solid.rectangle.source ==
+           sb::native_render::SolidRectangleSource::J2dGrafContextFillBox);
+    assert(receiver.solid.rectangle.positions[0] == sb::native_render::Vec2(6.0f, -2.0f));
+    assert(receiver.solid.rectangle.positions[3] == sb::native_render::Vec2(15.0f, 16.0f));
+    assert(receiver.solid.rectangle.corner[2] == sb::native_render::color_from_rgba8(0x0000ffff));
+    assert(receiver.solid.rectangle.corner[3] == sb::native_render::color_from_rgba8(0xffffffff));
+    assert(receiver.solid.rectangle.clip.space ==
+           sb::native_render::ClipCoordinateSpace::TargetPixels);
+    assert(receiver.solid.rectangle.clip.x == 10 && receiver.solid.rectangle.clip.y == 19);
+
     JDrama::TRect fill(-107, 20, 747, 460);
     sb_native_solid_rectangle_submit(&fill, 0x10203080U);
-    assert(receiver.calls == 5);
+    assert(receiver.calls == 6);
     assert(receiver.imageCount == 0);
     assert(receiver.solid.rectangle.positions[0] == sb::native_render::Vec2(-107.0f, 20.0f));
     assert(receiver.solid.rectangle.positions[3] == sb::native_render::Vec2(747.0f, 460.0f));
@@ -270,7 +292,7 @@ int main() {
                                   intensityTexels.size(),
                                   {0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff}};
     sb_native_font_glyph_submit(&glyph);
-    assert(receiver.calls == 6);
+    assert(receiver.calls == 7);
     assert(receiver.glyph.glyph.code == 'A');
     assert(receiver.glyph.glyph.clip.enabled && receiver.glyph.glyph.clip.x == 2);
     assert(receiver.glyph.glyph.positions[0] == sb::native_render::Vec2(14.0f, 17.0f));

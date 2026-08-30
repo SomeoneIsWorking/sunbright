@@ -33,6 +33,7 @@ bool capture_fill_rectangle(const GuestByteReader& reader, std::uint32_t rect, s
     const native_render::Color color = native_render::color_from_rgba8(rgba);
     draw = {{{0.0f, 0.0f}, {640.0f, 480.0f}, {0, 0, 640, 480}},
             {.instance = rect,
+             .source = native_render::SolidRectangleSource::Gc2dFillRect,
              .positions = {native_render::Vec2{static_cast<float>(x1), static_cast<float>(y1)},
                            native_render::Vec2{static_cast<float>(x2), static_cast<float>(y1)},
                            native_render::Vec2{static_cast<float>(x1), static_cast<float>(y2)},

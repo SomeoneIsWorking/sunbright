@@ -6,7 +6,7 @@ created: 2026-08-30
 tags: renderer,j2d,recomp,decomp
 depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_graph_context, decomp/sms/src/JSystem/J2D/J2DGrafContext.cpp#J2DGrafContext::J2DGrafContext
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 05:45:16
+verified_at: 2026-08-30 06:16:42
 ---
 
 ## Claim
@@ -24,3 +24,7 @@ Falsified if the retail DOL writes a stable base-context discriminator, if anoth
 ## Re-confirmed 2026-08-30
 
 Reverified after moving native active-canvas ownership into native_j2d_context.cpp: the stale-type/base-vtable negative control still refuses, the production-linked decomp context test passes, both full Clang builds pass, and the guarded Delfino run reaches the active canvas without refusal.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after graph-context capture gained target-pixel scissor values and the decomp file gained the fillBox bridge: the stale-type/base-vtable refusal controls still pass in both full suites.

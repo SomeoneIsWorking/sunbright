@@ -56,6 +56,7 @@ sb::native_render::GlyphDraw valid_glyph() {
 sb::native_render::SolidRectangleDraw valid_solid() {
     return {{.origin = {0, 0}, .extent = {1, 1}, .viewport = {0, 0, 1, 1}},
             {.instance = 8,
+             .source = sb::native_render::SolidRectangleSource::Gc2dFillRect,
              .positions = {{{0, 0}, {1, 0}, {0, 1}, {1, 1}}},
              .corner = {{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 1, 1}}}}};
 }

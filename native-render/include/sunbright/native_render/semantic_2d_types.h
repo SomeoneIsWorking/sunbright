@@ -21,12 +21,15 @@ struct Color {
 
 [[nodiscard]] Color color_from_rgba8(std::uint32_t rgba) noexcept;
 
+enum class ClipCoordinateSpace : std::uint8_t { Canvas, TargetPixels };
+
 struct ClipRect {
     bool enabled = false;
     std::int32_t x = 0;
     std::int32_t y = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    ClipCoordinateSpace space = ClipCoordinateSpace::Canvas;
 };
 
 struct PixelRect {

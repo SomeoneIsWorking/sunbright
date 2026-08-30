@@ -34,6 +34,9 @@ bool picture_context_from_graph(const J2DGrafContext* context, bool clipEnabled,
               {static_cast<float>(logical.getWidth()), static_cast<float>(logical.getHeight())},
               {viewport.x1, viewport.y1, static_cast<std::uint32_t>(viewport.getWidth()),
                static_cast<std::uint32_t>(viewport.getHeight())}},
+             sb::native_render::j2d_target_scissor(
+                 context->mScissorBounds.x1, context->mScissorBounds.y1, context->mScissorBounds.x2,
+                 context->mScissorBounds.y2),
              clipEnabled};
     return sb::native_render::valid(value.canvas);
 }

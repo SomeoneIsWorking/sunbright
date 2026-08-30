@@ -176,6 +176,10 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
             hasGlyphs = true;
         } else {
             ++stats_.submittedSolidRectangles;
+            if (std::get<SolidRectangleDraw>(draw).rectangle.source ==
+                SolidRectangleSource::J2dGrafContextFillBox) {
+                ++stats_.submittedJ2dFillBoxes;
+            }
             hasSolidRectangles = true;
         }
     }

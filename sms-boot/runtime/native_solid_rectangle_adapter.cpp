@@ -22,6 +22,7 @@ extern "C" void sb_native_solid_rectangle_submit(const void* rectPointer, std::u
     const sb::native_render::SolidRectangleDraw draw{
         {{0.0f, 0.0f}, {640.0f, 480.0f}, {0, 0, 640, 480}},
         {.instance = reinterpret_cast<std::uintptr_t>(rectPointer),
+         .source = sb::native_render::SolidRectangleSource::Gc2dFillRect,
          .positions =
              {sb::native_render::Vec2{static_cast<float>(rect.x1), static_cast<float>(rect.y1)},
               sb::native_render::Vec2{static_cast<float>(rect.x2), static_cast<float>(rect.y1)},

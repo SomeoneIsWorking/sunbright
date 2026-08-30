@@ -6,7 +6,7 @@ created: 2026-08-30
 tags: renderer,gpu,architecture
 depends: native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::initialize_device, native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::attach_presenter, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::shutdown, sms-recomp/host/render_composition.cpp#RenderComposition::initialize, sms-boot/runtime/semantic_render.cpp#sb_semantic_render_initialize
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 04:46:12
+verified_at: 2026-08-30 06:16:41
 ---
 
 ## Claim
@@ -33,3 +33,7 @@ the kernel GPU watcher with no incident.
 ## Re-confirmed 2026-08-30
 
 Reverified shared SDL GPU ownership and submission transaction after direct-picture integration: CPU/full suites pass, watched semantic GPU control is fault-free, and both guarded runtime audits complete without a device/window ownership failure.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after the semantic client gained the per-source J2D fill counter: the watched semantic GPU test and guarded 180-present recomp run completed without a kernel GPU fault.

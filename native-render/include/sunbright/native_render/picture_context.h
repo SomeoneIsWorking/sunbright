@@ -9,8 +9,15 @@ namespace sb::native_render {
 
 struct PictureContext {
     Canvas canvas{};
+    ClipRect scissor{};
     bool clipEnabled = false;
 };
+
+// J2DGrafContext::setScissor normalizes its integer bounds, shifts the top edge up one pixel, and
+// clamps to the retail 1024x1000 guard rectangle before programming GX. Preserve that high-level
+// J2D contract as a target-pixel clip; a zero extent is a legitimate ordered no-op.
+[[nodiscard]] ClipRect j2d_target_scissor(std::int32_t x1, std::int32_t y1, std::int32_t x2,
+                                          std::int32_t y2) noexcept;
 
 // J2DScreen traversal is nested but allocation-free. Each runtime owns its own instance and copies
 // graph values on entry, so no pointer to a stack-local J2DOrthoGraph crosses the semantic seam.

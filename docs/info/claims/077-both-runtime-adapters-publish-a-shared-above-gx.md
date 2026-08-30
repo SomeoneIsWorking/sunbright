@@ -6,7 +6,7 @@ created: 2026-08-28
 tags: renderer,semantic
 depends: native-render/src/semantic_2d_pass.cpp#Semantic2dPass::encode, sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 05:45:15
+verified_at: 2026-08-30 06:16:40
 ---
 
 ## Claim
@@ -40,3 +40,7 @@ Reverified after immediate-picture capture and active J2D canvas integration: bo
 ## Re-confirmed 2026-08-30
 
 Reverified after the glyph integration and shared-reader refactor: Clang builds, picture/collector/sink/GPU controls, production-linked native adapter control, and the guarded 180-present Delfino run all pass; picture bodies remain retained and picture commands still contain no GX state.
+
+## Re-confirmed 2026-08-30
+
+Reconfirmed after adding the independent J2DGrafContext fill-box adapter and context scissor: 43/43 root/decomp and 30/30 recomp tests pass, and the watched mixed-family semantic GPU control completed without a kernel fault.

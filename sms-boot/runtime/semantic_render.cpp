@@ -30,7 +30,8 @@ void report_stats() {
     sb_logf("semantic",
             "offscreen summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
             "operations=%llu "
-            "pictures=%llu glyphs=%llu solid-rectangles=%llu images=%llu samples=%llu "
+            "pictures=%llu glyphs=%llu solid-rectangles=%llu j2d-fill-boxes=%llu images=%llu "
+            "samples=%llu "
             "first-nonclear-frame=%llu first-nonclear-pixels=%zu",
             static_cast<unsigned long long>(stats.submittedFrames),
             static_cast<unsigned long long>(stats.completedFrames),
@@ -40,6 +41,7 @@ void report_stats() {
             static_cast<unsigned long long>(stats.submittedPictures),
             static_cast<unsigned long long>(stats.submittedGlyphs),
             static_cast<unsigned long long>(stats.submittedSolidRectangles),
+            static_cast<unsigned long long>(stats.submittedJ2dFillBoxes),
             static_cast<unsigned long long>(stats.submittedImages),
             static_cast<unsigned long long>(stats.sampledFrames),
             static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);

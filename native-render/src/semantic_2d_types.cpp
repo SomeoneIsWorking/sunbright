@@ -59,6 +59,21 @@ bool resolve_scissor(const Canvas& canvas, const ClipRect& clip, std::uint32_t t
     if (clip.enabled && (clip.width == 0 || clip.height == 0))
         return false;
 
+    if (clip.enabled && clip.space == ClipCoordinateSpace::TargetPixels) {
+        const std::int64_t rawRight = static_cast<std::int64_t>(clip.x) + clip.width;
+        const std::int64_t rawBottom = static_cast<std::int64_t>(clip.y) + clip.height;
+        const auto left = std::clamp<std::int64_t>(clip.x, 0, targetWidth);
+        const auto top = std::clamp<std::int64_t>(clip.y, 0, targetHeight);
+        const auto right = std::clamp<std::int64_t>(rawRight, 0, targetWidth);
+        const auto bottom = std::clamp<std::int64_t>(rawBottom, 0, targetHeight);
+        if (right <= left || bottom <= top)
+            return false;
+        scissor = {static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
+                   static_cast<std::uint32_t>(right - left),
+                   static_cast<std::uint32_t>(bottom - top)};
+        return true;
+    }
+
     const float scaleX = static_cast<float>(canvas.viewport.width) / canvas.extent.x;
     const float scaleY = static_cast<float>(canvas.viewport.height) / canvas.extent.y;
     const auto clampX = [&](float value) {
