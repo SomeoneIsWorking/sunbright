@@ -12,10 +12,10 @@ updated: 2026-08-30
 ## Root cause
 
 The game's actual J2D stream interleaves pictures with text glyphs, window pieces, multiple solid
-fill entry points, and direct picture calls that do not enter the current `J2DScreen::draw` context.
-The first vertical slice defined only `PictureCommand`; the current slice adds the title-visible
-`GC2D fill_rect` family, but the remaining families still prevent replacement or overlay without
-changing authored draw order.
+fill entry points, and immediate picture calls which can occur outside `J2DScreen::draw`. The first
+vertical slice defined only `PictureCommand`; subsequent slices added the title-visible `GC2D
+fill_rect` family and the active-context immediate-picture path, but the remaining families still
+prevent replacement or overlay without changing authored draw order.
 
 ## What was tried / dead ends
 
@@ -35,8 +35,16 @@ Both runtimes publish real `GC2D fill_rect` calls before retaining their origina
 title runs observed mixed picture/solid frames in both runtimes: six of 50 recomp semantic frames
 and eleven of 400 decomp semantic frames.
 
+Both runtimes now publish the immediate `J2DPicture::draw` family through the same picture command.
+The active canvas comes from `J2DGrafContext::setup2D`, not a fixed-size guess; the direct resolver
+uses the original function's position matrix, signed-16-bit destination extent, and orientation
+arguments. Recomp captures after the retained body builds that matrix, while decomp publishes from
+the corresponding source point before retaining GX emission. Close controls cover ordinary versus
+transposed UV ownership and the native-layout sink. A guarded 400-present recomp Delfino run reached
+the direct call and completed 3,019 operations without a GPU fault or capture refusal.
+
 ## Remaining resolution
 
-Add text glyphs, window contents/frame pieces, `J2DGrafContext::fillBox`, and direct picture calls to
-the same variant stream with planted inter-family order controls. Only then can the J2D portion be
-considered for visible presentation; 3D and effect families remain later work.
+Add text glyphs, window contents/frame pieces, and `J2DGrafContext::fillBox` to the same variant
+stream with planted inter-family order controls. Only then can the J2D portion be considered for
+visible presentation; 3D and effect families remain later work.

@@ -6,7 +6,7 @@ created: 2026-08-30
 tags: renderer,gpu,architecture
 depends: native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::initialize_device, native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::attach_presenter, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::shutdown, sms-recomp/host/render_composition.cpp#RenderComposition::initialize, sms-boot/runtime/semantic_render.cpp#sb_semantic_render_initialize
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 03:50:05
+verified_at: 2026-08-30 04:46:12
 ---
 
 ## Claim
@@ -29,3 +29,7 @@ without a window claim and can attach the optional sole presenter later. The wat
 control proves fenced submission, exactly-clear empty output, a nonclear planted mixed frame,
 duplicate-consumption refusal, and reverse teardown. Both bounded live-runtime runs completed under
 the kernel GPU watcher with no incident.
+
+## Re-confirmed 2026-08-30
+
+Reverified shared SDL GPU ownership and submission transaction after direct-picture integration: CPU/full suites pass, watched semantic GPU control is fault-free, and both guarded runtime audits complete without a device/window ownership failure.

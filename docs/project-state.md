@@ -106,6 +106,21 @@ rectangle, and then calls the retained recompiled body. Its pure big-endian adap
 negative widened coordinates, canonical corner order, packed colour, short reads, and a degenerate
 rectangle.
 
+Immediate `J2DPicture::draw` calls are also in the ordered stream. `J2DGrafContext::setup2D`
+publishes the active orthographic canvas independently of a `J2DScreen` scope; the picture override
+retains the complete guest body, then copies the position matrix that body built plus the saved
+destination extent and orientation flags. The shared resolver reproduces the retail signed-16-bit
+vertex narrowing and both ordinary and transposed UV associations without carrying GX state. Its
+known-different control proves the transposed branch changes UV ownership. A guarded 400-present
+Delfino run reached the direct entry point and completed 3,019 semantic operations (3,010 pictures
+and nine solid rectangles) without a GPU fault or missing-context/capture refusal.
+
+The active-canvas classifier requires both the retail `J2DOrthoGraph` vtable and its type word.
+Retail base `J2DGrafContext` constructors leave that word uninitialized, so trusting the type alone
+can reinterpret a base object as the larger derived layout. A known-different control plants the
+stale type under the base vtable and requires refusal; native decomp initializes the base
+discriminator to zero without changing non-native decomp behavior.
+
 With `SB_SEMANTIC_FRAME_AUDIT=1`, recomp host composition now activates that client while Aurora
 continues to present the visible GX frame. A guarded 100-present title run completed all 50 semantic
 simulation frames. All 50 were nonempty; six contained both operation families. The stream carried
@@ -115,10 +130,9 @@ proves an empty semantic frame stays exactly clear, a planted mixed frame produc
 non-clear hash, and a duplicate sequence is refused.
 
 Gap: this remains offscreen liveness and ownership evidence, not visual-correctness, completeness,
-cross-runtime-parity, or visible-presentation evidence. Direct `J2DPicture::draw` callers bypass the
-screen scope. Text, windows, `J2DGrafContext::fillBox`, 3D, authored mip chains, J3D, particles,
-lights, and effects are not in the semantic stream, so the partial result must not be overlaid or
-presented as the game frame.
+cross-runtime-parity, or visible-presentation evidence. Text, windows,
+`J2DGrafContext::fillBox`, 3D, authored mip chains, J3D, particles, lights, and effects are not in
+the semantic stream, so the partial result must not be overlaid or presented as the game frame.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -143,6 +157,12 @@ Aurora teardown. A guarded 400-present title run completed all 400 semantic fram
 nonempty and eleven contained both operation families. The stream carried 9,271 operations: 9,207
 pictures, 64 solid rectangles, and 9,207 images. Semantic frame 104 was the first sampled nonclear
 frame and contained 149,927 pixels distinct from clear. Aurora remains the visible GX renderer.
+
+The native decomp `J2DGrafContext::setup2D` and `J2DPicture::draw` now carry the same active-canvas
+and immediate-picture behavior through native source. The call publishes the already-built native
+position matrix and copied scalar arguments before retaining the original GX vertex body. A
+production-linked native-layout control exercises the active context, direct positions, mirrored
+UVs, transient image copy, and balanced host-allocation gate.
 
 Gap: the same missing unified ordering and semantic families described above prevent visible decomp
 semantic presentation.

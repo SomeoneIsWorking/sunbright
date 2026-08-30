@@ -6,7 +6,7 @@ created: 2026-08-28
 tags: renderer,j2d,recomp,decomp
 depends: native-render/src/frame.cpp#SemanticFrameCollector::append, native-render/src/semantic_2d_pass.cpp#Semantic2dPass::encode, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::encode_last_sealed, sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_context, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_context_push
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 03:50:04
+verified_at: 2026-08-30 04:46:11
 ---
 
 ## Claim
@@ -29,3 +29,7 @@ GPU control distinguishes clear, full-canvas, nonzero sub-viewport, and opposite
 picture/solid order results, while a fully clipped rectangle is a no-op. Live runtime frames
 exercise the same owned canvas/image/order values without adding GX/FIFO/Aurora input to the
 semantic client.
+
+## Re-confirmed 2026-08-30
+
+Reverified canvas, clip, order, and image lifetime after adding the active setup2D canvas: scoped screen controls and active direct-picture controls pass, full suites pass, guarded 400-present recomp/decomp audits complete, and the watched GPU ordering control remains fault-free.

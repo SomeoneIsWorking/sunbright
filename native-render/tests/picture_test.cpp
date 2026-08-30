@@ -8,6 +8,7 @@ namespace {
 
 using sb::native_render::Canvas;
 using sb::native_render::Color;
+using sb::native_render::DirectPictureLayout;
 using sb::native_render::PictureCommand;
 using sb::native_render::PictureLayout;
 using sb::native_render::PictureMaterial;
@@ -135,6 +136,37 @@ int main() {
         sb::native_render::resolve_picture_layout(transposed, transposedPositions, transposedUv));
     assert(transposedPositions != positions);
     assert((transposedUv == std::array<Vec2, 4>{Vec2{1, 0}, Vec2{1, 1}, Vec2{0, 0}, Vec2{0, 1}}));
+
+    // Spec-derived from J2DPicture::draw: makeMatrix has already produced this translated transform
+    // and the immediate emitter writes local (0,0)..(w,h) vertices with horizontally mirrored UVs.
+    DirectPictureLayout direct{};
+    direct.width = 48;
+    direct.height = 20;
+    direct.mirrorHorizontal = true;
+    direct.transform.value = {1, 0, 0, 12, 0, 1, 0, 34, 0, 0, 1, 0};
+    std::array<Vec2, 4> directPositions{};
+    std::array<Vec2, 4> directUv{};
+    assert(sb::native_render::resolve_direct_picture_layout(direct, directPositions, directUv));
+    assert((directPositions ==
+            std::array<Vec2, 4>{Vec2{12, 34}, Vec2{60, 34}, Vec2{12, 54}, Vec2{60, 54}}));
+    assert((directUv == std::array<Vec2, 4>{Vec2{1, 0}, Vec2{0, 0}, Vec2{1, 1}, Vec2{0, 1}}));
+
+    // Known-different control for the transposed retail branch. U now varies vertically and V
+    // horizontally; this must not collapse to the ordinary mirror mapping above.
+    direct.transpose = true;
+    direct.mirrorVertical = true;
+    std::array<Vec2, 4> directTransposedUv{};
+    assert(sb::native_render::resolve_direct_picture_layout(direct, directPositions,
+                                                            directTransposedUv));
+    assert((directTransposedUv ==
+            std::array<Vec2, 4>{Vec2{1, 0}, Vec2{1, 1}, Vec2{0, 0}, Vec2{0, 1}}));
+    assert(directTransposedUv != directUv);
+
+    // The guest emitter narrows dimensions to s16. Pin both the narrowing and its degenerate
+    // refusal so the semantic path cannot quietly use a different-sized quad.
+    direct.transpose = false;
+    direct.width = 65536;
+    assert(!sb::native_render::resolve_direct_picture_layout(direct, directPositions, directUv));
 
     sb::native_render::PixelRect scissor{};
     const Canvas canvas{.origin = {100, 50}, .extent = {200, 100}, .viewport = {50, 25, 200, 100}};

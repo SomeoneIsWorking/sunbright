@@ -129,6 +129,7 @@ int main() {
     memory.u8(texels0 + 33, 30);
 
     memory.u8(screen + 0xec, 1);
+    memory.u32(graf, 0x803e14b0); // GMSE01 J2DOrthoGraph vtable
     memory.u32(graf + 0x04, 1);
     memory.s32(graf + 0x08, 20);
     memory.s32(graf + 0x0c, 30);
@@ -147,6 +148,11 @@ int main() {
     assert((context.canvas.extent == sb::native_render::Vec2{640, 480}));
     assert((context.canvas.viewport == sb::native_render::PixelRect{20, 30, 320, 240}));
 
+    assert(sb::recomp::capture_j2d_graph_context(memory.reader(), graf, context) ==
+           sb::recomp::J2DContextCaptureResult::Success);
+    assert(!context.clipEnabled);
+    assert((context.canvas.origin == sb::native_render::Vec2{100, 50}));
+
     assert(sb::recomp::capture_j2d_context(memory.reader(), screen, 0, context) ==
            sb::recomp::J2DContextCaptureResult::Success);
     assert((context.canvas.viewport == sb::native_render::PixelRect{0, 0, 640, 480}));
@@ -154,6 +160,10 @@ int main() {
     assert(sb::recomp::capture_j2d_context(memory.reader(), screen, graf, context) ==
            sb::recomp::J2DContextCaptureResult::NonOrthographic);
     memory.u32(graf + 0x04, 1);
+    memory.u32(graf, 0x803e1448); // base J2DGrafContext with a stale type word must still refuse
+    assert(sb::recomp::capture_j2d_graph_context(memory.reader(), graf, context) ==
+           sb::recomp::J2DContextCaptureResult::NonOrthographic);
+    memory.u32(graf, 0x803e14b0);
 
     sb::recomp::CapturedPicture capture{};
     assert(sb::recomp::capture_j2d_picture(memory.reader(), self, parentMatrix, capture));
@@ -186,6 +196,21 @@ int main() {
     assert((std::array<std::uint8_t, 4>{capture.images[0].rgba8[0], capture.images[0].rgba8[1],
                                         capture.images[0].rgba8[2], capture.images[0].rgba8[3]} ==
             std::array<std::uint8_t, 4>{10, 20, 30, 128}));
+
+    // The direct entry point uses the matrix built by J2DPane::makeMatrix and its own dimensions /
+    // orientation flags; it must not fall back to drawFullSet's pane bounds or binding policy.
+    memory.matrix(self + 0x54, {1, 0, 0, 12, 0, 1, 0, 34, 0, 0, 1, 0});
+    assert(sb::recomp::capture_j2d_direct_picture(memory.reader(), self, self + 0x54, 48, 20, true,
+                                                  false, false, capture));
+    assert((capture.command.positions ==
+            std::array<sb::native_render::Vec2, 4>{
+                sb::native_render::Vec2{12, 34}, sb::native_render::Vec2{60, 34},
+                sb::native_render::Vec2{12, 54}, sb::native_render::Vec2{60, 54}}));
+    assert(
+        (capture.command.uv == std::array<sb::native_render::Vec2, 4>{
+                                   sb::native_render::Vec2{1, 0}, sb::native_render::Vec2{0, 0},
+                                   sb::native_render::Vec2{1, 1}, sb::native_render::Vec2{0, 1}}));
+    assert(!capture.command.clip.enabled);
 
     const std::uint64_t firstRevision = capture.images[0].revision;
     memory.u8(texels0 + 1, 11);

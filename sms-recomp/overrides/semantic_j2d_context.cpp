@@ -9,11 +9,14 @@
 #include <sunbright/native_render/semantic_sink.h>
 
 extern "C" void func_802cfda8(CPUState&); // J2DScreen::draw
+extern "C" void func_802eb6bc(CPUState&); // J2DGrafContext::setup2D
 
 namespace sb::recomp {
 namespace {
 
 native_render::PictureContextStack g_contexts{};
+native_render::PictureContext g_activeContext{};
+bool g_hasActiveContext = false;
 
 class ScreenContextScope {
   public:
@@ -49,8 +52,27 @@ void run_semantic_j2d_screen_draw(CPUState& cpu) {
     func_802cfda8(cpu);
 }
 
+void run_semantic_j2d_setup(CPUState& cpu) {
+    if (native_render::has_semantic_sink()) {
+        native_render::PictureContext context{};
+        const J2DContextCaptureResult result =
+            capture_j2d_graph_context(live_guest_byte_reader(), cpu.gpr[3], context);
+        if (result == J2DContextCaptureResult::Success) {
+            g_activeContext = context;
+            g_hasActiveContext = true;
+        } else if (result == J2DContextCaptureResult::NonOrthographic) {
+            g_hasActiveContext = false;
+        } else {
+            SB_ASSERT(false, "semantic active J2D context capture failed: graf=%08x", cpu.gpr[3]);
+        }
+    }
+    func_802eb6bc(cpu);
+}
+
 const native_render::PictureContext* current_semantic_j2d_context() noexcept {
-    return g_contexts.current();
+    if (const native_render::PictureContext* scoped = g_contexts.current(); scoped != nullptr)
+        return scoped;
+    return g_hasActiveContext ? &g_activeContext : nullptr;
 }
 
 } // namespace sb::recomp
@@ -59,7 +81,13 @@ namespace {
 void override_semantic_j2d_screen_draw(CPUState& cpu) {
     sb::recomp::run_semantic_j2d_screen_draw(cpu);
 }
+
+void override_semantic_j2d_setup(CPUState& cpu) {
+    sb::recomp::run_semantic_j2d_setup(cpu);
+}
 } // namespace
 
 SB_OVERRIDE(0x802cfda8u, override_semantic_j2d_screen_draw, "J2DScreen::draw",
             "publish renderer-neutral J2D canvas and clip context around retained body")
+SB_OVERRIDE(0x802eb6bcu, override_semantic_j2d_setup, "J2DGrafContext::setup2D",
+            "publish the active renderer-neutral J2D canvas for immediate-mode draws")

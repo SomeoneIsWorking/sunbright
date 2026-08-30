@@ -1,6 +1,7 @@
 #include <sunbright/native_render/picture.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 
 namespace sb::native_render {
@@ -237,6 +238,47 @@ bool resolve_picture_layout(const PictureLayout& layout, std::array<Vec2, 4>& po
                         static_cast<float>(renderY + height)),
         transform_point(transform, static_cast<float>(renderX + width),
                         static_cast<float>(renderY + height))};
+    return true;
+}
+
+bool resolve_direct_picture_layout(const DirectPictureLayout& layout,
+                                   std::array<Vec2, 4>& positions,
+                                   std::array<Vec2, 4>& uv) noexcept {
+    for (float value : layout.transform.value) {
+        if (!std::isfinite(value))
+            return false;
+    }
+
+    // The retail immediate vertex emitter narrows these public int dimensions to signed 16-bit.
+    const auto narrowS16 = [](std::int32_t value) {
+        return std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(value));
+    };
+    const auto width = narrowS16(layout.width);
+    const auto height = narrowS16(layout.height);
+    if (width == 0 || height == 0)
+        return false;
+
+    positions = {
+        transform_point(layout.transform, 0.0f, 0.0f),
+        transform_point(layout.transform, static_cast<float>(width), 0.0f),
+        transform_point(layout.transform, 0.0f, static_cast<float>(height)),
+        transform_point(layout.transform, static_cast<float>(width), static_cast<float>(height))};
+
+    const float uFirst = layout.mirrorHorizontal ? 1.0f : 0.0f;
+    const float uSecond = layout.mirrorHorizontal ? 0.0f : 1.0f;
+    if (!layout.transpose) {
+        const float vFirst = layout.mirrorVertical ? 1.0f : 0.0f;
+        const float vSecond = layout.mirrorVertical ? 0.0f : 1.0f;
+        uv = {Vec2{uFirst, vFirst}, Vec2{uSecond, vFirst}, Vec2{uFirst, vSecond},
+              Vec2{uSecond, vSecond}};
+    } else {
+        // Exact association emitted by the transposed branch: U varies down the destination quad
+        // and V varies across it. Its vertical flag reverses that horizontal V interval.
+        const float vFirst = layout.mirrorVertical ? 0.0f : 1.0f;
+        const float vSecond = layout.mirrorVertical ? 1.0f : 0.0f;
+        uv = {Vec2{uFirst, vFirst}, Vec2{uFirst, vSecond}, Vec2{uSecond, vFirst},
+              Vec2{uSecond, vSecond}};
+    }
     return true;
 }
 

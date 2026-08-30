@@ -82,6 +82,19 @@ struct PictureLayout {
     Matrix3x4 globalTransform{};
 };
 
+// Inputs owned by J2DPicture::draw, the immediate-mode picture entry point used by HUD effects.
+// Unlike drawFullSet, this path receives its destination rectangle and orientation directly and
+// uses the position matrix produced by J2DPane::makeMatrix. Width and height are narrowed to the
+// signed 16-bit values the retail vertex emitter consumes.
+struct DirectPictureLayout {
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    bool mirrorHorizontal = false;
+    bool mirrorVertical = false;
+    bool transpose = false;
+    Matrix3x4 transform{};
+};
+
 using PictureMesh = std::array<SemanticVertex, 6>;
 
 [[nodiscard]] bool valid(const PictureCommand& picture) noexcept;
@@ -89,6 +102,9 @@ using PictureMesh = std::array<SemanticVertex, 6>;
 [[nodiscard]] bool resolve_picture_layout(const PictureLayout& layout,
                                           std::array<Vec2, 4>& positions,
                                           std::array<Vec2, 4>& uv) noexcept;
+[[nodiscard]] bool resolve_direct_picture_layout(const DirectPictureLayout& layout,
+                                                 std::array<Vec2, 4>& positions,
+                                                 std::array<Vec2, 4>& uv) noexcept;
 [[nodiscard]] PictureMesh make_mesh(const PictureCommand& picture) noexcept;
 
 // Reference for the PC-native picture material. It blends decoded texture layers, applies the

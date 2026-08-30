@@ -19,8 +19,12 @@
 #include <vector>
 
 extern "C" void sb_native_picture_submit(const void* picture, const void* parentMatrix);
+extern "C" void sb_native_picture_submit_direct(const void* picture, const void* positionMatrix,
+                                                int width, int height, int mirrorHorizontal,
+                                                int mirrorVertical, int transpose);
 extern "C" void sb_native_picture_context_push(const void* grafContext, int clipEnabled);
 extern "C" void sb_native_picture_context_pop(void);
+extern "C" void sb_native_picture_context_activate(const void* grafContext);
 extern "C" void sb_native_solid_rectangle_submit(const void* rect, std::uint32_t rgba);
 
 namespace {
@@ -200,9 +204,29 @@ int main() {
     assert(receiver.images[1].revision == firstIntensityRevision);
     assert(g_hostAllocationDepth == 0);
 
+    // Immediate-mode J2DPicture::draw runs outside a J2DScreen scope. setup2D publishes its active
+    // ortho graph, then the direct bridge consumes the position matrix the retained body built.
+    sb_native_picture_context_pop();
+    sb_native_picture_context_activate(&graph);
+    Mtx directTransform{};
+    identity(directTransform);
+    directTransform[0][3] = 12.0f;
+    directTransform[1][3] = 34.0f;
+    sb_native_picture_submit_direct(&picture, &directTransform, 48, 20, 1, 0, 0);
+    assert(receiver.calls == 4);
+    assert(!receiver.draw.picture.clip.enabled);
+    assert((receiver.draw.picture.positions ==
+            std::array<sb::native_render::Vec2, 4>{
+                sb::native_render::Vec2{12, 34}, sb::native_render::Vec2{60, 34},
+                sb::native_render::Vec2{12, 54}, sb::native_render::Vec2{60, 54}}));
+    assert((receiver.draw.picture.uv ==
+            std::array<sb::native_render::Vec2, 4>{
+                sb::native_render::Vec2{1, 0}, sb::native_render::Vec2{0, 0},
+                sb::native_render::Vec2{1, 1}, sb::native_render::Vec2{0, 1}}));
+
     JDrama::TRect fill(-107, 20, 747, 460);
     sb_native_solid_rectangle_submit(&fill, 0x10203080U);
-    assert(receiver.calls == 4);
+    assert(receiver.calls == 5);
     assert(receiver.imageCount == 0);
     assert(receiver.solid.rectangle.positions[0] == sb::native_render::Vec2(-107.0f, 20.0f));
     assert(receiver.solid.rectangle.positions[3] == sb::native_render::Vec2(747.0f, 460.0f));
@@ -215,5 +239,4 @@ int main() {
     assert(g_hostAllocationDepth == 0);
 
     assert(sb::native_render::release_semantic_sink(sinkLease));
-    sb_native_picture_context_pop();
 }

@@ -6,7 +6,7 @@ created: 2026-08-28
 tags: renderer,semantic
 depends: native-render/src/semantic_2d_pass.cpp#Semantic2dPass::encode, sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 02:07:19
+verified_at: 2026-08-30 04:46:11
 ---
 
 ## Claim
@@ -32,3 +32,7 @@ Reconfirmed after per-draw canvas/viewport schema: root 40/40 tests, recomp 28/2
 ## Re-confirmed 2026-08-30
 
 Reconfirmed after the shared-platform and caller-owned encode refactor: Clang sms-boot/sms-recomp builds pass, root 42/42 and recomp 27/27 tests pass, both J2DPicture adapter controls pass, and the watched semantic GPU test proves the sRGB semantic 2D pass, changed revision, and current-revision residency without a kernel GPU fault.
+
+## Re-confirmed 2026-08-30
+
+Reverified after immediate-picture capture and active J2D canvas integration: both Clang builds pass, root 42/42 and recomp 28/28 tests pass, adapter controls pass, the watched semantic GPU control remains fault-free, and both original drawing bodies remain retained.

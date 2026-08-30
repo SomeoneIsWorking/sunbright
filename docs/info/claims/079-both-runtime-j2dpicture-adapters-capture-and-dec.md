@@ -6,7 +6,7 @@ created: 2026-08-28
 tags: renderer,resources,recomp,decomp
 depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit, native-render/src/semantic_sink.cpp#submit_picture
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 02:07:19
+verified_at: 2026-08-30 04:46:11
 ---
 
 ## Claim
@@ -28,3 +28,7 @@ Reconfirmed after contextual PictureDraw submission: production-linked decomp ad
 ## Re-confirmed 2026-08-30
 
 Reconfirmed after exclusive sink leases and frame-bridge integration: recomp j2d_picture_adapter and production-linked decomp native_picture_adapter controls pass exact pixels, revisions, refusal paths, transient copying, and host-allocation depth; root 42/42 and recomp 27/27 tests pass, and the watched GPU control remains fault-free.
+
+## Re-confirmed 2026-08-30
+
+Reverified decoded-image ownership after shared material capture was reused by the immediate path: recomp guest and production-linked decomp controls pass exact pixels, revisions, synchronous image copying, refusal paths, and host-allocation balance; full suites and watched GPU control pass.

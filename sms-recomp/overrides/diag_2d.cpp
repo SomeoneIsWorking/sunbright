@@ -247,6 +247,34 @@ void submit_semantic_picture(CPUState& cpu) {
               "semantic J2DPicture sink rejected a validated command: self=%08x", cpu.gpr[3]);
 }
 
+struct DirectPictureArgs {
+    u32 self = 0;
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    bool mirrorHorizontal = false;
+    bool mirrorVertical = false;
+    bool transpose = false;
+};
+
+void submit_semantic_direct_picture(const DirectPictureArgs& args) {
+    if (!sb::native_render::has_semantic_sink())
+        return;
+    sb::recomp::CapturedPicture capture{};
+    SB_ASSERT(sb::recomp::capture_j2d_direct_picture(
+                  sb::recomp::live_guest_byte_reader(), args.self, args.self + 0x54, args.width,
+                  args.height, args.mirrorHorizontal, args.mirrorVertical, args.transpose, capture),
+              "semantic direct J2DPicture capture failed: self=%08x size=%dx%d flags=%u/%u/%u",
+              args.self, args.width, args.height, args.mirrorHorizontal, args.mirrorVertical,
+              args.transpose);
+    const sb::native_render::PictureContext* context = sb::recomp::current_semantic_j2d_context();
+    SB_ASSERT(context != nullptr,
+              "semantic direct J2DPicture capture has no active orthographic context: self=%08x",
+              args.self);
+    const sb::native_render::PictureDraw draw{context->canvas, capture.command};
+    SB_ASSERT(sb::native_render::submit_picture(draw, capture.image_views()),
+              "semantic direct J2DPicture sink rejected a validated command: self=%08x", args.self);
+}
+
 void emit_pane_quad(const PaneQuad& q) {
     const int x1 = q.x1, y1 = q.y1, x2 = q.x2, y2 = q.y2;
     const u8 ca = q.alpha;
@@ -370,9 +398,20 @@ void ov_pic_drawself_mtx(CPUState& cpu) {
 void ov_pic_draw(CPUState& cpu) {
     sb::frame_interp::two_d::PaneScope identity(cpu.gpr[3],
                                                 sb::frame_interp::two_d::DrawPath::Picture);
+    const DirectPictureArgs args{.self = cpu.gpr[3],
+                                 .width = static_cast<std::int32_t>(cpu.gpr[6]),
+                                 .height = static_cast<std::int32_t>(cpu.gpr[7]),
+                                 .mirrorHorizontal = cpu.gpr[8] != 0,
+                                 .mirrorVertical = cpu.gpr[9] != 0,
+                                 .transpose = cpu.gpr[10] != 0};
+    const bool visible = sb_r8(args.self + 0x0c) != 0;
     if (diag_on())
         note("J2DPicture::draw", cpu.gpr[3]);
     func_802ccef4(cpu);
+    // This retained body owns makeMatrix(x,y), so capture its resulting high-level J2D matrix
+    // after return. The saved arguments preserve the entry contract across guest register clobbers.
+    if (visible)
+        submit_semantic_direct_picture(args);
 }
 void ov_text_draw(CPUState& cpu) {
     if (diag_on())
@@ -401,7 +440,8 @@ void sbr_diag_2d_note_window(u32 self, u32 rect) {
 SB_OVERRIDE(0x802cc758u, ov_pic_drawself, "J2DPicture::drawSelf", "diagnostic: 2D class census")
 SB_OVERRIDE(0x802cc7c0u, ov_pic_drawself_mtx, "J2DPicture::drawSelf(Mtx)",
             "diagnostic: 2D class census — the overload that receives the transform")
-SB_OVERRIDE(0x802ccef4u, ov_pic_draw, "J2DPicture::draw", "diagnostic: 2D class census")
+SB_OVERRIDE(0x802ccef4u, ov_pic_draw, "J2DPicture::draw",
+            "publish immediate-mode semantic pictures and retain the original body")
 SB_OVERRIDE(0x802d0b28u, ov_text_draw, "J2DTextBox::draw", "diagnostic: 2D class census")
 SB_OVERRIDE(0x802d0d70u, ov_text_drawself, "J2DTextBox::drawSelf", "diagnostic: 2D class census")
 SB_OVERRIDE(0x802d01c8u, ov_screen_drawself, "J2DScreen::drawSelf", "diagnostic: 2D class census")

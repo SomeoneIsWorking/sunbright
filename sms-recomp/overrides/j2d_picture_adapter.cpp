@@ -162,27 +162,61 @@ bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_
     return true;
 }
 
-} // namespace
+bool read_picture_material(const Reader& reader, std::uint32_t self,
+                           CapturedPicture& result) noexcept {
+    std::uint8_t textureCount = 0;
+    std::uint8_t opacity = 0;
+    std::uint32_t white = 0;
+    std::uint32_t black = 0;
+    std::uint32_t colorBlend = 0;
+    std::uint32_t alphaBlend = 0;
+    if (!reader.u8(self + 0xfc, textureCount) || textureCount == 0 || textureCount > 4 ||
+        !reader.u8(self + 0xcd, opacity) || !reader.u32(self + 0x13c, white) ||
+        !reader.u32(self + 0x140, black) || !reader.u32(self + 0x154, colorBlend) ||
+        !reader.u32(self + 0x158, alphaBlend)) {
+        return false;
+    }
 
-J2DContextCaptureResult capture_j2d_context(const GuestByteReader& byteReader, std::uint32_t screen,
-                                            std::uint32_t grafContext,
-                                            native_render::PictureContext& context) noexcept {
-    if (screen == 0)
-        return J2DContextCaptureResult::Invalid;
-    const Reader reader(byteReader);
-    std::uint8_t clipEnabled = 0;
-    if (!reader.u8(screen + 0xec, clipEnabled))
-        return J2DContextCaptureResult::Invalid;
+    result.command.instance = self;
+    result.command.opacity = static_cast<float>(opacity) / 255.0f;
+    result.command.material.textureCount = textureCount;
+    result.command.material.black = native_render::color_from_rgba8(black);
+    result.command.material.white = native_render::color_from_rgba8(white);
+    for (std::size_t index = 0; index < result.command.corner.size(); ++index) {
+        std::uint32_t rgba = 0;
+        if (!reader.u32(self + 0x144 + static_cast<std::uint32_t>(index * 4), rgba))
+            return false;
+        result.command.corner[index] = native_render::color_from_rgba8(rgba);
+    }
+    for (std::size_t index = 0; index < textureCount; ++index) {
+        std::uint32_t textureAddress = 0;
+        if (!reader.u32(self + 0xec + static_cast<std::uint32_t>(index * 4), textureAddress) ||
+            !read_texture(reader, textureAddress, index, colorBlend, alphaBlend,
+                          result.command.material.textures[index], result.rgba8[index])) {
+            return false;
+        }
+    }
+    result.imageCount = textureCount;
+    return true;
+}
 
+J2DContextCaptureResult capture_graph_context(const Reader& reader, std::uint32_t grafContext,
+                                              bool clipEnabled,
+                                              native_render::PictureContext& context) noexcept {
     native_render::PictureContext result{};
-    result.clipEnabled = clipEnabled != 0;
+    result.clipEnabled = clipEnabled;
     if (grafContext == 0) {
         result.canvas = {.origin = {0, 0}, .extent = {640, 480}, .viewport = {0, 0, 640, 480}};
     } else {
+        // GMSE01's J2DOrthoGraph constructor installs this vtable and writes type 1. The base
+        // J2DGrafContext constructors leave the type word untouched, so requiring both prevents an
+        // indeterminate base-context word from being mistaken for the larger ortho layout.
+        constexpr std::uint32_t kJ2DOrthoGraphVtable = 0x803e14b0;
+        std::uint32_t vtable = 0;
         std::uint32_t type = 0;
-        if (!reader.u32(grafContext + 0x04, type))
+        if (!reader.u32(grafContext, vtable) || !reader.u32(grafContext + 0x04, type))
             return J2DContextCaptureResult::Invalid;
-        if (type != 1)
+        if (vtable != kJ2DOrthoGraphVtable || type != 1)
             return J2DContextCaptureResult::NonOrthographic;
 
         std::int32_t viewportX1 = 0;
@@ -217,6 +251,29 @@ J2DContextCaptureResult capture_j2d_context(const GuestByteReader& byteReader, s
     return J2DContextCaptureResult::Success;
 }
 
+} // namespace
+
+J2DContextCaptureResult capture_j2d_context(const GuestByteReader& byteReader, std::uint32_t screen,
+                                            std::uint32_t grafContext,
+                                            native_render::PictureContext& context) noexcept {
+    if (screen == 0)
+        return J2DContextCaptureResult::Invalid;
+    const Reader reader(byteReader);
+    std::uint8_t clipEnabled = 0;
+    if (!reader.u8(screen + 0xec, clipEnabled))
+        return J2DContextCaptureResult::Invalid;
+
+    return capture_graph_context(reader, grafContext, clipEnabled != 0, context);
+}
+
+J2DContextCaptureResult capture_j2d_graph_context(const GuestByteReader& byteReader,
+                                                  std::uint32_t grafContext,
+                                                  native_render::PictureContext& context) noexcept {
+    if (grafContext == 0)
+        return J2DContextCaptureResult::Invalid;
+    return capture_graph_context(Reader(byteReader), grafContext, false, context);
+}
+
 void CapturedPicture::refresh_image_views() noexcept {
     for (std::size_t index = 0; index < imageCount; ++index) {
         const native_render::PictureTexture& texture = command.material.textures[index];
@@ -236,51 +293,22 @@ bool capture_j2d_picture(const GuestByteReader& byteReader, std::uint32_t self,
     const Reader reader(byteReader);
 
     CapturedPicture result{};
-    result.command.instance = self;
 
     std::int32_t x1 = 0;
     std::int32_t y1 = 0;
     std::int32_t x2 = 0;
     std::int32_t y2 = 0;
-    std::uint8_t textureCount = 0;
     std::uint8_t transpose = 0;
-    std::uint8_t opacity = 0;
     std::uint32_t binding = 0;
     std::uint32_t mirror = 0;
     std::int32_t horizontalWrap = 0;
     std::int32_t verticalWrap = 0;
-    std::uint32_t white = 0;
-    std::uint32_t black = 0;
-    std::uint32_t colorBlend = 0;
-    std::uint32_t alphaBlend = 0;
     if (!reader.s32(self + 0x14, x1) || !reader.s32(self + 0x18, y1) ||
         !reader.s32(self + 0x1c, x2) || !reader.s32(self + 0x20, y2) ||
-        !reader.u8(self + 0xfc, textureCount) || textureCount == 0 || textureCount > 4 ||
-        !reader.u8(self + 0x130, transpose) || !reader.u8(self + 0xcd, opacity) ||
-        !reader.u32(self + 0x128, binding) || !reader.u32(self + 0x12c, mirror) ||
-        !reader.s32(self + 0x134, horizontalWrap) || !reader.s32(self + 0x138, verticalWrap) ||
-        !reader.u32(self + 0x13c, white) || !reader.u32(self + 0x140, black) ||
-        !reader.u32(self + 0x154, colorBlend) || !reader.u32(self + 0x158, alphaBlend))
+        !reader.u8(self + 0x130, transpose) || !reader.u32(self + 0x128, binding) ||
+        !reader.u32(self + 0x12c, mirror) || !reader.s32(self + 0x134, horizontalWrap) ||
+        !reader.s32(self + 0x138, verticalWrap) || !read_picture_material(reader, self, result))
         return false;
-
-    result.command.opacity = static_cast<float>(opacity) / 255.0f;
-    result.command.material.textureCount = textureCount;
-    result.command.material.black = native_render::color_from_rgba8(black);
-    result.command.material.white = native_render::color_from_rgba8(white);
-    for (std::size_t index = 0; index < result.command.corner.size(); ++index) {
-        std::uint32_t rgba = 0;
-        if (!reader.u32(self + 0x144 + static_cast<std::uint32_t>(index * 4), rgba))
-            return false;
-        result.command.corner[index] = native_render::color_from_rgba8(rgba);
-    }
-    for (std::size_t index = 0; index < textureCount; ++index) {
-        std::uint32_t textureAddress = 0;
-        if (!reader.u32(self + 0xec + static_cast<std::uint32_t>(index * 4), textureAddress) ||
-            !read_texture(reader, textureAddress, index, colorBlend, alphaBlend,
-                          result.command.material.textures[index], result.rgba8[index]))
-            return false;
-    }
-    result.imageCount = textureCount;
 
     native_render::PictureLayout layout{};
     layout.width = x2 - x1;
@@ -298,6 +326,35 @@ bool capture_j2d_picture(const GuestByteReader& byteReader, std::uint32_t self,
                                                result.command.uv) ||
         !native_render::valid(result.command))
         return false;
+
+    capture = std::move(result);
+    capture.refresh_image_views();
+    return true;
+}
+
+bool capture_j2d_direct_picture(const GuestByteReader& byteReader, std::uint32_t self,
+                                std::uint32_t positionMatrix, std::int32_t width,
+                                std::int32_t height, bool mirrorHorizontal, bool mirrorVertical,
+                                bool transpose, CapturedPicture& capture) noexcept {
+    if (self == 0 || positionMatrix == 0)
+        return false;
+    const Reader reader(byteReader);
+    CapturedPicture result{};
+    if (!read_picture_material(reader, self, result))
+        return false;
+
+    native_render::DirectPictureLayout layout{};
+    layout.width = width;
+    layout.height = height;
+    layout.mirrorHorizontal = mirrorHorizontal;
+    layout.mirrorVertical = mirrorVertical;
+    layout.transpose = transpose;
+    if (!read_matrix(reader, positionMatrix, layout.transform) ||
+        !native_render::resolve_direct_picture_layout(layout, result.command.positions,
+                                                      result.command.uv) ||
+        !native_render::valid(result.command)) {
+        return false;
+    }
 
     capture = std::move(result);
     capture.refresh_image_views();

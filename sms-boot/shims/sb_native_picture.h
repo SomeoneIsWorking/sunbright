@@ -8,8 +8,12 @@ extern "C" {
 // renderer's C++ types. The implementation reads J2DPicture fields directly and publishes the same
 // semantic command as the recomp adapter.
 void sb_native_picture_submit(const void* picture, const void* parent_matrix);
+void sb_native_picture_submit_direct(const void* picture, const void* position_matrix, int width,
+                                     int height, int mirror_horizontal, int mirror_vertical,
+                                     int transpose);
 void sb_native_picture_context_push(const void* graf_context, int clip_enabled);
 void sb_native_picture_context_pop(void);
+void sb_native_picture_context_activate(const void* graf_context);
 
 #ifdef __cplusplus
 }
