@@ -12,6 +12,12 @@ bool accept(const SemanticDraw&, std::span<const DecodedImageView>, void*) {
     return true;
 }
 
+bool unexpected_model(const ModelDraw&, const MeshResourceView&, std::span<const DecodedImageView>,
+                      void*) {
+    assert(false && "incumbent sink must not receive a model in this test");
+    return false;
+}
+
 PictureDraw draw(std::uint64_t instance, std::uint64_t revision) {
     PictureCommand picture{};
     picture.instance = instance;
@@ -37,9 +43,9 @@ int main() {
     assert(std::strcmp(bridge.last_error(), "invalid target extent") == 0);
 
     SemanticSinkLease incumbent;
-    assert(claim_semantic_sink({accept, nullptr}, incumbent));
+    assert(claim_semantic_sink({.submit = accept, .submitModel = unexpected_model}, incumbent));
     SemanticSinkLease refused;
-    assert(!claim_semantic_sink({accept, nullptr}, refused));
+    assert(!claim_semantic_sink({.submit = accept, .submitModel = unexpected_model}, refused));
     assert(!refused);
     assert(!release_semantic_sink({incumbent.value + 1}));
     assert(owns_semantic_sink(incumbent));

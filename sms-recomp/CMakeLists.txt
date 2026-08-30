@@ -350,6 +350,15 @@ target_include_directories(semantic_j3d_material_adapter_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
 add_test(NAME semantic_j3d_material_adapter COMMAND semantic_j3d_material_adapter_test)
 
+add_executable(j3d_scene_projection_adapter_test
+               tests/j3d_scene_projection_adapter_test.cpp
+               overrides/big_endian_guest_reader.cpp
+               overrides/j3d_scene_projection_adapter.cpp)
+target_link_libraries(j3d_scene_projection_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(j3d_scene_projection_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME j3d_scene_projection_adapter COMMAND j3d_scene_projection_adapter_test)
+
 add_executable(guest_j3d_texture_adapter_test
                tests/guest_j3d_texture_adapter_test.cpp
                overrides/big_endian_guest_reader.cpp

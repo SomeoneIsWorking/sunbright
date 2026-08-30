@@ -68,6 +68,13 @@ bool receive(const sb::native_render::SemanticDraw& draw,
     return true;
 }
 
+bool unexpected_model(const sb::native_render::ModelDraw&,
+                      const sb::native_render::MeshResourceView&,
+                      std::span<const sb::native_render::DecodedImageView>, void*) {
+    assert(false && "native picture adapter test must not submit a model");
+    return false;
+}
+
 void identity(Mtx matrix) {
     for (std::size_t row = 0; row < 3; ++row)
         for (std::size_t column = 0; column < 4; ++column)
@@ -196,7 +203,8 @@ int main() {
     assert(receiver.calls == 0);
 
     sb::native_render::SemanticSinkLease sinkLease;
-    assert(sb::native_render::claim_semantic_sink({receive, &receiver}, sinkLease));
+    assert(sb::native_render::claim_semantic_sink(
+        {.submit = receive, .submitModel = unexpected_model, .context = &receiver}, sinkLease));
     sb_native_picture_context_push(&graph, 1);
     sb_native_picture_submit(&picture, &parent);
     assert(g_hostAllocationDepth == 0);

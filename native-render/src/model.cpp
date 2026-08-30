@@ -16,15 +16,15 @@ bool valid(Color color) noexcept {
     return finite(color.r) && finite(color.g) && finite(color.b) && finite(color.a);
 }
 
-bool valid(const Matrix4x4& matrix) noexcept {
-    return std::ranges::all_of(matrix.value, finite);
-}
-
 Color multiply(Color first, Color second) noexcept {
     return {first.r * second.r, first.g * second.g, first.b * second.b, first.a * second.a};
 }
 
 } // namespace
+
+bool valid(const Matrix4x4& matrix) noexcept {
+    return std::ranges::all_of(matrix.value, finite);
+}
 
 std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept {
     constexpr std::uint64_t kOffset = 14695981039346656037ULL;

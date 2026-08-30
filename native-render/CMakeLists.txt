@@ -1,7 +1,7 @@
 add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/image.cpp src/image_decode.cpp
                                                  src/j3d_mesh_decode.cpp
                                                  src/j3d_unlit_material.cpp
-                                                 src/model.cpp
+                                                 src/model.cpp src/model_context.cpp
                                                  src/res_timg_decode.cpp
                                                  src/picture.cpp src/picture_context.cpp
                                                  src/semantic_2d_types.cpp
@@ -41,6 +41,10 @@ add_test(NAME native_render_picture_context COMMAND native_render_picture_contex
 add_executable(native_render_model_test tests/model_test.cpp)
 target_link_libraries(native_render_model_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_model COMMAND native_render_model_test)
+
+add_executable(native_render_model_context_test tests/model_context_test.cpp)
+target_link_libraries(native_render_model_context_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_model_context COMMAND native_render_model_context_test)
 
 add_executable(native_render_j3d_mesh_decode_test tests/j3d_mesh_decode_test.cpp)
 target_link_libraries(native_render_j3d_mesh_decode_test PRIVATE sunbright-native-render-core)

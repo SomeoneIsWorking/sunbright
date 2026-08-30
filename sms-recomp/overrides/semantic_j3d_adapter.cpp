@@ -2,13 +2,13 @@
 
 #include "guest_j3d_texture_adapter.h"
 #include "semantic_j3d_material_adapter.h"
+#include "semantic_j3d_scene.h"
 
 #include "../runtime/probe_server.h"
 #include "../runtime/render/j3d_decode.h"
-#include "../runtime/render/native_render.h"
-#include "../runtime/render/scene.h"
 #include "../runtime/sb_assert.h"
 
+#include <sunbright/native_render/model_context.h>
 #include <sunbright/native_render/semantic_sink.h>
 
 #include <algorithm>
@@ -38,7 +38,7 @@ struct Stats {
     std::uint64_t materialMemoryFailures = 0;
     std::array<std::uint64_t, 9> materialRejections{};
     std::uint64_t layoutFailures = 0;
-    std::uint64_t projectionFailures = 0;
+    std::uint64_t noPerspectiveContexts = 0;
     std::uint64_t nonRigidElements = 0;
     std::uint64_t decodeFailures = 0;
     std::uint64_t textureTableFailures = 0;
@@ -79,16 +79,6 @@ float guest_f32(u32 address) {
     return value;
 }
 
-sb::native_render::Matrix4x4 current_projection() {
-    bool is2d = false;
-    const float* source = sbr_gx_current_projection(&is2d);
-    sb::native_render::Matrix4x4 projection{};
-    if (is2d || !sbr_scene_has_projection())
-        return projection;
-    std::copy_n(source, projection.value.size(), projection.value.begin());
-    return sb::native_render::zero_to_one_depth_projection(projection);
-}
-
 const bool g_probe = [] {
     sb_probe_register("/semantic-j3d", "PC-native rigid unlit J3D model coverage",
                       [](const ProbeArgs&) { return semantic_j3d_stats_text(); });
@@ -105,7 +95,7 @@ std::string semantic_j3d_stats_text() {
     std::snprintf(
         output, sizeof(output),
         "J3D native-model coverage: considered=%llu submitted=%llu models/%llu vertices; "
-        "unreadable=%llu layout=%llu projection=%llu non-rigid=%llu decode=%llu "
+        "unreadable=%llu layout=%llu no-perspective-context=%llu non-rigid=%llu decode=%llu "
         "texture-table=%llu texture-decode=%llu; material "
         "rejections: colour-block=%llu lighting=%llu missing-channel=%llu texture=%llu "
         "tev-family=%llu multi-stage=%llu colour-program=%llu missing-vertex-colour=%llu; "
@@ -116,7 +106,7 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.submittedVertices),
         static_cast<unsigned long long>(g_stats.materialMemoryFailures),
         static_cast<unsigned long long>(g_stats.layoutFailures),
-        static_cast<unsigned long long>(g_stats.projectionFailures),
+        static_cast<unsigned long long>(g_stats.noPerspectiveContexts),
         static_cast<unsigned long long>(g_stats.nonRigidElements),
         static_cast<unsigned long long>(g_stats.decodeFailures),
         static_cast<unsigned long long>(g_stats.textureTableFailures),
@@ -133,6 +123,15 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.litUntexturedCandidates),
         static_cast<unsigned long long>(g_stats.litTexturedCandidates));
     std::string report(output);
+    const sb::recomp::SemanticJ3dSceneStats sceneStats = sb::recomp::semantic_j3d_scene_stats();
+    char sceneLine[240];
+    std::snprintf(sceneLine, sizeof(sceneLine),
+                  "; high-level camera dispatches: perspective=%llu orthographic=%llu "
+                  "unavailable-before-camera=%llu",
+                  static_cast<unsigned long long>(sceneStats.perspectiveDispatches),
+                  static_cast<unsigned long long>(sceneStats.orthographicDispatches),
+                  static_cast<unsigned long long>(sceneStats.unavailableDispatches));
+    report += sceneLine;
     std::vector<std::pair<ProgramKey, std::uint64_t>> programs(g_programs.begin(),
                                                                g_programs.end());
     std::ranges::sort(programs, [](const auto& first, const auto& second) {
@@ -245,9 +244,10 @@ void submit_semantic_j3d_shape(u32 shape) {
         images = semanticImages;
     }
 
-    const sb::native_render::Matrix4x4 projection = current_projection();
-    if (std::ranges::all_of(projection.value, [](float value) { return value == 0.0F; })) {
-        ++g_stats.projectionFailures;
+    const sb::native_render::ModelSceneContext* scene = sb::recomp::current_semantic_j3d_scene();
+    if (scene == nullptr ||
+        scene->projectionKind != sb::native_render::ProjectionKind::Perspective) {
+        ++g_stats.noPerspectiveContexts;
         return;
     }
     const u32 matrixObjects = sb_r32(shape + kShapeMatrices);
@@ -301,7 +301,7 @@ void submit_semantic_j3d_shape(u32 shape) {
         draw.mesh = {resource, revision, static_cast<std::uint32_t>(g_vertices.size())};
         for (std::size_t index = 0; index < draw.modelView.value.size(); ++index)
             draw.modelView.value[index] = guest_f32(matrixAddress + index * 4);
-        draw.projection = projection;
+        draw.projection = scene->projection;
         draw.material = semanticMaterial;
         const sb::native_render::MeshResourceView mesh{resource, revision, g_vertices};
         SB_ASSERT(sb::native_render::submit_model(draw, mesh, images),

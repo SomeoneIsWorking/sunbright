@@ -2,6 +2,7 @@
 
 #include "host_allocation_scope.h"
 #include "native_j3d_material_adapter.h"
+#include "native_j3d_scene.h"
 
 #include <sunbright/native_render/j3d_mesh_decode.h>
 #include <sunbright/native_render/semantic_sink.h>
@@ -10,7 +11,6 @@
 #include <JSystem/J3D/J3DGraphBase/J3DPacket.hpp>
 #include <JSystem/J3D/J3DGraphBase/J3DShape.hpp>
 #include <JSystem/J3D/J3DGraphBase/J3DSys.hpp>
-#include <dolphin/gx/GXGet.h>
 #include <dolphin/os.h>
 #include <sb_log.h>
 
@@ -31,7 +31,7 @@ struct Stats {
     std::uint64_t submittedVertices = 0;
     std::uint64_t layoutFailures = 0;
     std::uint64_t materialFailures = 0;
-    std::uint64_t projectionFailures = 0;
+    std::uint64_t noPerspectiveContexts = 0;
     std::uint64_t nonRigidElements = 0;
     std::uint64_t decodeFailures = 0;
 };
@@ -80,31 +80,6 @@ bool build_layout(const J3DShape& shape, sb::native_render::J3dVertexLayout& lay
     return sb::native_render::normalize_j3d_vertex_layout(
         std::span(descriptors).first(descriptorCount), std::span(formats).first(formatCount),
         shape.unk30, layout);
-}
-
-sb::native_render::Matrix4x4 current_projection() {
-    float gxProjection[7]{};
-    GXGetProjectionv(gxProjection);
-    sb::native_render::Matrix4x4 projection{};
-    if (static_cast<GXProjectionType>(static_cast<int>(gxProjection[0])) != GX_PERSPECTIVE)
-        return projection;
-    projection.value = {gxProjection[1],
-                        0.0F,
-                        gxProjection[2],
-                        0.0F,
-                        0.0F,
-                        gxProjection[3],
-                        gxProjection[4],
-                        0.0F,
-                        0.0F,
-                        0.0F,
-                        gxProjection[5],
-                        gxProjection[6],
-                        0.0F,
-                        0.0F,
-                        -1.0F,
-                        0.0F};
-    return sb::native_render::zero_to_one_depth_projection(projection);
 }
 
 bool decode_element(const J3DShape& shape, std::uint32_t element,
@@ -161,9 +136,10 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         return;
     }
 
-    const sb::native_render::Matrix4x4 projection = current_projection();
-    if (std::ranges::all_of(projection.value, [](float value) { return value == 0.0F; })) {
-        ++g_stats.projectionFailures;
+    const sb::native_render::ModelSceneContext* scene = sb::current_native_j3d_scene();
+    if (scene == nullptr ||
+        scene->projectionKind != sb::native_render::ProjectionKind::Perspective) {
+        ++g_stats.noPerspectiveContexts;
         return;
     }
     if (shape.mElementCount == 0 || shape.mMatrices == nullptr || shape.mDrawMatrices == nullptr ||
@@ -216,7 +192,7 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
             reinterpret_cast<std::uintptr_t>(&shape) ^ reinterpret_cast<std::uintptr_t>(&modelView);
         draw.mesh = {resource, revision, static_cast<std::uint32_t>(g_vertices.size())};
         std::copy_n(&modelView[0][0], draw.modelView.value.size(), draw.modelView.value.begin());
-        draw.projection = projection;
+        draw.projection = scene->projection;
         draw.material = capturedMaterial.material;
         const sb::native_render::MeshResourceView mesh{resource, revision, g_vertices};
         if (!sb::native_render::submit_model(draw, mesh, images)) {
@@ -230,15 +206,21 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
 }
 
 extern "C" void sb_native_j3d_report_stats(void) {
+    const sb::NativeJ3dSceneStats sceneStats = sb::native_j3d_scene_stats();
     sb_logf("semantic",
             "native J3D models: considered=%llu submitted=%llu models/%llu vertices "
-            "rejected(layout=%llu material=%llu projection=%llu non-rigid=%llu decode=%llu)",
+            "rejected(layout=%llu material=%llu no-perspective-context=%llu non-rigid=%llu "
+            "decode=%llu); high-level camera dispatches: perspective=%llu orthographic=%llu "
+            "unavailable-before-camera=%llu",
             static_cast<unsigned long long>(g_stats.considered),
             static_cast<unsigned long long>(g_stats.submittedModels),
             static_cast<unsigned long long>(g_stats.submittedVertices),
             static_cast<unsigned long long>(g_stats.layoutFailures),
             static_cast<unsigned long long>(g_stats.materialFailures),
-            static_cast<unsigned long long>(g_stats.projectionFailures),
+            static_cast<unsigned long long>(g_stats.noPerspectiveContexts),
             static_cast<unsigned long long>(g_stats.nonRigidElements),
-            static_cast<unsigned long long>(g_stats.decodeFailures));
+            static_cast<unsigned long long>(g_stats.decodeFailures),
+            static_cast<unsigned long long>(sceneStats.perspectiveDispatches),
+            static_cast<unsigned long long>(sceneStats.orthographicDispatches),
+            static_cast<unsigned long long>(sceneStats.unavailableDispatches));
 }

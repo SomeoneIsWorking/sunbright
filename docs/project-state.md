@@ -20,12 +20,12 @@ compatibility tooling: a native GPU backend reproducing GX is not a PC-native re
 semantic frame now combines the ported 2D/UI stream with rigid J3D triangle meshes using ordinary
 model/view/projection matrices, decoded RGBA textures, vertex colour, and a PC-native depth-tested
 SDL3 pass. Both runtimes publish the same values through separate layout adapters and always retain
-their original draw bodies for A/B. The model adapters still obtain the active projection from the
-value cached by `GXSetProjection`/`GXGetProjectionv`; the renderer sees only a normal matrix, but
-camera ownership has not yet moved above the SDK seam. That high-level camera boundary is next,
-followed by faithful raster policy and broader J3D materials: culling, blend/depth/alpha policy,
-lighting, multiple texture stages, skinning, authored mip chains, particles, and effects still fall
-back to the retained renderer.
+their original draw bodies for A/B. Camera projection now comes directly from the `TGraphics`
+value written by the game's camera and is scoped around high-level `TViewObj::testPerform` draw
+dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetProjection`,
+`GXGetProjectionv`, FIFO, or compatibility-renderer state. Faithful raster policy and broader J3D
+materials are next: culling, blend/depth/alpha policy, lighting, multiple texture stages, skinning,
+authored mip chains, particles, and effects still fall back to the retained renderer.
 
 ## Capability details
 
@@ -62,12 +62,16 @@ image decoding, and the exact first material family: rigid, unlit, one texture, 
 coordinate, authored vertex colour, and the observed texture-times-raster-colour stage program.
 The recomp adapter reads retail big-endian objects and arrays; the SDL pass receives only triangle
 vertices, matrices, an ordinary RGBA image, and sampler policy. Its projection matrix is currently
-normalized from the `GXSetProjection` argument mirrored by the runtime, not yet published by a
-high-level camera owner. A planted shader control proves the
+copied from `JDrama::TGraphics + 0x74` at the game's high-level draw-dispatch funnel. The scope
+classifies perspective and orthographic camera matrices and explicitly suppresses uninitialized
+pre-camera traversals, so nested/non-3D passes cannot inherit stale projection state. The adapter
+has no dependency on the runtime's `GXSetProjection` mirror. A planted shader control proves the
 same triangle changes from red to green when the decoded texture is bound. The final combined-tree
-guarded 60-present audit submitted 6,512 model draws and 2,519,484 decoded vertices with zero
-layout, projection, rigid-matrix, or mesh-decode failures and no GPU fault. Original recompiled
-bodies remain callable and execute after every semantic submission.
+guarded 60-present camera-scope audit submitted 6,468 model draws and 2,512,884 decoded vertices
+with zero unreadable, layout, rigid-matrix, or mesh-decode failures and no GPU fault. It observed
+11,331 perspective, 728 orthographic, and 46 pre-camera dispatches; 44 model attempts outside a
+perspective scope correctly fell back. Original recompiled bodies remain callable and execute
+after every semantic submission. C093 records the falsifiable camera-boundary evidence.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission
@@ -210,11 +214,15 @@ through its original GX body. Its loader-swapped vertex arrays are identified ex
 byte order while display-list commands and indices remain big-endian; a planted mixed-byte-order
 control proves positions and UVs decode correctly. Relocated host-order `ResTIMG` headers feed the
 same shared image decoder used by the recomp adapter. The active projection currently comes from
-the native SDK cache through `GXGetProjectionv`, matching the recomp adapter's mirror but not yet
-the intended high-level camera boundary. A guarded 400-frame direct-to-Delfino audit
+the same high-level `TGraphics` camera value as recomp, copied at the native decomp's
+`TViewObj::testPerform` funnel; `GXGetProjectionv` is no longer used by the semantic adapter. A
+guarded 400-frame direct-to-Delfino audit
 considered 141,825 shape draws and submitted 42,852 supported model draws containing 27,326,178
 vertices, with zero layout, rigid-matrix, or mesh-decode failures. It rejected 55,825 unsupported
 materials and 43,148 non-perspective draw contexts, leaving those to the retained renderer.
+A post-change guarded 180-present run submitted 11,858 models/7,194,726 vertices with zero layout,
+rigid-matrix, or decode failures. It measured 36,422 perspective, 1,713 orthographic, and 3,547
+pre-camera high-level dispatches; 12,154 model attempts outside perspective fell back cleanly.
 
 The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic command from native
 J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only

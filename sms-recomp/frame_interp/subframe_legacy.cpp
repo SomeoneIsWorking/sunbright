@@ -30,6 +30,7 @@
 // one -- interpolation built on a dead snapshot would look correct while doing nothing.
 
 #include "../overrides/overrides.h"
+#include "../overrides/semantic_j3d_scene.h"
 #include "record_replace.h"
 #include "subframe_guest.hpp"
 #include "subframe_pose.hpp"
@@ -44,7 +45,6 @@
 #include <cstdio>
 #include <cstdlib>
 
-extern "C" void func_802fcc94(CPUState&); // JDrama::TViewObj::testPerform(u32, TGraphics*)
 extern "C" unsigned VIGetRetraceCount(void);
 // TPerformList::perform(u32 cue, TGraphics*). The interpolation sub-frame IS a re-issue of a
 // subset of these calls, so this file owns the seam and calls the retail body directly.
@@ -1210,12 +1210,12 @@ int g_viewWrites = 0;
 // case, not the interesting one.
 void attribute_view_write(CPUState& cpu, u32 gfxAddr) {
     if (g_viewWrites >= 12 || !gfxAddr || !sb_ram_fast(gfxAddr)) {
-        func_802fcc94(cpu);
+        sb::recomp::run_semantic_j3d_draw_dispatch(cpu);
         return;
     }
     const u32 obj = (u32)cpu.gpr[3];
     const float before = guest_f32(gfxAddr + OFF_VIEWMTX + 3 * 4);
-    func_802fcc94(cpu);
+    sb::recomp::run_semantic_j3d_draw_dispatch(cpu);
     const float after = guest_f32(gfxAddr + OFF_VIEWMTX + 3 * 4);
     if (before != after) {
         g_viewWriter = obj;
@@ -1256,7 +1256,7 @@ void watch_j3dsys(CPUState& cpu) {
     static long n = 0;
     const u32 obj = (u32)cpu.gpr[3];
     const float before = guest_f32(J3DSYS_VIEWMTX + 3 * 4);
-    func_802fcc94(cpu);
+    sb::recomp::run_semantic_j3d_draw_dispatch(cpu);
     const float after = guest_f32(J3DSYS_VIEWMTX + 3 * 4);
     if (before != after && n < 16) {
         ++n;
@@ -1387,7 +1387,7 @@ void viewseq_dispatch(CPUState& cpu) {
     float sceneBefore[12], sceneAfter[12];
     read_mtx(J3DSYS_VIEWMTX, sceneBefore);
 
-    func_802fcc94(cpu);
+    sb::recomp::run_semantic_j3d_draw_dispatch(cpu);
 
     ++g_seqDispatch;
     if (haveGfx)
@@ -1473,7 +1473,7 @@ void interp_test_perform(CPUState& cpu) {
         }
     }
 
-    func_802fcc94(cpu);
+    sb::recomp::run_semantic_j3d_draw_dispatch(cpu);
 }
 
 // Run one perform list through the real body with a synthesized CPU state. The list bodies are
@@ -1717,9 +1717,8 @@ void actors_calc_root(CPUState& cpu, u32 tick, bool substituteAnim, bool require
                 char w[112];
                 std::snprintf(
                     w, sizeof w,
-                    "vtable 0x%08x carries fewer than %d "
-                    "TLiveActor methods -- not identified as TLiveActor-derived, so slot %d "
-                    "is not known to be calcRootMatrix",
+                    "vtable 0x%08x has fewer than %d TLiveActor methods; slot %d is not proven "
+                    "calcRootMatrix",
                     vptr, kLiveActorMinHits, kCalcRootSlot);
                 note_mover(moved, e.obj, w);
             }
@@ -2884,5 +2883,5 @@ SB_OVERRIDE(0x802deeb8, viewcalc_hook, "J3DModel::viewCalc",
             "sub-frame against a whole tick; observe-only, always runs the real body")
 
 SB_OVERRIDE(0x802fcc94, interp_test_perform, "JDrama::TViewObj::testPerform",
-            "60fps interpolation (SBR_INTERP60): snapshot each actor's transform before its "
-            "movement; reads guest memory only, writes nothing; always runs the real body")
+            "scope high-level camera projection for semantic draws and snapshot actor transforms "
+            "for 60fps interpolation; always runs the real body")

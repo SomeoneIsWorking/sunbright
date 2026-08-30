@@ -4,9 +4,9 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: renderer,j3d,semantic
-depends: native-render/src/j3d_mesh_decode.cpp#decode_j3d_mesh_element, sms-recomp/overrides/semantic_j3d_adapter.cpp#submit_semantic_j3d_shape, sms-boot/runtime/native_j3d_adapter.cpp#sb_native_j3d_shape_submit, decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp#J3DShape::draw
+depends: sms-recomp/overrides/semantic_j3d_adapter.cpp#submit_semantic_j3d_shape, sms-boot/runtime/native_j3d_adapter.cpp#sb_native_j3d_shape_submit, decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp#J3DShape::draw
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 07:03:39+00:00
+verified_at: 2026-08-30 07:53:34+00:00
 ---
 
 ## Claim
@@ -28,3 +28,7 @@ Final combined-tree guarded recomp audit on 2026-08-30: 60 presents/30 semantic 
 ## Re-confirmed 2026-08-30
 
 Post-integration guarded reruns after separating native pointers from guest numeric addresses: recomp exited 0 after 60 presents with 6,512 models/2,519,484 decoded vertices and zero unreadable/layout/projection/non-rigid/decode/texture-table failures; native decomp exited 0 after 180 frames with 11,858 models/7,194,726 vertices and zero layout/non-rigid/decode failures.
+
+## Re-confirmed 2026-08-30
+
+Post-camera-scope guarded runs retained nonzero model publication and original bodies: recomp submitted 6,468 models/2,512,884 vertices; native decomp submitted 11,858 models/7,194,726 vertices; both exited 0 with zero layout/rigid/decode failures.

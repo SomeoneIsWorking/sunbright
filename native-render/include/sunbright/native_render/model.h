@@ -85,6 +85,7 @@ struct ClipVertex {
 
 [[nodiscard]] bool valid(const MeshVertex& vertex) noexcept;
 [[nodiscard]] bool valid(const MeshResourceView& mesh) noexcept;
+[[nodiscard]] bool valid(const Matrix4x4& matrix) noexcept;
 [[nodiscard]] bool valid(const ModelDraw& draw) noexcept;
 [[nodiscard]] std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept;
 // J3D camera matrices produce clip depth in [-w, 0]. The renderer-neutral model contract uses
