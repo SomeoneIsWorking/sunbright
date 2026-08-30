@@ -1,8 +1,8 @@
 #include <sunbright/native_render/semantic_3d_pass.h>
 
+#include "../shaders/model_color_frag_spv.h"
 #include "../shaders/model_texture_frag_spv.h"
 #include "../shaders/model_vert_spv.h"
-#include "../shaders/solid_rectangle_frag_spv.h"
 #include "sdl_image_cache.h"
 
 #include <algorithm>
@@ -26,8 +26,16 @@ struct DrawBatch {
     Uint32 firstVertex = 0;
     Uint32 vertexCount = 0;
     bool textured = false;
+    ModelRasterPolicy raster{};
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUTextureSamplerBinding texture{};
 };
+
+struct ModelRasterUniform {
+    float alphaTest[4]{};
+};
+
+static_assert(sizeof(ModelRasterUniform) == 16);
 
 struct VertexStorage {
     SDL_GPUBuffer* buffer = nullptr;
@@ -39,13 +47,23 @@ struct PipelineKey {
     SDL_GPUTextureFormat color = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUTextureFormat depth = SDL_GPU_TEXTUREFORMAT_INVALID;
     bool textured = false;
+    ModelRasterPolicy raster{};
     bool operator==(const PipelineKey&) const = default;
 };
 
 struct PipelineKeyHash {
     std::size_t operator()(PipelineKey key) const noexcept {
-        return static_cast<std::size_t>(key.color) | (static_cast<std::size_t>(key.depth) << 16U) |
-               (static_cast<std::size_t>(key.textured) << 31U);
+        std::size_t value = static_cast<std::size_t>(key.color) |
+                            (static_cast<std::size_t>(key.depth) << 16U) |
+                            (static_cast<std::size_t>(key.textured) << 31U);
+        const auto append = [&](std::size_t field) { value = (value * 131U) ^ field; };
+        append(static_cast<std::size_t>(key.raster.cull));
+        append(key.raster.depthTest);
+        append(static_cast<std::size_t>(key.raster.depthCompare));
+        append(key.raster.depthWrite);
+        append(static_cast<std::size_t>(key.raster.alphaTest));
+        append(static_cast<std::size_t>(key.raster.blend));
+        return value;
     }
 };
 
@@ -77,7 +95,8 @@ void release_storage(SDL_GPUDevice* device, VertexStorage storage) noexcept {
 }
 
 SDL_GPUShader* make_shader(SDL_GPUDevice* device, const void* code, std::size_t bytes,
-                           SDL_GPUShaderStage stage, Uint32 samplers = 0) noexcept {
+                           SDL_GPUShaderStage stage, Uint32 samplers = 0,
+                           Uint32 uniformBuffers = 0) noexcept {
     SDL_GPUShaderCreateInfo info{};
     info.code = static_cast<const Uint8*>(code);
     info.code_size = bytes;
@@ -85,7 +104,39 @@ SDL_GPUShader* make_shader(SDL_GPUDevice* device, const void* code, std::size_t 
     info.format = SDL_GPU_SHADERFORMAT_SPIRV;
     info.stage = stage;
     info.num_samplers = samplers;
+    info.num_uniform_buffers = uniformBuffers;
     return SDL_CreateGPUShader(device, &info);
+}
+
+SDL_GPUCullMode cull_mode(ModelCullMode mode) noexcept {
+    switch (mode) {
+    case ModelCullMode::None:
+        return SDL_GPU_CULLMODE_NONE;
+    case ModelCullMode::Front:
+        return SDL_GPU_CULLMODE_FRONT;
+    case ModelCullMode::Back:
+    case ModelCullMode::All:
+        return SDL_GPU_CULLMODE_BACK;
+    }
+    return SDL_GPU_CULLMODE_NONE;
+}
+
+SDL_GPUCompareOp depth_compare(ModelDepthCompare compare) noexcept {
+    constexpr std::array operations{
+        SDL_GPU_COMPAREOP_NEVER,
+        SDL_GPU_COMPAREOP_LESS,
+        SDL_GPU_COMPAREOP_EQUAL,
+        SDL_GPU_COMPAREOP_LESS_OR_EQUAL,
+        SDL_GPU_COMPAREOP_GREATER,
+        SDL_GPU_COMPAREOP_NOT_EQUAL,
+        SDL_GPU_COMPAREOP_GREATER_OR_EQUAL,
+        SDL_GPU_COMPAREOP_ALWAYS,
+    };
+    return operations[static_cast<std::size_t>(compare)];
+}
+
+float alpha_threshold(ModelAlphaTest test) noexcept {
+    return test == ModelAlphaTest::GreaterOrEqualHalf ? 128.0F / 255.0F : 0.0F;
 }
 
 } // namespace
@@ -166,15 +217,26 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
     info.vertex_input_state.vertex_attributes = attributes.data();
     info.vertex_input_state.num_vertex_attributes = attributes.size();
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    info.rasterizer_state.cull_mode = cull_mode(key.raster.cull);
+    // J3D/GX-authored front faces are clockwise. The semantic policy preserves that authored
+    // winding convention while carrying no GX register encoding into this pass.
+    info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
     info.target_info.color_target_descriptions = &colorTarget;
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = key.depth;
     info.target_info.has_depth_stencil_target = true;
-    info.depth_stencil_state.enable_depth_test = true;
-    info.depth_stencil_state.enable_depth_write = true;
-    info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+    info.depth_stencil_state.enable_depth_test = key.raster.depthTest;
+    info.depth_stencil_state.enable_depth_write = key.raster.depthWrite;
+    info.depth_stencil_state.compare_op = depth_compare(key.raster.depthCompare);
+    if (key.raster.blend == ModelBlendMode::SourceAlpha) {
+        colorTarget.blend_state.enable_blend = true;
+        colorTarget.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        colorTarget.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        colorTarget.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        colorTarget.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        colorTarget.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        colorTarget.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    }
     SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(impl.device, &info);
     if (pipeline == nullptr) {
         error = std::string("semantic 3D pipeline creation failed: ") + SDL_GetError();
@@ -221,11 +283,11 @@ bool Semantic3dPass::initialize(std::string& error) {
     impl_->vertexShader = make_shader(impl_->device, kModelVertSpv, sizeof(kModelVertSpv),
                                       SDL_GPU_SHADERSTAGE_VERTEX);
     impl_->colorFragmentShader =
-        make_shader(impl_->device, kSolidRectangleFragSpv, sizeof(kSolidRectangleFragSpv),
-                    SDL_GPU_SHADERSTAGE_FRAGMENT);
+        make_shader(impl_->device, kModelColorFragSpv, sizeof(kModelColorFragSpv),
+                    SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1);
     impl_->textureFragmentShader =
         make_shader(impl_->device, kModelTextureFragSpv, sizeof(kModelTextureFragSpv),
-                    SDL_GPU_SHADERSTAGE_FRAGMENT, 1);
+                    SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     if (impl_->vertexShader == nullptr || impl_->colorFragmentShader == nullptr ||
         impl_->textureFragmentShader == nullptr) {
         error = std::string("semantic 3D shader creation failed: ") + SDL_GetError();
@@ -250,12 +312,7 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
         error = "semantic 3D encode requires valid command-buffer, targets, and extent";
         return false;
     }
-    SDL_GPUGraphicsPipeline* colorPipeline =
-        ensure_pipeline(*impl_, {target.colorFormat, target.depthFormat, false}, error);
-    SDL_GPUGraphicsPipeline* texturePipeline =
-        ensure_pipeline(*impl_, {target.colorFormat, target.depthFormat, true}, error);
-    if (colorPipeline == nullptr || texturePipeline == nullptr ||
-        !impl_->images.begin(frame.images, error))
+    if (!impl_->images.begin(frame.images, error))
         return false;
 
     std::unordered_map<MeshKey, const MeshResourceView*, MeshKeyHash> meshes;
@@ -276,18 +333,28 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
             error = "semantic model references an absent or mismatched mesh";
             return false;
         }
+        const ModelRasterPolicy& raster = raster_policy(draw.material);
+        // Cull-all is an authored no-fragment operation. SDL has no cull-both pipeline mode, so
+        // omit the batch before upload rather than approximating it with one-sided culling.
+        if (raster.cull == ModelCullMode::All)
+            continue;
         if (vertices.size() > std::numeric_limits<Uint32>::max() ||
             mesh->second->vertices.size() > std::numeric_limits<Uint32>::max() - vertices.size()) {
             error = "semantic 3D vertex count exceeds SDL GPU limits";
             return false;
         }
         DrawBatch batch{.firstVertex = static_cast<Uint32>(vertices.size()),
-                        .vertexCount = static_cast<Uint32>(mesh->second->vertices.size())};
+                        .vertexCount = static_cast<Uint32>(mesh->second->vertices.size()),
+                        .raster = raster};
         if (const auto* material = std::get_if<UnlitTexturedMaterial>(&draw.material)) {
             batch.textured = true;
             if (!impl_->images.resolve(material->texture, batch.texture, error))
                 return false;
         }
+        batch.pipeline = ensure_pipeline(
+            *impl_, {target.colorFormat, target.depthFormat, batch.textured, raster}, error);
+        if (batch.pipeline == nullptr)
+            return false;
         for (const MeshVertex& source : mesh->second->vertices) {
             const ClipVertex transformed = transform_vertex(draw, source);
             vertices.push_back({{transformed.position.x, transformed.position.y,
@@ -342,9 +409,13 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
         const SDL_GPUBufferBinding binding{impl_->vertices.buffer, 0};
         SDL_BindGPUVertexBuffers(render, 0, &binding, 1);
         for (const DrawBatch& batch : batches) {
-            SDL_BindGPUGraphicsPipeline(render, batch.textured ? texturePipeline : colorPipeline);
+            SDL_BindGPUGraphicsPipeline(render, batch.pipeline);
             if (batch.textured)
                 SDL_BindGPUFragmentSamplers(render, 0, &batch.texture, 1);
+            const ModelRasterUniform rasterUniform{
+                {alpha_threshold(batch.raster.alphaTest), 0, 0, 0}};
+            SDL_PushGPUFragmentUniformData(target.commandBuffer, 0, &rasterUniform,
+                                           sizeof(rasterUniform));
             SDL_DrawGPUPrimitives(render, batch.vertexCount, 1, batch.firstVertex, 0);
         }
     }

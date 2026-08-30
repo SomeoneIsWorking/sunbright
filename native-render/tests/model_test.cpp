@@ -27,6 +27,7 @@ int main() {
 
     assert(valid(vertex));
     assert(valid(draw));
+    assert(raster_policy(draw.material) == ModelRasterPolicy{});
     const ClipVertex transformed = transform_vertex(draw, vertex);
     assert(near(transformed.position.x, 10.0F));
     assert(near(transformed.position.y, 21.0F));
@@ -65,5 +66,8 @@ int main() {
     assert(!valid(invalid));
     invalid = draw;
     invalid.projection.value[0] = std::numeric_limits<float>::infinity();
+    assert(!valid(invalid));
+    invalid = draw;
+    std::get<UnlitColorMaterial>(invalid.material).raster.cull = static_cast<ModelCullMode>(0xFF);
     assert(!valid(invalid));
 }

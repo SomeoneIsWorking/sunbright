@@ -8,6 +8,7 @@ namespace {
 constexpr std::uint32_t kMaterialColorBlock = 0x20;
 constexpr std::uint32_t kMaterialTextureGenerationBlock = 0x24;
 constexpr std::uint32_t kMaterialTevBlock = 0x28;
+constexpr std::uint32_t kMaterialPixelEngineBlock = 0x30;
 
 // Retail US constructor stores, not PAL symbol arithmetic: createColorBlock 0x802d6b14,
 // createTexGenBlock 0x802d6e88, and createTevBlock 0x802d6fc4 write these exact addresses. The
@@ -19,6 +20,12 @@ constexpr std::uint32_t kTevBlock1Vptr = 0x803E0BE8;
 constexpr std::uint32_t kTevBlock2Vptr = 0x803E0B4C;
 constexpr std::uint32_t kTevBlock4Vptr = 0x803E0AB0;
 constexpr std::uint32_t kTevBlock16Vptr = 0x803E0A14;
+// Retail US J3DMaterial::createPEBlock at 0x802d77a8 stores these vptrs. The full block is accepted
+// only when its explicit alpha/blend/depth fields exactly match one supported common policy.
+constexpr std::uint32_t kPixelEngineOpaqueVptr = 0x803E0E64;
+constexpr std::uint32_t kPixelEngineTextureEdgeVptr = 0x803E0E00;
+constexpr std::uint32_t kPixelEngineTranslucentVptr = 0x803E0D9C;
+constexpr std::uint32_t kPixelEngineFullVptr = 0x803E0968;
 
 std::uint32_t tev_type(std::uint32_t vptr) noexcept {
     switch (vptr) {
@@ -35,6 +42,21 @@ std::uint32_t tev_type(std::uint32_t vptr) noexcept {
     }
 }
 
+std::uint32_t pixel_engine_type(std::uint32_t vptr) noexcept {
+    switch (vptr) {
+    case kPixelEngineOpaqueVptr:
+        return 0x50454F50U; // 'PEOP'
+    case kPixelEngineTextureEdgeVptr:
+        return 0x50454544U; // 'PEED'
+    case kPixelEngineTranslucentVptr:
+        return 0x5045584CU; // 'PEXL'
+    case kPixelEngineFullVptr:
+        return 0x5045464CU; // 'PEFL'
+    default:
+        return 0;
+    }
+}
+
 } // namespace
 
 bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::uint32_t material,
@@ -46,10 +68,12 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
     std::uint32_t colorBlock = 0;
     std::uint32_t textureGenerationBlock = 0;
     std::uint32_t tevBlock = 0;
+    std::uint32_t pixelEngineBlock = 0;
     if (!reader.u32(material + kMaterialColorBlock, colorBlock) ||
         !reader.u32(material + kMaterialTextureGenerationBlock, textureGenerationBlock) ||
-        !reader.u32(material + kMaterialTevBlock, tevBlock) || colorBlock == 0 ||
-        textureGenerationBlock == 0 || tevBlock == 0) {
+        !reader.u32(material + kMaterialTevBlock, tevBlock) ||
+        !reader.u32(material + kMaterialPixelEngineBlock, pixelEngineBlock) || colorBlock == 0 ||
+        textureGenerationBlock == 0 || tevBlock == 0 || pixelEngineBlock == 0) {
         return false;
     }
 
@@ -57,10 +81,11 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
     std::uint32_t colorVptr = 0;
     std::uint32_t textureGenerationVptr = 0;
     std::uint32_t tevVptr = 0;
+    std::uint32_t pixelEngineVptr = 0;
     if (!reader.u32(colorBlock, colorVptr) ||
         !reader.u32(colorBlock + 0x04, captured.materialColorRgba8) ||
         !reader.u32(textureGenerationBlock, textureGenerationVptr) ||
-        !reader.u32(tevBlock, tevVptr)) {
+        !reader.u32(tevBlock, tevVptr) || !reader.u32(pixelEngineBlock, pixelEngineVptr)) {
         return false;
     }
     std::uint32_t channelCountOffset = 0;
@@ -68,9 +93,13 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
     if (colorVptr == kColorBlockLightOffVptr) {
         channelCountOffset = 0x0C;
         channelControlOffset = 0x0E;
+        if (!reader.u8(colorBlock + 0x16, captured.cullMode))
+            return false;
     } else if (colorVptr == kColorBlockLightOnVptr) {
         channelCountOffset = 0x14;
         channelControlOffset = 0x16;
+        if (!reader.u8(colorBlock + 0x40, captured.cullMode))
+            return false;
     }
     captured.supportedColorBlock = channelCountOffset != 0;
     if (captured.supportedColorBlock &&
@@ -85,6 +114,38 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
         return false;
     }
     captured.tevBlockType = tev_type(tevVptr);
+    captured.pixelEngineBlockType = pixel_engine_type(pixelEngineVptr);
+    if (pixelEngineVptr == kPixelEngineFullVptr) {
+        std::uint32_t fog = 0;
+        std::uint16_t alphaId = 0;
+        std::uint16_t depthId = 0;
+        if (!reader.u32(pixelEngineBlock + 0x04, fog) ||
+            !reader.u16(pixelEngineBlock + 0x08, alphaId) ||
+            !reader.u8(pixelEngineBlock + 0x0A, captured.alphaReference0) ||
+            !reader.u8(pixelEngineBlock + 0x0B, captured.alphaReference1) ||
+            !reader.u8(pixelEngineBlock + 0x0C, captured.blendMode) ||
+            !reader.u8(pixelEngineBlock + 0x0D, captured.blendSourceFactor) ||
+            !reader.u8(pixelEngineBlock + 0x0E, captured.blendDestinationFactor) ||
+            !reader.u8(pixelEngineBlock + 0x0F, captured.blendLogicOperation) ||
+            !reader.u16(pixelEngineBlock + 0x10, depthId)) {
+            return false;
+        }
+        if (fog != 0) {
+            std::uint8_t fogType = 0;
+            if (!reader.u8(fog, fogType))
+                return false;
+            captured.fogEnabled = fogType != 0;
+        }
+        if (alphaId != 0xFFFFU && depthId != 0xFFFFU) {
+            captured.hasExplicitPixelPolicy = true;
+            captured.alphaCompare0 = static_cast<std::uint8_t>(alphaId >> 5U);
+            captured.alphaOperation = static_cast<std::uint8_t>((alphaId >> 3U) & 3U);
+            captured.alphaCompare1 = static_cast<std::uint8_t>(alphaId & 7U);
+            captured.depthTest = (depthId & 0x10U) != 0;
+            captured.depthCompare = static_cast<std::uint8_t>((depthId >> 1U) & 7U);
+            captured.depthWrite = (depthId & 1U) != 0;
+        }
+    }
     std::uint32_t stageCountOffset = 0;
     std::uint32_t orderOffset = 0;
     std::uint32_t stageOffset = 0;

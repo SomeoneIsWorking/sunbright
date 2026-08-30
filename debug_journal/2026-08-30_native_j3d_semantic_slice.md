@@ -56,13 +56,13 @@ opposite answer, or if a rerun no longer submits nonzero models with zero layout
 
 ## Deliberate remaining boundary
 
-This is geometry plus one exact sampled material, not a faithful complete J3D renderer. Cull mode,
-blend/depth-write/alpha-test policy, lighting, multiple texture stages, skinning, mipmapped samplers,
-particles, and screen effects are not represented yet. Unsupported programs are refused and remain
-visible only through the retained renderer; none are approximated into the first family.
+Subsequent 2026-08-30 slices moved camera ownership to the high-level `TGraphics` draw dispatch and
+added high-level cull, depth, alpha-cutout, and blend policy for the exact common opaque,
+texture-edge, and translucent J3D families. The semantic model boundary no longer reads either GX
+projection cache. Details and current controls are in
+`debug_journal/2026-08-30_high_level_j3d_raster_policy.md`.
 
-Camera ownership is also not at its endpoint. The recomp adapter normalizes the projection value
-mirrored from `GXSetProjection`, and the decomp adapter reads the corresponding native SDK cache via
-`GXGetProjectionv`. No GPU register or fixed-function program crosses the semantic boundary, but
-the next slice must publish projection from the high-level camera owner so the shipping path no
-longer depends on this SDK seam.
+This remains geometry plus one exact sampled material-program family, not a faithful complete J3D
+renderer. Custom pixel policies, lighting, multiple texture stages, skinning, mipmapped samplers,
+particles, and screen effects are not represented. Unsupported programs are refused and remain
+visible only through the retained renderer; none are approximated into the first family.

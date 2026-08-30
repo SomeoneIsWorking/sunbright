@@ -34,6 +34,8 @@ struct Stats {
     std::uint64_t noPerspectiveContexts = 0;
     std::uint64_t nonRigidElements = 0;
     std::uint64_t decodeFailures = 0;
+    std::array<std::uint64_t, 3> rasterFamilies{};
+    std::array<std::uint64_t, 4> cullModes{};
 };
 
 Stats g_stats{};
@@ -47,6 +49,17 @@ bool read_native_memory(sb::native_render::ByteAddress address, std::span<std::u
         return false;
     std::memcpy(output.data(), source, output.size());
     return true;
+}
+
+void record_raster(const sb::native_render::ModelMaterial& material) {
+    const sb::native_render::ModelRasterPolicy& raster = sb::native_render::raster_policy(material);
+    std::size_t family = 0;
+    if (raster.alphaTest == sb::native_render::ModelAlphaTest::GreaterOrEqualHalf)
+        family = 1;
+    else if (raster.blend == sb::native_render::ModelBlendMode::SourceAlpha)
+        family = 2;
+    ++g_stats.rasterFamilies[family];
+    ++g_stats.cullModes[static_cast<std::size_t>(raster.cull)];
 }
 
 bool build_layout(const J3DShape& shape, sb::native_render::J3dVertexLayout& layout) {
@@ -200,6 +213,7 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
                     "native semantic renderer rejected validated J3D model shape=%p element=%u",
                     &shape, element);
         }
+        record_raster(capturedMaterial.material);
         ++g_stats.submittedModels;
         g_stats.submittedVertices += g_vertices.size();
     }
@@ -211,7 +225,8 @@ extern "C" void sb_native_j3d_report_stats(void) {
             "native J3D models: considered=%llu submitted=%llu models/%llu vertices "
             "rejected(layout=%llu material=%llu no-perspective-context=%llu non-rigid=%llu "
             "decode=%llu); high-level camera dispatches: perspective=%llu orthographic=%llu "
-            "unavailable-before-camera=%llu",
+            "unavailable-before-camera=%llu; published raster families: opaque=%llu cutout=%llu "
+            "translucent=%llu cull(none=%llu front=%llu back=%llu all=%llu)",
             static_cast<unsigned long long>(g_stats.considered),
             static_cast<unsigned long long>(g_stats.submittedModels),
             static_cast<unsigned long long>(g_stats.submittedVertices),
@@ -222,5 +237,12 @@ extern "C" void sb_native_j3d_report_stats(void) {
             static_cast<unsigned long long>(g_stats.decodeFailures),
             static_cast<unsigned long long>(sceneStats.perspectiveDispatches),
             static_cast<unsigned long long>(sceneStats.orthographicDispatches),
-            static_cast<unsigned long long>(sceneStats.unavailableDispatches));
+            static_cast<unsigned long long>(sceneStats.unavailableDispatches),
+            static_cast<unsigned long long>(g_stats.rasterFamilies[0]),
+            static_cast<unsigned long long>(g_stats.rasterFamilies[1]),
+            static_cast<unsigned long long>(g_stats.rasterFamilies[2]),
+            static_cast<unsigned long long>(g_stats.cullModes[0]),
+            static_cast<unsigned long long>(g_stats.cullModes[1]),
+            static_cast<unsigned long long>(g_stats.cullModes[2]),
+            static_cast<unsigned long long>(g_stats.cullModes[3]));
 }

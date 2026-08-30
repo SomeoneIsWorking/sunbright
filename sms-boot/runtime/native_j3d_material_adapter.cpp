@@ -49,13 +49,16 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
     J3DColorBlock* color = material.getColorBlock();
     J3DTexGenBlock* textureGeneration = material.getTexGenBlock();
     J3DTevBlock* tev = material.getTevBlock();
-    if (color == nullptr || textureGeneration == nullptr || tev == nullptr)
+    J3DPEBlock* pixelEngine = material.getPEBlock();
+    if (color == nullptr || textureGeneration == nullptr || tev == nullptr ||
+        pixelEngine == nullptr)
         return false;
 
     native_render::J3dUnlitMaterialState captured{};
     const std::uint32_t colorType = color->getType();
     captured.supportedColorBlock = colorType == static_cast<std::uint32_t>('CLOF') ||
                                    colorType == static_cast<std::uint32_t>('CLON');
+    captured.cullMode = color->getCullMode();
     captured.colorChannelCount = color->getColorChanNum();
     if (captured.colorChannelCount != 0) {
         J3DColorChan* channel = color->getColorChan(0);
@@ -74,6 +77,31 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
             : std::numeric_limits<std::uint32_t>::max();
 
     captured.tevBlockType = tev->getType();
+    captured.pixelEngineBlockType = pixelEngine->getType();
+    if (captured.pixelEngineBlockType == static_cast<std::uint32_t>('PEFL')) {
+        J3DAlphaComp* alpha = pixelEngine->getAlphaComp();
+        J3DBlend* blend = pixelEngine->getBlend();
+        J3DZMode* depth = pixelEngine->getZMode();
+        if (alpha == nullptr || blend == nullptr || depth == nullptr)
+            return false;
+        const J3DFog* fog = pixelEngine->getFog();
+        captured.fogEnabled = fog != nullptr && fog->mType != 0;
+        if (alpha->mAlphaCmpID != 0xFFFFU && depth->mZModeID != 0xFFFFU) {
+            captured.hasExplicitPixelPolicy = true;
+            captured.alphaCompare0 = static_cast<std::uint8_t>(alpha->getComp0());
+            captured.alphaReference0 = alpha->getRef0();
+            captured.alphaOperation = static_cast<std::uint8_t>(alpha->getOp());
+            captured.alphaCompare1 = static_cast<std::uint8_t>(alpha->getComp1());
+            captured.alphaReference1 = alpha->getRef1();
+            captured.blendMode = blend->mBlendMode;
+            captured.blendSourceFactor = blend->mSrcFactor;
+            captured.blendDestinationFactor = blend->mDstFactor;
+            captured.blendLogicOperation = blend->mLogicOp;
+            captured.depthTest = depth->getCompareEnable() != 0;
+            captured.depthCompare = depth->getFunc();
+            captured.depthWrite = depth->getUpdateEnable() != 0;
+        }
+    }
     captured.supportedTevBlock = captured.tevBlockType == static_cast<std::uint32_t>('TVB1') ||
                                  captured.tevBlockType == static_cast<std::uint32_t>('TVB2') ||
                                  captured.tevBlockType == static_cast<std::uint32_t>('TVB4') ||

@@ -8,6 +8,28 @@ constexpr std::array<std::uint8_t, 8> kRasterColorPassThrough{0xC0, 0x40, 0xAF, 
                                                               0xC1, 0x08, 0xBF, 0x80};
 constexpr std::array<std::uint8_t, 8> kTextureTimesRaster{0xC0, 0x08, 0xF8, 0xAF,
                                                           0xC1, 0x08, 0xF2, 0xF0};
+constexpr std::uint32_t kPixelEngineOpaque = 0x50454F50U;      // 'PEOP'
+constexpr std::uint32_t kPixelEngineTextureEdge = 0x50454544U; // 'PEED'
+constexpr std::uint32_t kPixelEngineTranslucent = 0x5045584CU; // 'PEXL'
+constexpr std::uint32_t kPixelEngineFull = 0x5045464CU;        // 'PEFL'
+
+bool full_policy_matches(const J3dUnlitMaterialState& state, std::uint8_t alphaCompare0,
+                         std::uint8_t alphaReference0, std::uint8_t alphaCompare1,
+                         std::uint8_t alphaReference1, std::uint8_t blendMode,
+                         std::uint8_t blendSource, std::uint8_t blendDestination,
+                         bool depthWrite) noexcept {
+    constexpr std::uint8_t kAlphaAnd = 0;
+    constexpr std::uint8_t kLogicCopy = 3;
+    constexpr std::uint8_t kDepthLessOrEqual = 3;
+    return state.hasExplicitPixelPolicy && state.alphaCompare0 == alphaCompare0 &&
+           state.alphaReference0 == alphaReference0 && state.alphaOperation == kAlphaAnd &&
+           state.alphaCompare1 == alphaCompare1 && state.alphaReference1 == alphaReference1 &&
+           state.blendMode == blendMode && state.blendSourceFactor == blendSource &&
+           state.blendDestinationFactor == blendDestination &&
+           state.blendLogicOperation == kLogicCopy && state.depthTest &&
+           state.depthCompare == kDepthLessOrEqual && state.depthWrite == depthWrite &&
+           !state.fogEnabled;
+}
 
 } // namespace
 
@@ -31,6 +53,8 @@ const char* j3d_unlit_material_result_name(J3dUnlitMaterialResult result) noexce
         return "unsupported colour program";
     case J3dUnlitMaterialResult::MissingVertexColor:
         return "missing vertex colour";
+    case J3dUnlitMaterialResult::UnsupportedRasterPolicy:
+        return "unsupported raster policy";
     }
     return "unknown";
 }
@@ -57,8 +81,55 @@ const char* j3d_unlit_textured_result_name(J3dUnlitTexturedResult result) noexce
         return "unsupported colour program";
     case J3dUnlitTexturedResult::MissingVertexColor:
         return "missing vertex colour";
+    case J3dUnlitTexturedResult::UnsupportedRasterPolicy:
+        return "unsupported raster policy";
     }
     return "unknown";
+}
+
+J3dRasterPolicyResult classify_j3d_raster_policy(const J3dUnlitMaterialState& state,
+                                                 ModelRasterPolicy& policy) noexcept {
+    if (state.cullMode > static_cast<std::uint8_t>(ModelCullMode::All))
+        return J3dRasterPolicyResult::UnsupportedCullMode;
+
+    ModelRasterPolicy result{};
+    result.cull = static_cast<ModelCullMode>(state.cullMode);
+    if (state.pixelEngineBlockType == kPixelEngineOpaque) {
+        // J3DPEBlockOpa::load: pass alpha, replace colour, LEQUAL depth test + write.
+    } else if (state.pixelEngineBlockType == kPixelEngineTextureEdge) {
+        // J3DPEBlockTexEdge::load: alpha >= 128/255, replace colour, LEQUAL + write.
+        result.alphaTest = ModelAlphaTest::GreaterOrEqualHalf;
+    } else if (state.pixelEngineBlockType == kPixelEngineTranslucent) {
+        // J3DPEBlockXlu::load: source-alpha blend, LEQUAL depth test without depth writes.
+        result.depthWrite = false;
+        result.blend = ModelBlendMode::SourceAlpha;
+    } else if (state.pixelEngineBlockType == kPixelEngineFull) {
+        constexpr std::uint8_t kAlways = 7;
+        constexpr std::uint8_t kGreaterOrEqual = 6;
+        constexpr std::uint8_t kLessOrEqual = 3;
+        constexpr std::uint8_t kBlendNone = 0;
+        constexpr std::uint8_t kBlend = 1;
+        constexpr std::uint8_t kZero = 0;
+        constexpr std::uint8_t kOne = 1;
+        constexpr std::uint8_t kSourceAlpha = 4;
+        constexpr std::uint8_t kInverseSourceAlpha = 5;
+        if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlendNone, kOne, kZero, true)) {
+            // Exact expanded form of J3DPEBlockOpa.
+        } else if (full_policy_matches(state, kGreaterOrEqual, 0x80, kLessOrEqual, 0xFF, kBlendNone,
+                                       kOne, kZero, true)) {
+            result.alphaTest = ModelAlphaTest::GreaterOrEqualHalf;
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kSourceAlpha,
+                                       kInverseSourceAlpha, false)) {
+            result.depthWrite = false;
+            result.blend = ModelBlendMode::SourceAlpha;
+        } else {
+            return J3dRasterPolicyResult::UnsupportedPixelEngineBlock;
+        }
+    } else {
+        return J3dRasterPolicyResult::UnsupportedPixelEngineBlock;
+    }
+    policy = result;
+    return J3dRasterPolicyResult::Success;
 }
 
 J3dUnlitMaterialFeatures inspect_j3d_unlit_material(const J3dUnlitMaterialState& state) noexcept {
@@ -94,6 +165,9 @@ J3dUnlitMaterialResult classify_j3d_unlit_material(const J3dUnlitMaterialState& 
         return J3dUnlitMaterialResult::TextureBinding;
     if (!features.rasterColorPassThrough)
         return J3dUnlitMaterialResult::UnsupportedColorProgram;
+    ModelRasterPolicy raster{};
+    if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
+        return J3dUnlitMaterialResult::UnsupportedRasterPolicy;
 
     const bool vertexColor = (state.colorChannelControl & 0x0001U) != 0;
     if (!features.requiredVertexColorPresent)
@@ -101,6 +175,7 @@ J3dUnlitMaterialResult classify_j3d_unlit_material(const J3dUnlitMaterialState& 
     material.usesVertexColor = vertexColor;
     material.baseColor =
         vertexColor ? Color{1.0F, 1.0F, 1.0F, 1.0F} : color_from_rgba8(state.materialColorRgba8);
+    material.raster = raster;
     return J3dUnlitMaterialResult::Success;
 }
 
@@ -127,11 +202,15 @@ classify_j3d_unlit_textured_material(const J3dUnlitMaterialState& state,
     }
     if (state.tevStage0 != kTextureTimesRaster)
         return J3dUnlitTexturedResult::UnsupportedColorProgram;
+    ModelRasterPolicy raster{};
+    if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
+        return J3dUnlitTexturedResult::UnsupportedRasterPolicy;
     const bool vertexColor = (state.colorChannelControl & 0x0001U) != 0;
     if (vertexColor && !state.hasVertexColor)
         return J3dUnlitTexturedResult::MissingVertexColor;
     material.texture = texture;
     material.usesVertexColor = vertexColor;
+    material.raster = raster;
     return J3dUnlitTexturedResult::Success;
 }
 

@@ -1,6 +1,7 @@
 #include <sunbright/native_render/sdl_gpu_frame_target.h>
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
 #include <sunbright/native_render/semantic_2d_pass.h>
+#include <sunbright/native_render/semantic_3d_pass.h>
 #include <sunbright/native_render/semantic_frame_mode.h>
 #include <sunbright/native_render/semantic_sink.h>
 
@@ -30,6 +31,7 @@ using sb::native_render::PictureTexture;
 using sb::native_render::SdlGpuFrameTarget;
 using sb::native_render::SdlGpuPlatform;
 using sb::native_render::Semantic2dPass;
+using sb::native_render::Semantic3dPass;
 using sb::native_render::SemanticDraw;
 using sb::native_render::SemanticFrame;
 using sb::native_render::SemanticFramePixels;
@@ -151,6 +153,83 @@ bool encode_and_readback(Semantic2dPass& pass, const SemanticFrame& frame,
     void* mapped = SDL_MapGPUTransferBuffer(device, download, false);
     if (mapped == nullptr) {
         SDL_ReleaseGPUTransferBuffer(device, download);
+        return false;
+    }
+    output = {frame.targetWidth, frame.targetHeight, std::vector<std::uint8_t>(byteCount)};
+    std::memcpy(output.rgba8.data(), mapped, byteCount);
+    SDL_UnmapGPUTransferBuffer(device, download);
+    SDL_ReleaseGPUTransferBuffer(device, download);
+    return true;
+}
+
+bool encode_3d_and_readback(Semantic3dPass& pass, const SemanticFrame& frame,
+                            const SdlGpuFrameTarget& target, SemanticFramePixels& output,
+                            std::string& error) {
+    SDL_GPUDevice* device = target.device();
+    SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(device);
+    const std::size_t byteCount =
+        static_cast<std::size_t>(frame.targetWidth) * frame.targetHeight * 4;
+    const SDL_GPUTransferBufferCreateInfo downloadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+                                                       static_cast<Uint32>(byteCount), 0};
+    SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(device, &downloadInfo);
+    if (commandBuffer == nullptr || download == nullptr) {
+        if (commandBuffer != nullptr)
+            SDL_CancelGPUCommandBuffer(commandBuffer);
+        if (download != nullptr)
+            SDL_ReleaseGPUTransferBuffer(device, download);
+        error = SDL_GetError();
+        return false;
+    }
+    const sb::native_render::Semantic3dPassTarget passTarget{
+        commandBuffer, target.color(), target.desc().colorFormat, target.depth(),
+        target.desc().depthFormat};
+    if (!pass.encode(frame, passTarget, error)) {
+        SDL_CancelGPUCommandBuffer(commandBuffer);
+        std::string completionError;
+        (void)pass.complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        return false;
+    }
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commandBuffer);
+    if (copy == nullptr) {
+        SDL_CancelGPUCommandBuffer(commandBuffer);
+        std::string completionError;
+        (void)pass.complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        error = SDL_GetError();
+        return false;
+    }
+    const SDL_GPUTextureRegion source{target.color(),     0, 0, 0, 0, 0, frame.targetWidth,
+                                      frame.targetHeight, 1};
+    const SDL_GPUTextureTransferInfo destination{download, 0, frame.targetWidth,
+                                                 frame.targetHeight};
+    SDL_DownloadFromGPUTexture(copy, &source, &destination);
+    SDL_EndGPUCopyPass(copy);
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
+    if (fence == nullptr) {
+        std::string completionError;
+        (void)pass.complete_encode(false, completionError);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        error = SDL_GetError();
+        return false;
+    }
+    if (!pass.complete_encode(true, error)) {
+        SDL_ReleaseGPUFence(device, fence);
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        return false;
+    }
+    SDL_GPUFence* fences[] = {fence};
+    const bool waited = SDL_WaitForGPUFences(device, true, fences, 1);
+    SDL_ReleaseGPUFence(device, fence);
+    if (!waited) {
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        error = SDL_GetError();
+        return false;
+    }
+    void* mapped = SDL_MapGPUTransferBuffer(device, download, false);
+    if (mapped == nullptr) {
+        SDL_ReleaseGPUTransferBuffer(device, download);
+        error = SDL_GetError();
         return false;
     }
     output = {frame.targetWidth, frame.targetHeight, std::vector<std::uint8_t>(byteCount)};
@@ -315,6 +394,120 @@ int main() {
         const Color alphaBlend = pixel(alpha, 10, 10);
         assert(alphaBlend.r > 0.70f && alphaBlend.b > 0.70f && alphaBlend.g < 0.01f);
     }
+
+    SdlGpuFrameTarget modelTarget;
+    assert(modelTarget.initialize(platform, {.width = 16, .height = 16, .hasDepth = true},
+                                  platformError));
+    {
+        Semantic3dPass pass(device);
+        std::string error;
+        const std::array<MeshVertex, 3> vertices{
+            MeshVertex{{-0.75F, -0.75F, 0.5F}, {0, 0}},
+            MeshVertex{{0.0F, 0.75F, 0.5F}, {0.5F, 1}},
+            MeshVertex{{0.75F, -0.75F, 0.5F}, {1, 0}},
+        };
+        const MeshResourceView mesh{201, 1, vertices};
+        ModelDraw model{
+            .instance = 202,
+            .mesh = {.resource = 201, .revision = 1, .vertexCount = 3},
+            .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+            .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
+            .material = sb::native_render::UnlitColorMaterial{.baseColor = {1, 0, 0, 1}},
+        };
+        const auto render = [&](std::span<const ModelDraw> models,
+                                std::span<const DecodedImageView> images = {}) {
+            const SemanticFrame modelFrame{.targetWidth = 16,
+                                           .targetHeight = 16,
+                                           .models = models,
+                                           .meshes = std::span<const MeshResourceView>(&mesh, 1),
+                                           .images = images};
+            SemanticFramePixels result{};
+            assert(encode_3d_and_readback(pass, modelFrame, modelTarget, result, error) &&
+                   error.empty());
+            return result;
+        };
+
+        // Culling controls: this triangle follows J3D's authored front-face winding. Back
+        // culling keeps it, front culling removes it, and cull-all is an exact no-fragment draw.
+        auto& material = std::get<sb::native_render::UnlitColorMaterial>(model.material);
+        material.raster.cull = sb::native_render::ModelCullMode::Back;
+        const SemanticFramePixels backCull = render(std::span<const ModelDraw>(&model, 1));
+        assert(pixel(backCull, 8, 8).r > 0.9F);
+        material.raster.cull = sb::native_render::ModelCullMode::Front;
+        const SemanticFramePixels frontCull = render(std::span<const ModelDraw>(&model, 1));
+        require_color(pixel(frontCull, 8, 8), {});
+        material.raster.cull = sb::native_render::ModelCullMode::All;
+        const SemanticFramePixels allCull = render(std::span<const ModelDraw>(&model, 1));
+        assert(hash(allCull) == hash(frontCull));
+
+        // Cutout threshold controls: 127/255 is rejected and the adjacent authored value 128/255
+        // is accepted. This catches a disabled test and an off-by-one threshold independently.
+        material.raster.cull = sb::native_render::ModelCullMode::None;
+        material.raster.alphaTest = sb::native_render::ModelAlphaTest::GreaterOrEqualHalf;
+        material.baseColor.a = 127.0F / 255.0F;
+        const SemanticFramePixels belowCutout = render(std::span<const ModelDraw>(&model, 1));
+        require_color(pixel(belowCutout, 8, 8), {});
+        material.baseColor.a = 128.0F / 255.0F;
+        const SemanticFramePixels atCutout = render(std::span<const ModelDraw>(&model, 1));
+        assert(pixel(atCutout, 8, 8).r > 0.9F);
+
+        // The texture fragment shader has its own alpha-rejection code, so exercise the adjacent
+        // 127/128 controls there as well instead of inferring coverage from the colour shader.
+        std::array<std::uint8_t, 4> cutoutTexel{255, 0, 0, 127};
+        DecodedImageView cutoutImage{
+            .resource = 204, .revision = 1, .width = 1, .height = 1, .rgba8 = cutoutTexel};
+        ModelDraw texturedCutout = model;
+        texturedCutout.instance = 205;
+        texturedCutout.material = sb::native_render::UnlitTexturedMaterial{
+            .texture = {.resource = 204, .revision = 1, .width = 1, .height = 1, .hasAlpha = true},
+            .usesVertexColor = false,
+            .raster = {.cull = sb::native_render::ModelCullMode::None,
+                       .alphaTest = sb::native_render::ModelAlphaTest::GreaterOrEqualHalf}};
+        const SemanticFramePixels textureBelow =
+            render(std::span<const ModelDraw>(&texturedCutout, 1),
+                   std::span<const DecodedImageView>(&cutoutImage, 1));
+        require_color(pixel(textureBelow, 8, 8), {});
+        cutoutTexel[3] = 128;
+        cutoutImage.revision = 2;
+        std::get<sb::native_render::UnlitTexturedMaterial>(texturedCutout.material)
+            .texture.revision = 2;
+        const SemanticFramePixels textureAt =
+            render(std::span<const ModelDraw>(&texturedCutout, 1),
+                   std::span<const DecodedImageView>(&cutoutImage, 1));
+        assert(pixel(textureAt, 8, 8).r > 0.9F);
+
+        // Blend control: the same half-alpha red replaces black when opaque, but source-alpha
+        // blending produces the distinct sRGB-encoded half-intensity result.
+        material.raster.alphaTest = sb::native_render::ModelAlphaTest::PassAll;
+        material.raster.blend = sb::native_render::ModelBlendMode::Replace;
+        material.baseColor = {1, 0, 0, 0.5F};
+        const SemanticFramePixels replaced = render(std::span<const ModelDraw>(&model, 1));
+        material.raster.blend = sb::native_render::ModelBlendMode::SourceAlpha;
+        const SemanticFramePixels blended = render(std::span<const ModelDraw>(&model, 1));
+        assert(pixel(replaced, 8, 8).r > 0.95F);
+        assert(pixel(blended, 8, 8).r > 0.65F && pixel(blended, 8, 8).r < 0.80F);
+        assert(hash(replaced) != hash(blended));
+
+        // Depth-write control: a near red draw prevents a later far green draw only when the near
+        // material writes depth. Both cases retain LEQUAL testing, isolating the write bit.
+        ModelDraw near = model;
+        auto& nearMaterial = std::get<sb::native_render::UnlitColorMaterial>(near.material);
+        nearMaterial.baseColor = {1, 0, 0, 1};
+        nearMaterial.raster.blend = sb::native_render::ModelBlendMode::Replace;
+        nearMaterial.raster.depthWrite = true;
+        ModelDraw far = near;
+        far.instance = 203;
+        far.modelView.value[11] = 0.5F;
+        std::get<sb::native_render::UnlitColorMaterial>(far.material).baseColor = {0, 1, 0, 1};
+        std::array<ModelDraw, 2> layered{near, far};
+        const SemanticFramePixels depthWritten = render(layered);
+        assert(pixel(depthWritten, 8, 8).r > 0.9F && pixel(depthWritten, 8, 8).g < 0.1F);
+        std::get<sb::native_render::UnlitColorMaterial>(layered[0].material).raster.depthWrite =
+            false;
+        const SemanticFramePixels depthNotWritten = render(layered);
+        assert(pixel(depthNotWritten, 8, 8).g > 0.9F && pixel(depthNotWritten, 8, 8).r < 0.1F);
+    }
+    modelTarget.shutdown();
 
     target.shutdown();
     assert(platform.shutdown(platformError));

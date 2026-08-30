@@ -36,19 +36,21 @@ constexpr std::uint32_t kColor0 = 11;
 struct Stats {
     std::uint64_t shapeDraws = 0;
     std::uint64_t materialMemoryFailures = 0;
-    std::array<std::uint64_t, 9> materialRejections{};
+    std::array<std::uint64_t, 10> materialRejections{};
     std::uint64_t layoutFailures = 0;
     std::uint64_t noPerspectiveContexts = 0;
     std::uint64_t nonRigidElements = 0;
     std::uint64_t decodeFailures = 0;
     std::uint64_t textureTableFailures = 0;
     std::array<std::uint64_t, 12> textureDecodeFailures{};
-    std::array<std::uint64_t, 10> texturedMaterialRejections{};
+    std::array<std::uint64_t, 11> texturedMaterialRejections{};
     std::uint64_t submittedModels = 0;
     std::uint64_t submittedVertices = 0;
     std::uint64_t unlitTexturedCandidates = 0;
     std::uint64_t litUntexturedCandidates = 0;
     std::uint64_t litTexturedCandidates = 0;
+    std::array<std::uint64_t, 3> rasterFamilies{};
+    std::array<std::uint64_t, 4> cullModes{};
 };
 
 struct ProgramKey {
@@ -72,6 +74,17 @@ bool readable(u32 address) {
     return sb_ram_fast(address) != nullptr;
 }
 
+void record_raster(const sb::native_render::ModelMaterial& material) {
+    const sb::native_render::ModelRasterPolicy& raster = sb::native_render::raster_policy(material);
+    std::size_t family = 0;
+    if (raster.alphaTest == sb::native_render::ModelAlphaTest::GreaterOrEqualHalf)
+        family = 1;
+    else if (raster.blend == sb::native_render::ModelBlendMode::SourceAlpha)
+        family = 2;
+    ++g_stats.rasterFamilies[family];
+    ++g_stats.cullModes[static_cast<std::size_t>(raster.cull)];
+}
+
 float guest_f32(u32 address) {
     const u32 bits = sb_r32(address);
     float value = 0.0F;
@@ -91,14 +104,17 @@ std::string semantic_j3d_stats_text() {
     std::uint64_t textureDecodeFailures = 0;
     for (std::uint64_t count : g_stats.textureDecodeFailures)
         textureDecodeFailures += count;
-    char output[1536];
+    char output[1792];
     std::snprintf(
         output, sizeof(output),
         "J3D native-model coverage: considered=%llu submitted=%llu models/%llu vertices; "
         "unreadable=%llu layout=%llu no-perspective-context=%llu non-rigid=%llu decode=%llu "
         "texture-table=%llu texture-decode=%llu; material "
         "rejections: colour-block=%llu lighting=%llu missing-channel=%llu texture=%llu "
-        "tev-family=%llu multi-stage=%llu colour-program=%llu missing-vertex-colour=%llu; "
+        "tev-family=%llu multi-stage=%llu colour-program=%llu missing-vertex-colour=%llu "
+        "raster-policy=%llu textured-raster-policy=%llu; published raster families: opaque=%llu "
+        "cutout=%llu translucent=%llu "
+        "cull(none=%llu front=%llu back=%llu all=%llu); "
         "exact next-family candidates: unlit+textured=%llu lit+untextured=%llu "
         "lit+textured=%llu",
         static_cast<unsigned long long>(g_stats.shapeDraws),
@@ -119,6 +135,15 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.materialRejections[6]),
         static_cast<unsigned long long>(g_stats.materialRejections[7]),
         static_cast<unsigned long long>(g_stats.materialRejections[8]),
+        static_cast<unsigned long long>(g_stats.materialRejections[9]),
+        static_cast<unsigned long long>(g_stats.texturedMaterialRejections[10]),
+        static_cast<unsigned long long>(g_stats.rasterFamilies[0]),
+        static_cast<unsigned long long>(g_stats.rasterFamilies[1]),
+        static_cast<unsigned long long>(g_stats.rasterFamilies[2]),
+        static_cast<unsigned long long>(g_stats.cullModes[0]),
+        static_cast<unsigned long long>(g_stats.cullModes[1]),
+        static_cast<unsigned long long>(g_stats.cullModes[2]),
+        static_cast<unsigned long long>(g_stats.cullModes[3]),
         static_cast<unsigned long long>(g_stats.unlitTexturedCandidates),
         static_cast<unsigned long long>(g_stats.litUntexturedCandidates),
         static_cast<unsigned long long>(g_stats.litTexturedCandidates));
@@ -308,6 +333,7 @@ void submit_semantic_j3d_shape(u32 shape) {
                   "semantic J3D sink rejected validated rigid model: shape=%08x element=%u "
                   "vertices=%zu",
                   shape, element, g_vertices.size());
+        record_raster(semanticMaterial);
         ++g_stats.submittedModels;
         g_stats.submittedVertices += g_vertices.size();
     }

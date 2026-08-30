@@ -68,6 +68,17 @@ bool valid(const MeshResourceView& mesh) noexcept {
                                [](const MeshVertex& vertex) { return valid(vertex); });
 }
 
+bool valid(const ModelRasterPolicy& raster) noexcept {
+    return raster.cull <= ModelCullMode::All && raster.depthCompare <= ModelDepthCompare::Always &&
+           raster.alphaTest <= ModelAlphaTest::GreaterOrEqualHalf &&
+           raster.blend <= ModelBlendMode::SourceAlpha;
+}
+
+const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept {
+    return std::visit([](const auto& value) -> const ModelRasterPolicy& { return value.raster; },
+                      material);
+}
+
 bool valid(const ModelDraw& draw) noexcept {
     const bool validMaterial = std::visit(
         [](const auto& material) {
@@ -81,7 +92,7 @@ bool valid(const ModelDraw& draw) noexcept {
         draw.material);
     return draw.instance != 0 && draw.mesh.resource != 0 && draw.mesh.vertexCount != 0 &&
            draw.mesh.vertexCount % 3U == 0U && valid(draw.modelView) && valid(draw.projection) &&
-           validMaterial;
+           validMaterial && valid(raster_policy(draw.material));
 }
 
 ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noexcept {

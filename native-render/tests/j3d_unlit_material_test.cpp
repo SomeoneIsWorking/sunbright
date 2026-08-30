@@ -6,6 +6,7 @@ int main() {
     using namespace sb::native_render;
     J3dUnlitMaterialState state{
         .supportedColorBlock = true,
+        .cullMode = 2,
         .lightingEnabled = false,
         .colorChannelCount = 1,
         .colorChannelControl = 0,
@@ -19,11 +20,16 @@ int main() {
         .textureMap0 = 0xFFU,
         .colorChannel0 = 4,
         .tevStage0 = {0xC0, 0x40, 0xAF, 0xF0, 0xC1, 0x08, 0xBF, 0x80},
+        .pixelEngineBlockType = 0x50454F50U,
         .hasVertexColor = false,
     };
     UnlitColorMaterial material{};
     assert(classify_j3d_unlit_material(state, material) == J3dUnlitMaterialResult::Success);
     assert(!material.usesVertexColor);
+    assert(material.raster.cull == ModelCullMode::Back);
+    assert(material.raster.depthWrite);
+    assert(material.raster.alphaTest == ModelAlphaTest::PassAll);
+    assert(material.raster.blend == ModelBlendMode::Replace);
     assert(material.baseColor == Color(128.0F / 255.0F, 64.0F / 255.0F, 32.0F / 255.0F, 1.0F));
 
     state.textureCoordinateCount = 3;
@@ -59,6 +65,60 @@ int main() {
            J3dUnlitTexturedResult::Success);
     assert(texturedMaterial.texture == texture);
     assert(texturedMaterial.usesVertexColor);
+
+    state.pixelEngineBlockType = 0x50454544U;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.alphaTest == ModelAlphaTest::GreaterOrEqualHalf);
+    assert(texturedMaterial.raster.depthWrite);
+    state.pixelEngineBlockType = 0x5045584CU;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.blend == ModelBlendMode::SourceAlpha);
+    assert(!texturedMaterial.raster.depthWrite);
+    state.pixelEngineBlockType = 0x5045464CU;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::UnsupportedRasterPolicy);
+    state.hasExplicitPixelPolicy = true;
+    state.alphaCompare0 = 7;
+    state.alphaReference0 = 0;
+    state.alphaOperation = 0;
+    state.alphaCompare1 = 7;
+    state.alphaReference1 = 0;
+    state.blendMode = 0;
+    state.blendSourceFactor = 1;
+    state.blendDestinationFactor = 0;
+    state.blendLogicOperation = 3;
+    state.depthTest = true;
+    state.depthCompare = 3;
+    state.depthWrite = true;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster == ModelRasterPolicy{.cull = ModelCullMode::Back});
+    state.fogEnabled = true;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::UnsupportedRasterPolicy);
+    state.fogEnabled = false;
+    state.alphaCompare0 = 6;
+    state.alphaReference0 = 0x80;
+    state.alphaCompare1 = 3;
+    state.alphaReference1 = 0xFF;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.alphaTest == ModelAlphaTest::GreaterOrEqualHalf);
+    state.alphaCompare0 = 7;
+    state.alphaReference0 = 0;
+    state.alphaCompare1 = 7;
+    state.alphaReference1 = 0;
+    state.blendMode = 1;
+    state.blendSourceFactor = 4;
+    state.blendDestinationFactor = 5;
+    state.depthWrite = false;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.blend == ModelBlendMode::SourceAlpha);
+    assert(!texturedMaterial.raster.depthWrite);
+    state.pixelEngineBlockType = 0x50454F50U;
 
     state.tevStage0[2] ^= 1U;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==

@@ -64,6 +64,12 @@ SHADERS = (
         "native-render/shaders/model_vert_spv.h",
     ),
     Shader(
+        "native-render/shaders/model_color.frag.glsl",
+        "frag",
+        "kModelColorFragSpv",
+        "native-render/shaders/model_color_frag_spv.h",
+    ),
+    Shader(
         "native-render/shaders/model_texture.frag.glsl",
         "frag",
         "kModelTextureFragSpv",

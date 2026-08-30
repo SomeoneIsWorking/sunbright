@@ -52,12 +52,39 @@ struct MeshResourceView {
     std::span<const MeshVertex> vertices{};
 };
 
+enum class ModelCullMode : std::uint8_t { None, Front, Back, All };
+enum class ModelDepthCompare : std::uint8_t {
+    Never,
+    Less,
+    Equal,
+    LessOrEqual,
+    Greater,
+    NotEqual,
+    GreaterOrEqual,
+    Always,
+};
+enum class ModelAlphaTest : std::uint8_t { PassAll, GreaterOrEqualHalf };
+enum class ModelBlendMode : std::uint8_t { Replace, SourceAlpha };
+
+// Ordinary PC raster policy. Runtime adapters derive it from high-level material objects before
+// publication; packed GX registers and compatibility-renderer state never cross this boundary.
+struct ModelRasterPolicy {
+    ModelCullMode cull = ModelCullMode::None;
+    bool depthTest = true;
+    ModelDepthCompare depthCompare = ModelDepthCompare::LessOrEqual;
+    bool depthWrite = true;
+    ModelAlphaTest alphaTest = ModelAlphaTest::PassAll;
+    ModelBlendMode blend = ModelBlendMode::Replace;
+    bool operator==(const ModelRasterPolicy&) const = default;
+};
+
 // Ordinary unlit colour semantics, used by controlled GPU tests and by a runtime adapter only when
 // its source material is an exact match. More material families get distinct semantic types;
 // unsupported J3D programs are never squeezed into this one as an approximation.
 struct UnlitColorMaterial {
     Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
     bool usesVertexColor = false;
+    ModelRasterPolicy raster{};
 };
 
 // A decoded game texture modulated by authored vertex colour. Asset encoding is gone before this
@@ -65,6 +92,7 @@ struct UnlitColorMaterial {
 struct UnlitTexturedMaterial {
     PictureTexture texture{};
     bool usesVertexColor = true;
+    ModelRasterPolicy raster{};
 };
 
 using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial>;
@@ -86,7 +114,9 @@ struct ClipVertex {
 [[nodiscard]] bool valid(const MeshVertex& vertex) noexcept;
 [[nodiscard]] bool valid(const MeshResourceView& mesh) noexcept;
 [[nodiscard]] bool valid(const Matrix4x4& matrix) noexcept;
+[[nodiscard]] bool valid(const ModelRasterPolicy& raster) noexcept;
 [[nodiscard]] bool valid(const ModelDraw& draw) noexcept;
+[[nodiscard]] const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept;
 [[nodiscard]] std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept;
 // J3D camera matrices produce clip depth in [-w, 0]. The renderer-neutral model contract uses
 // [0, w], so each runtime adapter applies this conversion before publishing a draw.

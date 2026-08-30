@@ -23,9 +23,11 @@ SDL3 pass. Both runtimes publish the same values through separate layout adapter
 their original draw bodies for A/B. Camera projection now comes directly from the `TGraphics`
 value written by the game's camera and is scoped around high-level `TViewObj::testPerform` draw
 dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetProjection`,
-`GXGetProjectionv`, FIFO, or compatibility-renderer state. Faithful raster policy and broader J3D
-materials are next: culling, blend/depth/alpha policy, lighting, multiple texture stages, skinning,
-authored mip chains, particles, and effects still fall back to the retained renderer.
+`GXGetProjectionv`, FIFO, or compatibility-renderer state. The same high-level J3D material objects
+now supply culling, depth test/write, alpha cutout, and source-alpha blending for the exact common
+opaque, texture-edge, and translucent policy families. Broader J3D materials are next: lighting,
+multiple texture stages, custom pixel policies, skinning, authored mip chains, particles, and
+effects still fall back to the retained renderer.
 
 ## Capability details
 
@@ -72,6 +74,18 @@ with zero unreadable, layout, rigid-matrix, or mesh-decode failures and no GPU f
 11,331 perspective, 728 orthographic, and 46 pre-camera dispatches; 44 model attempts outside a
 perspective scope correctly fell back. Original recompiled bodies remain callable and execute
 after every semantic submission. C093 records the falsifiable camera-boundary evidence.
+
+The renderer-neutral material value now also carries ordinary cull, depth compare/write, alpha
+cutout, and blend policy. The guest adapter reads those values from the retail J3D colour and pixel
+engine blocks; the shared classifier accepts the three common high-level policy families and full
+blocks only when every relevant field exactly expands to one of those families. The SDL pass keys
+its pipelines by that policy, rejects cull-all draws before upload, and uses PC shaders for the
+cutout threshold. A guarded GPU control distinguishes front/back/all culling, alpha 127 from 128,
+replace from source-alpha blending, and depth-write on from off. The post-change guarded recomp run
+exited cleanly after 60 presents with 6,006 cutout/back-cull models and 1,092,366 vertices; it
+separately rejected 682 unsupported textured raster policies rather than approximating them and
+reported no GPU fault. Full blocks with a present but `GX_FOG_NONE` fog object remain eligible;
+actual fog modes fall back.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission
@@ -202,10 +216,10 @@ semantic frame, and then counts a window hidden after startup as temporarily una
 still completing the semantic submission. C091 records the combined window-ownership evidence and
 its falsifier.
 
-Gap: this is a real model path, not full-frame visual correctness. The first material family does
-not yet carry cull, blend, depth-write, or alpha-test policy, and unsupported J3D programs are
-refused rather than approximated. Lighting, skinning, multiple texture stages, authored mip chains,
-particles, and effects remain absent, so the preview is not yet a complete product renderer.
+Gap: this is a real model path, not full-frame visual correctness. Custom pixel policies and
+unsupported J3D programs are refused rather than approximated. Lighting, skinning, multiple texture
+stages, authored mip chains, particles, and effects remain absent, so the preview is not yet a
+complete product renderer.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -223,6 +237,11 @@ materials and 43,148 non-perspective draw contexts, leaving those to the retaine
 A post-change guarded 180-present run submitted 11,858 models/7,194,726 vertices with zero layout,
 rigid-matrix, or decode failures. It measured 36,422 perspective, 1,713 orthographic, and 3,547
 pre-camera high-level dispatches; 12,154 model attempts outside perspective fell back cleanly.
+After the shared raster-policy integration, a guarded 120-present run exited cleanly and submitted
+2,278 cutout/back-cull models containing 513,876 vertices, with zero layout, rigid-matrix, or decode
+failures. The first cold run exceeded the default 15-second in-process watchdog while Aurora was
+creating a pipeline; rerunning with a 60-second diagnostic watchdog completed normally, so the
+aborted cold run is recorded as startup-cost evidence rather than silently discarded.
 
 The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic command from native
 J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only
@@ -287,8 +306,9 @@ exercise a resource-font glyph on their reached paths, so they prove runtime saf
 decomp glyph coverage; that remains explicit rather than inferred from the adapter test.
 
 Gap: decomp window behavior has close production-linked coverage but not an organically reached
-live window in the bounded title/stage-one routes. The same 3D and effect families remain missing
-from its visible native preview.
+live window in the bounded title/stage-one routes. Custom J3D pixel policies, lighting, skinning,
+multiple texture stages, authored mip chains, particles, and effects remain missing from its visible
+native preview.
 
 ### S006 — Lerp coverage
 
