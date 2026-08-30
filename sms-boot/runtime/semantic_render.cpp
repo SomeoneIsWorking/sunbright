@@ -28,12 +28,17 @@ void report_stats() {
         return;
     const auto& stats = sb::native_render::sdl_semantic_frame_client().stats();
     sb_logf("semantic",
-            "offscreen summary: submitted=%llu completed=%llu nonempty=%llu draws=%llu "
-            "images=%llu samples=%llu first-nonclear-frame=%llu first-nonclear-pixels=%zu",
+            "offscreen summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
+            "operations=%llu "
+            "pictures=%llu solid-rectangles=%llu images=%llu samples=%llu "
+            "first-nonclear-frame=%llu first-nonclear-pixels=%zu",
             static_cast<unsigned long long>(stats.submittedFrames),
             static_cast<unsigned long long>(stats.completedFrames),
             static_cast<unsigned long long>(stats.nonEmptyFrames),
-            static_cast<unsigned long long>(stats.submittedDraws),
+            static_cast<unsigned long long>(stats.mixedOperationFrames),
+            static_cast<unsigned long long>(stats.submittedOperations),
+            static_cast<unsigned long long>(stats.submittedPictures),
+            static_cast<unsigned long long>(stats.submittedSolidRectangles),
             static_cast<unsigned long long>(stats.submittedImages),
             static_cast<unsigned long long>(stats.sampledFrames),
             static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);
@@ -49,12 +54,12 @@ extern "C" bool sb_semantic_render_configure(void) {
         return false;
     }
     const auto setting =
-        sb::native_render::parse_semantic_picture_audit(std::getenv("SB_SEMANTIC_PICTURE_AUDIT"));
-    if (setting == sb::native_render::SemanticPictureAuditSetting::Invalid) {
-        g_error = "SB_SEMANTIC_PICTURE_AUDIT accepts only 0 or 1";
+        sb::native_render::parse_semantic_frame_audit(std::getenv("SB_SEMANTIC_FRAME_AUDIT"));
+    if (setting == sb::native_render::SemanticFrameAuditSetting::Invalid) {
+        g_error = "SB_SEMANTIC_FRAME_AUDIT accepts only 0 or 1";
         return false;
     }
-    g_requested = setting == sb::native_render::SemanticPictureAuditSetting::Enabled;
+    g_requested = setting == sb::native_render::SemanticFrameAuditSetting::Enabled;
     g_configured = true;
     return true;
 }
@@ -80,7 +85,7 @@ extern "C" bool sb_semantic_render_initialize(void) {
         (void)platform.shutdown(platformError);
         return false;
     }
-    sb_logf("semantic", "offscreen semantic picture audit active at 640x480");
+    sb_logf("semantic", "offscreen semantic 2D frame audit active at 640x480");
     return true;
 }
 

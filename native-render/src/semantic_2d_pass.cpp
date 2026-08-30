@@ -1,7 +1,8 @@
-#include <sunbright/native_render/picture_pass.h>
+#include <sunbright/native_render/semantic_2d_pass.h>
 
 #include "../shaders/picture_frag_spv.h"
 #include "../shaders/picture_vert_spv.h"
+#include "../shaders/solid_rectangle_frag_spv.h"
 
 #include <algorithm>
 #include <array>
@@ -165,13 +166,15 @@ std::size_t next_capacity(std::size_t required) noexcept {
 
 } // namespace
 
-struct PicturePassImpl {
-    explicit PicturePassImpl(SDL_GPUDevice* value) noexcept : device(value) {}
+struct Semantic2dPassImpl {
+    explicit Semantic2dPassImpl(SDL_GPUDevice* value) noexcept : device(value) {}
 
     SDL_GPUDevice* device = nullptr;
     SDL_GPUShader* vertexShader = nullptr;
-    SDL_GPUShader* fragmentShader = nullptr;
-    std::unordered_map<SDL_GPUTextureFormat, SDL_GPUGraphicsPipeline*> pipelines{};
+    SDL_GPUShader* pictureFragmentShader = nullptr;
+    SDL_GPUShader* solidFragmentShader = nullptr;
+    std::unordered_map<SDL_GPUTextureFormat, SDL_GPUGraphicsPipeline*> picturePipelines{};
+    std::unordered_map<SDL_GPUTextureFormat, SDL_GPUGraphicsPipeline*> solidPipelines{};
     std::unordered_map<ImageKey, CachedImage, ImageKeyHash> images{};
     std::unordered_map<ImageKey, CachedImage, ImageKeyHash> pendingImages{};
     std::vector<ImageKey> currentImages{};
@@ -198,7 +201,7 @@ void release_image(SDL_GPUDevice* device, CachedImage image) noexcept {
         SDL_ReleaseGPUTexture(device, image.texture);
 }
 
-const CachedImage* find_image(const PicturePassImpl& impl, ImageKey key) noexcept {
+const CachedImage* find_image(const Semantic2dPassImpl& impl, ImageKey key) noexcept {
     if (const auto resident = impl.images.find(key); resident != impl.images.end())
         return &resident->second;
     if (const auto pending = impl.pendingImages.find(key); pending != impl.pendingImages.end())
@@ -206,15 +209,18 @@ const CachedImage* find_image(const PicturePassImpl& impl, ImageKey key) noexcep
     return nullptr;
 }
 
-SDL_GPUGraphicsPipeline* ensure_pipeline(PicturePassImpl& impl, SDL_GPUTextureFormat format,
-                                         std::string& error) {
-    const auto existing = impl.pipelines.find(format);
-    if (existing != impl.pipelines.end())
+SDL_GPUGraphicsPipeline*
+ensure_pipeline(Semantic2dPassImpl& impl,
+                std::unordered_map<SDL_GPUTextureFormat, SDL_GPUGraphicsPipeline*>& pipelines,
+                SDL_GPUShader* fragmentShader, SDL_GPUTextureFormat format, const char* label,
+                std::string& error) {
+    const auto existing = pipelines.find(format);
+    if (existing != pipelines.end())
         return existing->second;
     if (format == SDL_GPU_TEXTUREFORMAT_INVALID ||
         !SDL_GPUTextureSupportsFormat(impl.device, format, SDL_GPU_TEXTURETYPE_2D,
                                       SDL_GPU_TEXTUREUSAGE_COLOR_TARGET)) {
-        error = "picture target format is not a supported SDL GPU color target";
+        error = "semantic 2D target format is not a supported SDL GPU color target";
         return nullptr;
     }
 
@@ -246,7 +252,7 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(PicturePassImpl& impl, SDL_GPUTextureFo
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = impl.vertexShader;
-    info.fragment_shader = impl.fragmentShader;
+    info.fragment_shader = fragmentShader;
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.vertex_input_state.vertex_buffer_descriptions = &vertexBuffer;
     info.vertex_input_state.num_vertex_buffers = 1;
@@ -259,19 +265,19 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(PicturePassImpl& impl, SDL_GPUTextureFo
     info.target_info.num_color_targets = 1;
     SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(impl.device, &info);
     if (pipeline == nullptr) {
-        error = std::string("picture pipeline creation failed: ") + SDL_GetError();
+        error = std::string(label) + " pipeline creation failed: " + SDL_GetError();
         return nullptr;
     }
-    impl.pipelines.emplace(format, pipeline);
+    pipelines.emplace(format, pipeline);
     return pipeline;
 }
 
-bool ensure_vertex_storage(PicturePassImpl& impl, std::size_t required, std::string& error) {
+bool ensure_vertex_storage(Semantic2dPassImpl& impl, std::size_t required, std::string& error) {
     if (required == 0 || required <= impl.vertices.capacity)
         return true;
     const std::size_t capacity = next_capacity(required);
     if (capacity > std::numeric_limits<Uint32>::max()) {
-        error = "picture vertex upload exceeds SDL GPU limits";
+        error = "semantic 2D vertex upload exceeds SDL GPU limits";
         return false;
     }
     const SDL_GPUBufferCreateInfo bufferInfo{SDL_GPU_BUFFERUSAGE_VERTEX,
@@ -282,7 +288,7 @@ bool ensure_vertex_storage(PicturePassImpl& impl, std::size_t required, std::str
                               SDL_CreateGPUTransferBuffer(impl.device, &uploadInfo), capacity};
     if (replacement.buffer == nullptr || replacement.upload == nullptr) {
         release_vertex_storage(impl.device, replacement);
-        error = std::string("picture vertex resource allocation failed: ") + SDL_GetError();
+        error = std::string("semantic 2D vertex resource allocation failed: ") + SDL_GetError();
         return false;
     }
     if (impl.vertices.buffer != nullptr)
@@ -291,7 +297,7 @@ bool ensure_vertex_storage(PicturePassImpl& impl, std::size_t required, std::str
     return true;
 }
 
-SDL_GPUSampler* ensure_sampler(PicturePassImpl& impl, const PictureTexture& texture,
+SDL_GPUSampler* ensure_sampler(Semantic2dPassImpl& impl, const PictureTexture& texture,
                                std::string& error) {
     const SamplerKey key = sampler_key(texture);
     const auto existing = impl.samplers.find(key);
@@ -316,9 +322,9 @@ SDL_GPUSampler* ensure_sampler(PicturePassImpl& impl, const PictureTexture& text
 
 } // namespace
 
-PicturePass::PicturePass(SDL_GPUDevice* device) : impl_(new PicturePassImpl(device)) {}
+Semantic2dPass::Semantic2dPass(SDL_GPUDevice* device) : impl_(new Semantic2dPassImpl(device)) {}
 
-PicturePass::~PicturePass() {
+Semantic2dPass::~Semantic2dPass() {
     if (impl_ != nullptr && impl_->encodeActive)
         std::terminate();
     if (impl_ != nullptr && impl_->device != nullptr) {
@@ -337,48 +343,63 @@ PicturePass::~PicturePass() {
         release_vertex_storage(impl_->device, impl_->vertices);
         for (VertexStorage storage : impl_->retiredVertexStorage)
             release_vertex_storage(impl_->device, storage);
-        for (const auto& [format, pipeline] : impl_->pipelines) {
+        for (const auto& [format, pipeline] : impl_->picturePipelines) {
             (void)format;
             SDL_ReleaseGPUGraphicsPipeline(impl_->device, pipeline);
         }
-        if (impl_->fragmentShader != nullptr)
-            SDL_ReleaseGPUShader(impl_->device, impl_->fragmentShader);
+        for (const auto& [format, pipeline] : impl_->solidPipelines) {
+            (void)format;
+            SDL_ReleaseGPUGraphicsPipeline(impl_->device, pipeline);
+        }
+        if (impl_->solidFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->solidFragmentShader);
+        if (impl_->pictureFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->pictureFragmentShader);
         if (impl_->vertexShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->vertexShader);
     }
     delete impl_;
 }
 
-bool PicturePass::initialize(std::string& error) {
+bool Semantic2dPass::initialize(std::string& error) {
     error.clear();
     if (impl_ == nullptr || impl_->device == nullptr) {
-        error = "picture pass requires a host-owned SDL GPU device";
+        error = "semantic 2D pass requires a host-owned SDL GPU device";
         return false;
     }
-    if (impl_->vertexShader != nullptr && impl_->fragmentShader != nullptr)
+    if (impl_->vertexShader != nullptr && impl_->pictureFragmentShader != nullptr &&
+        impl_->solidFragmentShader != nullptr)
         return true;
     impl_->vertexShader = make_shader(impl_->device, kPictureVertSpv, sizeof(kPictureVertSpv),
                                       SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-    impl_->fragmentShader = make_shader(impl_->device, kPictureFragSpv, sizeof(kPictureFragSpv),
-                                        SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
-    if (impl_->vertexShader == nullptr || impl_->fragmentShader == nullptr) {
-        error = std::string("picture shader creation failed: ") + SDL_GetError();
-        if (impl_->fragmentShader != nullptr)
-            SDL_ReleaseGPUShader(impl_->device, impl_->fragmentShader);
+    impl_->pictureFragmentShader =
+        make_shader(impl_->device, kPictureFragSpv, sizeof(kPictureFragSpv),
+                    SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
+    impl_->solidFragmentShader =
+        make_shader(impl_->device, kSolidRectangleFragSpv, sizeof(kSolidRectangleFragSpv),
+                    SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
+    if (impl_->vertexShader == nullptr || impl_->pictureFragmentShader == nullptr ||
+        impl_->solidFragmentShader == nullptr) {
+        error = std::string("semantic 2D shader creation failed: ") + SDL_GetError();
+        if (impl_->solidFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->solidFragmentShader);
+        if (impl_->pictureFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->pictureFragmentShader);
         if (impl_->vertexShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->vertexShader);
-        impl_->fragmentShader = nullptr;
+        impl_->solidFragmentShader = nullptr;
+        impl_->pictureFragmentShader = nullptr;
         impl_->vertexShader = nullptr;
         return false;
     }
     return true;
 }
 
-bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& target,
-                         std::string& error) {
+bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarget& target,
+                            std::string& error) {
     error.clear();
     if (impl_ == nullptr || impl_->encodeActive) {
-        error = "previous picture encode has not been completed";
+        error = "previous semantic 2D encode has not been completed";
         return false;
     }
     impl_->encodeActive = true;
@@ -388,15 +409,20 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
     if (!initialize(error))
         return false;
     if (target.commandBuffer == nullptr || target.colorTexture == nullptr) {
-        error = "picture encode requires borrowed command-buffer and color-target handles";
+        error = "semantic 2D encode requires borrowed command-buffer and color-target handles";
         return false;
     }
     if (frame.targetWidth == 0 || frame.targetHeight == 0) {
-        error = "picture frame has an invalid target extent";
+        error = "semantic frame has an invalid target extent";
         return false;
     }
-    SDL_GPUGraphicsPipeline* pipeline = ensure_pipeline(*impl_, target.colorFormat, error);
-    if (pipeline == nullptr)
+    SDL_GPUGraphicsPipeline* picturePipeline =
+        ensure_pipeline(*impl_, impl_->picturePipelines, impl_->pictureFragmentShader,
+                        target.colorFormat, "picture", error);
+    SDL_GPUGraphicsPipeline* solidPipeline =
+        ensure_pipeline(*impl_, impl_->solidPipelines, impl_->solidFragmentShader,
+                        target.colorFormat, "solid rectangle", error);
+    if (picturePipeline == nullptr || solidPipeline == nullptr)
         return false;
 
     std::unordered_map<ImageKey, const DecodedImageView*, ImageKeyHash> sources;
@@ -406,7 +432,7 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
         const ImageKey key{image.resource, image.revision};
         if (image.resource == 0 || !multiplication_fits(image.width, image.height, bytes) ||
             image.rgba8.size() != bytes || !sources.emplace(key, &image).second) {
-            error = "picture frame contains an invalid or duplicate decoded image";
+            error = "semantic frame contains an invalid or duplicate decoded image";
             return false;
         }
         impl_->currentImages.push_back(key);
@@ -420,37 +446,45 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
 
     std::vector<GpuVertex> vertices;
     vertices.reserve(frame.draws.size() * 6U);
-    for (const PictureDraw& draw : frame.draws) {
-        PixelRect viewport{};
-        if (!valid(draw) ||
-            !resolve_scissor(draw.canvas, {}, frame.targetWidth, frame.targetHeight, viewport)) {
-            error = "picture frame contains an invalid draw context or command";
-            return false;
-        }
-        for (const PictureVertex& source : make_mesh(draw.picture)) {
+    const auto appendMesh = [&vertices](const auto& mesh) {
+        for (const SemanticVertex& source : mesh) {
             vertices.push_back({{source.position.x, source.position.y},
                                 {source.uv.x, source.uv.y},
                                 {source.color.r, source.color.g, source.color.b, source.color.a}});
         }
-        for (std::size_t index = 0; index < draw.picture.material.textureCount; ++index) {
-            const PictureTexture& texture = draw.picture.material.textures[index];
-            const ImageKey key{texture.resource, texture.revision};
-            const auto source = sources.find(key);
-            const auto cached = impl_->images.find(key);
-            const std::uint32_t width = source != sources.end()         ? source->second->width
-                                        : cached != impl_->images.end() ? cached->second.width
-                                                                        : 0;
-            const std::uint32_t height = source != sources.end()         ? source->second->height
-                                         : cached != impl_->images.end() ? cached->second.height
-                                                                         : 0;
-            if (width != texture.width || height != texture.height) {
-                error = "picture command references an absent or mismatched decoded image";
-                return false;
+    };
+    for (const SemanticDraw& semanticDraw : frame.draws) {
+        PixelRect viewport{};
+        const Canvas& drawCanvas = canvas(semanticDraw);
+        if (!valid(semanticDraw) ||
+            !resolve_scissor(drawCanvas, {}, frame.targetWidth, frame.targetHeight, viewport)) {
+            error = "semantic frame contains an invalid draw context or command";
+            return false;
+        }
+        if (const auto* picture = std::get_if<PictureDraw>(&semanticDraw)) {
+            appendMesh(make_mesh(picture->picture));
+            for (std::size_t index = 0; index < picture->picture.material.textureCount; ++index) {
+                const PictureTexture& texture = picture->picture.material.textures[index];
+                const ImageKey key{texture.resource, texture.revision};
+                const auto source = sources.find(key);
+                const auto cached = impl_->images.find(key);
+                const std::uint32_t width = source != sources.end()         ? source->second->width
+                                            : cached != impl_->images.end() ? cached->second.width
+                                                                            : 0;
+                const std::uint32_t height = source != sources.end() ? source->second->height
+                                             : cached != impl_->images.end() ? cached->second.height
+                                                                             : 0;
+                if (width != texture.width || height != texture.height) {
+                    error = "picture command references an absent or mismatched decoded image";
+                    return false;
+                }
+                if (std::find(impl_->currentImages.begin(), impl_->currentImages.end(), key) ==
+                    impl_->currentImages.end()) {
+                    impl_->currentImages.push_back(key);
+                }
             }
-            if (std::find(impl_->currentImages.begin(), impl_->currentImages.end(), key) ==
-                impl_->currentImages.end()) {
-                impl_->currentImages.push_back(key);
-            }
+        } else {
+            appendMesh(make_mesh(std::get<SolidRectangleDraw>(semanticDraw).rectangle));
         }
     }
 
@@ -460,7 +494,7 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
     if (vertexBytes != 0) {
         void* mapped = SDL_MapGPUTransferBuffer(impl_->device, impl_->vertices.upload, true);
         if (mapped == nullptr) {
-            error = std::string("picture vertex upload map failed: ") + SDL_GetError();
+            error = std::string("semantic 2D vertex upload map failed: ") + SDL_GetError();
             return false;
         }
         std::memcpy(mapped, vertices.data(), vertexBytes);
@@ -508,20 +542,23 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
 
     std::vector<std::array<SDL_GPUTextureSamplerBinding, 4>> drawBindings;
     drawBindings.reserve(frame.draws.size());
-    for (const PictureDraw& draw : frame.draws) {
+    for (const SemanticDraw& semanticDraw : frame.draws) {
         std::array<SDL_GPUTextureSamplerBinding, 4> bindings{};
-        for (std::size_t index = 0; index < bindings.size(); ++index) {
-            const PictureTexture& texture = draw.picture.material.textures[std::min<std::size_t>(
-                index, draw.picture.material.textureCount - 1U)];
-            SDL_GPUSampler* sampler = ensure_sampler(*impl_, texture, error);
-            if (sampler == nullptr)
-                return false;
-            const CachedImage* image = find_image(*impl_, {texture.resource, texture.revision});
-            if (image == nullptr) {
-                error = "picture image cache lost a validated semantic resource";
-                return false;
+        if (const auto* picture = std::get_if<PictureDraw>(&semanticDraw)) {
+            for (std::size_t index = 0; index < bindings.size(); ++index) {
+                const PictureTexture& texture =
+                    picture->picture.material.textures[std::min<std::size_t>(
+                        index, picture->picture.material.textureCount - 1U)];
+                SDL_GPUSampler* sampler = ensure_sampler(*impl_, texture, error);
+                if (sampler == nullptr)
+                    return false;
+                const CachedImage* image = find_image(*impl_, {texture.resource, texture.revision});
+                if (image == nullptr) {
+                    error = "picture image cache lost a validated semantic resource";
+                    return false;
+                }
+                bindings[index] = {image->texture, sampler};
             }
-            bindings[index] = {image->texture, sampler};
         }
         drawBindings.push_back(bindings);
     }
@@ -529,7 +566,7 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
     if (vertexBytes != 0 || !impl_->pendingImages.empty()) {
         SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(target.commandBuffer);
         if (copy == nullptr) {
-            error = std::string("picture upload pass creation failed: ") + SDL_GetError();
+            error = std::string("semantic 2D upload pass creation failed: ") + SDL_GetError();
             return false;
         }
         if (vertexBytes != 0) {
@@ -565,10 +602,9 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
     SDL_GPURenderPass* render =
         SDL_BeginGPURenderPass(target.commandBuffer, &colorTarget, 1, nullptr);
     if (render == nullptr) {
-        error = std::string("picture render pass creation failed: ") + SDL_GetError();
+        error = std::string("semantic 2D render pass creation failed: ") + SDL_GetError();
         return false;
     }
-    SDL_BindGPUGraphicsPipeline(render, pipeline);
     if (vertexBytes != 0) {
         const SDL_GPUBufferBinding binding{impl_->vertices.buffer, 0};
         SDL_BindGPUVertexBuffers(render, 0, &binding, 1);
@@ -576,11 +612,11 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
 
     std::size_t firstVertex = 0;
     std::size_t drawIndex = 0;
-    for (const PictureDraw& draw : frame.draws) {
-        const PictureCommand& command = draw.picture;
+    for (const SemanticDraw& semanticDraw : frame.draws) {
         const auto& bindings = drawBindings[drawIndex++];
+        const Canvas& drawCanvas = canvas(semanticDraw);
         PixelRect semanticScissor{};
-        if (!resolve_scissor(draw.canvas, command.clip, frame.targetWidth, frame.targetHeight,
+        if (!resolve_scissor(drawCanvas, clip(semanticDraw), frame.targetWidth, frame.targetHeight,
                              semanticScissor)) {
             firstVertex += 6U;
             continue;
@@ -588,33 +624,39 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
         const SDL_Rect scissor{semanticScissor.x, semanticScissor.y,
                                static_cast<int>(semanticScissor.width),
                                static_cast<int>(semanticScissor.height)};
-        const SDL_GPUViewport viewport{static_cast<float>(draw.canvas.viewport.x),
-                                       static_cast<float>(draw.canvas.viewport.y),
-                                       static_cast<float>(draw.canvas.viewport.width),
-                                       static_cast<float>(draw.canvas.viewport.height),
+        const SDL_GPUViewport viewport{static_cast<float>(drawCanvas.viewport.x),
+                                       static_cast<float>(drawCanvas.viewport.y),
+                                       static_cast<float>(drawCanvas.viewport.width),
+                                       static_cast<float>(drawCanvas.viewport.height),
                                        0.0f,
                                        1.0f};
         SDL_SetGPUViewport(render, &viewport);
         SDL_SetGPUScissor(render, &scissor);
-        SDL_BindGPUFragmentSamplers(render, 0, bindings.data(), bindings.size());
-
-        PictureStyleUniform style{};
-        assign(style.black, command.material.black);
-        assign(style.white, command.material.white);
-        std::int32_t alphaMask = 0;
-        for (std::size_t index = 0; index < command.material.textureCount; ++index) {
-            style.colorMix[index] = command.material.textures[index].colorMix;
-            style.alphaMix[index] = command.material.textures[index].alphaMix;
-            if (command.material.textures[index].hasAlpha)
-                alphaMask |= 1 << index;
+        if (const auto* picture = std::get_if<PictureDraw>(&semanticDraw)) {
+            const PictureCommand& command = picture->picture;
+            SDL_BindGPUGraphicsPipeline(render, picturePipeline);
+            SDL_BindGPUFragmentSamplers(render, 0, bindings.data(), bindings.size());
+            PictureStyleUniform style{};
+            assign(style.black, command.material.black);
+            assign(style.white, command.material.white);
+            std::int32_t alphaMask = 0;
+            for (std::size_t index = 0; index < command.material.textureCount; ++index) {
+                style.colorMix[index] = command.material.textures[index].colorMix;
+                style.alphaMix[index] = command.material.textures[index].alphaMix;
+                if (command.material.textures[index].hasAlpha)
+                    alphaMask |= 1 << index;
+            }
+            style.control[0] = command.material.textureCount;
+            style.control[1] = alphaMask;
+            style.opacity[0] = command.opacity;
+            SDL_PushGPUFragmentUniformData(target.commandBuffer, 0, &style, sizeof(style));
+        } else {
+            SDL_BindGPUGraphicsPipeline(render, solidPipeline);
         }
-        style.control[0] = command.material.textureCount;
-        style.control[1] = alphaMask;
-        style.opacity[0] = command.opacity;
-        const CanvasUniform canvas{{draw.canvas.origin.x, draw.canvas.origin.y},
-                                   {draw.canvas.extent.x, draw.canvas.extent.y}};
-        SDL_PushGPUVertexUniformData(target.commandBuffer, 0, &canvas, sizeof(canvas));
-        SDL_PushGPUFragmentUniformData(target.commandBuffer, 0, &style, sizeof(style));
+        const CanvasUniform canvasUniform{{drawCanvas.origin.x, drawCanvas.origin.y},
+                                          {drawCanvas.extent.x, drawCanvas.extent.y}};
+        SDL_PushGPUVertexUniformData(target.commandBuffer, 0, &canvasUniform,
+                                     sizeof(canvasUniform));
         SDL_DrawGPUPrimitives(render, 6, 1, firstVertex, 0);
         firstVertex += 6U;
     }
@@ -623,14 +665,14 @@ bool PicturePass::encode(const PictureFrame& frame, const PicturePassTarget& tar
     return true;
 }
 
-bool PicturePass::complete_encode(bool submitted, std::string& error) noexcept {
+bool Semantic2dPass::complete_encode(bool submitted, std::string& error) noexcept {
     error.clear();
     if (impl_ == nullptr || !impl_->encodeActive) {
-        error = "no picture encode is awaiting completion";
+        error = "no semantic 2D encode is awaiting completion";
         return false;
     }
     if (submitted && !impl_->encodeSucceeded) {
-        error = "failed picture encode cannot be committed as submitted";
+        error = "failed semantic 2D encode cannot be committed as submitted";
         return false;
     }
 
@@ -663,19 +705,19 @@ bool PicturePass::complete_encode(bool submitted, std::string& error) noexcept {
     return true;
 }
 
-std::size_t PicturePass::resident_image_count() const noexcept {
+std::size_t Semantic2dPass::resident_image_count() const noexcept {
     return impl_ != nullptr ? impl_->images.size() : 0;
 }
 
-bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePixels& output,
-                                      std::string& error) {
+bool Semantic2dPass::render_and_readback(const SemanticFrame& frame, SemanticFramePixels& output,
+                                         std::string& error) {
     error.clear();
     output = {};
     if (!initialize(error))
         return false;
     std::size_t readbackBytes = 0;
     if (!multiplication_fits(frame.targetWidth, frame.targetHeight, readbackBytes)) {
-        error = "picture target exceeds SDL GPU limits";
+        error = "semantic 2D target exceeds SDL GPU limits";
         return false;
     }
 
@@ -697,7 +739,7 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
             SDL_ReleaseGPUTransferBuffer(impl_->device, download);
         if (target != nullptr)
             SDL_ReleaseGPUTexture(impl_->device, target);
-        error = std::string("picture readback resource allocation failed: ") + SDL_GetError();
+        error = std::string("semantic 2D readback resource allocation failed: ") + SDL_GetError();
         return false;
     }
 
@@ -705,11 +747,11 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
     if (commandBuffer == nullptr) {
         SDL_ReleaseGPUTransferBuffer(impl_->device, download);
         SDL_ReleaseGPUTexture(impl_->device, target);
-        error = std::string("picture command acquisition failed: ") + SDL_GetError();
+        error = std::string("semantic 2D command acquisition failed: ") + SDL_GetError();
         return false;
     }
-    const PicturePassTarget passTarget{commandBuffer, target, kImageFormat, SDL_GPU_LOADOP_CLEAR,
-                                       SDL_GPU_STOREOP_STORE};
+    const Semantic2dPassTarget passTarget{commandBuffer, target, kImageFormat, SDL_GPU_LOADOP_CLEAR,
+                                          SDL_GPU_STOREOP_STORE};
     if (!encode(frame, passTarget, error)) {
         SDL_CancelGPUCommandBuffer(commandBuffer);
         std::string completionError;
@@ -721,7 +763,7 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
 
     SDL_GPUCopyPass* downloadPass = SDL_BeginGPUCopyPass(commandBuffer);
     if (downloadPass == nullptr) {
-        error = std::string("picture readback pass creation failed: ") + SDL_GetError();
+        error = std::string("semantic 2D readback pass creation failed: ") + SDL_GetError();
         SDL_CancelGPUCommandBuffer(commandBuffer);
         std::string completionError;
         (void)complete_encode(false, completionError);
@@ -764,7 +806,7 @@ bool PicturePass::render_and_readback(const PictureFrame& frame, PictureFramePix
 
     void* mapped = SDL_MapGPUTransferBuffer(impl_->device, download, false);
     if (mapped == nullptr) {
-        error = std::string("picture readback map failed: ") + SDL_GetError();
+        error = std::string("semantic 2D readback map failed: ") + SDL_GetError();
         SDL_ReleaseGPUTransferBuffer(impl_->device, download);
         SDL_ReleaseGPUTexture(impl_->device, target);
         return false;

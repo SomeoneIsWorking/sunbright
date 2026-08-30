@@ -72,14 +72,6 @@ bool read_matrix(const Reader& reader, std::uint32_t address,
     return true;
 }
 
-native_render::Color color(std::uint32_t rgba) noexcept {
-    constexpr float kScale = 1.0f / 255.0f;
-    return {static_cast<float>((rgba >> 24U) & 0xffU) * kScale,
-            static_cast<float>((rgba >> 16U) & 0xffU) * kScale,
-            static_cast<float>((rgba >> 8U) & 0xffU) * kScale,
-            static_cast<float>(rgba & 0xffU) * kScale};
-}
-
 bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_t textureIndex,
                   std::uint32_t colorBlend, std::uint32_t alphaBlend,
                   native_render::PictureTexture& texture,
@@ -273,13 +265,13 @@ bool capture_j2d_picture(const GuestByteReader& byteReader, std::uint32_t self,
 
     result.command.opacity = static_cast<float>(opacity) / 255.0f;
     result.command.material.textureCount = textureCount;
-    result.command.material.black = color(black);
-    result.command.material.white = color(white);
+    result.command.material.black = native_render::color_from_rgba8(black);
+    result.command.material.white = native_render::color_from_rgba8(white);
     for (std::size_t index = 0; index < result.command.corner.size(); ++index) {
         std::uint32_t rgba = 0;
         if (!reader.u32(self + 0x144 + static_cast<std::uint32_t>(index * 4), rgba))
             return false;
-        result.command.corner[index] = color(rgba);
+        result.command.corner[index] = native_render::color_from_rgba8(rgba);
     }
     for (std::size_t index = 0; index < textureCount; ++index) {
         std::uint32_t textureAddress = 0;

@@ -310,7 +310,8 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/fifo_player.cpp")
     target_sources(sms-boot PRIVATE
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp")
     add_dependencies(sms-boot sms-native-sjis)
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
@@ -376,6 +377,7 @@ if(TARGET aurora_core)
     add_executable(platform-native_picture_adapter_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/native_picture_adapter_test.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DGrafContext.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DOrthoGraph.cpp"

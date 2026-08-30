@@ -322,6 +322,13 @@ target_include_directories(j2d_picture_adapter_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
 add_test(NAME j2d_picture_adapter COMMAND j2d_picture_adapter_test)
 
+add_executable(solid_rectangle_adapter_test tests/solid_rectangle_adapter_test.cpp
+                                            overrides/solid_rectangle_adapter.cpp)
+target_link_libraries(solid_rectangle_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(solid_rectangle_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME solid_rectangle_adapter COMMAND solid_rectangle_adapter_test)
+
 # The interpolation pairing self-test, reached through the main binary with SBR_INTERP_SELFTEST=1.
 # It is pure CPU work — local buffers and aurora's own pairing tables — but until now it only ran
 # from inside interpolate_recorded_frame, so proving the pairing maths required a GPU frame. It is

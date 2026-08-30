@@ -6,7 +6,7 @@
 
 #include "../runtime/sb_assert.h"
 
-#include <sunbright/native_render/picture_sink.h>
+#include <sunbright/native_render/semantic_sink.h>
 
 extern "C" void func_802cfda8(CPUState&); // J2DScreen::draw
 
@@ -18,7 +18,7 @@ native_render::PictureContextStack g_contexts{};
 class ScreenContextScope {
   public:
     explicit ScreenContextScope(const CPUState& cpu) {
-        if (!native_render::has_picture_sink())
+        if (!native_render::has_semantic_sink())
             return;
         native_render::PictureContext context{};
         const J2DContextCaptureResult result =

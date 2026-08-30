@@ -1,7 +1,8 @@
-#include <sunbright/native_render/picture_sink.h>
+#include <sunbright/native_render/semantic_sink.h>
 
 #include <JSystem/J2D/J2DOrthoGraph.hpp>
 #include <JSystem/J2D/J2DPicture.hpp>
+#include <JSystem/JDrama/JDRRect.hpp>
 #include <JSystem/JUtility/JUTPalette.hpp>
 #include <JSystem/JUtility/JUTTexture.hpp>
 #include <dolphin/gx.h>
@@ -10,6 +11,7 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +21,7 @@
 extern "C" void sb_native_picture_submit(const void* picture, const void* parentMatrix);
 extern "C" void sb_native_picture_context_push(const void* grafContext, int clipEnabled);
 extern "C" void sb_native_picture_context_pop(void);
+extern "C" void sb_native_solid_rectangle_submit(const void* rect, std::uint32_t rgba);
 
 namespace {
 
@@ -35,16 +38,20 @@ struct ReceivedImage {
 struct Receiver {
     std::size_t calls = 0;
     sb::native_render::PictureDraw draw{};
+    sb::native_render::SolidRectangleDraw solid{};
     std::array<ReceivedImage, 4> images{};
     std::size_t imageCount = 0;
 };
 
-bool receive(const sb::native_render::PictureDraw& draw,
+bool receive(const sb::native_render::SemanticDraw& draw,
              std::span<const sb::native_render::DecodedImageView> images, void* context) {
     assert(g_hostAllocationDepth == 1);
     auto& receiver = *static_cast<Receiver*>(context);
     ++receiver.calls;
-    receiver.draw = draw;
+    if (const auto* picture = std::get_if<sb::native_render::PictureDraw>(&draw))
+        receiver.draw = *picture;
+    else
+        receiver.solid = std::get<sb::native_render::SolidRectangleDraw>(draw);
     receiver.imageCount = images.size();
     for (std::size_t index = 0; index < images.size(); ++index) {
         const auto& source = images[index];
@@ -151,13 +158,13 @@ int main() {
     identity(parent);
     Receiver receiver{};
     J2DOrthoGraph graph(10, 20, 320, 240);
-    assert(!sb::native_render::has_picture_sink());
+    assert(!sb::native_render::has_semantic_sink());
     sb_native_picture_submit(&picture, &parent);
     assert(g_hostAllocationDepth == 0);
     assert(receiver.calls == 0);
 
-    sb::native_render::PictureSinkLease sinkLease;
-    assert(sb::native_render::claim_picture_sink({receive, &receiver}, sinkLease));
+    sb::native_render::SemanticSinkLease sinkLease;
+    assert(sb::native_render::claim_semantic_sink({receive, &receiver}, sinkLease));
     sb_native_picture_context_push(&graph, 1);
     sb_native_picture_submit(&picture, &parent);
     assert(g_hostAllocationDepth == 0);
@@ -193,6 +200,20 @@ int main() {
     assert(receiver.images[1].revision == firstIntensityRevision);
     assert(g_hostAllocationDepth == 0);
 
-    assert(sb::native_render::release_picture_sink(sinkLease));
+    JDrama::TRect fill(-107, 20, 747, 460);
+    sb_native_solid_rectangle_submit(&fill, 0x10203080U);
+    assert(receiver.calls == 4);
+    assert(receiver.imageCount == 0);
+    assert(receiver.solid.rectangle.positions[0] == sb::native_render::Vec2(-107.0f, 20.0f));
+    assert(receiver.solid.rectangle.positions[3] == sb::native_render::Vec2(747.0f, 460.0f));
+    const auto fillColor = receiver.solid.rectangle.corner[0];
+    constexpr float kColorTolerance = 0.000001f;
+    assert(std::abs(fillColor.r - 16.0f / 255.0f) < kColorTolerance);
+    assert(std::abs(fillColor.g - 32.0f / 255.0f) < kColorTolerance);
+    assert(std::abs(fillColor.b - 48.0f / 255.0f) < kColorTolerance);
+    assert(std::abs(fillColor.a - 128.0f / 255.0f) < kColorTolerance);
+    assert(g_hostAllocationDepth == 0);
+
+    assert(sb::native_render::release_semantic_sink(sinkLease));
     sb_native_picture_context_pop();
 }

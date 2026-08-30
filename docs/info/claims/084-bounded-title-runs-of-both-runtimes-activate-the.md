@@ -9,11 +9,11 @@ depends: native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient:
 
 ## Claim
 
-Bounded title runs of both runtimes activate the shared semantic collector and submit real nonempty J2D picture frames through the offscreen SDL GPU semantic pass while Aurora remains the visible GX path.
+Bounded title runs of both runtimes activate the shared semantic collector and submit real nonempty J2D picture/GC2D-solid frames through the offscreen SDL GPU semantic pass while Aurora remains the visible GX path.
 
 ## Evidence
 
-Recomp: guarded 100 presents, 50/50 semantic submissions completed, 42 frames carrying 1,302 draws/images, first nonclear semantic frame 9 with 14,181 pixels. Decomp: guarded 400 presents, 400/400 completed, 297 frames carrying 9,207 draws/images, first nonclear semantic frame 104 with 158,038 pixels. Both launcher exits were 0 with no kernel GPU fault. The production GPU control separately proves empty-clear, planted-nonclear, and duplicate-consume refusal.
+Recomp: guarded 100 presents, 50/50 semantic submissions completed, all 50 nonempty, 6 mixed-family frames, 1,302 pictures, 14 solid rectangles, and 1,302 images; the first sampled frame had 286,720 nonclear pixels. Decomp: guarded 400 presents, 400/400 completed, 350 nonempty, 11 mixed-family frames, 9,207 pictures, 64 solid rectangles, and 9,207 images; semantic frame 104 was the first sampled nonclear frame with 149,927 pixels. Both launcher exits were 0 with no kernel GPU fault. The production GPU control separately proves empty-clear, mixed planted-nonclear, and duplicate-consume refusal.
 
 ## What would falsify it
 

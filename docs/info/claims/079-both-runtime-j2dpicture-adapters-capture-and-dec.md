@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-28
 tags: renderer,resources,recomp,decomp
-depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit, native-render/src/picture_sink.cpp#submit_picture
+depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit, native-render/src/semantic_sink.cpp#submit_picture
 reconfirmed: 2026-08-30
 verified_at: 2026-08-30 02:07:19
 ---

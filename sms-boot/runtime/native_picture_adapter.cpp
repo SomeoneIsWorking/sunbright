@@ -2,7 +2,9 @@
 #include <sunbright/native_render/image_decode.h>
 #include <sunbright/native_render/picture.h>
 #include <sunbright/native_render/picture_context.h>
-#include <sunbright/native_render/picture_sink.h>
+#include <sunbright/native_render/semantic_sink.h>
+
+#include "host_allocation_scope.h"
 
 #include <JSystem/J2D/J2DGrafContext.hpp>
 #include <JSystem/J2D/J2DOrthoGraph.hpp>
@@ -19,32 +21,12 @@
 #include <span>
 #include <vector>
 
-extern "C" void sb_host_alloc_push(void);
-extern "C" void sb_host_alloc_pop(void);
-
 namespace {
 
 constexpr std::size_t kContextScopeCapacity = 16;
 sb::native_render::PictureContextStack g_pictureContexts{};
 std::array<bool, kContextScopeCapacity> g_contextScopeHasValue{};
 std::size_t g_contextScopeDepth = 0;
-
-class HostAllocationScope {
-  public:
-    HostAllocationScope() { sb_host_alloc_push(); }
-    ~HostAllocationScope() { sb_host_alloc_pop(); }
-
-    HostAllocationScope(const HostAllocationScope&) = delete;
-    HostAllocationScope& operator=(const HostAllocationScope&) = delete;
-};
-
-sb::native_render::Color color(std::uint32_t rgba) noexcept {
-    constexpr float kScale = 1.0f / 255.0f;
-    return {static_cast<float>((rgba >> 24U) & 0xffU) * kScale,
-            static_cast<float>((rgba >> 16U) & 0xffU) * kScale,
-            static_cast<float>((rgba >> 8U) & 0xffU) * kScale,
-            static_cast<float>(rgba & 0xffU) * kScale};
-}
 
 const sb::native_render::PictureContext* current_picture_context() noexcept {
     if (g_contextScopeDepth == 0 || !g_contextScopeHasValue[g_contextScopeDepth - 1])
@@ -61,7 +43,7 @@ extern "C" void sb_native_picture_context_push(const void* contextPointer, int c
     }
 
     bool pushed = false;
-    if (!sb::native_render::has_picture_sink()) {
+    if (!sb::native_render::has_semantic_sink()) {
         g_contextScopeHasValue[g_contextScopeDepth++] = false;
         return;
     }
@@ -100,7 +82,7 @@ extern "C" void sb_native_picture_context_pop(void) {
 }
 
 extern "C" void sb_native_picture_submit(const void* picturePointer, const void* matrixPointer) {
-    if (!sb::native_render::has_picture_sink())
+    if (!sb::native_render::has_semantic_sink())
         return;
     const auto fail = [&](const char* reason) {
         OSPanic(__FILE__, __LINE__, "semantic J2DPicture capture failed: %s picture=%p matrix=%p",
@@ -113,7 +95,7 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
 
     // This seam runs on the game thread, where ordinary new routes through JKR. Decoding owns host
     // vectors only for the duration of the atomic sink call, so route those allocations explicitly.
-    const HostAllocationScope hostAllocations;
+    const sb::HostAllocationScope hostAllocations;
 
     const auto& picture = *static_cast<const J2DPicture*>(picturePointer);
     const auto& parent = *static_cast<const Mtx*>(matrixPointer);
@@ -131,10 +113,11 @@ extern "C" void sb_native_picture_submit(const void* picturePointer, const void*
     command.instance = reinterpret_cast<std::uintptr_t>(&picture);
     command.opacity = static_cast<float>(picture.mColorAlpha) / 255.0f;
     command.material.textureCount = picture.mTextureNum;
-    command.material.black = color(static_cast<u32>(picture.mBlack));
-    command.material.white = color(static_cast<u32>(picture.mWhite));
+    command.material.black = sb::native_render::color_from_rgba8(static_cast<u32>(picture.mBlack));
+    command.material.white = sb::native_render::color_from_rgba8(static_cast<u32>(picture.mWhite));
     for (std::size_t index = 0; index < command.corner.size(); ++index)
-        command.corner[index] = color(static_cast<u32>(picture.mCornerColor[index]));
+        command.corner[index] =
+            sb::native_render::color_from_rgba8(static_cast<u32>(picture.mCornerColor[index]));
 
     std::array<std::vector<std::uint8_t>, 4> decodedPixels{};
     std::array<sb::native_render::DecodedImageView, 4> images{};

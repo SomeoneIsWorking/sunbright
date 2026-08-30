@@ -23,7 +23,7 @@
 #include "j2d_picture_adapter.h"
 #include "semantic_j2d_context.h"
 
-#include <sunbright/native_render/picture_sink.h>
+#include <sunbright/native_render/semantic_sink.h>
 
 #include <intrinsics.h>
 
@@ -217,7 +217,7 @@ PaneQuad read_pane(CPUState& cpu) {
 }
 
 void submit_semantic_picture(CPUState& cpu) {
-    if (!sb::native_render::has_picture_sink())
+    if (!sb::native_render::has_semantic_sink())
         return;
     sb::recomp::CapturedPicture capture{};
     const sb::recomp::GuestByteReader reader = sb::recomp::live_guest_byte_reader();

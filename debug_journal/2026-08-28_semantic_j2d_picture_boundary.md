@@ -32,7 +32,7 @@ stale when clipping is disabled.
 Texture identity, sampler state, and decoded/versioned RGBA content are now captured together at
 draw entry. The sink receives the command and every matching image as one synchronous operation, so
 it must copy the transient views before return and cannot defer a guest-pointer read until frame end.
-Both runtimes decode before their retained GX body runs. The independent SDL3 `PicturePass` rendered
+Both runtimes decode before their retained GX body runs. The independent SDL3 `Semantic2dPass` rendered
 a watched 16x16 control: known texture quadrants, clipping, half-alpha, repeat determinism, and
 changed revision/content all produced the required answers without a kernel GPU fault. Both live
 runtime collectors are now installed behind an explicit audit switch; the result remains offscreen
@@ -64,15 +64,17 @@ initializes them, while the non-native decomp constructor remains unchanged.
 ## Frame ownership
 
 `native-render/src/frame.cpp` now owns the lifetime boundary after atomic submission. Its collector
-is independent of SDL and both game runtimes: it stores ordered `PictureDraw` values, including
-each screen's distinct canvas/viewport, and copies new decoded RGBA resources into configured
-draw/image/byte bounds. Resource/revision pairs are
+is independent of SDL and both game runtimes: it stores one ordered `SemanticDraw` variant stream,
+currently covering pictures and GC2D solid rectangles. Pictures retain each screen's distinct
+canvas/viewport, and the collector copies new decoded RGBA resources into configured
+operation/image/byte bounds. Resource/revision pairs are
 coalesced only when dimensions and bytes agree; disagreement is a producer error, not a cache miss.
 Seal exposes stable spans until the next frame begins. Controls mutate the caller's source after
 submission, exercise duplicate and changed-revision answers, and force every capacity and lifecycle
 failure. A guarded SDL3 control uses a nonzero physical sub-viewport and must differ from the same
-logical draw on the full canvas. Direct `J2DPicture::draw` calls bypass the screen scope, and a
-picture-only overlay would lose ordering against J2D text, windows, fills, and 3D passes.
+logical draw on the full canvas. Direct `J2DPicture::draw` calls bypass the screen scope. The later
+solid-rectangle slice proves mixed picture/fill order, but text, windows, generic fills, and 3D
+remain absent; see `2026-08-30_semantic_solid_rectangle_ordering.md`.
 
 ## Exact frame seams and shared GPU ownership (2026-08-30)
 
@@ -83,10 +85,10 @@ frame boundary: retained wait and guest-scheduler work can still publish draws. 
 after optional subframe presentations. The decomp begins at `sb_frame_seam_start`, seals inside the
 host-allocation gate at `sb_frame_present`, and begins again after Aurora starts the next frame.
 
-The bridge owns the picture sink through a lease instead of a raw setter. This fixes two authority
+The bridge owns the semantic sink through a lease instead of a raw setter. This fixes two authority
 failures in the initial design: a second owner could silently steal the collector, and an unrelated
 caller could clear it. Begin/seal remain successful no-ops while inactive. Each runtime's explicit
-semantic-picture audit now activates the bridge; the ordinary product path leaves it inert. This is
+semantic-frame audit now activates the bridge; the ordinary product path leaves it inert. This is
 still an exact frame/lifetime seam and offscreen liveness proof, not evidence that a semantic frame
 is visible.
 
@@ -102,18 +104,18 @@ around SDL device creation to preserve the previously proven Vulkan-loader race 
 compatibility renderer consumes the same SDL platform with its own target; the old duplicate SDL
 presenter/device implementation is gone.
 
-`PicturePass::encode` now borrows the host command buffer and target. Resource publication is a
+`Semantic2dPass::encode` now borrows the host command buffer and target. Resource publication is a
 transaction: newly staged textures enter the resident cache only after the caller confirms submit,
 and cancellation rolls them back. Entries not referenced by the submitted current frame are
 evicted, preventing every historical content revision from accumulating forever. A watched sRGB
-GPU control exercises an exactly clear empty frame, a known non-clear picture with a different hash,
-changed-revision residency, and duplicate-sequence refusal. The migrated GX compatibility path
+GPU control exercises an exactly clear empty frame, known non-clear mixed picture/solid output,
+opposite results after reordering, changed-revision residency, and duplicate-sequence refusal. The migrated GX compatibility path
 completed 130 presents plus four exact-frame Aurora joins without a kernel GPU fault.
 
 ## Live offscreen runtime evidence (2026-08-30)
 
 `SdlSemanticFrameClient` is now the shared host consumer. It owns a 640x480 no-depth target,
-`PicturePass`, fenced submission, and readback-until-nonclear; it consumes one sealed sequence once
+`Semantic2dPass`, fenced submission, and readback-until-nonclear; it consumes one sealed sequence once
 and never claims or presents a window. Recomp composition lives in
 `sms-recomp/host/render_composition.*`; decomp composition lives in
 `sms-boot/runtime/semantic_render.*`. Both initialize before the first semantic begin, encode after
@@ -121,14 +123,14 @@ seal and before the next begin, and shut the semantic client/platform down befor
 encode and teardown paths stay inside the host-allocation gate.
 
 A guarded recomp title run bounded at 100 presents submitted and completed 50 semantic simulation
-frames. Forty-two carried 1,302 picture draws and images; semantic frame 9 produced 14,181 pixels
-different from the controlled clear. A guarded decomp title run bounded at 400 presents submitted
-and completed 400 semantic frames. Two hundred ninety-seven carried 9,207 picture draws and images;
-semantic frame 104 produced 158,038 pixels different from clear. Both launcher runs exited cleanly
-and the watcher found no kernel GPU fault.
+frames. All 50 were nonempty, six mixed pictures and solids, and the stream carried 1,302 pictures
+plus 14 solid rectangles. A guarded decomp title run bounded at 400 presents submitted and completed
+400 semantic frames. Three hundred fifty were nonempty, eleven mixed both families, and the stream
+carried 9,207 pictures plus 64 solid rectangles. Both launcher runs exited cleanly and the watcher
+found no kernel GPU fault. Exact readback counts are recorded in the solid-ordering journal.
 
 These numbers prove the real runtime producers, bounded collector, shared semantic pass, submission,
 and readback are live. One non-clear sample does not prove appearance correctness, sustained output,
-complete J2D coverage, or cross-runtime parity. Text, windows, fills, direct picture callers, 3D,
-mip chains, particles, lights, and effects remain outside the stream; presenting a picture-only
-target would destroy authored interleaving and is therefore still forbidden.
+complete J2D coverage, or cross-runtime parity. Text, windows, generic J2D fills, direct picture
+callers, 3D, mip chains, particles, lights, and effects remain outside the stream; presenting the
+partial target would destroy authored interleaving and is therefore still forbidden.

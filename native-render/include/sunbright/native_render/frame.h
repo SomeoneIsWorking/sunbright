@@ -1,8 +1,8 @@
 #pragma once
 
 #include <sunbright/native_render/image.h>
-#include <sunbright/native_render/picture.h>
-#include <sunbright/native_render/picture_sink.h>
+#include <sunbright/native_render/semantic_draw.h>
+#include <sunbright/native_render/semantic_sink.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -13,21 +13,21 @@ namespace sb::native_render {
 
 // A sealed game-semantic frame. All spans remain valid until the collector that produced the frame
 // begins or resets. This boundary contains no GX state, FIFO packets, guest pointers, or SDL types.
-struct PictureFrame {
+struct SemanticFrame {
     std::uint32_t targetWidth = 0;
     std::uint32_t targetHeight = 0;
-    std::span<const PictureDraw> draws{};
+    std::span<const SemanticDraw> draws{};
     std::span<const DecodedImageView> images{};
     Color clear{};
 };
 
-struct PictureFrameLimits {
+struct SemanticFrameLimits {
     std::size_t commands = 16'384;
     std::size_t images = 4'096;
     std::size_t decodedImageBytes = 256U * 1024U * 1024U;
 };
 
-enum class PictureFrameError : std::uint8_t {
+enum class SemanticFrameError : std::uint8_t {
     None,
     InvalidLimits,
     InvalidFrame,
@@ -41,25 +41,28 @@ enum class PictureFrameError : std::uint8_t {
     AllocationFailure,
 };
 
-[[nodiscard]] const char* picture_frame_error_name(PictureFrameError error) noexcept;
+[[nodiscard]] const char* semantic_frame_error_name(SemanticFrameError error) noexcept;
 
-// Owns the complete immutable input of one PC-native J2D picture frame. Runtime adapters may pass
-// transient spans: append() copies every new decoded image before accepting its command. Images are
-// coalesced only when resource, revision, dimensions, and content all agree.
-class PictureFrameCollector {
+// Owns the complete immutable input of one PC-native semantic 2D frame. Runtime adapters may pass
+// transient spans: append_picture() copies every new decoded image before accepting its command.
+// Images are coalesced only when resource, revision, dimensions, and content all agree.
+class SemanticFrameCollector {
   public:
-    explicit PictureFrameCollector(PictureFrameLimits limits = {});
+    explicit SemanticFrameCollector(SemanticFrameLimits limits = {});
 
-    PictureFrameCollector(const PictureFrameCollector&) = delete;
-    PictureFrameCollector& operator=(const PictureFrameCollector&) = delete;
+    SemanticFrameCollector(const SemanticFrameCollector&) = delete;
+    SemanticFrameCollector& operator=(const SemanticFrameCollector&) = delete;
 
     [[nodiscard]] bool begin(std::uint32_t targetWidth, std::uint32_t targetHeight, Color clear);
-    [[nodiscard]] PictureSink sink() noexcept;
-    [[nodiscard]] bool append(const PictureDraw& draw, std::span<const DecodedImageView> images);
-    [[nodiscard]] bool seal(PictureFrame& frame);
+    [[nodiscard]] SemanticSink sink() noexcept;
+    [[nodiscard]] bool append(const SemanticDraw& draw, std::span<const DecodedImageView> images);
+    [[nodiscard]] bool append_picture(const PictureDraw& draw,
+                                      std::span<const DecodedImageView> images);
+    [[nodiscard]] bool append_solid_rectangle(const SolidRectangleDraw& draw);
+    [[nodiscard]] bool seal(SemanticFrame& frame);
     void reset() noexcept;
 
-    [[nodiscard]] PictureFrameError error() const noexcept;
+    [[nodiscard]] SemanticFrameError error() const noexcept;
     [[nodiscard]] std::size_t decoded_image_bytes() const noexcept;
 
   private:
@@ -73,19 +76,19 @@ class PictureFrameCollector {
 
     enum class State : std::uint8_t { Idle, Collecting, Sealed };
 
-    static bool receive(const PictureDraw& draw, std::span<const DecodedImageView> images,
+    static bool receive(const SemanticDraw& draw, std::span<const DecodedImageView> images,
                         void* context);
-    [[nodiscard]] bool fail(PictureFrameError error) noexcept;
+    [[nodiscard]] bool fail(SemanticFrameError error) noexcept;
 
-    PictureFrameLimits limits_{};
+    SemanticFrameLimits limits_{};
     std::uint32_t targetWidth_ = 0;
     std::uint32_t targetHeight_ = 0;
     Color clear_{};
-    std::vector<PictureDraw> draws_{};
+    std::vector<SemanticDraw> draws_{};
     std::vector<StoredImage> images_{};
     std::vector<DecodedImageView> imageViews_{};
     std::size_t decodedImageBytes_ = 0;
-    PictureFrameError error_ = PictureFrameError::None;
+    SemanticFrameError error_ = SemanticFrameError::None;
     State state_ = State::Idle;
 };
 

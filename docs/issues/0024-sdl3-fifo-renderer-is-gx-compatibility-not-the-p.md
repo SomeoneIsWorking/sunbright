@@ -44,13 +44,13 @@ GX. The retained body remains selectable as the reference and fallback.
 ## Implemented slice
 
 `native-render/` now owns a GX-free `PictureCommand`, layered picture material, sampler semantics,
-`J2DPicture::drawFullSet` crop/binding/mirror/flip resolver, and a guarded picture sink. Recomp's
+`J2DPicture::drawFullSet` crop/binding/mirror/flip resolver, and a guarded semantic sink. Recomp's
 existing `0x802cc7c0` registration reads raw big-endian guest fields through
 `j2d_picture_adapter.cpp` at entry; decomp calls `sb_native_picture_submit` from the corresponding
 native function. Both always continue into their original body. Focused controls cover exact mesh
 order, crop/transform/UV behavior, mirror+flip behavior, endian field decoding, sampler decoding,
 packed blend factors, an invalid sampler, an unmapped matrix, and sink refusal of invalid commands.
-`native-render/src/picture_pass.cpp` is the first independent SDL3 consumer. A watched 16x16 GPU
+`native-render/src/semantic_2d_pass.cpp` is the first independent SDL3 consumer. A watched 16x16 GPU
 test proves its semantic scissor, decoded 2x2 texture quadrants, half-alpha blend, exact-repeat hash,
 and a changed-content/revision hash without consulting GX state. C077 records the combined adapter
 and GPU evidence with its falsifier.
@@ -100,7 +100,7 @@ owner and prevents an unrelated caller from clearing the active sink.
 The SDL platform copies its dispatch table, requires host-owned SDL video initialization, owns the
 only GPU device/window claim/presenter, and refuses shutdown while client frame targets remain. The
 old recomp presenter/device implementation is deleted; the GX compatibility renderer now consumes
-this shared platform with its own target. `PicturePass` encodes into a borrowed command buffer and
+this shared platform with its own target. `Semantic2dPass` encodes into a borrowed command buffer and
 target, and its image-cache transaction is committed only after the caller reports submission or
 rolled back after cancellation. Current-frame residency is bounded instead of retaining every
 historical revision. CPU lifecycle controls, the watched sRGB picture GPU control, and a bounded
@@ -108,9 +108,9 @@ historical revision. CPU lifecycle controls, the watched sRGB picture GPU contro
 shared GPU/submission ownership contract.
 
 Host composition now activates the bridge and encodes its sealed frame through an offscreen semantic
-target. The remaining visible-presentation gap is tracked separately: expand the unified order
-stream to text/windows/fills before bypassing GX, because a picture-only overlay cannot preserve
-their interleaving. Retain the original bodies for A/B.
+target. The remaining visible-presentation gap is tracked separately: the unified stream now
+preserves pictures and GC2D fills, but must still add text, windows, generic J2D fills, and direct
+picture calls before bypassing GX. Retain the original bodies for A/B.
 
 ## Exit condition
 

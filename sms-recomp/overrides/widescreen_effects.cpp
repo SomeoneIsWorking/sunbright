@@ -20,14 +20,17 @@
 // percentages — and the game events they trigger — are simply wrong.
 
 #include "overrides.h"
+#include "solid_rectangle_adapter.h"
 
 #include "../frame_interp/stream_interp.h"
 
-#include "../runtime/probe_server.h"
 #include "../frame_interp/effects.h"
+#include "../runtime/probe_server.h"
+#include "../runtime/sb_assert.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
+#include <sunbright/native_render/semantic_sink.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -35,15 +38,14 @@
 #include <map>
 #include <string>
 
-extern "C" void func_8013fa54(CPUState&);   // TSMSFader::drawFadeinout
-extern "C" void func_8013fc88(CPUState&);   // TSMSFader::draw
-extern "C" void func_80140390(CPUState&);   // GC2D fill_rect
-extern "C" void func_802f8bac(CPUState&);   // JDrama::TEfbCtrlTex::perform
-extern "C" void func_802f8904(CPUState&);   // JDrama::TEfbCtrlDisp::perform
-extern "C" void func_80193fbc(CPUState&);   // TMirrorCamera::perform
-extern "C" void func_8022d4f8(CPUState&);   // TAfterEffect::perform
-extern "C" void func_801aa6cc(CPUState&);   // TBathWaterManager::draw_mist
-
+extern "C" void func_8013fa54(CPUState&); // TSMSFader::drawFadeinout
+extern "C" void func_8013fc88(CPUState&); // TSMSFader::draw
+extern "C" void func_80140390(CPUState&); // GC2D fill_rect
+extern "C" void func_802f8bac(CPUState&); // JDrama::TEfbCtrlTex::perform
+extern "C" void func_802f8904(CPUState&); // JDrama::TEfbCtrlDisp::perform
+extern "C" void func_80193fbc(CPUState&); // TMirrorCamera::perform
+extern "C" void func_8022d4f8(CPUState&); // TAfterEffect::perform
+extern "C" void func_801aa6cc(CPUState&); // TBathWaterManager::draw_mist
 
 // widescreen.cpp
 extern bool g_ws_2d_suspend;
@@ -51,20 +53,22 @@ extern bool g_ws_last_proj_is2d;
 extern bool g_ws_persp_suspend;
 void ws_2d_suspend_begin(CPUState&);
 void ws_2d_suspend_end(CPUState&);
-int  sbr_ws_pillar();
+int sbr_ws_pillar();
 
 namespace {
 
 constexpr u32 FADER_DRAW_FADEINOUT = 0x8013fa54u;
-constexpr u32 FADER_DRAW           = 0x8013fc88u;
-constexpr u32 FILL_RECT            = 0x80140390u;
-constexpr u32 EFBCTRLTEX_PERFORM   = 0x802f8bacu;
-constexpr u32 EFBCTRLDISP_PERFORM  = 0x802f8904u;
-constexpr u32 MIRRORCAM_PERFORM    = 0x80193fbcu;
-constexpr u32 AFTEREFFECT_PERFORM  = 0x8022d4f8u;
-constexpr u32 BATH_DRAW_MIST       = 0x801aa6ccu;
+constexpr u32 FADER_DRAW = 0x8013fc88u;
+constexpr u32 FILL_RECT = 0x80140390u;
+constexpr u32 EFBCTRLTEX_PERFORM = 0x802f8bacu;
+constexpr u32 EFBCTRLDISP_PERFORM = 0x802f8904u;
+constexpr u32 MIRRORCAM_PERFORM = 0x80193fbcu;
+constexpr u32 AFTEREFFECT_PERFORM = 0x8022d4f8u;
+constexpr u32 BATH_DRAW_MIST = 0x801aa6ccu;
 
-bool widescreen_on() { return sbr_ws_pillar() != 0; }
+bool widescreen_on() {
+    return sbr_ws_pillar() != 0;
+}
 
 // ── Live effect census (probe /wsfx) ─────────────────────────────────────────────────────
 // Which widescreen-affected effects actually RUN, and how often. The retired inventory
@@ -75,7 +79,9 @@ bool widescreen_on() { return sbr_ws_pillar() != 0; }
 // So "a fix exists" and "the fix runs, once" are different claims, and only this tells them
 // apart. An effect that never fires cannot have been verified by looking at the screen.
 std::map<std::string, unsigned long> g_fx;
-void fx(const char* name) { ++g_fx[name]; }
+void fx(const char* name) {
+    ++g_fx[name];
+}
 
 const bool g_fx_probe = [] {
     sb_probe_register("/wsfx", "widescreen effect census: which effects ran, and how often",
@@ -86,7 +92,8 @@ const bool g_fx_probe = [] {
                               std::snprintf(buf, sizeof buf, "%-26s %lu\n", k.c_str(), n);
                               out += buf;
                           }
-                          if (out.empty()) out = "no widescreen effects have run yet\n";
+                          if (out.empty())
+                              out = "no widescreen effects have run yet\n";
                           return out;
                       });
     return true;
@@ -112,19 +119,25 @@ struct WidenScope {
 void with_widened_rect(CPUState& cpu, u32 rectReg, void (*real)(CPUState&)) {
     const u32 rect = rectReg;
     const WidenScope scope;
-    if (!widescreen_on() || !scope.outermost() || !sb_ram_fast(rect)) { real(cpu); return; }
+    if (!widescreen_on() || !scope.outermost() || !sb_ram_fast(rect)) {
+        real(cpu);
+        return;
+    }
     const s32 x1 = (s32)sb_r32(rect + RECT_X1), x2 = (s32)sb_r32(rect + RECT_X2);
     const s32 extra = (x2 - x1) / 6 + 1;
     sb_w32(rect + RECT_X1, (u32)(x1 - extra));
     sb_w32(rect + RECT_X2, (u32)(x2 + extra));
     real(cpu);
-    sb_w32(rect + RECT_X1, (u32)x1);   // the caller's rect is its own state; always restore
+    sb_w32(rect + RECT_X1, (u32)x1); // the caller's rect is its own state; always restore
     sb_w32(rect + RECT_X2, (u32)x2);
 }
 
 // TSMSFader fills the caller's TRect with a GX quad. Widening the rect is enough here:
 // drawFadeinout draws its own quad rather than going through fill_rect.
-void ov_fader_draw_fadeinout(CPUState& cpu) { fx("fader.drawFadeinout"); with_widened_rect(cpu, cpu.gpr[4], func_8013fa54); }
+void ov_fader_draw_fadeinout(CPUState& cpu) {
+    fx("fader.drawFadeinout");
+    with_widened_rect(cpu, cpu.gpr[4], func_8013fa54);
+}
 
 // TSMSFader::draw also carries the hx_wiper circle-wipe curtain, which draws 0..640 geometry with
 // the CURRENT ortho — so the rect widening is not enough and the ortho itself must be unsqueezed
@@ -165,22 +178,25 @@ std::map<std::string, unsigned long> g_fills;
 
 void note_fill(u32 rect) {
     char key[40];
-    std::snprintf(key, sizeof key, "%d,%d,%d,%d", (int)(s32)sb_r32(rect + 0x0), (int)(s32)sb_r32(rect + 0x4),
-                  (int)(s32)sb_r32(rect + 0x8), (int)(s32)sb_r32(rect + 0xC));
+    std::snprintf(key, sizeof key, "%d,%d,%d,%d", (int)(s32)sb_r32(rect + 0x0),
+                  (int)(s32)sb_r32(rect + 0x4), (int)(s32)sb_r32(rect + 0x8),
+                  (int)(s32)sb_r32(rect + 0xC));
     ++g_fills[key];
 }
 
 const bool g_fill_probe = [] {
-    sb_probe_register("/fills", "distinct fill_rect rects seen: x1,y1,x2,y2 -> count", [](const ProbeArgs&) {
-        std::string out;
-        char buf[96];
-        for (const auto& [k, n] : g_fills) {
-            std::snprintf(buf, sizeof buf, "%-28s %lu\n", k.c_str(), n);
-            out += buf;
-        }
-        if (out.empty()) out = "no fills recorded yet\n";
-        return out;
-    });
+    sb_probe_register("/fills", "distinct fill_rect rects seen: x1,y1,x2,y2 -> count",
+                      [](const ProbeArgs&) {
+                          std::string out;
+                          char buf[96];
+                          for (const auto& [k, n] : g_fills) {
+                              std::snprintf(buf, sizeof buf, "%-28s %lu\n", k.c_str(), n);
+                              out += buf;
+                          }
+                          if (out.empty())
+                              out = "no fills recorded yet\n";
+                          return out;
+                      });
     return true;
 }();
 
@@ -189,16 +205,36 @@ const bool g_fill_probe = [] {
 // stops at the 4:3 edges with the scene visible beside it. PARTIAL fills (wipe boxes, dialog
 // boxes that are meant to be inset) must not be touched, hence the full-width test rather than a
 // blanket widen.
+void run_fill_rect(CPUState& cpu) {
+    if (sb::native_render::has_semantic_sink()) {
+        sb::native_render::SolidRectangleDraw draw{};
+        SB_ASSERT(sb::recomp::capture_fill_rectangle(sb::recomp::live_guest_byte_reader(),
+                                                     cpu.gpr[3], cpu.gpr[4], draw),
+                  "semantic fill_rect capture failed: rect=%08x color=%08x", cpu.gpr[3],
+                  cpu.gpr[4]);
+        SB_ASSERT(sb::native_render::submit_solid_rectangle(draw),
+                  "semantic fill_rect sink rejected validated command: rect=%08x color=%08x",
+                  cpu.gpr[3], cpu.gpr[4]);
+    }
+    func_80140390(cpu);
+}
+
 void ov_fill_rect(CPUState& cpu) {
     const u32 rect = cpu.gpr[3];
-    if (!widescreen_on() || !sb_ram_fast(rect)) { func_80140390(cpu); return; }
+    if (!widescreen_on() || !sb_ram_fast(rect)) {
+        run_fill_rect(cpu);
+        return;
+    }
     fx("fill_rect");
     note_fill(rect);
     const s32 x1 = (s32)sb_r32(rect + RECT_X1), x2 = (s32)sb_r32(rect + RECT_X2);
     const bool full_width = (x1 <= 0 && x1 > -40 && x2 >= 600 && x2 < 700);
-    if (!full_width) { func_80140390(cpu); return; }
+    if (!full_width) {
+        run_fill_rect(cpu);
+        return;
+    }
     fx("fill_rect.widened");
-    with_widened_rect(cpu, rect, func_80140390);
+    with_widened_rect(cpu, rect, run_fill_rect);
 }
 
 // The scene graph runs offscreen render-to-EFB-then-copy passes bracketed by TEfbCtrlTex::perform:
@@ -206,15 +242,21 @@ void ov_fill_rect(CPUState& cpu) {
 // TEXTURE pixel space, 1:1 with the copy source rect, so those orthos must reach the GP verbatim.
 void ov_efbctrltex_perform(CPUState& cpu) {
     const u32 flags = cpu.gpr[4];
-    if (flags & 0x80) fx("efbtex.pass_open");
-    if (flags & 0x8) fx("efbtex.pass_close");
-    if (!widescreen_on()) { func_802f8bac(cpu); return; }
+    if (flags & 0x80)
+        fx("efbtex.pass_open");
+    if (flags & 0x8)
+        fx("efbtex.pass_close");
+    if (!widescreen_on()) {
+        func_802f8bac(cpu);
+        return;
+    }
     if (flags & 0x80) {
         g_ws_2d_suspend = true;
         lucent::debug("widescreen", "EFB->texture pass open — 2D squeeze suspended");
     }
     func_802f8bac(cpu);
-    if (flags & 0x8) g_ws_2d_suspend = false;
+    if (flags & 0x8)
+        g_ws_2d_suspend = false;
 }
 
 // The screen display pass beginning is the safety net: a pass that somehow never closes must not
@@ -234,7 +276,10 @@ void ov_efbctrldisp_perform(CPUState& cpu) {
 void ov_mirrorcam_perform(CPUState& cpu) {
     fx("mirrorcam.perform");
     sb_screen_effect_fired(ScreenEffect::MirrorPreRender, true);
-    if (!widescreen_on()) { func_80193fbc(cpu); return; }
+    if (!widescreen_on()) {
+        func_80193fbc(cpu);
+        return;
+    }
     const bool prev = g_ws_persp_suspend;
     g_ws_persp_suspend = true;
     func_80193fbc(cpu);
@@ -266,7 +311,10 @@ void ov_aftereffect_perform(CPUState& cpu) {
     sbr_afterimage_note_texture(self, enabled_draw);
     sb_screen_effect_fired(ScreenEffect::DashBlur, enabled_draw);
     const bool draws = widescreen_on() && enabled_draw;
-    if (!draws) { func_8022d4f8(cpu); return; }
+    if (!draws) {
+        func_8022d4f8(cpu);
+        return;
+    }
     ws_2d_suspend_begin(cpu);
     func_8022d4f8(cpu);
     ws_2d_suspend_end(cpu);
@@ -279,7 +327,10 @@ void ov_aftereffect_perform(CPUState& cpu) {
 void ov_bath_draw_mist(CPUState& cpu) {
     fx("bath.draw_mist");
     sb_screen_effect_fired(ScreenEffect::BathMist, true);
-    if (!widescreen_on()) { func_801aa6cc(cpu); return; }
+    if (!widescreen_on()) {
+        func_801aa6cc(cpu);
+        return;
+    }
     const bool prev = g_ws_2d_suspend;
     g_ws_2d_suspend = true;
     func_801aa6cc(cpu);
@@ -293,7 +344,7 @@ SB_OVERRIDE(FADER_DRAW_FADEINOUT, ov_fader_draw_fadeinout, "TSMSFader::drawFadei
 SB_OVERRIDE(FADER_DRAW, ov_fader_draw, "TSMSFader::draw",
             "widescreen: fades and the circle wipe must span the whole picture")
 SB_OVERRIDE(FILL_RECT, ov_fill_rect, "GC2D fill_rect",
-            "widescreen: stretch full-width bands (telop/dialogue) to the real edges")
+            "publish semantic solid rectangles and stretch full-width bands to the real edges")
 SB_OVERRIDE(EFBCTRLTEX_PERFORM, ov_efbctrltex_perform, "JDrama::TEfbCtrlTex::perform",
             "widescreen: EFB->texture passes are texture-space and must NOT be squeezed — "
             "squeezing them miscounts pollution coverage")

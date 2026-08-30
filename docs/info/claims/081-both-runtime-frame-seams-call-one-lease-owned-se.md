@@ -6,7 +6,7 @@ created: 2026-08-30
 tags: renderer,architecture
 depends: native-render/src/semantic_frame_bridge.cpp#SemanticFrameBridge::begin, native-render/src/semantic_frame_bridge.cpp#SemanticFrameBridge::seal, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::encode_last_sealed, sms-recomp/host/render_composition.cpp#RenderComposition::encode_semantic_frame, sms-recomp/overrides/native_frame.cpp#present_tail, sms-boot/runtime/semantic_render.cpp#sb_semantic_render_consume, sms-boot/runtime/frame_seam.cpp#sb_frame_present
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 02:49:25
+verified_at: 2026-08-30 03:50:05
 ---
 
 ## Claim
@@ -23,4 +23,8 @@ A runtime publishes a semantic draw after its seal but before the corresponding 
 
 ## Re-confirmed 2026-08-30
 
-The bridge control now proves the sealed sequence increments and the production GPU client refuses duplicate consumption. Guarded title runs activated the bridge in both hosts: recomp completed 50/50 semantic frames and decomp completed 400/400, with each encode after seal and before the next begin.
+Reverified the exact shared-library bridge and host frame lifecycle after the mixed-stream change.
+The root 42/42 and recomp 28/28 tests pass. The bridge control proves sealed sequence increments
+and duplicate-consumption refusal. Guarded title runs activated the bridge in both hosts and
+completed every submitted semantic frame: 50/50 for recomp and 400/400 for decomp, with each encode
+after seal and before the next begin.

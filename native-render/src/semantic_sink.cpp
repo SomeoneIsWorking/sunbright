@@ -1,15 +1,15 @@
-#include <sunbright/native_render/picture_sink.h>
+#include <sunbright/native_render/semantic_sink.h>
 
 namespace sb::native_render {
 namespace {
 
-PictureSink g_sink{};
-PictureSinkLease g_lease{};
+SemanticSink g_sink{};
+SemanticSinkLease g_lease{};
 std::uint64_t g_nextLease = 1;
 
 } // namespace
 
-bool claim_picture_sink(PictureSink sink, PictureSinkLease& lease) noexcept {
+bool claim_semantic_sink(SemanticSink sink, SemanticSinkLease& lease) noexcept {
     lease = {};
     if (sink.submit == nullptr || g_sink.submit != nullptr)
         return false;
@@ -21,7 +21,7 @@ bool claim_picture_sink(PictureSink sink, PictureSinkLease& lease) noexcept {
     return true;
 }
 
-bool release_picture_sink(PictureSinkLease lease) noexcept {
+bool release_semantic_sink(SemanticSinkLease lease) noexcept {
     if (!lease || lease != g_lease)
         return false;
     g_sink = {};
@@ -29,11 +29,11 @@ bool release_picture_sink(PictureSinkLease lease) noexcept {
     return true;
 }
 
-bool owns_picture_sink(PictureSinkLease lease) noexcept {
+bool owns_semantic_sink(SemanticSinkLease lease) noexcept {
     return lease && lease == g_lease;
 }
 
-bool has_picture_sink() noexcept {
+bool has_semantic_sink() noexcept {
     return g_sink.submit != nullptr;
 }
 
@@ -50,7 +50,13 @@ bool submit_picture(const PictureDraw& draw, std::span<const DecodedImageView> i
             return false;
         }
     }
-    return g_sink.submit(draw, images, g_sink.context);
+    return g_sink.submit(SemanticDraw{draw}, images, g_sink.context);
+}
+
+bool submit_solid_rectangle(const SolidRectangleDraw& draw) noexcept {
+    if (g_sink.submit == nullptr || !valid(draw))
+        return false;
+    return g_sink.submit(SemanticDraw{draw}, {}, g_sink.context);
 }
 
 } // namespace sb::native_render

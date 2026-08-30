@@ -1,49 +1,12 @@
 #pragma once
 
+#include <sunbright/native_render/semantic_2d_types.h>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
 
 namespace sb::native_render {
-
-struct Vec2 {
-    float x = 0.0f;
-    float y = 0.0f;
-    bool operator==(const Vec2&) const = default;
-};
-
-struct Color {
-    float r = 0.0f;
-    float g = 0.0f;
-    float b = 0.0f;
-    float a = 0.0f;
-    bool operator==(const Color&) const = default;
-};
-
-struct ClipRect {
-    bool enabled = false;
-    std::int32_t x = 0;
-    std::int32_t y = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-};
-
-struct PixelRect {
-    std::int32_t x = 0;
-    std::int32_t y = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    bool operator==(const PixelRect&) const = default;
-};
-
-// One J2D screen's logical coordinate system and its physical placement inside the native target.
-// A game frame may contain several distinct canvases, so this value travels with each draw.
-struct Canvas {
-    Vec2 origin{};
-    Vec2 extent{};
-    PixelRect viewport{};
-    bool operator==(const Canvas&) const = default;
-};
 
 enum class AddressMode : std::uint8_t { Clamp, Repeat, Mirror };
 enum class FilterMode : std::uint8_t { Nearest, Linear };
@@ -119,23 +82,13 @@ struct PictureLayout {
     Matrix3x4 globalTransform{};
 };
 
-struct PictureVertex {
-    Vec2 position{};
-    Vec2 uv{};
-    Color color{};
-};
-
-using PictureMesh = std::array<PictureVertex, 6>;
+using PictureMesh = std::array<SemanticVertex, 6>;
 
 [[nodiscard]] bool valid(const PictureCommand& picture) noexcept;
-[[nodiscard]] bool valid(const Canvas& canvas) noexcept;
 [[nodiscard]] bool valid(const PictureDraw& draw) noexcept;
 [[nodiscard]] bool resolve_picture_layout(const PictureLayout& layout,
                                           std::array<Vec2, 4>& positions,
                                           std::array<Vec2, 4>& uv) noexcept;
-[[nodiscard]] bool resolve_scissor(const Canvas& canvas, const ClipRect& clip,
-                                   std::uint32_t targetWidth, std::uint32_t targetHeight,
-                                   PixelRect& scissor) noexcept;
 [[nodiscard]] PictureMesh make_mesh(const PictureCommand& picture) noexcept;
 
 // Reference for the PC-native picture material. It blends decoded texture layers, applies the

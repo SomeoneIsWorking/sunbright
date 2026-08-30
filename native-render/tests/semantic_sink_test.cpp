@@ -1,18 +1,24 @@
-#include <sunbright/native_render/picture_sink.h>
+#include <sunbright/native_render/semantic_sink.h>
 
 #include <array>
 #include <cassert>
 
 namespace {
 
-bool receive(const sb::native_render::PictureDraw& draw,
+bool receive(const sb::native_render::SemanticDraw& draw,
              std::span<const sb::native_render::DecodedImageView> images, void* context) {
-    assert(images.size() == 1);
-    *static_cast<std::uint64_t*>(context) = draw.picture.instance;
+    if (const auto* picture = std::get_if<sb::native_render::PictureDraw>(&draw)) {
+        assert(images.size() == 1);
+        *static_cast<std::uint64_t*>(context) = picture->picture.instance;
+    } else {
+        assert(images.empty());
+        *static_cast<std::uint64_t*>(context) =
+            std::get<sb::native_render::SolidRectangleDraw>(draw).rectangle.instance;
+    }
     return true;
 }
 
-bool reject(const sb::native_render::PictureDraw&,
+bool reject(const sb::native_render::SemanticDraw&,
             std::span<const sb::native_render::DecodedImageView>, void*) {
     return false;
 }
@@ -33,21 +39,30 @@ sb::native_render::PictureDraw valid_draw() {
     return {{.origin = {0, 0}, .extent = {1, 1}, .viewport = {0, 0, 1, 1}}, valid_picture()};
 }
 
+sb::native_render::SolidRectangleDraw valid_solid() {
+    return {{.origin = {0, 0}, .extent = {1, 1}, .viewport = {0, 0, 1, 1}},
+            {.instance = 8,
+             .positions = {{{0, 0}, {1, 0}, {0, 1}, {1, 1}}},
+             .corner = {{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 1, 1}}}}};
+}
+
 } // namespace
 
 int main() {
     const std::array<std::uint8_t, 4> rgba{1, 2, 3, 4};
     const sb::native_render::DecodedImageView image{
         .resource = 1, .width = 1, .height = 1, .rgba8 = rgba};
-    assert(!sb::native_render::has_picture_sink());
+    assert(!sb::native_render::has_semantic_sink());
     assert(!sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
 
     std::uint64_t received = 0;
-    sb::native_render::PictureSinkLease lease;
-    assert(sb::native_render::claim_picture_sink({receive, &received}, lease));
-    assert(sb::native_render::has_picture_sink());
+    sb::native_render::SemanticSinkLease lease;
+    assert(sb::native_render::claim_semantic_sink({receive, &received}, lease));
+    assert(sb::native_render::has_semantic_sink());
     assert(sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
     assert(received == 7);
+    assert(sb::native_render::submit_solid_rectangle(valid_solid()));
+    assert(received == 8);
 
     auto invalid = valid_draw();
     invalid.picture.material.textureCount = 0;
@@ -65,9 +80,9 @@ int main() {
     assert(!sb::native_render::submit_picture(valid_draw(), std::span(&shortImage, 1)));
     assert(received == 0);
 
-    assert(sb::native_render::release_picture_sink(lease));
-    assert(sb::native_render::claim_picture_sink({reject, nullptr}, lease));
+    assert(sb::native_render::release_semantic_sink(lease));
+    assert(sb::native_render::claim_semantic_sink({reject, nullptr}, lease));
     assert(!sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
 
-    assert(sb::native_render::release_picture_sink(lease));
+    assert(sb::native_render::release_semantic_sink(lease));
 }

@@ -11,11 +11,11 @@ bool SemanticFrameBridge::activate(SemanticFrameBridgeConfig config) noexcept {
         return fail("already active");
     if (config.targetWidth == 0 || config.targetHeight == 0)
         return fail("invalid target extent");
-    if (has_picture_sink())
-        return fail("picture sink already owned");
+    if (has_semantic_sink())
+        return fail("semantic sink already owned");
 
     collector_.emplace(config.limits);
-    if (collector_->error() != PictureFrameError::None) {
+    if (collector_->error() != SemanticFrameError::None) {
         const bool result = fail_collector(collector_->error());
         collector_.reset();
         return result;
@@ -29,8 +29,8 @@ bool SemanticFrameBridge::activate(SemanticFrameBridgeConfig config) noexcept {
 }
 
 bool SemanticFrameBridge::deactivate() noexcept {
-    if (collecting_ && !release_picture_sink(lease_))
-        return fail("picture sink ownership lost");
+    if (collecting_ && !release_semantic_sink(lease_))
+        return fail("semantic sink ownership lost");
     collector_.reset();
     sealedFrame_ = {};
     config_ = {};
@@ -46,13 +46,13 @@ bool SemanticFrameBridge::begin() noexcept {
         return true;
     if (collecting_)
         return fail("frame already collecting");
-    if (has_picture_sink())
-        return fail("picture sink already owned");
+    if (has_semantic_sink())
+        return fail("semantic sink already owned");
     if (!collector_->begin(config_.targetWidth, config_.targetHeight, config_.clear))
         return fail_collector(collector_->error());
-    if (!claim_picture_sink(collector_->sink(), lease_)) {
+    if (!claim_semantic_sink(collector_->sink(), lease_)) {
         collector_->reset();
-        return fail("picture sink claim failed");
+        return fail("semantic sink claim failed");
     }
 
     sealedFrame_ = {};
@@ -67,10 +67,10 @@ bool SemanticFrameBridge::seal() noexcept {
         return true;
     if (!collecting_)
         return fail("frame is not collecting");
-    if (!owns_picture_sink(lease_))
-        return fail("picture sink ownership lost");
-    if (!release_picture_sink(lease_))
-        return fail("picture sink release failed");
+    if (!owns_semantic_sink(lease_))
+        return fail("semantic sink ownership lost");
+    if (!release_semantic_sink(lease_))
+        return fail("semantic sink release failed");
 
     lease_ = {};
     collecting_ = false;
@@ -83,7 +83,7 @@ bool SemanticFrameBridge::seal() noexcept {
     return true;
 }
 
-const PictureFrame* SemanticFrameBridge::last_sealed_frame() const noexcept {
+const SemanticFrame* SemanticFrameBridge::last_sealed_frame() const noexcept {
     return hasSealedFrame_ ? &sealedFrame_ : nullptr;
 }
 
@@ -104,8 +104,8 @@ bool SemanticFrameBridge::fail(const char* error) noexcept {
     return false;
 }
 
-bool SemanticFrameBridge::fail_collector(PictureFrameError error) noexcept {
-    error_ = picture_frame_error_name(error);
+bool SemanticFrameBridge::fail_collector(SemanticFrameError error) noexcept {
+    error_ = semantic_frame_error_name(error);
     return false;
 }
 

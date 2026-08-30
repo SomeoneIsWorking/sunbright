@@ -32,12 +32,12 @@ bool byte_count(std::uint32_t width, std::uint32_t height, std::size_t& result) 
 
 } // namespace
 
-SemanticPictureAuditSetting parse_semantic_picture_audit(const char* value) noexcept {
+SemanticFrameAuditSetting parse_semantic_frame_audit(const char* value) noexcept {
     if (value == nullptr || std::strcmp(value, "0") == 0)
-        return SemanticPictureAuditSetting::Disabled;
+        return SemanticFrameAuditSetting::Disabled;
     if (std::strcmp(value, "1") == 0)
-        return SemanticPictureAuditSetting::Enabled;
-    return SemanticPictureAuditSetting::Invalid;
+        return SemanticFrameAuditSetting::Enabled;
+    return SemanticFrameAuditSetting::Invalid;
 }
 
 SdlSemanticFrameClient::~SdlSemanticFrameClient() {
@@ -70,7 +70,7 @@ bool SdlSemanticFrameClient::initialize(SdlGpuPlatform& platform, SemanticFrameB
         release_resources();
         return false;
     }
-    pass_ = std::make_unique<PicturePass>(platform.device());
+    pass_ = std::make_unique<Semantic2dPass>(platform.device());
     if (!pass_->initialize(error)) {
         release_resources();
         return false;
@@ -105,7 +105,7 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
         error = "semantic SDL frame client is not active";
         return false;
     }
-    const PictureFrame* frame = bridge_->last_sealed_frame();
+    const SemanticFrame* frame = bridge_->last_sealed_frame();
     const std::uint64_t sequence = bridge_->sealed_sequence();
     if (frame == nullptr || sequence == consumedSequence_) {
         error = frame == nullptr ? "semantic frame bridge has no sealed frame"
@@ -120,8 +120,9 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
     SDL_GPUCommandBuffer* commandBuffer = platform_->acquire_command_buffer(error);
     if (commandBuffer == nullptr)
         return false;
-    const PicturePassTarget passTarget{commandBuffer, target_.color(), target_.desc().colorFormat,
-                                       SDL_GPU_LOADOP_CLEAR, SDL_GPU_STOREOP_STORE};
+    const Semantic2dPassTarget passTarget{commandBuffer, target_.color(),
+                                          target_.desc().colorFormat, SDL_GPU_LOADOP_CLEAR,
+                                          SDL_GPU_STOREOP_STORE};
     if (!pass_->encode(*frame, passTarget, error)) {
         std::string cancellationError;
         const bool cancelled = platform_->cancel_command_buffer(commandBuffer, cancellationError);
@@ -130,7 +131,7 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
         if (!cancelled)
             error += "; " + cancellationError;
         if (!completed)
-            error += "; picture rollback failed: " + completionError;
+            error += "; semantic pass rollback failed: " + completionError;
         return false;
     }
 
@@ -143,7 +144,7 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
         if (!cancelled)
             error += "; " + cancellationError;
         if (!completed)
-            error += "; picture rollback failed: " + completionError;
+            error += "; semantic pass rollback failed: " + completionError;
         return false;
     }
 
@@ -151,18 +152,31 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
     if (fence == nullptr) {
         std::string completionError;
         if (!pass_->complete_encode(false, completionError))
-            error += "; picture rollback failed: " + completionError;
+            error += "; semantic pass rollback failed: " + completionError;
         return false;
     }
     std::string completionError;
     if (!pass_->complete_encode(true, completionError)) {
         platform_->release_fence(fence);
-        error = "submitted picture cache commit failed: " + completionError;
+        error = "submitted semantic resource commit failed: " + completionError;
         return false;
     }
 
     ++stats_.submittedFrames;
-    stats_.submittedDraws += frame->draws.size();
+    stats_.submittedOperations += frame->draws.size();
+    bool hasPictures = false;
+    bool hasSolidRectangles = false;
+    for (const SemanticDraw& draw : frame->draws) {
+        if (std::holds_alternative<PictureDraw>(draw)) {
+            ++stats_.submittedPictures;
+            hasPictures = true;
+        } else {
+            ++stats_.submittedSolidRectangles;
+            hasSolidRectangles = true;
+        }
+    }
+    if (hasPictures && hasSolidRectangles)
+        ++stats_.mixedOperationFrames;
     stats_.submittedImages += frame->images.size();
     if (!frame->draws.empty())
         ++stats_.nonEmptyFrames;
@@ -208,7 +222,7 @@ bool SdlSemanticFrameClient::validate_audit(std::string& error) const noexcept {
     }
     if (config_.readback != SemanticReadbackMode::None &&
         (stats_.sampledFrames == 0 || stats_.firstNonClearFrame == 0)) {
-        error = "semantic audit never observed picture pixels distinct from the controlled clear";
+        error = "semantic audit never observed output distinct from the controlled clear";
         return false;
     }
     return true;
@@ -238,7 +252,7 @@ const SdlSemanticFrameStats& SdlSemanticFrameClient::stats() const noexcept {
     return stats_;
 }
 
-bool SdlSemanticFrameClient::should_read_back(const PictureFrame& frame) const noexcept {
+bool SdlSemanticFrameClient::should_read_back(const SemanticFrame& frame) const noexcept {
     if (readback_ == nullptr)
         return false;
     if (config_.readback == SemanticReadbackMode::EveryFrame)
@@ -248,7 +262,7 @@ bool SdlSemanticFrameClient::should_read_back(const PictureFrame& frame) const n
 }
 
 bool SdlSemanticFrameClient::append_readback(SDL_GPUCommandBuffer* commandBuffer,
-                                             const PictureFrame& frame, std::string& error) {
+                                             const SemanticFrame& frame, std::string& error) {
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commandBuffer);
     if (copy == nullptr) {
         error = std::string("semantic readback copy-pass creation failed: ") + SDL_GetError();
@@ -263,7 +277,7 @@ bool SdlSemanticFrameClient::append_readback(SDL_GPUCommandBuffer* commandBuffer
     return true;
 }
 
-bool SdlSemanticFrameClient::measure_readback(const PictureFrame& frame,
+bool SdlSemanticFrameClient::measure_readback(const SemanticFrame& frame,
                                               std::string& error) noexcept {
     auto* pixels = static_cast<const std::uint8_t*>(
         SDL_MapGPUTransferBuffer(platform_->device(), readback_, false));

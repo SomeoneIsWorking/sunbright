@@ -12,11 +12,12 @@ using sb::native_render::Color;
 using sb::native_render::DecodedImageView;
 using sb::native_render::PictureCommand;
 using sb::native_render::PictureDraw;
-using sb::native_render::PictureFrame;
-using sb::native_render::PictureFrameCollector;
-using sb::native_render::PictureFrameError;
-using sb::native_render::PictureFrameLimits;
 using sb::native_render::PictureTexture;
+using sb::native_render::SemanticFrame;
+using sb::native_render::SemanticFrameCollector;
+using sb::native_render::SemanticFrameError;
+using sb::native_render::SemanticFrameLimits;
+using sb::native_render::SolidRectangleDraw;
 using sb::native_render::Vec2;
 
 constexpr Canvas kCanvas{{0, 0}, {640, 480}, {0, 0, 1280, 960}};
@@ -36,6 +37,14 @@ PictureDraw draw(PictureCommand picture, Canvas canvas = kCanvas) {
     return {canvas, picture};
 }
 
+SolidRectangleDraw solid(std::uint64_t instance, Canvas canvas = kCanvas) {
+    return {
+        canvas,
+        {.instance = instance,
+         .positions = {Vec2{2, 2}, Vec2{14, 2}, Vec2{2, 14}, Vec2{14, 14}},
+         .corner = {Color{1, 0, 0, 1}, Color{0, 1, 0, 1}, Color{0, 0, 1, 1}, Color{1, 1, 1, 1}}}};
+}
+
 DecodedImageView image(std::uint64_t resource, std::uint64_t revision,
                        const std::array<std::uint8_t, 4>& pixel) {
     return {resource, revision, 1, 1, pixel};
@@ -47,28 +56,39 @@ int main() {
     const std::array<std::uint8_t, 4> red{255, 0, 0, 255};
     const std::array<std::uint8_t, 4> blue{0, 0, 255, 255};
 
-    PictureFrameCollector collector{{.commands = 3, .images = 2, .decodedImageBytes = 8}};
-    PictureFrame frame{};
+    SemanticFrameCollector collector{{.commands = 3, .images = 2, .decodedImageBytes = 8}};
+    SemanticFrame frame{};
     assert(!collector.seal(frame));
-    assert(collector.error() == PictureFrameError::NotCollecting);
+    assert(collector.error() == SemanticFrameError::NotCollecting);
     assert(collector.begin(1280, 960, Color{0.1f, 0.2f, 0.3f, 1.0f}));
     assert(!collector.begin(1280, 960, {}));
-    assert(collector.error() == PictureFrameError::AlreadyCollecting);
+    assert(collector.error() == SemanticFrameError::AlreadyCollecting);
 
     auto firstCommand = command(10, 7, 1);
     auto firstImage = image(7, 1, red);
     assert(collector.append(draw(firstCommand), std::span(&firstImage, 1)));
 
-    // Duplicate resource content is coalesced while command order remains exact.
+    // Duplicate resource content is coalesced while mixed command order remains exact.
+    assert(collector.append_solid_rectangle(solid(20)));
     auto secondCommand = command(11, 7, 1);
     assert(collector.append(draw(secondCommand), std::span(&firstImage, 1)));
     assert(collector.decoded_image_bytes() == 4);
     assert(collector.seal(frame));
-    assert(frame.draws.size() == 2);
-    assert(frame.draws[0].picture.instance == 10);
-    assert(frame.draws[1].picture.instance == 11);
+    assert(frame.draws.size() == 3);
+    assert(std::get<PictureDraw>(frame.draws[0]).picture.instance == 10);
+    assert(std::get<SolidRectangleDraw>(frame.draws[1]).rectangle.instance == 20);
+    assert(std::get<PictureDraw>(frame.draws[2]).picture.instance == 11);
     assert(frame.images.size() == 1);
     assert(frame.images[0].rgba8[0] == 255);
+
+    // A valid operation wholly outside its clip remains an ordered no-op; clipping is evaluated by
+    // the target, not misclassified as a malformed producer submission.
+    auto clippedSolid = solid(21);
+    clippedSolid.rectangle.clip = {.enabled = true, .x = 2000, .y = 2000, .width = 4, .height = 4};
+    assert(collector.begin(1280, 960, {}));
+    assert(collector.append_solid_rectangle(clippedSolid));
+    assert(collector.seal(frame));
+    assert(frame.draws.size() == 1);
 
     // The collector owns source data: mutating the transient input after seal cannot change it.
     auto mutableRed = red;
@@ -84,7 +104,7 @@ int main() {
     assert(collector.append(draw(firstCommand), std::span(&firstImage, 1)));
     auto conflicting = image(7, 1, blue);
     assert(!collector.append(draw(secondCommand), std::span(&conflicting, 1)));
-    assert(collector.error() == PictureFrameError::ConflictingImage);
+    assert(collector.error() == SemanticFrameError::ConflictingImage);
     assert(collector.seal(frame));
     assert(frame.draws.size() == 1);
     assert(frame.images.size() == 1);
@@ -99,36 +119,38 @@ int main() {
     assert(collector.seal(frame));
     assert(frame.images.size() == 2);
     assert(frame.images[0].rgba8[0] != frame.images[1].rgba8[0]);
-    assert(frame.draws[0].canvas != frame.draws[1].canvas);
+    assert(sb::native_render::canvas(frame.draws[0]) != sb::native_render::canvas(frame.draws[1]));
 
-    PictureFrameCollector commandBound{{.commands = 1, .images = 2, .decodedImageBytes = 8}};
+    SemanticFrameCollector commandBound{{.commands = 1, .images = 2, .decodedImageBytes = 8}};
     assert(commandBound.begin(1280, 960, {}));
     assert(commandBound.append(draw(firstCommand), std::span(&firstImage, 1)));
     assert(!commandBound.append(draw(secondCommand), std::span(&firstImage, 1)));
-    assert(commandBound.error() == PictureFrameError::CommandLimit);
+    assert(commandBound.error() == SemanticFrameError::CommandLimit);
 
-    PictureFrameCollector imageBound{{.commands = 2, .images = 1, .decodedImageBytes = 8}};
+    SemanticFrameCollector imageBound{{.commands = 2, .images = 1, .decodedImageBytes = 8}};
     assert(imageBound.begin(1280, 960, {}));
     assert(imageBound.append(draw(firstCommand), std::span(&firstImage, 1)));
     assert(!imageBound.append(draw(changedCommand), std::span(&changedImage, 1)));
-    assert(imageBound.error() == PictureFrameError::ImageLimit);
+    assert(imageBound.error() == SemanticFrameError::ImageLimit);
 
-    PictureFrameCollector byteBound{{.commands = 2, .images = 2, .decodedImageBytes = 4}};
+    SemanticFrameCollector byteBound{{.commands = 2, .images = 2, .decodedImageBytes = 4}};
     assert(byteBound.begin(1280, 960, {}));
     assert(byteBound.append(draw(firstCommand), std::span(&firstImage, 1)));
     assert(!byteBound.append(draw(changedCommand), std::span(&changedImage, 1)));
-    assert(byteBound.error() == PictureFrameError::ImageByteLimit);
+    assert(byteBound.error() == SemanticFrameError::ImageByteLimit);
 
-    PictureFrameCollector invalid{};
+    SemanticFrameCollector invalid{};
     assert(!invalid.begin(0, 960, {}));
-    assert(invalid.error() == PictureFrameError::InvalidFrame);
+    assert(invalid.error() == SemanticFrameError::InvalidFrame);
 
     // The production sink callback exercises the same append implementation.
     assert(invalid.begin(1280, 960, {}));
     const auto sink = invalid.sink();
     const PictureDraw firstDraw = draw(firstCommand);
-    assert(sink.submit(firstDraw, std::span(&firstImage, 1), sink.context));
+    assert(sink.submit(sb::native_render::SemanticDraw{firstDraw}, std::span(&firstImage, 1),
+                       sink.context));
+    assert(sink.submit(sb::native_render::SemanticDraw{solid(30)}, {}, sink.context));
     invalid.reset();
     assert(!invalid.append(firstDraw, std::span(&firstImage, 1)));
-    assert(invalid.error() == PictureFrameError::NotCollecting);
+    assert(invalid.error() == SemanticFrameError::NotCollecting);
 }

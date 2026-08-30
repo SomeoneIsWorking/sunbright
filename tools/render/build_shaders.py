@@ -51,6 +51,12 @@ SHADERS = (
         "kPictureFragSpv",
         "native-render/shaders/picture_frag_spv.h",
     ),
+    Shader(
+        "native-render/shaders/solid_rectangle.frag.glsl",
+        "frag",
+        "kSolidRectangleFragSpv",
+        "native-render/shaders/solid_rectangle_frag_spv.h",
+    ),
 )
 
 

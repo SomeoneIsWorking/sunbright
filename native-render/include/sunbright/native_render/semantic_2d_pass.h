@@ -12,17 +12,17 @@
 
 namespace sb::native_render {
 
-struct PicturePassImpl;
+struct Semantic2dPassImpl;
 
-struct PictureFramePixels {
+struct SemanticFramePixels {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgba8{};
 };
 
-// Backend-facing target for one semantic picture encoding. Every handle is borrowed. The caller
+// Backend-facing target for one semantic 2D encoding. Every handle is borrowed. The caller
 // retains command-buffer submission and target lifetime/presentation ownership.
-struct PicturePassTarget {
+struct Semantic2dPassTarget {
     SDL_GPUCommandBuffer* commandBuffer = nullptr;
     SDL_GPUTexture* colorTexture = nullptr;
     SDL_GPUTextureFormat colorFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
@@ -30,34 +30,34 @@ struct PicturePassTarget {
     SDL_GPUStoreOp storeOp = SDL_GPU_STOREOP_STORE;
 };
 
-// A semantic J2D picture pass. The host owns the SDL device, command buffer, target, submission,
-// and presentation. This client owns shaders, format-specific pipelines, and semantic resource
-// caches. Destroy it only after the host has completed work previously encoded by this pass.
-class PicturePass {
+// A semantic 2D pass. The host owns the SDL device, command buffer, target, submission, and
+// presentation. This client owns shaders, format-specific pipelines, and semantic resource caches.
+// Destroy it only after the host has completed work previously encoded by this pass.
+class Semantic2dPass {
   public:
-    explicit PicturePass(SDL_GPUDevice* device);
-    ~PicturePass();
+    explicit Semantic2dPass(SDL_GPUDevice* device);
+    ~Semantic2dPass();
 
-    PicturePass(const PicturePass&) = delete;
-    PicturePass& operator=(const PicturePass&) = delete;
+    Semantic2dPass(const Semantic2dPass&) = delete;
+    Semantic2dPass& operator=(const Semantic2dPass&) = delete;
 
     [[nodiscard]] bool initialize(std::string& error);
     // Encodes uploads and draws into target.commandBuffer. It never submits, waits, reads back, or
     // takes ownership of either borrowed handle. After this returns, the caller must submit or
     // cancel the command buffer and report that outcome through complete_encode() before encoding
     // another frame. Failed encodes must be canceled and completed with submitted=false.
-    [[nodiscard]] bool encode(const PictureFrame& frame, const PicturePassTarget& target,
+    [[nodiscard]] bool encode(const SemanticFrame& frame, const Semantic2dPassTarget& target,
                               std::string& error);
     [[nodiscard]] bool complete_encode(bool submitted, std::string& error) noexcept;
 
     [[nodiscard]] std::size_t resident_image_count() const noexcept;
 
     // GPU-test facade. Production code should provide its live target to encode().
-    [[nodiscard]] bool render_and_readback(const PictureFrame& frame, PictureFramePixels& output,
+    [[nodiscard]] bool render_and_readback(const SemanticFrame& frame, SemanticFramePixels& output,
                                            std::string& error);
 
   private:
-    PicturePassImpl* impl_ = nullptr;
+    Semantic2dPassImpl* impl_ = nullptr;
 };
 
 } // namespace sb::native_render

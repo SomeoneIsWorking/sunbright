@@ -168,7 +168,7 @@ logger — that is debt to convert, not a feature.
 | `SB_SEL_DUMP_SETTLED` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_SEL_PICK` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_SEL_POS` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
-| `SB_SEMANTIC_PICTURE_AUDIT` | 2 | `sms-recomp/host/render_composition.cpp` |  |
+| `SB_SEMANTIC_FRAME_AUDIT` | 2 | `sms-recomp/host/render_composition.cpp` |  |
 | `SB_SHADER_CHECK` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
 | `SB_SHADER_DUMP` | 2 | `extern/aurora/lib/gx/shader.cpp` |  |
 | `SB_SHADER_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |

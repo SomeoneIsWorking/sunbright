@@ -30,15 +30,15 @@ bool RenderComposition::configure(app::Renderer renderer, std::string& error) no
         return false;
     }
     renderer_ = renderer;
-    const native_render::SemanticPictureAuditSetting audit =
-        native_render::parse_semantic_picture_audit(std::getenv("SB_SEMANTIC_PICTURE_AUDIT"));
-    if (audit == native_render::SemanticPictureAuditSetting::Invalid) {
-        error = "SB_SEMANTIC_PICTURE_AUDIT accepts only 0 or 1";
+    const native_render::SemanticFrameAuditSetting audit =
+        native_render::parse_semantic_frame_audit(std::getenv("SB_SEMANTIC_FRAME_AUDIT"));
+    if (audit == native_render::SemanticFrameAuditSetting::Invalid) {
+        error = "SB_SEMANTIC_FRAME_AUDIT accepts only 0 or 1";
         return false;
     }
-    semanticRequested_ = audit == native_render::SemanticPictureAuditSetting::Enabled;
+    semanticRequested_ = audit == native_render::SemanticFrameAuditSetting::Enabled;
     if (semanticRequested_ && renderer_ == app::Renderer::GxCompatibility) {
-        error = "semantic picture audit cannot run with the GX compatibility renderer";
+        error = "semantic frame audit cannot run with the GX compatibility renderer";
         return false;
     }
     configured_ = true;
@@ -74,7 +74,7 @@ bool RenderComposition::initialize(SDL_Window* window, std::string& error) {
             (void)platform.shutdown(platformError);
             return false;
         }
-        lucent::info("semantic", "offscreen semantic picture audit active at 640x480");
+        lucent::info("semantic", "offscreen semantic 2D frame audit active at 640x480");
     }
     initialized_ = true;
     return true;
@@ -127,10 +127,12 @@ void RenderComposition::report_semantic_stats() noexcept {
         return;
     const auto& stats = native_render::sdl_semantic_frame_client().stats();
     lucent::info("semantic",
-                 "offscreen summary: submitted={} completed={} nonempty={} draws={} images={} "
-                 "samples={} first-nonclear-frame={} first-nonclear-pixels={}",
+                 "offscreen summary: submitted={} completed={} nonempty={} mixed={} operations={} "
+                 "pictures={} solid-rectangles={} images={} samples={} first-nonclear-frame={} "
+                 "first-nonclear-pixels={}",
                  stats.submittedFrames, stats.completedFrames, stats.nonEmptyFrames,
-                 stats.submittedDraws, stats.submittedImages, stats.sampledFrames,
+                 stats.mixedOperationFrames, stats.submittedOperations, stats.submittedPictures,
+                 stats.submittedSolidRectangles, stats.submittedImages, stats.sampledFrames,
                  stats.firstNonClearFrame, stats.firstNonClearPixels);
     statsReported_ = true;
 }

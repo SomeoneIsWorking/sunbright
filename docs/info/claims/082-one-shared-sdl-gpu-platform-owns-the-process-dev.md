@@ -6,12 +6,12 @@ created: 2026-08-30
 tags: renderer,gpu,architecture
 depends: native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::initialize_device, native-render/src/sdl_gpu_platform.cpp#SdlGpuPlatform::attach_presenter, native-render/src/sdl_semantic_frame_client.cpp#SdlSemanticFrameClient::shutdown, sms-recomp/host/render_composition.cpp#RenderComposition::initialize, sms-boot/runtime/semantic_render.cpp#sb_semantic_render_initialize
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 02:49:26
+verified_at: 2026-08-30 03:50:05
 ---
 
 ## Claim
 
-One shared SDL GPU platform owns the process SDL device, optional sole window claim/presenter, and independent client targets; PicturePass publishes image-cache state only after the caller confirms submission.
+One shared SDL GPU platform owns the process SDL device, optional sole window claim/presenter, and independent client targets; Semantic2dPass publishes image-cache state only after the caller confirms submission.
 
 ## Evidence
 
@@ -19,8 +19,13 @@ The SDL platform CPU control proves copied call-table lifetime, host-owned SDL-v
 
 ## What would falsify it
 
-A second device/window claim is created by a renderer client, platform shutdown succeeds while a live target references its device, a canceled/failed PicturePass encode enters the resident cache, an old revision remains resident after a submitted replacement frame, or the guarded GPU controls fault.
+A second device/window claim is created by a renderer client, platform shutdown succeeds while a live target references its device, a canceled/failed Semantic2dPass encode enters the resident cache, an old revision remains resident after a submitted replacement frame, or the guarded GPU controls fault.
 
 ## Re-confirmed 2026-08-30
 
-Device-only CPU controls prove one process SDL device can exist without a window claim and can attach the optional sole presenter later. The watched GPU client control proves fenced submit, exactly-clear empty output, a nonclear planted picture, duplicate-consume refusal, and reverse teardown. Both runtime audit runs completed without a kernel GPU fault.
+Reverified shared SDL GPU device/window/event ownership after the mixed-stream change. Both Clang
+builds and full test suites pass. Device-only CPU controls prove one process SDL device can exist
+without a window claim and can attach the optional sole presenter later. The watched GPU client
+control proves fenced submission, exactly-clear empty output, a nonclear planted mixed frame,
+duplicate-consumption refusal, and reverse teardown. Both bounded live-runtime runs completed under
+the kernel GPU watcher with no incident.

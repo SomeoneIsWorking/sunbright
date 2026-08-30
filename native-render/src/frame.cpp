@@ -16,47 +16,47 @@ bool valid_color(Color color) noexcept {
 
 } // namespace
 
-const char* picture_frame_error_name(PictureFrameError error) noexcept {
+const char* semantic_frame_error_name(SemanticFrameError error) noexcept {
     switch (error) {
-    case PictureFrameError::None:
+    case SemanticFrameError::None:
         return "none";
-    case PictureFrameError::InvalidLimits:
+    case SemanticFrameError::InvalidLimits:
         return "invalid limits";
-    case PictureFrameError::InvalidFrame:
+    case SemanticFrameError::InvalidFrame:
         return "invalid frame";
-    case PictureFrameError::AlreadyCollecting:
+    case SemanticFrameError::AlreadyCollecting:
         return "already collecting";
-    case PictureFrameError::NotCollecting:
+    case SemanticFrameError::NotCollecting:
         return "not collecting";
-    case PictureFrameError::InvalidSubmission:
+    case SemanticFrameError::InvalidSubmission:
         return "invalid submission";
-    case PictureFrameError::CommandLimit:
+    case SemanticFrameError::CommandLimit:
         return "command limit";
-    case PictureFrameError::ImageLimit:
+    case SemanticFrameError::ImageLimit:
         return "image limit";
-    case PictureFrameError::ImageByteLimit:
+    case SemanticFrameError::ImageByteLimit:
         return "decoded image byte limit";
-    case PictureFrameError::ConflictingImage:
+    case SemanticFrameError::ConflictingImage:
         return "conflicting image content";
-    case PictureFrameError::AllocationFailure:
+    case SemanticFrameError::AllocationFailure:
         return "allocation failure";
     }
     return "unknown";
 }
 
-PictureFrameCollector::PictureFrameCollector(PictureFrameLimits limits) : limits_(limits) {
+SemanticFrameCollector::SemanticFrameCollector(SemanticFrameLimits limits) : limits_(limits) {
     if (limits.commands == 0 || limits.images == 0 || limits.decodedImageBytes == 0)
-        error_ = PictureFrameError::InvalidLimits;
+        error_ = SemanticFrameError::InvalidLimits;
 }
 
-bool PictureFrameCollector::begin(std::uint32_t targetWidth, std::uint32_t targetHeight,
-                                  Color clear) {
+bool SemanticFrameCollector::begin(std::uint32_t targetWidth, std::uint32_t targetHeight,
+                                   Color clear) {
     if (limits_.commands == 0 || limits_.images == 0 || limits_.decodedImageBytes == 0)
-        return fail(PictureFrameError::InvalidLimits);
+        return fail(SemanticFrameError::InvalidLimits);
     if (state_ == State::Collecting)
-        return fail(PictureFrameError::AlreadyCollecting);
+        return fail(SemanticFrameError::AlreadyCollecting);
     if (targetWidth == 0 || targetHeight == 0 || !valid_color(clear))
-        return fail(PictureFrameError::InvalidFrame);
+        return fail(SemanticFrameError::InvalidFrame);
 
     draws_.clear();
     images_.clear();
@@ -66,25 +66,34 @@ bool PictureFrameCollector::begin(std::uint32_t targetWidth, std::uint32_t targe
     targetHeight_ = targetHeight;
     clear_ = clear;
     state_ = State::Collecting;
-    error_ = PictureFrameError::None;
+    error_ = SemanticFrameError::None;
     return true;
 }
 
-PictureSink PictureFrameCollector::sink() noexcept {
+SemanticSink SemanticFrameCollector::sink() noexcept {
     return {receive, this};
 }
 
-bool PictureFrameCollector::append(const PictureDraw& draw,
-                                   std::span<const DecodedImageView> images) {
+bool SemanticFrameCollector::append(const SemanticDraw& draw,
+                                    std::span<const DecodedImageView> images) {
+    if (const auto* picture = std::get_if<PictureDraw>(&draw))
+        return append_picture(*picture, images);
+    if (!images.empty())
+        return fail(SemanticFrameError::InvalidSubmission);
+    return append_solid_rectangle(std::get<SolidRectangleDraw>(draw));
+}
+
+bool SemanticFrameCollector::append_picture(const PictureDraw& draw,
+                                            std::span<const DecodedImageView> images) {
     if (state_ != State::Collecting)
-        return fail(PictureFrameError::NotCollecting);
+        return fail(SemanticFrameError::NotCollecting);
     if (!valid(draw) || images.size() != draw.picture.material.textureCount)
-        return fail(PictureFrameError::InvalidSubmission);
+        return fail(SemanticFrameError::InvalidSubmission);
     PixelRect viewport{};
     if (!resolve_scissor(draw.canvas, {}, targetWidth_, targetHeight_, viewport))
-        return fail(PictureFrameError::InvalidSubmission);
+        return fail(SemanticFrameError::InvalidSubmission);
     if (draws_.size() >= limits_.commands)
-        return fail(PictureFrameError::CommandLimit);
+        return fail(SemanticFrameError::CommandLimit);
 
     std::vector<StoredImage> pending;
     std::size_t pendingBytes = 0;
@@ -96,7 +105,7 @@ bool PictureFrameCollector::append(const PictureDraw& draw,
             if (!valid(image) || image.resource != texture.resource ||
                 image.revision != texture.revision || image.width != texture.width ||
                 image.height != texture.height) {
-                return fail(PictureFrameError::InvalidSubmission);
+                return fail(SemanticFrameError::InvalidSubmission);
             }
 
             const auto stored =
@@ -108,7 +117,7 @@ bool PictureFrameCollector::append(const PictureDraw& draw,
                 if (stored->width != image.width || stored->height != image.height ||
                     !std::equal(stored->rgba8.begin(), stored->rgba8.end(), image.rgba8.begin(),
                                 image.rgba8.end()))
-                    return fail(PictureFrameError::ConflictingImage);
+                    return fail(SemanticFrameError::ConflictingImage);
                 continue;
             }
             const auto staged =
@@ -120,15 +129,15 @@ bool PictureFrameCollector::append(const PictureDraw& draw,
                 if (staged->width != image.width || staged->height != image.height ||
                     !std::equal(staged->rgba8.begin(), staged->rgba8.end(), image.rgba8.begin(),
                                 image.rgba8.end()))
-                    return fail(PictureFrameError::ConflictingImage);
+                    return fail(SemanticFrameError::ConflictingImage);
                 continue;
             }
             if (images_.size() + pending.size() >= limits_.images)
-                return fail(PictureFrameError::ImageLimit);
+                return fail(SemanticFrameError::ImageLimit);
             if (pendingBytes > limits_.decodedImageBytes - decodedImageBytes_ ||
                 image.rgba8.size() >
                     limits_.decodedImageBytes - decodedImageBytes_ - pendingBytes) {
-                return fail(PictureFrameError::ImageByteLimit);
+                return fail(SemanticFrameError::ImageByteLimit);
             }
 
             StoredImage owned{image.resource, image.revision, image.width, image.height,
@@ -142,17 +151,36 @@ bool PictureFrameCollector::append(const PictureDraw& draw,
         for (StoredImage& image : pending)
             images_.push_back(std::move(image));
         decodedImageBytes_ += pendingBytes;
-        draws_.push_back(draw);
+        draws_.emplace_back(draw);
     } catch (const std::bad_alloc&) {
-        return fail(PictureFrameError::AllocationFailure);
+        return fail(SemanticFrameError::AllocationFailure);
     }
-    error_ = PictureFrameError::None;
+    error_ = SemanticFrameError::None;
     return true;
 }
 
-bool PictureFrameCollector::seal(PictureFrame& frame) {
+bool SemanticFrameCollector::append_solid_rectangle(const SolidRectangleDraw& draw) {
     if (state_ != State::Collecting)
-        return fail(PictureFrameError::NotCollecting);
+        return fail(SemanticFrameError::NotCollecting);
+    if (!valid(draw))
+        return fail(SemanticFrameError::InvalidSubmission);
+    PixelRect viewport{};
+    if (!resolve_scissor(draw.canvas, {}, targetWidth_, targetHeight_, viewport))
+        return fail(SemanticFrameError::InvalidSubmission);
+    if (draws_.size() >= limits_.commands)
+        return fail(SemanticFrameError::CommandLimit);
+    try {
+        draws_.emplace_back(draw);
+    } catch (const std::bad_alloc&) {
+        return fail(SemanticFrameError::AllocationFailure);
+    }
+    error_ = SemanticFrameError::None;
+    return true;
+}
+
+bool SemanticFrameCollector::seal(SemanticFrame& frame) {
+    if (state_ != State::Collecting)
+        return fail(SemanticFrameError::NotCollecting);
     try {
         imageViews_.clear();
         imageViews_.reserve(images_.size());
@@ -161,37 +189,37 @@ bool PictureFrameCollector::seal(PictureFrame& frame) {
                 {image.resource, image.revision, image.width, image.height, image.rgba8});
         }
     } catch (const std::bad_alloc&) {
-        return fail(PictureFrameError::AllocationFailure);
+        return fail(SemanticFrameError::AllocationFailure);
     }
     state_ = State::Sealed;
-    error_ = PictureFrameError::None;
+    error_ = SemanticFrameError::None;
     frame = {targetWidth_, targetHeight_, draws_, imageViews_, clear_};
     return true;
 }
 
-void PictureFrameCollector::reset() noexcept {
+void SemanticFrameCollector::reset() noexcept {
     draws_.clear();
     images_.clear();
     imageViews_.clear();
     decodedImageBytes_ = 0;
-    error_ = PictureFrameError::None;
+    error_ = SemanticFrameError::None;
     state_ = State::Idle;
 }
 
-PictureFrameError PictureFrameCollector::error() const noexcept {
+SemanticFrameError SemanticFrameCollector::error() const noexcept {
     return error_;
 }
 
-std::size_t PictureFrameCollector::decoded_image_bytes() const noexcept {
+std::size_t SemanticFrameCollector::decoded_image_bytes() const noexcept {
     return decodedImageBytes_;
 }
 
-bool PictureFrameCollector::receive(const PictureDraw& draw,
-                                    std::span<const DecodedImageView> images, void* context) {
-    return static_cast<PictureFrameCollector*>(context)->append(draw, images);
+bool SemanticFrameCollector::receive(const SemanticDraw& draw,
+                                     std::span<const DecodedImageView> images, void* context) {
+    return static_cast<SemanticFrameCollector*>(context)->append(draw, images);
 }
 
-bool PictureFrameCollector::fail(PictureFrameError error) noexcept {
+bool SemanticFrameCollector::fail(SemanticFrameError error) noexcept {
     error_ = error;
     return false;
 }
