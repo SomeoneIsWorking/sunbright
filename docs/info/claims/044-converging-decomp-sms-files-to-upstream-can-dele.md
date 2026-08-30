@@ -4,7 +4,9 @@ kind: claim
 status: holds
 created: 2026-08-12
 tags: upstream,convergence,lp64
-depends: tools/re/rebase_upstream.py#classify
+depends: tools/re/rebase_upstream.py#cmd_converge, debug_journal/2026-08-30_upstream_convergence_runtime_bisection.md
+reconfirmed: 2026-08-30
+verified_at: 2026-08-30 04:06:32+00:00
 ---
 
 ## Claim
@@ -18,3 +20,7 @@ Converging decomp/sms files to upstream can DELETE native work while building gr
 ## What would falsify it
 
 a convergence that adopts one of these files and both builds AND runs, which would mean upstream has taken the fix. Does NOT falsify it: a green build alone, which is the exact check that missed all six.
+
+## Re-confirmed 2026-08-30
+
+2026-08-30 convergence compiled after 135 upstream adoptions, then failed bounded gameplay; commit-history review found six additional dormant fixes. Thirteen replacements were restored and the corrected tree completed 400 stage-1 frames.

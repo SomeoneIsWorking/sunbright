@@ -98,8 +98,6 @@ logger — that is debt to convert, not a feature.
 | `SB_JPA_DBG` | 1 | `decomp/sms/src/JSystem/JParticle/JPAEmitterManager.cpp` |  |
 | `SB_JPA_TEXDBG` | 1 | `decomp/sms/src/JSystem/JParticle/JPATexture.cpp` | gated print |
 | `SB_KEEP_PH6_MAPXLU` | 1 | `decomp/sms/src/JSystem/JDrama/JDRDrawBufObj.cpp` |  |
-| `SB_LF_CLAMP_DIAG` | 1 | `decomp/sms/src/Camera/lensflare.cpp` |  |
-| `SB_LF_DBG` | 1 | `decomp/sms/src/Camera/lensflare.cpp` | gated print |
 | `SB_LIGHT_DBG` | 1 | `extern/aurora/lib/gx/command_processor.cpp` |  |
 | `SB_LOAD_PANE_DBG` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_LOG` | 3 | `sms-recomp/runtime/sb_log.cpp` | gated print |
@@ -382,4 +380,4 @@ logger — that is debt to convert, not a feature.
 | `SBR_WIDESCREEN` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 | `SBR_WS_SCALE` | 1 | `sms-recomp/overrides/widescreen.cpp` |  |
 
-**361 switches; 61 still gate a raw print.**
+**359 switches; 60 still gate a raw print.**

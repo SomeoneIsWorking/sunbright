@@ -185,7 +185,10 @@ green) → `converge`. Hard-won rules:
   the next rebase replays that stale snapshot over newer upstream (this silently reverted
   upstream's newer `Particles.hpp` once).
 - A build-green convergence is NOT proof: a file can compile yet drop a native LP64/BE fix
-  that only shows at runtime. Runtime-verify before trusting a big convergence batch.
+  that only shows at runtime. `converge` now runs a bounded gameplay check for every build-green
+  candidate group and bisects runtime failures. It still cannot exercise every completed port:
+  mark verified local behavior without a natural native guard `SUNBRIGHT-KEEP`, then review removed
+  lines and the introducing commits before landing the adopted files.
 
 ## 🚫 NO BANDAIDS — RE the intent, port it
 

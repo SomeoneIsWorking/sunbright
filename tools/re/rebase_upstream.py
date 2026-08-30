@@ -9,8 +9,8 @@ from upstream is small and *deliberate*. This tool does three things:
     rebase     perform the rebase with the strategy that actually works here
     diverge    list diverging files, split into "native-guarded" (legit) vs
                "unmarked" (free-convergence candidates — shrink these!)
-    converge   greedily adopt upstream's version of candidate files, building
-               after each batch and keeping only what stays green
+    converge   greedily adopt upstream's version of candidate files, bisecting
+               on either build or bounded-gameplay failure
 
 Background (learned the hard way, 2026-07-17 — see
 debug_journal/2026-07-17_upstream_rebase_and_delfino_crash.md):
@@ -77,6 +77,10 @@ NATIVE_MARKERS = (
     "Native port of",
     "RE'd",
     "for the native port",
+    # Verified behavior or portability that has no natural platform preprocessor guard. Keep the
+    # marker next to the reason; this is deliberately explicit instead of guessing from generic
+    # words such as "host" or "implemented".
+    "SUNBRIGHT-KEEP",
 )
 
 SRC_DIRS = ["src", "include"]
@@ -176,8 +180,12 @@ def classify(files):
         except OSError:
             unmarked.append(f)
             continue
-        (guarded if any(m in body for m in NATIVE_MARKERS) else unmarked).append(f)
+        (guarded if is_guarded_text(body) else unmarked).append(f)
     return guarded, unmarked
+
+
+def is_guarded_text(body):
+    return any(marker in body for marker in NATIVE_MARKERS)
 
 
 def build(jobs=None):
@@ -316,7 +324,9 @@ def unitise(files):
 
 
 def _try_units(units, depth=0):
-    """Adopt what builds, bisecting on failure. Returns (adopted_units, reverted_units).
+    """Adopt what builds and runs, bisecting on failure.
+
+    Returns (adopted_units, reverted_units).
 
     The previous version reverted a whole failing batch and moved on, so ONE poisonous file cost
     the other nine in its slice. Against this tree that meant 0 files adopted out of 40 — four
@@ -329,8 +339,21 @@ def _try_units(units, depth=0):
     git("checkout", "upstream/main", "--", *flat)
     ok, n = build()
     if ok:
-        print(f"  {'  ' * depth}[+] adopted {len(units)} unit(s), {len(flat)} file(s)")
-        return units, []
+        runtime_ok, returncode, output = run_runtime_smoke()
+        if runtime_ok:
+            print(f"  {'  ' * depth}[+] adopted {len(units)} unit(s), {len(flat)} file(s); "
+                  "runtime green")
+            return units, []
+        git("checkout", "HEAD", "--", *flat)
+        reason = runtime_failure_reason(returncode, output)
+        if len(units) == 1:
+            print(f"  {'  ' * depth}[-] kept ours: {', '.join(units[0])} ({reason})")
+            return [], units
+        mid = len(units) // 2
+        print(f"  {'  ' * depth}[/] {len(units)} unit(s) {reason} — bisecting")
+        la, lr = _try_units(units[:mid], depth + 1)
+        ra, rr = _try_units(units[mid:], depth + 1)
+        return la + ra, lr + rr
     git("checkout", "HEAD", "--", *flat)
     if len(units) == 1:
         print(f"  {'  ' * depth}[-] kept ours: {', '.join(units[0])} ({n} errors)")
@@ -361,6 +384,7 @@ def cmd_converge(args):
     ok, _ = build()
     if not ok:
         sys.exit("build is RED before converging — fix that first.")
+    runtime_gate("baseline before convergence")
     nfiles = sum(len(u) for u in units)
     paired = sum(1 for u in units if len(u) > 1)
     print(f"[converge] {len(units)} unit(s) / {nfiles} file(s); {paired} unit(s) are a "
@@ -373,8 +397,6 @@ def cmd_converge(args):
     if nr:
         print("Kept-ours units are where upstream and our tree genuinely disagree — those are the "
               "ones worth reading, and each is named above with its error count.")
-    if na:
-        runtime_gate()
     print("REVIEW THE DIFF: a green build and a surviving run still do not prove a converged")
     print("file kept every native fix — only that it kept the ones this stage exercises.")
 
@@ -386,7 +408,33 @@ def runtime_smoke_passed(returncode, output):
             and "[draw-stats] frame=" in output)
 
 
-def runtime_gate():
+def run_runtime_smoke():
+    """Run the bounded decomp smoke and return (passed, returncode, combined output)."""
+    runner = os.path.join(REPO, "run.sh")
+    if not os.path.exists(runner):
+        return False, None, "run.sh not found"
+    env = dict(os.environ)
+    result = subprocess.run(
+        [runner, "--diagnostic", "--runtime", "decomp", "--run-secs", "30", "--",
+         "SB_STAGE=1", "SB_DRAW_STATS=1"],
+        cwd=REPO, env=env, capture_output=True, text=True, errors="replace")
+    output = result.stdout + result.stderr
+    return runtime_smoke_passed(result.returncode, output), result.returncode, output
+
+
+def runtime_failure_reason(returncode, output):
+    if returncode is None:
+        return "runtime unavailable"
+    missing = []
+    if "APP_STATE_GAMEPLAY" not in output:
+        missing.append("no gameplay marker")
+    if "[draw-stats] frame=" not in output:
+        missing.append("no completed frame")
+    suffix = f"; {', '.join(missing)}" if missing else ""
+    return f"runtime RED, exit {returncode}{suffix}"
+
+
+def runtime_gate(label="convergence result"):
     """Actually RUN the thing once, because building it is not the test.
 
     Added 2026-08-12, immediately after a 48-file convergence built green and then segfaulted on
@@ -400,27 +448,14 @@ def runtime_gate():
     every native fix — only that the boot path still works. A clean result here is the floor, not
     the verification.
     """
-    runner = os.path.join(REPO, "run.sh")
-    if not os.path.exists(runner):
-        print("\n  RUNTIME GATE SKIPPED: run.sh not found, so NOTHING was run. That is not a "
-              "pass — the adopted files are unverified at runtime.")
-        return
-    print("\n[converge] runtime smoke test (one short run of the decomp runtime) ...")
-    env = dict(os.environ)
-    # errors="replace", NOT text=True: the boot log is Shift-JIS, and a strict utf-8 decode raises
-    # UnicodeDecodeError from inside subprocess — the gate would abort with a traceback instead of
-    # reporting on the run it just did, which is a gate that fails closed in the least useful way.
-    r = subprocess.run([runner, "--diagnostic", "--runtime", "decomp", "--run-secs", "30",
-                        "--", "SB_STAGE=1", "SB_DRAW_STATS=1"], cwd=REPO, env=env,
-                       capture_output=True, text=True, errors="replace")
-    # 124 is the guarded launcher's wall-clock cap: the run survived to the end of its budget.
-    output = r.stdout + r.stderr
-    if runtime_smoke_passed(r.returncode, output):
+    print(f"\n[converge] runtime smoke test ({label}) ...")
+    passed, returncode, output = run_runtime_smoke()
+    if passed:
         print("[converge] runtime smoke test PASSED (the boot path still runs). This is a floor, "
               "not proof: it exercises one stage and cannot see a fix the boot path never uses.")
         return
-    print(f"[converge] *** RUNTIME SMOKE TEST FAILED, exit {r.returncode} "
-          f"{'(SEGFAULT)' if r.returncode == 139 else ''} ***")
+    print(f"[converge] *** RUNTIME SMOKE TEST FAILED: "
+          f"{runtime_failure_reason(returncode, output)} ***")
     print("           The adoption BUILT but does not RUN. Bisect the adopted set by reverting")
     print("           halves and re-running — a header that overlays file bytes or carries an")
     print("           LP64/BE fix is the usual cause, and the compiler cannot see either.")
@@ -446,6 +481,10 @@ def cmd_selftest(_args):
         actual = runtime_smoke_passed(returncode, output)
         if actual != expected:
             raise RuntimeError(f"runtime-gate control failed for {label}: got {actual}")
+    if not is_guarded_text("// SUNBRIGHT-KEEP: native observable behavior"):
+        raise RuntimeError("convergence marker control was not classified as guarded")
+    if is_guarded_text("// ordinary upstream-compatible implementation"):
+        raise RuntimeError("plain implementation control was incorrectly classified as guarded")
     print("rebase_upstream selftest: PASS (known-good, crash, startup-hang, no-frame controls)")
 
 
