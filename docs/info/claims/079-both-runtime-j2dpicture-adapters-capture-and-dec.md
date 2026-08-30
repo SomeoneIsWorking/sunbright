@@ -6,7 +6,7 @@ created: 2026-08-28
 tags: renderer,resources,recomp,decomp
 depends: sms-recomp/overrides/j2d_picture_adapter.cpp#capture_j2d_picture, sms-boot/runtime/native_picture_adapter.cpp#sb_native_picture_submit, native-render/src/semantic_sink.cpp#submit_picture
 reconfirmed: 2026-08-30
-verified_at: 2026-08-30 04:46:11
+verified_at: 2026-08-30 05:45:15
 ---
 
 ## Claim
@@ -32,3 +32,7 @@ Reconfirmed after exclusive sink leases and frame-bridge integration: recomp j2d
 ## Re-confirmed 2026-08-30
 
 Reverified decoded-image ownership after shared material capture was reused by the immediate path: recomp guest and production-linked decomp controls pass exact pixels, revisions, synchronous image copying, refusal paths, and host-allocation balance; full suites and watched GPU control pass.
+
+## Re-confirmed 2026-08-30
+
+Reverified after extracting BigEndianGuestReader and the shared native J2D bridge: both picture adapter controls still distinguish valid/short/changed image content, the full Clang suites pass, and the guarded Delfino run completed without image capture refusal.
