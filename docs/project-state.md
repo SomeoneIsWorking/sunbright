@@ -140,7 +140,10 @@ partial populations. Screen-space localization alone cannot name the missing tar
 ### S007 — Decomp expansion
 
 The native decomp is integrated as a runnable game path and carries project-specific native safety
-adaptations while tracking upstream `doldecomp/sms`.
+adaptations while tracking upstream `doldecomp/sms`. The 2026-08-30 sync incorporated seven
+upstream commits, reconciled the overlapping MActor/SDLModel/MarioCap API renames as complete
+header/source ownership units, passed the native Clang audit, and reached bounded title and gameplay
+frames under the guarded launcher.
 
 Gap: upstream convergence debt, known `unk*` names, and reachable unimplemented bodies remain. Each
 expansion pass must still follow rebase → rename established unknowns → extend from binary evidence.

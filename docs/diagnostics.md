@@ -106,7 +106,7 @@ logger — that is debt to convert, not a feature.
 | `SB_MAKEVCD_DBG` | 1 | `decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp` | gated print |
 | `SB_MAPXLU_DBG` | 1 | `decomp/sms/src/Map/Map.cpp` |  |
 | `SB_MARIO_ANIM_DBG` | 1 | `decomp/sms/src/Player/MarioMain.cpp` | gated print |
-| `SB_MARIO_DBG` | 4 | `decomp/sms/src/Player/MarioCap.cpp` | gated print |
+| `SB_MARIO_DBG` | 3 | `decomp/sms/src/Player/MarioDraw.cpp` | gated print |
 | `SB_MAX_PRESENT_HZ` | 3 | `sms-recomp/overrides/native_frame.cpp` |  |
 | `SB_MIRRORBUF_DBG` | 1 | `decomp/sms/src/Map/MapMirror.cpp` | gated print |
 | `SB_MODEL_TRACE` | 5 | `decomp/sms/src/JSystem/J3D/J3DGraphLoader/J3DModelLoader.cpp` | gated print |

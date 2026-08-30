@@ -132,8 +132,9 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 ## Reference decomp (`decomp/sms` — submodule, SomeoneIsWorking/sms fork)
 
 The real game source, native-platform-guarded (`SMS_NATIVE_PLATFORM`). Current fork tip
-`b5362cf2` is rebased and audited with `tools/re/rebase_upstream.py`; the native Clang audit is
-green. Its standing loop is **rebase → rename known `unk*` semantics → expand remaining gaps**. The restored upstream
+`9e7a2105` is rebased onto the 2026-08-30 upstream tip and audited with
+`tools/re/rebase_upstream.py`; its Clang build and guarded decomp runtime smoke test are green. Its
+standing loop is **rebase → rename known `unk*` semantics → expand remaining gaps**. The restored upstream
 `MtxUtil` implementation keeps the native-safe 4×4-to-3×4 light-projection adaptation, and the typed
 `MActorAnmData` accessors replace five known `getUnk*` names. Matching-MWCC proof remains externally
 blocked on the absent Japanese Rev-0 disc. Rendering-affecting code is always native. Screen effects
