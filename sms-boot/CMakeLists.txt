@@ -294,6 +294,28 @@ endforeach()
 # SMS_NATIVE_PLATFORM=1, rendered through Aurora (SDL3 + Dawn/WebGPU).
 # ---------------------------------------------------------------------------
 if(TARGET aurora_core)
+    # One owner for the decomp-side renderer-neutral J2D adapters. Any executable that pulls
+    # reachable J2D code from sms-native must link this bridge; keeping the implementation in a
+    # library lets the static linker select only the seams that executable actually reaches.
+    add_library(sms-native-semantic-2d STATIC
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_context.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp")
+    add_dependencies(sms-native-semantic-2d sms-native-sjis)
+    set_target_properties(sms-native-semantic-2d PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(sms-native-semantic-2d PRIVATE
+        "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims"
+        "${SMS_INCLUDE_STAGED}")
+    target_compile_definitions(sms-native-semantic-2d PRIVATE
+        TARGET_PC=1 SMS_NATIVE_PLATFORM=1 SMS_AURORA=1)
+    target_compile_options(sms-native-semantic-2d PRIVATE
+        "SHELL:-include ${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
+        -w -fcommon)
+    target_link_libraries(sms-native-semantic-2d PUBLIC sunbright-native-render-core)
+
     add_executable(sms-boot
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/main.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/frame_seam.cpp"
@@ -309,9 +331,6 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pin_state.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/fifo_player.cpp")
-    target_sources(sms-boot PRIVATE
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp")
     add_dependencies(sms-boot sms-native-sjis)
     set_target_properties(sms-boot PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
@@ -368,6 +387,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
+        sms-native-semantic-2d
         sunbright-native-render-sdl3
         Threads::Threads)
 
@@ -376,7 +396,9 @@ if(TARGET aurora_core)
     # a counting host-allocation gate instead of the full game's global-new routing.
     add_executable(platform-native_picture_adapter_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/native_picture_adapter_test.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_context.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DGrafContext.cpp"
@@ -440,6 +462,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
+        sms-native-semantic-2d
         Threads::Threads)
     add_test(NAME platform_jaudio_release_test COMMAND platform-jaudio_release_test)
 
@@ -474,6 +497,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
+        sms-native-semantic-2d
         Threads::Threads)
     add_test(NAME platform_gx_yscale_test COMMAND platform-gx_yscale_test)
 

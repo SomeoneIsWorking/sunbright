@@ -33,6 +33,8 @@ struct SemanticSinkLease {
 // the image was copied.
 [[nodiscard]] bool submit_picture(const PictureDraw& draw,
                                   std::span<const DecodedImageView> images) noexcept;
+[[nodiscard]] bool submit_glyph(const GlyphDraw& draw,
+                                std::span<const DecodedImageView> images) noexcept;
 [[nodiscard]] bool submit_solid_rectangle(const SolidRectangleDraw& draw) noexcept;
 
 } // namespace sb::native_render

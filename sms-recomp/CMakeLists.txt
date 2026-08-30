@@ -316,11 +316,21 @@ target_include_directories(native_raster_state_test PRIVATE runtime/render)
 add_test(NAME native_raster_state COMMAND native_raster_state_test)
 
 add_executable(j2d_picture_adapter_test tests/j2d_picture_adapter_test.cpp
+                                        overrides/big_endian_guest_reader.cpp
                                         overrides/j2d_picture_adapter.cpp)
 target_link_libraries(j2d_picture_adapter_test PRIVATE sunbright-native-render-core)
 target_include_directories(j2d_picture_adapter_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
 add_test(NAME j2d_picture_adapter COMMAND j2d_picture_adapter_test)
+
+add_executable(resource_font_glyph_adapter_test
+               tests/resource_font_glyph_adapter_test.cpp
+               overrides/big_endian_guest_reader.cpp
+               overrides/resource_font_glyph_adapter.cpp)
+target_link_libraries(resource_font_glyph_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(resource_font_glyph_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME resource_font_glyph_adapter COMMAND resource_font_glyph_adapter_test)
 
 add_executable(solid_rectangle_adapter_test tests/solid_rectangle_adapter_test.cpp
                                             overrides/solid_rectangle_adapter.cpp)

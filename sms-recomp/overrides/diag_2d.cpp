@@ -39,8 +39,6 @@ extern "C" void func_802cc758(CPUState&); // J2DPicture::drawSelf(int, int)
 // actually reaches the hardware, and its r6 is the matrix a 2D capture needs.
 extern "C" void func_802cc7c0(CPUState&);
 extern "C" void func_802ccef4(CPUState&); // J2DPicture::draw
-extern "C" void func_802d0b28(CPUState&); // J2DTextBox::draw
-extern "C" void func_802d0d70(CPUState&); // J2DTextBox::drawSelf
 extern "C" void func_802d01c8(CPUState&); // J2DScreen::drawSelf
 
 namespace {
@@ -413,16 +411,6 @@ void ov_pic_draw(CPUState& cpu) {
     if (visible)
         submit_semantic_direct_picture(args);
 }
-void ov_text_draw(CPUState& cpu) {
-    if (diag_on())
-        note("J2DTextBox::draw", cpu.gpr[3]);
-    func_802d0b28(cpu);
-}
-void ov_text_drawself(CPUState& cpu) {
-    if (diag_on())
-        note("J2DTextBox::drawSelf", cpu.gpr[3]);
-    func_802d0d70(cpu);
-}
 void ov_screen_drawself(CPUState& cpu) {
     if (diag_on())
         note("J2DScreen::drawSelf", cpu.gpr[3]);
@@ -437,11 +425,14 @@ void sbr_diag_2d_note_window(u32 self, u32 rect) {
         note_rect("J2DWindow::rect", self, rect);
 }
 
+void sbr_diag_2d_note_text(const char* entry, u32 self) {
+    if (diag_on())
+        note(entry, self);
+}
+
 SB_OVERRIDE(0x802cc758u, ov_pic_drawself, "J2DPicture::drawSelf", "diagnostic: 2D class census")
 SB_OVERRIDE(0x802cc7c0u, ov_pic_drawself_mtx, "J2DPicture::drawSelf(Mtx)",
             "diagnostic: 2D class census — the overload that receives the transform")
 SB_OVERRIDE(0x802ccef4u, ov_pic_draw, "J2DPicture::draw",
             "publish immediate-mode semantic pictures and retain the original body")
-SB_OVERRIDE(0x802d0b28u, ov_text_draw, "J2DTextBox::draw", "diagnostic: 2D class census")
-SB_OVERRIDE(0x802d0d70u, ov_text_drawself, "J2DTextBox::drawSelf", "diagnostic: 2D class census")
 SB_OVERRIDE(0x802d01c8u, ov_screen_drawself, "J2DScreen::drawSelf", "diagnostic: 2D class census")

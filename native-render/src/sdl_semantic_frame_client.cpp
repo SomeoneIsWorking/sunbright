@@ -165,18 +165,25 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
     ++stats_.submittedFrames;
     stats_.submittedOperations += frame->draws.size();
     bool hasPictures = false;
+    bool hasGlyphs = false;
     bool hasSolidRectangles = false;
     for (const SemanticDraw& draw : frame->draws) {
         if (std::holds_alternative<PictureDraw>(draw)) {
             ++stats_.submittedPictures;
             hasPictures = true;
+        } else if (std::holds_alternative<GlyphDraw>(draw)) {
+            ++stats_.submittedGlyphs;
+            hasGlyphs = true;
         } else {
             ++stats_.submittedSolidRectangles;
             hasSolidRectangles = true;
         }
     }
-    if (hasPictures && hasSolidRectangles)
+    if (static_cast<unsigned>(hasPictures) + static_cast<unsigned>(hasGlyphs) +
+            static_cast<unsigned>(hasSolidRectangles) >
+        1U) {
         ++stats_.mixedOperationFrames;
+    }
     stats_.submittedImages += frame->images.size();
     if (!frame->draws.empty())
         ++stats_.nonEmptyFrames;

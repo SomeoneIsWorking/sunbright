@@ -18,6 +18,8 @@ namespace {
 
 using sb::native_render::Color;
 using sb::native_render::DecodedImageView;
+using sb::native_render::GlyphCommand;
+using sb::native_render::GlyphDraw;
 using sb::native_render::PictureCommand;
 using sb::native_render::PictureDraw;
 using sb::native_render::PictureTexture;
@@ -262,7 +264,13 @@ int main() {
         greenPicture.material.textureCount = 1;
         greenPicture.material.textures[0] =
             PictureTexture{.resource = 41, .width = 1, .height = 1, .hasAlpha = true};
-        const PictureDraw greenDraw{draw.canvas, greenPicture};
+        const GlyphCommand greenGlyph{.instance = 42,
+                                      .code = 'A',
+                                      .positions = greenPicture.positions,
+                                      .uv = greenPicture.uv,
+                                      .corner = greenPicture.corner,
+                                      .atlas = greenPicture.material.textures[0]};
+        const GlyphDraw greenDraw{draw.canvas, greenGlyph};
         const SolidRectangleDraw redFill = solid(40, 0, 0, 16, 16, {1, 0, 0, 1});
         const SolidRectangleDraw blueFill = solid(43, 8, 8, 16, 16, {0, 0, 1, 1});
         const std::array<SemanticDraw, 3> mixedDraws{redFill, greenDraw, blueFill};
@@ -336,13 +344,22 @@ int main() {
 
     assert(bridge.begin());
     assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+    const GlyphCommand auditGlyph{.instance = 100,
+                                  .code = 'A',
+                                  .positions = draw.picture.positions,
+                                  .uv = draw.picture.uv,
+                                  .corner = draw.picture.corner,
+                                  .atlas = draw.picture.material.textures[0]};
+    assert(sb::native_render::submit_glyph(GlyphDraw{draw.canvas, auditGlyph},
+                                           std::span<const DecodedImageView>(&image, 1)));
     assert(sb::native_render::submit_solid_rectangle(solid(99, 12, 12, 16, 16, {1, 1, 1, 1})));
     assert(bridge.seal());
     assert(client.encode_last_sealed(platformError));
     assert(client.stats().submittedFrames == 2 && client.stats().completedFrames == 2);
     assert(client.stats().nonEmptyFrames == 1 && client.stats().mixedOperationFrames == 1);
-    assert(client.stats().submittedOperations == 2);
-    assert(client.stats().submittedPictures == 1 && client.stats().submittedSolidRectangles == 1);
+    assert(client.stats().submittedOperations == 3);
+    assert(client.stats().submittedPictures == 1 && client.stats().submittedGlyphs == 1 &&
+           client.stats().submittedSolidRectangles == 1);
     assert(client.stats().lastSampleNonClearPixels != 0);
     assert(client.stats().lastSampleHash != clearHash);
     assert(client.validate_audit(platformError));

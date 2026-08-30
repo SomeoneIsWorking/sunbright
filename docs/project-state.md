@@ -8,8 +8,8 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered game-frame J2D pictures and GC2D solid rectangles to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
-| S005 | The native decomp feeds the same ordered semantic picture/solid-rectangle stream to that renderer | partial | S002, S004 | G004 |
+| S004 | The recomp feeds ordered game-frame J2D pictures, resource-font glyphs, and GC2D solid rectangles to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S005 | The native decomp feeds the same ordered semantic picture/glyph/solid-rectangle stream to that renderer | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
 
@@ -17,8 +17,8 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 
 S004 is the current focus. The path previously counted toward it is now classified separately as
 compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. The current
-atomic gap is adding text, windows, generic J2D fills, and direct picture calls to the same ordered
-stream before semantic output can own visible presentation.
+atomic gap is adding J2D window contents/frame pieces and generic `J2DGrafContext::fillBox` calls to
+the same ordered stream before semantic output can own visible 2D presentation.
 
 ## Capability details
 
@@ -115,6 +115,18 @@ known-different control proves the transposed branch changes UV ownership. A gua
 Delfino run reached the direct entry point and completed 3,019 semantic operations (3,010 pictures
 and nine solid rectangles) without a GPU fault or missing-context/capture refusal.
 
+Resource-font text is now a distinct ordered semantic family rather than a textured-picture alias.
+The shared glyph resolver owns the retail bearing, advance, vertical metrics, fixed-point atlas UV,
+corner-colour, black/white remap, clip, and transformed-quad contract. The recomp wraps the retained
+`J2DTextBox::draw` and matrix-taking `drawSelf` bodies to publish their high-level text transform,
+tracks both retained `JUTResFont::setGX` forms, then calls the retained `drawChar_scale` body before
+copying the selected big-endian glyph page and width entry through the renderer-neutral adapter.
+Malformed block bounds, unsupported indexed font pages, short guest reads, and missing semantic
+context fail at the adapter boundary. Close controls cover fixed versus proportional advance,
+bearing application, the retail 15-bit atlas-coordinate rounding, corner order, content revision,
+and a changed glyph page. A guarded 180-present Delfino run completed 90 semantic frames with 1,209
+ordered operations: 160 pictures, 1,040 actual resource-font glyphs, and nine solid rectangles.
+
 The active-canvas classifier requires both the retail `J2DOrthoGraph` vtable and its type word.
 Retail base `J2DGrafContext` constructors leave that word uninitialized, so trusting the type alone
 can reinterpret a base object as the larger derived layout. A known-different control plants the
@@ -130,9 +142,9 @@ proves an empty semantic frame stays exactly clear, a planted mixed frame produc
 non-clear hash, and a duplicate sequence is refused.
 
 Gap: this remains offscreen liveness and ownership evidence, not visual-correctness, completeness,
-cross-runtime-parity, or visible-presentation evidence. Text, windows,
-`J2DGrafContext::fillBox`, 3D, authored mip chains, J3D, particles, lights, and effects are not in
-the semantic stream, so the partial result must not be overlaid or presented as the game frame.
+cross-runtime-parity, or visible-presentation evidence. Windows, `J2DGrafContext::fillBox`, 3D,
+authored mip chains, J3D, particles, lights, and effects are not in the semantic stream, so the
+partial result must not be overlaid or presented as the game frame.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -164,7 +176,16 @@ position matrix and copied scalar arguments before retaining the original GX ver
 production-linked native-layout control exercises the active context, direct positions, mirrored
 UVs, transient image copy, and balanced host-allocation gate.
 
-Gap: the same missing unified ordering and semantic families described above prevent visible decomp
+Native `J2DTextBox` bodies now publish their exact transform and clip around the retained
+`J2DPrint` traversal, while native `JUTResFont` publishes the selected glyph metrics, atlas page,
+corner colours, and remap after retaining its GX body. The layout-local adapter decodes that page
+inside the host-allocation gate and submits the same shared `GlyphDraw` value used by recomp. The
+production-linked native-layout control drives the real bridge with encoded font-page bytes and
+proves the transient image is copied before return. Bounded title and stage-one decomp runs did not
+exercise a resource-font glyph on their reached paths, so they prove runtime safety but not live
+decomp glyph coverage; that remains explicit rather than inferred from the adapter test.
+
+Gap: the same missing window and generic-fill families described above prevent visible decomp
 semantic presentation.
 
 ### S006 — Lerp coverage

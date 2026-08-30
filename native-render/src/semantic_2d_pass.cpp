@@ -113,6 +113,17 @@ void assign(float (&destination)[4], Color source) noexcept {
     destination[3] = source.a;
 }
 
+const PictureCommand* textured_command(const SemanticDraw& draw,
+                                       PictureCommand& glyphPicture) noexcept {
+    if (const auto* picture = std::get_if<PictureDraw>(&draw))
+        return &picture->picture;
+    if (const auto* glyph = std::get_if<GlyphDraw>(&draw)) {
+        glyphPicture = picture_from_glyph(glyph->glyph);
+        return &glyphPicture;
+    }
+    return nullptr;
+}
+
 SDL_GPUFilter filter(FilterMode value) noexcept {
     return value == FilterMode::Linear ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
 }
@@ -461,10 +472,11 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
             error = "semantic frame contains an invalid draw context or command";
             return false;
         }
-        if (const auto* picture = std::get_if<PictureDraw>(&semanticDraw)) {
-            appendMesh(make_mesh(picture->picture));
-            for (std::size_t index = 0; index < picture->picture.material.textureCount; ++index) {
-                const PictureTexture& texture = picture->picture.material.textures[index];
+        PictureCommand glyphPicture{};
+        if (const PictureCommand* command = textured_command(semanticDraw, glyphPicture)) {
+            appendMesh(make_mesh(*command));
+            for (std::size_t index = 0; index < command->material.textureCount; ++index) {
+                const PictureTexture& texture = command->material.textures[index];
                 const ImageKey key{texture.resource, texture.revision};
                 const auto source = sources.find(key);
                 const auto cached = impl_->images.find(key);
@@ -544,11 +556,11 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
     drawBindings.reserve(frame.draws.size());
     for (const SemanticDraw& semanticDraw : frame.draws) {
         std::array<SDL_GPUTextureSamplerBinding, 4> bindings{};
-        if (const auto* picture = std::get_if<PictureDraw>(&semanticDraw)) {
+        PictureCommand glyphPicture{};
+        if (const PictureCommand* command = textured_command(semanticDraw, glyphPicture)) {
             for (std::size_t index = 0; index < bindings.size(); ++index) {
-                const PictureTexture& texture =
-                    picture->picture.material.textures[std::min<std::size_t>(
-                        index, picture->picture.material.textureCount - 1U)];
+                const PictureTexture& texture = command->material.textures[std::min<std::size_t>(
+                    index, command->material.textureCount - 1U)];
                 SDL_GPUSampler* sampler = ensure_sampler(*impl_, texture, error);
                 if (sampler == nullptr)
                     return false;
@@ -632,23 +644,23 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
                                        1.0f};
         SDL_SetGPUViewport(render, &viewport);
         SDL_SetGPUScissor(render, &scissor);
-        if (const auto* picture = std::get_if<PictureDraw>(&semanticDraw)) {
-            const PictureCommand& command = picture->picture;
+        PictureCommand glyphPicture{};
+        if (const PictureCommand* command = textured_command(semanticDraw, glyphPicture)) {
             SDL_BindGPUGraphicsPipeline(render, picturePipeline);
             SDL_BindGPUFragmentSamplers(render, 0, bindings.data(), bindings.size());
             PictureStyleUniform style{};
-            assign(style.black, command.material.black);
-            assign(style.white, command.material.white);
+            assign(style.black, command->material.black);
+            assign(style.white, command->material.white);
             std::int32_t alphaMask = 0;
-            for (std::size_t index = 0; index < command.material.textureCount; ++index) {
-                style.colorMix[index] = command.material.textures[index].colorMix;
-                style.alphaMix[index] = command.material.textures[index].alphaMix;
-                if (command.material.textures[index].hasAlpha)
+            for (std::size_t index = 0; index < command->material.textureCount; ++index) {
+                style.colorMix[index] = command->material.textures[index].colorMix;
+                style.alphaMix[index] = command->material.textures[index].alphaMix;
+                if (command->material.textures[index].hasAlpha)
                     alphaMask |= 1 << index;
             }
-            style.control[0] = command.material.textureCount;
+            style.control[0] = command->material.textureCount;
             style.control[1] = alphaMask;
-            style.opacity[0] = command.opacity;
+            style.opacity[0] = command->opacity;
             SDL_PushGPUFragmentUniformData(target.commandBuffer, 0, &style, sizeof(style));
         } else {
             SDL_BindGPUGraphicsPipeline(render, solidPipeline);

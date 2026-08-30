@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace sb::native_render {
@@ -49,9 +50,18 @@ struct SemanticVertex {
     Vec2 position{};
     Vec2 uv{};
     Color color{};
+    bool operator==(const SemanticVertex&) const = default;
+};
+
+struct Matrix3x4 {
+    std::array<float, 12> value{};
 };
 
 [[nodiscard]] bool valid(const Canvas& canvas) noexcept;
+[[nodiscard]] bool valid(const Matrix3x4& matrix) noexcept;
+[[nodiscard]] Matrix3x4 concatenate_transform(const Matrix3x4& first,
+                                              const Matrix3x4& second) noexcept;
+[[nodiscard]] Vec2 transform_point(const Matrix3x4& matrix, float x, float y) noexcept;
 [[nodiscard]] bool resolve_scissor(const Canvas& canvas, const ClipRect& clip,
                                    std::uint32_t targetWidth, std::uint32_t targetHeight,
                                    PixelRect& scissor) noexcept;

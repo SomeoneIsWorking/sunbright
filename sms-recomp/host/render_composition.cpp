@@ -126,14 +126,15 @@ void RenderComposition::report_semantic_stats() noexcept {
     if (statsReported_)
         return;
     const auto& stats = native_render::sdl_semantic_frame_client().stats();
-    lucent::info("semantic",
-                 "offscreen summary: submitted={} completed={} nonempty={} mixed={} operations={} "
-                 "pictures={} solid-rectangles={} images={} samples={} first-nonclear-frame={} "
-                 "first-nonclear-pixels={}",
-                 stats.submittedFrames, stats.completedFrames, stats.nonEmptyFrames,
-                 stats.mixedOperationFrames, stats.submittedOperations, stats.submittedPictures,
-                 stats.submittedSolidRectangles, stats.submittedImages, stats.sampledFrames,
-                 stats.firstNonClearFrame, stats.firstNonClearPixels);
+    lucent::info(
+        "semantic",
+        "offscreen summary: submitted={} completed={} nonempty={} mixed={} operations={} "
+        "pictures={} glyphs={} solid-rectangles={} images={} samples={} first-nonclear-frame={} "
+        "first-nonclear-pixels={}",
+        stats.submittedFrames, stats.completedFrames, stats.nonEmptyFrames,
+        stats.mixedOperationFrames, stats.submittedOperations, stats.submittedPictures,
+        stats.submittedGlyphs, stats.submittedSolidRectangles, stats.submittedImages,
+        stats.sampledFrames, stats.firstNonClearFrame, stats.firstNonClearPixels);
     statsReported_ = true;
 }
 

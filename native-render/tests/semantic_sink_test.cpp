@@ -10,6 +10,9 @@ bool receive(const sb::native_render::SemanticDraw& draw,
     if (const auto* picture = std::get_if<sb::native_render::PictureDraw>(&draw)) {
         assert(images.size() == 1);
         *static_cast<std::uint64_t*>(context) = picture->picture.instance;
+    } else if (const auto* glyph = std::get_if<sb::native_render::GlyphDraw>(&draw)) {
+        assert(images.size() == 1);
+        *static_cast<std::uint64_t*>(context) = glyph->glyph.instance;
     } else {
         assert(images.empty());
         *static_cast<std::uint64_t*>(context) =
@@ -39,6 +42,17 @@ sb::native_render::PictureDraw valid_draw() {
     return {{.origin = {0, 0}, .extent = {1, 1}, .viewport = {0, 0, 1, 1}}, valid_picture()};
 }
 
+sb::native_render::GlyphDraw valid_glyph() {
+    const auto picture = valid_picture();
+    return {{.origin = {0, 0}, .extent = {1, 1}, .viewport = {0, 0, 1, 1}},
+            {.instance = 9,
+             .code = 'A',
+             .positions = picture.positions,
+             .uv = picture.uv,
+             .corner = picture.corner,
+             .atlas = picture.material.textures[0]}};
+}
+
 sb::native_render::SolidRectangleDraw valid_solid() {
     return {{.origin = {0, 0}, .extent = {1, 1}, .viewport = {0, 0, 1, 1}},
             {.instance = 8,
@@ -63,6 +77,8 @@ int main() {
     assert(received == 7);
     assert(sb::native_render::submit_solid_rectangle(valid_solid()));
     assert(received == 8);
+    assert(sb::native_render::submit_glyph(valid_glyph(), std::span(&image, 1)));
+    assert(received == 9);
 
     auto invalid = valid_draw();
     invalid.picture.material.textureCount = 0;

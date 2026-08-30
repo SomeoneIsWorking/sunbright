@@ -33,6 +33,7 @@ struct PictureTexture {
     bool hasAlpha = false;
     float colorMix = 1.0f;
     float alphaMix = 1.0f;
+    bool operator==(const PictureTexture&) const = default;
 };
 
 struct PictureMaterial {
@@ -59,10 +60,6 @@ struct PictureCommand {
 struct PictureDraw {
     Canvas canvas{};
     PictureCommand picture{};
-};
-
-struct Matrix3x4 {
-    std::array<float, 12> value{};
 };
 
 // Inputs owned by the game's J2D layout code. This is shared by the decomp and recomp adapters;

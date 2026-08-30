@@ -25,6 +25,28 @@ bool valid(const Canvas& canvas) noexcept {
            canvas.extent.y > 0.0f && canvas.viewport.width != 0 && canvas.viewport.height != 0;
 }
 
+bool valid(const Matrix3x4& matrix) noexcept {
+    return std::ranges::all_of(matrix.value, [](float value) { return std::isfinite(value); });
+}
+
+Matrix3x4 concatenate_transform(const Matrix3x4& first, const Matrix3x4& second) noexcept {
+    Matrix3x4 result{};
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            float value = column == 3 ? first.value[row * 4 + 3] : 0.0f;
+            for (std::size_t inner = 0; inner < 3; ++inner)
+                value += first.value[row * 4 + inner] * second.value[inner * 4 + column];
+            result.value[row * 4 + column] = value;
+        }
+    }
+    return result;
+}
+
+Vec2 transform_point(const Matrix3x4& matrix, float x, float y) noexcept {
+    return {matrix.value[0] * x + matrix.value[1] * y + matrix.value[3],
+            matrix.value[4] * x + matrix.value[5] * y + matrix.value[7]};
+}
+
 bool resolve_scissor(const Canvas& canvas, const ClipRect& clip, std::uint32_t targetWidth,
                      std::uint32_t targetHeight, PixelRect& scissor) noexcept {
     if (!valid(canvas) || targetWidth == 0 || targetHeight == 0)

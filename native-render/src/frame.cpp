@@ -78,6 +78,8 @@ bool SemanticFrameCollector::append(const SemanticDraw& draw,
                                     std::span<const DecodedImageView> images) {
     if (const auto* picture = std::get_if<PictureDraw>(&draw))
         return append_picture(*picture, images);
+    if (const auto* glyph = std::get_if<GlyphDraw>(&draw))
+        return append_glyph(*glyph, images);
     if (!images.empty())
         return fail(SemanticFrameError::InvalidSubmission);
     return append_solid_rectangle(std::get<SolidRectangleDraw>(draw));
@@ -85,12 +87,25 @@ bool SemanticFrameCollector::append(const SemanticDraw& draw,
 
 bool SemanticFrameCollector::append_picture(const PictureDraw& draw,
                                             std::span<const DecodedImageView> images) {
+    return append_textured(SemanticDraw{draw}, draw.canvas, draw.picture, images);
+}
+
+bool SemanticFrameCollector::append_glyph(const GlyphDraw& draw,
+                                          std::span<const DecodedImageView> images) {
+    if (!valid(draw))
+        return fail(SemanticFrameError::InvalidSubmission);
+    return append_textured(SemanticDraw{draw}, draw.canvas, picture_from_glyph(draw.glyph), images);
+}
+
+bool SemanticFrameCollector::append_textured(const SemanticDraw& draw, const Canvas& canvas,
+                                             const PictureCommand& picture,
+                                             std::span<const DecodedImageView> images) {
     if (state_ != State::Collecting)
         return fail(SemanticFrameError::NotCollecting);
-    if (!valid(draw) || images.size() != draw.picture.material.textureCount)
+    if (!valid(draw) || images.size() != picture.material.textureCount)
         return fail(SemanticFrameError::InvalidSubmission);
     PixelRect viewport{};
-    if (!resolve_scissor(draw.canvas, {}, targetWidth_, targetHeight_, viewport))
+    if (!resolve_scissor(canvas, {}, targetWidth_, targetHeight_, viewport))
         return fail(SemanticFrameError::InvalidSubmission);
     if (draws_.size() >= limits_.commands)
         return fail(SemanticFrameError::CommandLimit);
@@ -101,7 +116,7 @@ bool SemanticFrameCollector::append_picture(const PictureDraw& draw,
         pending.reserve(images.size());
         for (std::size_t index = 0; index < images.size(); ++index) {
             const DecodedImageView& image = images[index];
-            const PictureTexture& texture = draw.picture.material.textures[index];
+            const PictureTexture& texture = picture.material.textures[index];
             if (!valid(image) || image.resource != texture.resource ||
                 image.revision != texture.revision || image.width != texture.width ||
                 image.height != texture.height) {
@@ -151,7 +166,7 @@ bool SemanticFrameCollector::append_picture(const PictureDraw& draw,
         for (StoredImage& image : pending)
             images_.push_back(std::move(image));
         decodedImageBytes_ += pendingBytes;
-        draws_.emplace_back(draw);
+        draws_.push_back(draw);
     } catch (const std::bad_alloc&) {
         return fail(SemanticFrameError::AllocationFailure);
     }

@@ -33,6 +33,7 @@ struct SdlSemanticFrameStats {
     std::uint64_t mixedOperationFrames = 0;
     std::uint64_t submittedOperations = 0;
     std::uint64_t submittedPictures = 0;
+    std::uint64_t submittedGlyphs = 0;
     std::uint64_t submittedSolidRectangles = 0;
     std::uint64_t submittedImages = 0;
     std::uint64_t sampledFrames = 0;

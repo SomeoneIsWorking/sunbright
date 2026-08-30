@@ -58,6 +58,8 @@ class SemanticFrameCollector {
     [[nodiscard]] bool append(const SemanticDraw& draw, std::span<const DecodedImageView> images);
     [[nodiscard]] bool append_picture(const PictureDraw& draw,
                                       std::span<const DecodedImageView> images);
+    [[nodiscard]] bool append_glyph(const GlyphDraw& draw,
+                                    std::span<const DecodedImageView> images);
     [[nodiscard]] bool append_solid_rectangle(const SolidRectangleDraw& draw);
     [[nodiscard]] bool seal(SemanticFrame& frame);
     void reset() noexcept;
@@ -78,6 +80,9 @@ class SemanticFrameCollector {
 
     static bool receive(const SemanticDraw& draw, std::span<const DecodedImageView> images,
                         void* context);
+    [[nodiscard]] bool append_textured(const SemanticDraw& draw, const Canvas& canvas,
+                                       const PictureCommand& picture,
+                                       std::span<const DecodedImageView> images);
     [[nodiscard]] bool fail(SemanticFrameError error) noexcept;
 
     SemanticFrameLimits limits_{};

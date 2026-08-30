@@ -7,6 +7,22 @@ SemanticSink g_sink{};
 SemanticSinkLease g_lease{};
 std::uint64_t g_nextLease = 1;
 
+bool submit_textured(const SemanticDraw& draw, const PictureCommand& picture,
+                     std::span<const DecodedImageView> images) noexcept {
+    if (g_sink.submit == nullptr || !valid(draw) || images.size() != picture.material.textureCount)
+        return false;
+    for (std::size_t index = 0; index < images.size(); ++index) {
+        const PictureTexture& texture = picture.material.textures[index];
+        const DecodedImageView& image = images[index];
+        if (!valid(image) || image.resource != texture.resource ||
+            image.revision != texture.revision || image.width != texture.width ||
+            image.height != texture.height) {
+            return false;
+        }
+    }
+    return g_sink.submit(draw, images, g_sink.context);
+}
+
 } // namespace
 
 bool claim_semantic_sink(SemanticSink sink, SemanticSinkLease& lease) noexcept {
@@ -38,19 +54,13 @@ bool has_semantic_sink() noexcept {
 }
 
 bool submit_picture(const PictureDraw& draw, std::span<const DecodedImageView> images) noexcept {
-    if (g_sink.submit == nullptr || !valid(draw) ||
-        images.size() != draw.picture.material.textureCount)
+    return submit_textured(SemanticDraw{draw}, draw.picture, images);
+}
+
+bool submit_glyph(const GlyphDraw& draw, std::span<const DecodedImageView> images) noexcept {
+    if (!valid(draw))
         return false;
-    for (std::size_t index = 0; index < images.size(); ++index) {
-        const PictureTexture& texture = draw.picture.material.textures[index];
-        const DecodedImageView& image = images[index];
-        if (!valid(image) || image.resource != texture.resource ||
-            image.revision != texture.revision || image.width != texture.width ||
-            image.height != texture.height) {
-            return false;
-        }
-    }
-    return g_sink.submit(SemanticDraw{draw}, images, g_sink.context);
+    return submit_textured(SemanticDraw{draw}, picture_from_glyph(draw.glyph), images);
 }
 
 bool submit_solid_rectangle(const SolidRectangleDraw& draw) noexcept {

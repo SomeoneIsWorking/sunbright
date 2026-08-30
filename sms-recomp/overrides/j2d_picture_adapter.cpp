@@ -2,8 +2,6 @@
 
 #include <sunbright/native_render/image_decode.h>
 
-#include <array>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,57 +10,7 @@
 namespace sb::recomp {
 namespace {
 
-class Reader {
-  public:
-    explicit Reader(const GuestByteReader& reader) noexcept : reader_(reader) {}
-
-    bool bytes(std::uint32_t address, void* destination, std::size_t size) const noexcept {
-        return reader_.read != nullptr && reader_.read(reader_.context, address, destination, size);
-    }
-
-    bool u8(std::uint32_t address, std::uint8_t& value) const noexcept {
-        return bytes(address, &value, sizeof(value));
-    }
-
-    bool u16(std::uint32_t address, std::uint16_t& value) const noexcept {
-        std::array<std::uint8_t, 2> data{};
-        if (!bytes(address, data.data(), data.size()))
-            return false;
-        value = static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[0]) << 8U) | data[1]);
-        return true;
-    }
-
-    bool u32(std::uint32_t address, std::uint32_t& value) const noexcept {
-        std::array<std::uint8_t, 4> data{};
-        if (!bytes(address, data.data(), data.size()))
-            return false;
-        value = (static_cast<std::uint32_t>(data[0]) << 24U) |
-                (static_cast<std::uint32_t>(data[1]) << 16U) |
-                (static_cast<std::uint32_t>(data[2]) << 8U) | data[3];
-        return true;
-    }
-
-    bool s32(std::uint32_t address, std::int32_t& value) const noexcept {
-        std::uint32_t bits = 0;
-        if (!u32(address, bits))
-            return false;
-        value = std::bit_cast<std::int32_t>(bits);
-        return true;
-    }
-
-    bool f32(std::uint32_t address, float& value) const noexcept {
-        std::uint32_t bits = 0;
-        if (!u32(address, bits))
-            return false;
-        value = std::bit_cast<float>(bits);
-        return true;
-    }
-
-  private:
-    const GuestByteReader& reader_;
-};
-
-bool read_matrix(const Reader& reader, std::uint32_t address,
+bool read_matrix(const BigEndianGuestReader& reader, std::uint32_t address,
                  native_render::Matrix3x4& matrix) noexcept {
     for (std::size_t index = 0; index < matrix.value.size(); ++index) {
         if (!reader.f32(address + static_cast<std::uint32_t>(index * sizeof(float)),
@@ -72,8 +20,8 @@ bool read_matrix(const Reader& reader, std::uint32_t address,
     return true;
 }
 
-bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_t textureIndex,
-                  std::uint32_t colorBlend, std::uint32_t alphaBlend,
+bool read_texture(const BigEndianGuestReader& reader, std::uint32_t textureAddress,
+                  std::size_t textureIndex, std::uint32_t colorBlend, std::uint32_t alphaBlend,
                   native_render::PictureTexture& texture,
                   std::vector<std::uint8_t>& rgba8) noexcept {
     std::uint32_t resource = 0;
@@ -162,7 +110,7 @@ bool read_texture(const Reader& reader, std::uint32_t textureAddress, std::size_
     return true;
 }
 
-bool read_picture_material(const Reader& reader, std::uint32_t self,
+bool read_picture_material(const BigEndianGuestReader& reader, std::uint32_t self,
                            CapturedPicture& result) noexcept {
     std::uint8_t textureCount = 0;
     std::uint8_t opacity = 0;
@@ -200,8 +148,8 @@ bool read_picture_material(const Reader& reader, std::uint32_t self,
     return true;
 }
 
-J2DContextCaptureResult capture_graph_context(const Reader& reader, std::uint32_t grafContext,
-                                              bool clipEnabled,
+J2DContextCaptureResult capture_graph_context(const BigEndianGuestReader& reader,
+                                              std::uint32_t grafContext, bool clipEnabled,
                                               native_render::PictureContext& context) noexcept {
     native_render::PictureContext result{};
     result.clipEnabled = clipEnabled;
@@ -258,7 +206,7 @@ J2DContextCaptureResult capture_j2d_context(const GuestByteReader& byteReader, s
                                             native_render::PictureContext& context) noexcept {
     if (screen == 0)
         return J2DContextCaptureResult::Invalid;
-    const Reader reader(byteReader);
+    const BigEndianGuestReader reader(byteReader);
     std::uint8_t clipEnabled = 0;
     if (!reader.u8(screen + 0xec, clipEnabled))
         return J2DContextCaptureResult::Invalid;
@@ -271,7 +219,7 @@ J2DContextCaptureResult capture_j2d_graph_context(const GuestByteReader& byteRea
                                                   native_render::PictureContext& context) noexcept {
     if (grafContext == 0)
         return J2DContextCaptureResult::Invalid;
-    return capture_graph_context(Reader(byteReader), grafContext, false, context);
+    return capture_graph_context(BigEndianGuestReader(byteReader), grafContext, false, context);
 }
 
 void CapturedPicture::refresh_image_views() noexcept {
@@ -290,7 +238,7 @@ bool capture_j2d_picture(const GuestByteReader& byteReader, std::uint32_t self,
                          std::uint32_t parentMatrix, CapturedPicture& capture) noexcept {
     if (self == 0 || parentMatrix == 0)
         return false;
-    const Reader reader(byteReader);
+    const BigEndianGuestReader reader(byteReader);
 
     CapturedPicture result{};
 
@@ -338,7 +286,7 @@ bool capture_j2d_direct_picture(const GuestByteReader& byteReader, std::uint32_t
                                 bool transpose, CapturedPicture& capture) noexcept {
     if (self == 0 || positionMatrix == 0)
         return false;
-    const Reader reader(byteReader);
+    const BigEndianGuestReader reader(byteReader);
     CapturedPicture result{};
     if (!read_picture_material(reader, self, result))
         return false;

@@ -1,5 +1,7 @@
 #include <sunbright/native_render/semantic_sink.h>
 
+#include <sb_native_j2d.h>
+
 #include <JSystem/J2D/J2DOrthoGraph.hpp>
 #include <JSystem/J2D/J2DPicture.hpp>
 #include <JSystem/JDrama/JDRRect.hpp>
@@ -18,13 +20,6 @@
 #include <span>
 #include <vector>
 
-extern "C" void sb_native_picture_submit(const void* picture, const void* parentMatrix);
-extern "C" void sb_native_picture_submit_direct(const void* picture, const void* positionMatrix,
-                                                int width, int height, int mirrorHorizontal,
-                                                int mirrorVertical, int transpose);
-extern "C" void sb_native_picture_context_push(const void* grafContext, int clipEnabled);
-extern "C" void sb_native_picture_context_pop(void);
-extern "C" void sb_native_picture_context_activate(const void* grafContext);
 extern "C" void sb_native_solid_rectangle_submit(const void* rect, std::uint32_t rgba);
 
 namespace {
@@ -42,6 +37,7 @@ struct ReceivedImage {
 struct Receiver {
     std::size_t calls = 0;
     sb::native_render::PictureDraw draw{};
+    sb::native_render::GlyphDraw glyph{};
     sb::native_render::SolidRectangleDraw solid{};
     std::array<ReceivedImage, 4> images{};
     std::size_t imageCount = 0;
@@ -52,10 +48,13 @@ bool receive(const sb::native_render::SemanticDraw& draw,
     assert(g_hostAllocationDepth == 1);
     auto& receiver = *static_cast<Receiver*>(context);
     ++receiver.calls;
-    if (const auto* picture = std::get_if<sb::native_render::PictureDraw>(&draw))
+    if (const auto* picture = std::get_if<sb::native_render::PictureDraw>(&draw)) {
         receiver.draw = *picture;
-    else
+    } else if (const auto* glyph = std::get_if<sb::native_render::GlyphDraw>(&draw)) {
+        receiver.glyph = *glyph;
+    } else {
         receiver.solid = std::get<sb::native_render::SolidRectangleDraw>(draw);
+    }
     receiver.imageCount = images.size();
     for (std::size_t index = 0; index < images.size(); ++index) {
         const auto& source = images[index];
@@ -237,6 +236,51 @@ int main() {
     assert(std::abs(fillColor.b - 48.0f / 255.0f) < kColorTolerance);
     assert(std::abs(fillColor.a - 128.0f / 255.0f) < kColorTolerance);
     assert(g_hostAllocationDepth == 0);
+
+    // Resource-font control: the decomp seam supplies the exact high-level glyph metrics and
+    // selected encoded page; this adapter owns decode and semantic submission.
+    sb_native_picture_context_push(&graph, 1);
+    JUTRect textClip(2, 3, 8, 9);
+    Mtx textTransform{};
+    identity(textTransform);
+    textTransform[0][3] = 5.0f;
+    sb_native_text_context_push(&textClip, &textTransform);
+    sb_native_font_remap(0x10203040, 0xa0b0c0d0);
+    const SbNativeFontGlyph glyph{&picture,
+                                  'A',
+                                  1,
+                                  10.0f,
+                                  20.0f,
+                                  8.0f,
+                                  4.0f,
+                                  8,
+                                  4,
+                                  3,
+                                  1,
+                                  1,
+                                  6,
+                                  8,
+                                  0,
+                                  0,
+                                  0,
+                                  intensityTexels.data(),
+                                  8,
+                                  4,
+                                  GX_TF_I8,
+                                  intensityTexels.size(),
+                                  {0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff}};
+    sb_native_font_glyph_submit(&glyph);
+    assert(receiver.calls == 6);
+    assert(receiver.glyph.glyph.code == 'A');
+    assert(receiver.glyph.glyph.clip.enabled && receiver.glyph.glyph.clip.x == 2);
+    assert(receiver.glyph.glyph.positions[0] == sb::native_render::Vec2(14.0f, 17.0f));
+    assert(receiver.glyph.glyph.positions[3] == sb::native_render::Vec2(22.0f, 21.0f));
+    assert(receiver.glyph.glyph.black == sb::native_render::color_from_rgba8(0x10203040));
+    assert(receiver.glyph.glyph.white == sb::native_render::color_from_rgba8(0xa0b0c0d0));
+    assert(receiver.imageCount == 1 && receiver.images[0].rgba8[0] == 77);
+    assert(g_hostAllocationDepth == 0);
+    sb_native_text_context_pop();
+    sb_native_picture_context_pop();
 
     assert(sb::native_render::release_semantic_sink(sinkLease));
 }

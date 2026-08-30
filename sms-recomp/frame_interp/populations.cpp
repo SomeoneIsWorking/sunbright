@@ -14,15 +14,14 @@
 // silently replacing the first, and it caught both attempts here. Their labels are applied from
 // those hooks instead, which is the correct outcome: a label is a line of code, not a hook.
 
-#include "../overrides/overrides.h"
 #include "populations.h"
+#include "../overrides/overrides.h"
 
 #include <intrinsics.h>
 
-extern "C" void func_801dc34c(CPUState&);   // TMapObjFlag::draw
-extern "C" void func_801dd21c(CPUState&);   // TMapObjWave::draw
-extern "C" void func_80225d00(CPUState&);   // SMS_DrawCube
-extern "C" void func_802f1b00(CPUState&);   // JUTResFont::drawChar_scale
+extern "C" void func_801dc34c(CPUState&); // TMapObjFlag::draw
+extern "C" void func_801dd21c(CPUState&); // TMapObjWave::draw
+extern "C" void func_80225d00(CPUState&); // SMS_DrawCube
 bool sbr_lerp_enabled();
 void sbr_gxfifo_draw_tag(uint64_t tag);
 uint64_t sbr_gxfifo_pending_tag();
@@ -36,10 +35,12 @@ namespace {
 struct Scope {
     bool on;
     explicit Scope(u8 pop) : on(sbr_lerp_enabled()) {
-        if (on) sbr_gxfifo_draw_pop(pop);
+        if (on)
+            sbr_gxfifo_draw_pop(pop);
     }
     ~Scope() {
-        if (on) sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
+        if (on)
+            sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
     }
 };
 
@@ -53,7 +54,8 @@ struct Scope {
 // correspondence and snaps rather than smearing between two unrelated shapes.
 struct Deforming {
     bool on;
-    Deforming(u8 pop, u32 self) : on(sbr_lerp_enabled() && self != 0 && sbr_gxfifo_pending_tag() == 0) {
+    Deforming(u8 pop, u32 self)
+        : on(sbr_lerp_enabled() && self != 0 && sbr_gxfifo_pending_tag() == 0) {
         if (on) {
             sbr_gxfifo_draw_pop(pop);
             sbr_gxfifo_draw_tag((uint64_t)self << 32 | 1u);
@@ -67,19 +69,26 @@ struct Deforming {
     }
 };
 
-void ov_flag(CPUState& cpu) { Deforming d(SB_POP_FLAG, (u32)cpu.gpr[3]); func_801dc34c(cpu); }
-void ov_wave(CPUState& cpu) { Deforming d(SB_POP_WAVE, (u32)cpu.gpr[3]); func_801dd21c(cpu); }
+void ov_flag(CPUState& cpu) {
+    Deforming d(SB_POP_FLAG, (u32)cpu.gpr[3]);
+    func_801dc34c(cpu);
+}
+void ov_wave(CPUState& cpu) {
+    Deforming d(SB_POP_WAVE, (u32)cpu.gpr[3]);
+    func_801dd21c(cpu);
+}
 // The alpha-restore cube is no longer label-only: tag_shadow can give it the identity of the shadow
 // GROUP it bounds (sbr_shadow_cube_tag — the key is the group's MEMBERSHIP, so a re-clustered group
 // snaps instead of pairing with a different set of actors).
 void ov_cube(CPUState& cpu) {
     Scope s(SB_POP_DRAW_CUBE);
     const uint64_t tag = sbr_gxfifo_pending_tag() == 0 ? sbr_shadow_cube_tag(cpu) : 0;
-    if (tag != 0) sbr_gxfifo_draw_tag(tag);
+    if (tag != 0)
+        sbr_gxfifo_draw_tag(tag);
     func_80225d00(cpu);
-    if (tag != 0) sbr_gxfifo_draw_tag(0);
+    if (tag != 0)
+        sbr_gxfifo_draw_tag(0);
 }
-void ov_text(CPUState& cpu)      { Scope s(SB_POP_TEXT);      func_802f1b00(cpu); }
 
 } // namespace
 
@@ -89,5 +98,3 @@ SB_OVERRIDE(0x801dd21cu, ov_wave, "TMapObjWave::draw",
             "60fps audit label only: the sea ripple grid, rebuilt per tick")
 SB_OVERRIDE(0x80225d00u, ov_cube, "SMS_DrawCube",
             "60fps audit label only: the shadow pass's alpha-restore cube")
-SB_OVERRIDE(0x802f1b00u, ov_text, "JUTResFont::drawChar_scale",
-            "60fps audit label only: text glyphs")

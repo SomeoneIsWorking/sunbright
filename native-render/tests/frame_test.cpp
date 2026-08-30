@@ -10,6 +10,7 @@ namespace {
 using sb::native_render::Canvas;
 using sb::native_render::Color;
 using sb::native_render::DecodedImageView;
+using sb::native_render::GlyphDraw;
 using sb::native_render::PictureCommand;
 using sb::native_render::PictureDraw;
 using sb::native_render::PictureTexture;
@@ -35,6 +36,18 @@ PictureCommand command(std::uint64_t instance, std::uint64_t resource, std::uint
 
 PictureDraw draw(PictureCommand picture, Canvas canvas = kCanvas) {
     return {canvas, picture};
+}
+
+GlyphDraw glyph(std::uint64_t instance, std::uint64_t resource, std::uint64_t revision,
+                Canvas canvas = kCanvas) {
+    const PictureCommand picture = command(instance, resource, revision);
+    return {canvas,
+            {.instance = instance,
+             .code = 'A',
+             .positions = picture.positions,
+             .uv = picture.uv,
+             .corner = picture.corner,
+             .atlas = picture.material.textures[0]}};
 }
 
 SolidRectangleDraw solid(std::uint64_t instance, Canvas canvas = kCanvas) {
@@ -71,13 +84,13 @@ int main() {
     // Duplicate resource content is coalesced while mixed command order remains exact.
     assert(collector.append_solid_rectangle(solid(20)));
     auto secondCommand = command(11, 7, 1);
-    assert(collector.append(draw(secondCommand), std::span(&firstImage, 1)));
+    assert(collector.append_glyph(glyph(11, 7, 1), std::span(&firstImage, 1)));
     assert(collector.decoded_image_bytes() == 4);
     assert(collector.seal(frame));
     assert(frame.draws.size() == 3);
     assert(std::get<PictureDraw>(frame.draws[0]).picture.instance == 10);
     assert(std::get<SolidRectangleDraw>(frame.draws[1]).rectangle.instance == 20);
-    assert(std::get<PictureDraw>(frame.draws[2]).picture.instance == 11);
+    assert(std::get<GlyphDraw>(frame.draws[2]).glyph.instance == 11);
     assert(frame.images.size() == 1);
     assert(frame.images[0].rgba8[0] == 255);
 

@@ -38,25 +38,6 @@ Color saturated(Color value) noexcept {
             std::clamp(value.b, 0.0f, 1.0f), std::clamp(value.a, 0.0f, 1.0f)};
 }
 
-Matrix3x4 concatenate(const Matrix3x4& first, const Matrix3x4& second) noexcept {
-    Matrix3x4 result{};
-    for (std::size_t row = 0; row < 3; ++row) {
-        for (std::size_t column = 0; column < 4; ++column) {
-            float value = column == 3 ? first.value[row * 4 + 3] : 0.0f;
-            for (std::size_t inner = 0; inner < 3; ++inner) {
-                value += first.value[row * 4 + inner] * second.value[inner * 4 + column];
-            }
-            result.value[row * 4 + column] = value;
-        }
-    }
-    return result;
-}
-
-Vec2 transform_point(const Matrix3x4& matrix, float x, float y) noexcept {
-    return {matrix.value[0] * x + matrix.value[1] * y + matrix.value[3],
-            matrix.value[4] * x + matrix.value[5] * y + matrix.value[7]};
-}
-
 } // namespace
 
 bool decode_address_mode(std::uint8_t raw, AddressMode& mode) noexcept {
@@ -141,14 +122,8 @@ bool resolve_picture_layout(const PictureLayout& layout, std::array<Vec2, 4>& po
     if (layout.width <= 0 || layout.height <= 0 || layout.textureWidth == 0 ||
         layout.textureHeight == 0 || layout.binding > 0x0f || layout.mirror > 0x03)
         return false;
-    for (float value : layout.parentTransform.value) {
-        if (!std::isfinite(value))
-            return false;
-    }
-    for (float value : layout.globalTransform.value) {
-        if (!std::isfinite(value))
-            return false;
-    }
+    if (!valid(layout.parentTransform) || !valid(layout.globalTransform))
+        return false;
 
     int renderX = 0;
     int renderY = 0;
@@ -229,7 +204,8 @@ bool resolve_picture_layout(const PictureLayout& layout, std::array<Vec2, 4>& po
         uv = {Vec2{u[0], v[1]}, Vec2{u[0], v[0]}, Vec2{u[1], v[1]}, Vec2{u[1], v[0]}};
     }
 
-    const Matrix3x4 transform = concatenate(layout.parentTransform, layout.globalTransform);
+    const Matrix3x4 transform =
+        concatenate_transform(layout.parentTransform, layout.globalTransform);
     positions = {
         transform_point(transform, static_cast<float>(renderX), static_cast<float>(renderY)),
         transform_point(transform, static_cast<float>(renderX + width),
@@ -244,10 +220,8 @@ bool resolve_picture_layout(const PictureLayout& layout, std::array<Vec2, 4>& po
 bool resolve_direct_picture_layout(const DirectPictureLayout& layout,
                                    std::array<Vec2, 4>& positions,
                                    std::array<Vec2, 4>& uv) noexcept {
-    for (float value : layout.transform.value) {
-        if (!std::isfinite(value))
-            return false;
-    }
+    if (!valid(layout.transform))
+        return false;
 
     // The retail immediate vertex emitter narrows these public int dimensions to signed 16-bit.
     const auto narrowS16 = [](std::int32_t value) {

@@ -43,8 +43,16 @@ the corresponding source point before retaining GX emission. Close controls cove
 transposed UV ownership and the native-layout sink. A guarded 400-present recomp Delfino run reached
 the direct call and completed 3,019 operations without a GPU fault or capture refusal.
 
+Both runtimes now publish individual `JUTResFont` glyphs as a distinct semantic family in that same
+sequence. The shared resolver owns proportional/fixed width, bearing, advance, transformed corners,
+retail fixed-point atlas coordinates, corner colours, font black/white remap, and clipping. The
+recomp path retained 1,040 glyph calls in a guarded Delfino run and submitted them alongside 160
+pictures and nine solids without regrouping. The decomp production-linked control exercises the
+same value contract with actual encoded font-page bytes; its bounded title and stage-one runs did
+not happen to reach resource-font glyph drawing, so live decomp glyph coverage is still unmeasured.
+
 ## Remaining resolution
 
-Add text glyphs, window contents/frame pieces, and `J2DGrafContext::fillBox` to the same variant
-stream with planted inter-family order controls. Only then can the J2D portion be considered for
-visible presentation; 3D and effect families remain later work.
+Add window contents/frame pieces and `J2DGrafContext::fillBox` to the same variant stream with
+planted inter-family order controls. Only then can the J2D portion be considered for visible
+presentation; 3D and effect families remain later work.
