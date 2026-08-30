@@ -8,20 +8,24 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered game-frame J2D pictures, resource-font glyphs, complete J2D window compositions, generic J2D filled/gradient boxes, and GC2D solid rectangles to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
-| S005 | The native decomp feeds the same ordered semantic J2D picture/glyph/window/filled-box stream to that renderer | partial | S002, S004 | G004 |
+| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit single-texture J3D models to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S005 | The native decomp feeds the same semantic 2D/UI and first J3D model family to that renderer through native-layout adapters | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
 
 ## Current focus
 
-S004 is the current focus. The path previously counted toward it is now classified separately as
-compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. Pictures,
-resource-font text, window contents and frames, and the two filled-rectangle entry points now share
-one ordered J2D stream. That incomplete native 2D frame can now own the live window in an explicit,
-plainly labelled preview while Aurora continues offscreen as the retained reference. The current
-atomic gap is selecting and grounding the first 3D scene/material boundary; 3D, particles, lights,
-and effects remain absent from the native frame.
+S004 is the current focus. The path previously counted toward it is classified separately as
+compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. The shared
+semantic frame now combines the ported 2D/UI stream with rigid J3D triangle meshes using ordinary
+model/view/projection matrices, decoded RGBA textures, vertex colour, and a PC-native depth-tested
+SDL3 pass. Both runtimes publish the same values through separate layout adapters and always retain
+their original draw bodies for A/B. The model adapters still obtain the active projection from the
+value cached by `GXSetProjection`/`GXGetProjectionv`; the renderer sees only a normal matrix, but
+camera ownership has not yet moved above the SDK seam. That high-level camera boundary is next,
+followed by faithful raster policy and broader J3D materials: culling, blend/depth/alpha policy,
+lighting, multiple texture stages, skinning, authored mip chains, particles, and effects still fall
+back to the retained renderer.
 
 ## Capability details
 
@@ -51,6 +55,19 @@ goal because the shipping abstraction remains GameCube GX. This path is retained
 diagnostic infrastructure.
 
 ### S004 — Recomp PC-native semantic renderer
+
+The first 3D slice now intercepts the high-level `J3DShape::draw` boundary, not a GX/FIFO boundary.
+One shared decoder owns J3D vertex-layout normalization, display-list primitive decoding, asset
+image decoding, and the exact first material family: rigid, unlit, one texture, one texture
+coordinate, authored vertex colour, and the observed texture-times-raster-colour stage program.
+The recomp adapter reads retail big-endian objects and arrays; the SDL pass receives only triangle
+vertices, matrices, an ordinary RGBA image, and sampler policy. Its projection matrix is currently
+normalized from the `GXSetProjection` argument mirrored by the runtime, not yet published by a
+high-level camera owner. A planted shader control proves the
+same triangle changes from red to green when the decoded texture is bound. The final combined-tree
+guarded 60-present audit submitted 6,512 model draws and 2,519,484 decoded vertices with zero
+layout, projection, rigid-matrix, or mesh-decode failures and no GPU fault. Original recompiled
+bodies remain callable and execute after every semantic submission.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission
@@ -181,12 +198,23 @@ semantic frame, and then counts a window hidden after startup as temporarily una
 still completing the semantic submission. C091 records the combined window-ownership evidence and
 its falsifier.
 
-Gap: this is visible presentation and ownership evidence, not full-frame visual correctness or
-cross-runtime parity. 3D, authored mip chains, J3D, particles, lights, and effects are not in the
-semantic stream, so the preview intentionally shows the controlled clear wherever those families
-would have rendered and is not a complete product renderer.
+Gap: this is a real model path, not full-frame visual correctness. The first material family does
+not yet carry cull, blend, depth-write, or alpha-test policy, and unsupported J3D programs are
+refused rather than approximated. Lighting, skinning, multiple texture stages, authored mip chains,
+particles, and effects remain absent, so the preview is not yet a complete product renderer.
 
 ### S005 — Decomp PC-native semantic renderer
+
+The decomp `J3DShape::draw` body now calls a native-layout semantic adapter and then always continues
+through its original GX body. Its loader-swapped vertex arrays are identified explicitly as host
+byte order while display-list commands and indices remain big-endian; a planted mixed-byte-order
+control proves positions and UVs decode correctly. Relocated host-order `ResTIMG` headers feed the
+same shared image decoder used by the recomp adapter. The active projection currently comes from
+the native SDK cache through `GXGetProjectionv`, matching the recomp adapter's mirror but not yet
+the intended high-level camera boundary. A guarded 400-frame direct-to-Delfino audit
+considered 141,825 shape draws and submitted 42,852 supported model draws containing 27,326,178
+vertices, with zero layout, rigid-matrix, or mesh-decode failures. It rejected 55,825 unsupported
+materials and 43,148 non-perspective draw contexts, leaving those to the retained renderer.
 
 The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic command from native
 J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only

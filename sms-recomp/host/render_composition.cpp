@@ -1,5 +1,6 @@
 #include "render_composition.h"
 
+#include "../overrides/semantic_j3d_adapter.h"
 #include "../runtime/render/native_render.h"
 
 #include <sunbright/native_render/sdl_gpu_platform.h>
@@ -79,10 +80,12 @@ bool RenderComposition::initialize(SDL_Window* window, std::string& error) {
             return false;
         }
         if (preview) {
-            lucent::warn("semantic", "INCOMPLETE native 2D preview active at 640x480; 3D, "
-                                     "particles, lights, and effects are intentionally absent");
+            lucent::warn("semantic", "INCOMPLETE native semantic preview active at 640x480; "
+                                     "rigid unlit single-texture J3D models and the ported 2D "
+                                     "families are present; other materials, particles, lights, "
+                                     "and effects are intentionally absent");
         } else {
-            lucent::info("semantic", "offscreen semantic 2D frame audit active at 640x480");
+            lucent::info("semantic", "offscreen semantic frame audit active at 640x480");
         }
     }
     initialized_ = true;
@@ -136,11 +139,12 @@ void RenderComposition::report_semantic_stats() noexcept {
     if (statsReported_)
         return;
     const auto& stats = native_render::sdl_semantic_frame_client().stats();
+    lucent::info("semantic", "{}", semantic_j3d_stats_text());
     lucent::info("semantic",
                  "semantic summary: submitted={} completed={} nonempty={} mixed={} operations={} "
                  "pictures={} j2d-window-pictures={} glyphs={} solid-rectangles={} "
                  "j2d-fill-boxes={} j2d-window-contents={} images={} samples={} presented={} "
-                 "window-unavailable={} "
+                 "models={} meshes={} mesh-vertices={} window-unavailable={} "
                  "first-nonclear-frame={} "
                  "first-nonclear-pixels={}",
                  stats.submittedFrames, stats.completedFrames, stats.nonEmptyFrames,
@@ -148,8 +152,9 @@ void RenderComposition::report_semantic_stats() noexcept {
                  stats.submittedJ2dWindowPictures, stats.submittedGlyphs,
                  stats.submittedSolidRectangles, stats.submittedJ2dFillBoxes,
                  stats.submittedJ2dWindowContents, stats.submittedImages, stats.sampledFrames,
-                 stats.presentedFrames, stats.windowUnavailableFrames, stats.firstNonClearFrame,
-                 stats.firstNonClearPixels);
+                 stats.presentedFrames, stats.submittedModels, stats.submittedMeshes,
+                 stats.submittedMeshVertices, stats.windowUnavailableFrames,
+                 stats.firstNonClearFrame, stats.firstNonClearPixels);
     statsReported_ = true;
 }
 

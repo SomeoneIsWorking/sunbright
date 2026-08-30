@@ -341,6 +341,24 @@ target_include_directories(j2d_fill_box_adapter_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
 add_test(NAME j2d_fill_box_adapter COMMAND j2d_fill_box_adapter_test)
 
+add_executable(semantic_j3d_material_adapter_test
+               tests/semantic_j3d_material_adapter_test.cpp
+               overrides/big_endian_guest_reader.cpp
+               overrides/semantic_j3d_material_adapter.cpp)
+target_link_libraries(semantic_j3d_material_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(semantic_j3d_material_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME semantic_j3d_material_adapter COMMAND semantic_j3d_material_adapter_test)
+
+add_executable(guest_j3d_texture_adapter_test
+               tests/guest_j3d_texture_adapter_test.cpp
+               overrides/big_endian_guest_reader.cpp
+               overrides/guest_j3d_texture_adapter.cpp)
+target_link_libraries(guest_j3d_texture_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(guest_j3d_texture_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME guest_j3d_texture_adapter COMMAND guest_j3d_texture_adapter_test)
+
 add_executable(resource_font_glyph_adapter_test
                tests/resource_font_glyph_adapter_test.cpp
                overrides/big_endian_guest_reader.cpp

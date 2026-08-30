@@ -62,13 +62,14 @@ bool SdlSemanticFrameClient::initialize(SdlGpuPlatform& platform, SemanticFrameB
     stats_ = {};
     consumedSequence_ = bridge.sealed_sequence();
     const SdlGpuFrameTargetDesc targetDesc{
-        .width = config.width, .height = config.height, .hasDepth = false};
+        .width = config.width, .height = config.height, .hasDepth = true};
     if (!target_.initialize(platform, targetDesc, error)) {
         release_resources();
         return false;
     }
+    pass3d_ = std::make_unique<Semantic3dPass>(platform.device());
     pass_ = std::make_unique<Semantic2dPass>(platform.device());
-    if (!pass_->initialize(error)) {
+    if (!pass3d_->initialize(error) || !pass_->initialize(error)) {
         release_resources();
         return false;
     }
@@ -122,8 +123,17 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
     SDL_GPUCommandBuffer* commandBuffer = platform_->acquire_command_buffer(error);
     if (commandBuffer == nullptr)
         return false;
+    const Semantic3dPassTarget pass3dTarget{commandBuffer, target_.color(),
+                                            target_.desc().colorFormat, target_.depth(),
+                                            target_.desc().depthFormat};
+    if (!pass3d_->encode(*frame, pass3dTarget, error)) {
+        std::string completionError;
+        (void)pass3d_->complete_encode(false, completionError);
+        (void)platform_->cancel_command_buffer(commandBuffer, completionError);
+        return false;
+    }
     const Semantic2dPassTarget passTarget{commandBuffer, target_.color(),
-                                          target_.desc().colorFormat, SDL_GPU_LOADOP_CLEAR,
+                                          target_.desc().colorFormat, SDL_GPU_LOADOP_LOAD,
                                           SDL_GPU_STOREOP_STORE};
     if (!pass_->encode(*frame, passTarget, error)) {
         (void)cancel_encode(commandBuffer, error);
@@ -150,19 +160,25 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
     SDL_GPUFence* fence = platform_->submit_and_acquire_fence(commandBuffer, error);
     if (fence == nullptr) {
         std::string completionError;
+        if (!pass3d_->complete_encode(false, completionError))
+            error += "; semantic 3D pass rollback failed: " + completionError;
         if (!pass_->complete_encode(false, completionError))
             error += "; semantic pass rollback failed: " + completionError;
         return false;
     }
     std::string completionError;
-    if (!pass_->complete_encode(true, completionError)) {
+    const bool completed3d = pass3d_->complete_encode(true, completionError);
+    std::string completion2dError;
+    const bool completed2d = pass_->complete_encode(true, completion2dError);
+    if (!completed3d || !completed2d) {
         platform_->release_fence(fence);
-        error = "submitted semantic resource commit failed: " + completionError;
+        error = "submitted semantic resource commit failed: " +
+                (completed3d ? completion2dError : completionError);
         return false;
     }
 
     ++stats_.submittedFrames;
-    stats_.submittedOperations += frame->draws.size();
+    stats_.submittedOperations += frame->draws.size() + frame->models.size();
     bool hasPictures = false;
     bool hasGlyphs = false;
     bool hasSolidRectangles = false;
@@ -193,7 +209,11 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
         ++stats_.mixedOperationFrames;
     }
     stats_.submittedImages += frame->images.size();
-    if (!frame->draws.empty())
+    stats_.submittedModels += frame->models.size();
+    stats_.submittedMeshes += frame->meshes.size();
+    for (const MeshResourceView& mesh : frame->meshes)
+        stats_.submittedMeshVertices += mesh.vertices.size();
+    if (!frame->draws.empty() || !frame->models.empty())
         ++stats_.nonEmptyFrames;
     const auto deadline = std::chrono::steady_clock::now() + kFenceTimeout;
     while (!platform_->fence_signaled(fence)) {
@@ -270,7 +290,7 @@ bool SdlSemanticFrameClient::shutdown(std::string& error) noexcept {
 
 bool SdlSemanticFrameClient::ready() const noexcept {
     return active_ && platform_ != nullptr && bridge_ != nullptr && target_.ready() &&
-           pass_ != nullptr &&
+           pass3d_ != nullptr && pass_ != nullptr &&
            (config_.presentationWindow == nullptr || platform_->presenter_ready());
 }
 
@@ -284,11 +304,15 @@ bool SdlSemanticFrameClient::cancel_encode(SDL_GPUCommandBuffer* commandBuffer,
     const bool cancelled = platform_->cancel_command_buffer(commandBuffer, cancellationError);
     std::string completionError;
     const bool completed = pass_->complete_encode(false, completionError);
+    std::string completion3dError;
+    const bool completed3d = pass3d_->complete_encode(false, completion3dError);
     if (!cancelled)
         error += "; " + cancellationError;
     if (!completed)
         error += "; semantic pass rollback failed: " + completionError;
-    return cancelled && completed;
+    if (!completed3d)
+        error += "; semantic 3D pass rollback failed: " + completion3dError;
+    return cancelled && completed && completed3d;
 }
 
 bool SdlSemanticFrameClient::should_read_back(const SemanticFrame& frame) const noexcept {
@@ -296,8 +320,8 @@ bool SdlSemanticFrameClient::should_read_back(const SemanticFrame& frame) const 
         return false;
     if (config_.readback == SemanticReadbackMode::EveryFrame)
         return true;
-    return config_.readback == SemanticReadbackMode::UntilNonClear && !frame.draws.empty() &&
-           stats_.firstNonClearFrame == 0;
+    return config_.readback == SemanticReadbackMode::UntilNonClear &&
+           (!frame.draws.empty() || !frame.models.empty()) && stats_.firstNonClearFrame == 0;
 }
 
 bool SdlSemanticFrameClient::append_readback(SDL_GPUCommandBuffer* commandBuffer,
@@ -349,6 +373,7 @@ void SdlSemanticFrameClient::release_resources() noexcept {
         SDL_ReleaseGPUTransferBuffer(platform_->device(), readback_);
     readback_ = nullptr;
     pass_.reset();
+    pass3d_.reset();
     target_.shutdown();
     platform_ = nullptr;
     bridge_ = nullptr;

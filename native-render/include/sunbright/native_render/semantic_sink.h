@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sunbright/native_render/image.h>
+#include <sunbright/native_render/model.h>
 #include <sunbright/native_render/semantic_draw.h>
 
 #include <cstdint>
@@ -10,9 +11,12 @@ namespace sb::native_render {
 
 using SemanticSubmit = bool (*)(const SemanticDraw& draw, std::span<const DecodedImageView> images,
                                 void* context);
+using SemanticModelSubmit = bool (*)(const ModelDraw& draw, const MeshResourceView& mesh,
+                                     std::span<const DecodedImageView> images, void* context);
 
 struct SemanticSink {
     SemanticSubmit submit = nullptr;
+    SemanticModelSubmit submitModel = nullptr;
     void* context = nullptr;
 };
 
@@ -36,5 +40,7 @@ struct SemanticSinkLease {
 [[nodiscard]] bool submit_glyph(const GlyphDraw& draw,
                                 std::span<const DecodedImageView> images) noexcept;
 [[nodiscard]] bool submit_solid_rectangle(const SolidRectangleDraw& draw) noexcept;
+[[nodiscard]] bool submit_model(const ModelDraw& draw, const MeshResourceView& mesh,
+                                std::span<const DecodedImageView> images = {}) noexcept;
 
 } // namespace sb::native_render

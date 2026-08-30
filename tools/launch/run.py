@@ -286,7 +286,7 @@ Normal play is windowed, paced, audible, unlimited, and protected by the live GP
   --run-secs SECONDS      impose a wall-clock limit
   --max-present-hz HZ     cap GPU submission rate
   --diagnostic            conservative headless/muted/60-Hz/240-second defaults
-  --semantic-preview      show the incomplete PC-native 2D frame (3D/effects absent)
+  --semantic-preview      show the incomplete PC-native semantic frame
   --isolated-environment  clear ambient project knobs (diagnostic recomp only)
   --runtime decomp        use the decomp oracle (diagnostic or semantic preview only)
   -- NAME=VALUE ...       add exact environment settings after launcher options
@@ -417,8 +417,8 @@ def _print_controls(invocation: Invocation) -> None:
         print(" 60 FPS interpolation: ON — game logic remains at 30 Hz.")
     if invocation.semantic_preview:
         print(
-            " Native 2D preview: INCOMPLETE — only ported 2D/UI is visible; "
-            "3D, particles, lights, and effects are absent."
+            " Native semantic preview: INCOMPLETE — rigid unlit single-texture models and "
+            "ported 2D/UI are visible; other materials, particles, lights, and effects are absent."
         )
 
 

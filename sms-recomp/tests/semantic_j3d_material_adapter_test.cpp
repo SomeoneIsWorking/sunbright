@@ -1,0 +1,90 @@
+#include "../overrides/semantic_j3d_material_adapter.h"
+
+#include <array>
+#include <cassert>
+#include <cstring>
+
+namespace {
+
+struct Memory {
+    std::array<std::uint8_t, 1024> bytes{};
+};
+
+bool read(void* context, std::uint32_t address, void* destination, std::size_t size) {
+    const auto& memory = *static_cast<const Memory*>(context);
+    if (address > memory.bytes.size() || size > memory.bytes.size() - address)
+        return false;
+    std::memcpy(destination, memory.bytes.data() + address, size);
+    return true;
+}
+
+void write_u16(Memory& memory, std::size_t address, std::uint16_t value) {
+    memory.bytes[address] = static_cast<std::uint8_t>(value >> 8U);
+    memory.bytes[address + 1] = static_cast<std::uint8_t>(value);
+}
+
+void write_u32(Memory& memory, std::size_t address, std::uint32_t value) {
+    memory.bytes[address] = static_cast<std::uint8_t>(value >> 24U);
+    memory.bytes[address + 1] = static_cast<std::uint8_t>(value >> 16U);
+    memory.bytes[address + 2] = static_cast<std::uint8_t>(value >> 8U);
+    memory.bytes[address + 3] = static_cast<std::uint8_t>(value);
+}
+
+} // namespace
+
+int main() {
+    constexpr std::uint32_t material = 64;
+    constexpr std::uint32_t color = 160;
+    constexpr std::uint32_t texgen = 256;
+    constexpr std::uint32_t tev = 352;
+    Memory memory{};
+    write_u32(memory, material + 0x20, color);
+    write_u32(memory, material + 0x24, texgen);
+    write_u32(memory, material + 0x28, tev);
+    write_u32(memory, color, 0x803E0D38);
+    write_u32(memory, color + 4, 0x804020FF);
+    memory.bytes[color + 0x0C] = 1;
+    write_u16(memory, color + 0x0E, 0);
+    write_u32(memory, texgen, 0x803E0C84);
+    write_u32(memory, texgen + 4, 0);
+    write_u32(memory, tev, 0x803E0BE8);
+    write_u16(memory, tev + 4, 0xFFFF);
+    memory.bytes[tev + 6] = 0xFF;
+    memory.bytes[tev + 7] = 0xFF;
+    memory.bytes[tev + 8] = 4;
+    const std::array<std::uint8_t, 8> stage{0xC0, 0x40, 0xAF, 0xF0, 0xC1, 0x08, 0xBF, 0x80};
+    std::memcpy(memory.bytes.data() + tev + 0x0A, stage.data(), stage.size());
+
+    const sb::recomp::GuestByteReader reader{&memory, read};
+    sb::native_render::J3dUnlitMaterialState state{};
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    sb::native_render::UnlitColorMaterial output{};
+    assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
+           sb::native_render::J3dUnlitMaterialResult::Success);
+
+    // LightOn and LightOff have different channel offsets. A LightOn-capable block with the
+    // channel's lighting enable bit clear is still semantically unlit.
+    write_u32(memory, color, 0x803E0CD4);
+    memory.bytes[color + 0x14] = 1;
+    write_u16(memory, color + 0x16, 0);
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
+           sb::native_render::J3dUnlitMaterialResult::Success);
+
+    write_u32(memory, tev, 0x803E0B4C);
+    memory.bytes[tev + 0x30] = 1;
+    memory.bytes[tev + 0x08] = 0xFF;
+    memory.bytes[tev + 0x09] = 0xFF;
+    memory.bytes[tev + 0x0A] = 4;
+    std::memcpy(memory.bytes.data() + tev + 0x31, stage.data(), stage.size());
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
+           sb::native_render::J3dUnlitMaterialResult::Success);
+    memory.bytes[tev + 0x30] = 2;
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
+           sb::native_render::J3dUnlitMaterialResult::MultipleTevStages);
+
+    write_u32(memory, material + 0x20, 0xFFFF);
+    assert(!sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+}

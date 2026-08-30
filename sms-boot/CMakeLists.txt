@@ -294,30 +294,32 @@ endforeach()
 # SMS_NATIVE_PLATFORM=1, rendered through Aurora (SDL3 + Dawn/WebGPU).
 # ---------------------------------------------------------------------------
 if(TARGET aurora_core)
-    # One owner for the decomp-side renderer-neutral J2D adapters. Any executable that pulls
-    # reachable J2D code from sms-native must link this bridge; keeping the implementation in a
-    # library lets the static linker select only the seams that executable actually reaches.
-    add_library(sms-native-semantic-2d STATIC
+    # One owner for the decomp-side renderer-neutral J2D and J3D adapters. Any executable that
+    # pulls reachable draw code from sms-native must link this bridge; keeping the implementation
+    # in a library lets the static linker select only the seams that executable actually reaches.
+    add_library(sms-native-semantic STATIC
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_context.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_fill_box_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j3d_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j3d_material_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_jut_texture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_window_adapter.cpp")
-    add_dependencies(sms-native-semantic-2d sms-native-sjis)
-    set_target_properties(sms-native-semantic-2d PROPERTIES
+    add_dependencies(sms-native-semantic sms-native-sjis)
+    set_target_properties(sms-native-semantic PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    target_include_directories(sms-native-semantic-2d PRIVATE
+    target_include_directories(sms-native-semantic PRIVATE
         "${SMS_NATIVE_REPO_ROOT}/extern/aurora/include"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims"
         "${SMS_INCLUDE_STAGED}")
-    target_compile_definitions(sms-native-semantic-2d PRIVATE
+    target_compile_definitions(sms-native-semantic PRIVATE
         TARGET_PC=1 SMS_NATIVE_PLATFORM=1 SMS_AURORA=1)
-    target_compile_options(sms-native-semantic-2d PRIVATE
+    target_compile_options(sms-native-semantic PRIVATE
         "SHELL:-include ${SMS_NATIVE_REPO_ROOT}/extern/aurora/include/dolphin/types.h"
         -w -fcommon)
-    target_link_libraries(sms-native-semantic-2d PUBLIC sunbright-native-render-core)
+    target_link_libraries(sms-native-semantic PUBLIC sunbright-native-render-core)
 
     add_executable(sms-boot
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/main.cpp"
@@ -390,7 +392,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
-        sms-native-semantic-2d
+        sms-native-semantic
         sunbright-native-render-sdl3
         Threads::Threads)
 
@@ -469,7 +471,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
-        sms-native-semantic-2d
+        sms-native-semantic
         Threads::Threads)
     add_test(NAME platform_jaudio_release_test COMMAND platform-jaudio_release_test)
 
@@ -504,7 +506,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
-        sms-native-semantic-2d
+        sms-native-semantic
         Threads::Threads)
     add_test(NAME platform_gx_yscale_test COMMAND platform-gx_yscale_test)
 

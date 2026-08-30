@@ -38,6 +38,12 @@ const char* semantic_frame_error_name(SemanticFrameError error) noexcept {
         return "decoded image byte limit";
     case SemanticFrameError::ConflictingImage:
         return "conflicting image content";
+    case SemanticFrameError::MeshLimit:
+        return "mesh limit";
+    case SemanticFrameError::MeshVertexLimit:
+        return "mesh vertex limit";
+    case SemanticFrameError::ConflictingMesh:
+        return "conflicting mesh content";
     case SemanticFrameError::AllocationFailure:
         return "allocation failure";
     }
@@ -45,13 +51,15 @@ const char* semantic_frame_error_name(SemanticFrameError error) noexcept {
 }
 
 SemanticFrameCollector::SemanticFrameCollector(SemanticFrameLimits limits) : limits_(limits) {
-    if (limits.commands == 0 || limits.images == 0 || limits.decodedImageBytes == 0)
+    if (limits.commands == 0 || limits.images == 0 || limits.decodedImageBytes == 0 ||
+        limits.meshes == 0 || limits.meshVertices == 0)
         error_ = SemanticFrameError::InvalidLimits;
 }
 
 bool SemanticFrameCollector::begin(std::uint32_t targetWidth, std::uint32_t targetHeight,
                                    Color clear) {
-    if (limits_.commands == 0 || limits_.images == 0 || limits_.decodedImageBytes == 0)
+    if (limits_.commands == 0 || limits_.images == 0 || limits_.decodedImageBytes == 0 ||
+        limits_.meshes == 0 || limits_.meshVertices == 0)
         return fail(SemanticFrameError::InvalidLimits);
     if (state_ == State::Collecting)
         return fail(SemanticFrameError::AlreadyCollecting);
@@ -59,9 +67,13 @@ bool SemanticFrameCollector::begin(std::uint32_t targetWidth, std::uint32_t targ
         return fail(SemanticFrameError::InvalidFrame);
 
     draws_.clear();
+    models_.clear();
+    meshes_.clear();
+    meshViews_.clear();
     images_.clear();
     imageViews_.clear();
     decodedImageBytes_ = 0;
+    meshVertices_ = 0;
     targetWidth_ = targetWidth;
     targetHeight_ = targetHeight;
     clear_ = clear;
@@ -71,7 +83,7 @@ bool SemanticFrameCollector::begin(std::uint32_t targetWidth, std::uint32_t targ
 }
 
 SemanticSink SemanticFrameCollector::sink() noexcept {
-    return {receive, this};
+    return {receive, receive_model, this};
 }
 
 bool SemanticFrameCollector::append(const SemanticDraw& draw,
@@ -107,7 +119,7 @@ bool SemanticFrameCollector::append_textured(const SemanticDraw& draw, const Can
     PixelRect viewport{};
     if (!resolve_scissor(canvas, {}, targetWidth_, targetHeight_, viewport))
         return fail(SemanticFrameError::InvalidSubmission);
-    if (draws_.size() >= limits_.commands)
+    if (draws_.size() + models_.size() >= limits_.commands)
         return fail(SemanticFrameError::CommandLimit);
 
     std::vector<StoredImage> pending;
@@ -182,10 +194,101 @@ bool SemanticFrameCollector::append_solid_rectangle(const SolidRectangleDraw& dr
     PixelRect viewport{};
     if (!resolve_scissor(draw.canvas, {}, targetWidth_, targetHeight_, viewport))
         return fail(SemanticFrameError::InvalidSubmission);
-    if (draws_.size() >= limits_.commands)
+    if (draws_.size() + models_.size() >= limits_.commands)
         return fail(SemanticFrameError::CommandLimit);
     try {
         draws_.emplace_back(draw);
+    } catch (const std::bad_alloc&) {
+        return fail(SemanticFrameError::AllocationFailure);
+    }
+    error_ = SemanticFrameError::None;
+    return true;
+}
+
+bool SemanticFrameCollector::append_model(const ModelDraw& draw, const MeshResourceView& mesh,
+                                          std::span<const DecodedImageView> images) {
+    if (state_ != State::Collecting)
+        return fail(SemanticFrameError::NotCollecting);
+    if (!valid(draw) || !valid(mesh) || draw.mesh.resource != mesh.resource ||
+        draw.mesh.revision != mesh.revision || draw.mesh.vertexCount != mesh.vertices.size()) {
+        return fail(SemanticFrameError::InvalidSubmission);
+    }
+    if (draws_.size() + models_.size() >= limits_.commands)
+        return fail(SemanticFrameError::CommandLimit);
+
+    const auto* textured = std::get_if<UnlitTexturedMaterial>(&draw.material);
+    if ((textured == nullptr && !images.empty()) || (textured != nullptr && images.size() != 1))
+        return fail(SemanticFrameError::InvalidSubmission);
+
+    std::vector<StoredImage> pendingImages;
+    std::size_t pendingImageBytes = 0;
+    if (textured != nullptr) {
+        const DecodedImageView& image = images.front();
+        const PictureTexture& texture = textured->texture;
+        if (!valid(image) || image.resource != texture.resource ||
+            image.revision != texture.revision || image.width != texture.width ||
+            image.height != texture.height) {
+            return fail(SemanticFrameError::InvalidSubmission);
+        }
+        const auto storedImage =
+            std::find_if(images_.begin(), images_.end(), [&](const StoredImage& candidate) {
+                return candidate.resource == image.resource && candidate.revision == image.revision;
+            });
+        if (storedImage != images_.end()) {
+            if (storedImage->width != image.width || storedImage->height != image.height ||
+                !std::equal(storedImage->rgba8.begin(), storedImage->rgba8.end(),
+                            image.rgba8.begin(), image.rgba8.end())) {
+                return fail(SemanticFrameError::ConflictingImage);
+            }
+        } else {
+            if (images_.size() >= limits_.images)
+                return fail(SemanticFrameError::ImageLimit);
+            if (decodedImageBytes_ > limits_.decodedImageBytes ||
+                image.rgba8.size() > limits_.decodedImageBytes - decodedImageBytes_) {
+                return fail(SemanticFrameError::ImageByteLimit);
+            }
+            try {
+                pendingImages.push_back(
+                    {image.resource, image.revision, image.width, image.height,
+                     std::vector<std::uint8_t>(image.rgba8.begin(), image.rgba8.end())});
+                pendingImageBytes = image.rgba8.size();
+            } catch (const std::bad_alloc&) {
+                return fail(SemanticFrameError::AllocationFailure);
+            }
+        }
+    }
+
+    const auto stored = std::find_if(meshes_.begin(), meshes_.end(), [&](const StoredMesh& item) {
+        return item.resource == mesh.resource && item.revision == mesh.revision;
+    });
+    const bool needsMesh = stored == meshes_.end();
+    if (stored != meshes_.end()) {
+        if (!std::equal(stored->vertices.begin(), stored->vertices.end(), mesh.vertices.begin(),
+                        mesh.vertices.end())) {
+            return fail(SemanticFrameError::ConflictingMesh);
+        }
+    } else {
+        if (meshes_.size() >= limits_.meshes)
+            return fail(SemanticFrameError::MeshLimit);
+        if (mesh.vertices.size() > limits_.meshVertices - meshVertices_)
+            return fail(SemanticFrameError::MeshVertexLimit);
+    }
+
+    std::vector<MeshVertex> pendingMesh;
+    try {
+        if (needsMesh)
+            pendingMesh.assign(mesh.vertices.begin(), mesh.vertices.end());
+        images_.reserve(images_.size() + pendingImages.size());
+        meshes_.reserve(meshes_.size() + (needsMesh ? 1U : 0U));
+        models_.reserve(models_.size() + 1U);
+        for (StoredImage& image : pendingImages)
+            images_.push_back(std::move(image));
+        decodedImageBytes_ += pendingImageBytes;
+        if (needsMesh) {
+            meshes_.push_back({mesh.resource, mesh.revision, std::move(pendingMesh)});
+            meshVertices_ += mesh.vertices.size();
+        }
+        models_.push_back(draw);
     } catch (const std::bad_alloc&) {
         return fail(SemanticFrameError::AllocationFailure);
     }
@@ -197,6 +300,10 @@ bool SemanticFrameCollector::seal(SemanticFrame& frame) {
     if (state_ != State::Collecting)
         return fail(SemanticFrameError::NotCollecting);
     try {
+        meshViews_.clear();
+        meshViews_.reserve(meshes_.size());
+        for (const StoredMesh& mesh : meshes_)
+            meshViews_.push_back({mesh.resource, mesh.revision, mesh.vertices});
         imageViews_.clear();
         imageViews_.reserve(images_.size());
         for (const StoredImage& image : images_) {
@@ -208,15 +315,19 @@ bool SemanticFrameCollector::seal(SemanticFrame& frame) {
     }
     state_ = State::Sealed;
     error_ = SemanticFrameError::None;
-    frame = {targetWidth_, targetHeight_, draws_, imageViews_, clear_};
+    frame = {targetWidth_, targetHeight_, draws_, models_, meshViews_, imageViews_, clear_};
     return true;
 }
 
 void SemanticFrameCollector::reset() noexcept {
     draws_.clear();
+    models_.clear();
+    meshes_.clear();
+    meshViews_.clear();
     images_.clear();
     imageViews_.clear();
     decodedImageBytes_ = 0;
+    meshVertices_ = 0;
     error_ = SemanticFrameError::None;
     state_ = State::Idle;
 }
@@ -232,6 +343,12 @@ std::size_t SemanticFrameCollector::decoded_image_bytes() const noexcept {
 bool SemanticFrameCollector::receive(const SemanticDraw& draw,
                                      std::span<const DecodedImageView> images, void* context) {
     return static_cast<SemanticFrameCollector*>(context)->append(draw, images);
+}
+
+bool SemanticFrameCollector::receive_model(const ModelDraw& draw, const MeshResourceView& mesh,
+                                           std::span<const DecodedImageView> images,
+                                           void* context) {
+    return static_cast<SemanticFrameCollector*>(context)->append_model(draw, mesh, images);
 }
 
 bool SemanticFrameCollector::fail(SemanticFrameError error) noexcept {

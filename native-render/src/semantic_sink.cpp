@@ -27,7 +27,7 @@ bool submit_textured(const SemanticDraw& draw, const PictureCommand& picture,
 
 bool claim_semantic_sink(SemanticSink sink, SemanticSinkLease& lease) noexcept {
     lease = {};
-    if (sink.submit == nullptr || g_sink.submit != nullptr)
+    if (sink.submit == nullptr || sink.submitModel == nullptr || g_sink.submit != nullptr)
         return false;
     g_sink = sink;
     g_lease.value = g_nextLease++;
@@ -67,6 +67,28 @@ bool submit_solid_rectangle(const SolidRectangleDraw& draw) noexcept {
     if (g_sink.submit == nullptr || !valid(draw))
         return false;
     return g_sink.submit(SemanticDraw{draw}, {}, g_sink.context);
+}
+
+bool submit_model(const ModelDraw& draw, const MeshResourceView& mesh,
+                  std::span<const DecodedImageView> images) noexcept {
+    if (g_sink.submitModel == nullptr || !valid(draw) || !valid(mesh) ||
+        draw.mesh.resource != mesh.resource || draw.mesh.revision != mesh.revision ||
+        draw.mesh.vertexCount != mesh.vertices.size()) {
+        return false;
+    }
+    const auto* textured = std::get_if<UnlitTexturedMaterial>(&draw.material);
+    if ((textured == nullptr && !images.empty()) || (textured != nullptr && images.size() != 1))
+        return false;
+    if (textured != nullptr) {
+        const DecodedImageView& image = images.front();
+        const PictureTexture& texture = textured->texture;
+        if (!valid(image) || image.resource != texture.resource ||
+            image.revision != texture.revision || image.width != texture.width ||
+            image.height != texture.height) {
+            return false;
+        }
+    }
+    return g_sink.submitModel(draw, mesh, images, g_sink.context);
 }
 
 } // namespace sb::native_render

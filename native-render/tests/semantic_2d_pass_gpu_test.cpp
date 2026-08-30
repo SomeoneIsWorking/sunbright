@@ -21,6 +21,9 @@ using sb::native_render::Color;
 using sb::native_render::DecodedImageView;
 using sb::native_render::GlyphCommand;
 using sb::native_render::GlyphDraw;
+using sb::native_render::MeshResourceView;
+using sb::native_render::MeshVertex;
+using sb::native_render::ModelDraw;
 using sb::native_render::PictureCommand;
 using sb::native_render::PictureDraw;
 using sb::native_render::PictureTexture;
@@ -249,7 +252,9 @@ int main() {
         semanticDraw = draw;
         SemanticFramePixels changed{};
         assert(pass.render_and_readback(frame, changed, error) && error.empty());
-        assert(pass.resident_image_count() == 1);
+        // Immutable revisions remain resident so recurring game assets do not allocate and upload
+        // again every frame. The original and changed revisions are intentionally distinct keys.
+        assert(pass.resident_image_count() == 2);
         assert(hash(changed) != hash(first));
         require_color(pixel(changed, 5, 5), {0, 0, 1, 1});
 
@@ -276,8 +281,10 @@ int main() {
         const SolidRectangleDraw redFill = solid(40, 0, 0, 16, 16, {1, 0, 0, 1});
         const SolidRectangleDraw blueFill = solid(43, 8, 8, 16, 16, {0, 0, 1, 1});
         const std::array<SemanticDraw, 3> mixedDraws{redFill, greenDraw, blueFill};
-        const SemanticFrame mixedFrame{
-            16, 16, mixedDraws, std::span<const DecodedImageView>(&greenImage, 1), {}};
+        const SemanticFrame mixedFrame{.targetWidth = 16,
+                                       .targetHeight = 16,
+                                       .draws = mixedDraws,
+                                       .images = std::span<const DecodedImageView>(&greenImage, 1)};
         SemanticFramePixels mixed{};
         assert(pass.render_and_readback(mixedFrame, mixed, error) && error.empty());
         require_color(pixel(mixed, 6, 6), {0, 1, 0, 1});
@@ -296,13 +303,13 @@ int main() {
         SolidRectangleDraw clippedSolid = blueFill;
         clippedSolid.rectangle.clip = {.enabled = true, .x = 20, .y = 20, .width = 2, .height = 2};
         const std::array<SemanticDraw, 2> noOpDraws{redFill, clippedSolid};
-        SemanticFrame noOpFrame{16, 16, noOpDraws, {}, {}};
+        SemanticFrame noOpFrame{.targetWidth = 16, .targetHeight = 16, .draws = noOpDraws};
         SemanticFramePixels noOp{};
         assert(pass.render_and_readback(noOpFrame, noOp, error) && error.empty());
         require_color(pixel(noOp, 10, 10), {1, 0, 0, 1});
         const std::array<SemanticDraw, 2> alphaDraws{redFill,
                                                      solid(44, 0, 0, 16, 16, {0, 0, 1, 0.5f})};
-        SemanticFrame alphaFrame{16, 16, alphaDraws, {}, {}};
+        SemanticFrame alphaFrame{.targetWidth = 16, .targetHeight = 16, .draws = alphaDraws};
         SemanticFramePixels alpha{};
         assert(pass.render_and_readback(alphaFrame, alpha, error) && error.empty());
         const Color alphaBlend = pixel(alpha, 10, 10);
@@ -344,6 +351,51 @@ int main() {
     assert(!client.validate_output(platformError));
     assert(platformError.find("never observed pixels") != std::string::npos);
 
+    // Known-positive 3D control through the production collector/client: a red clip-space triangle
+    // must produce pixels before any 2D draw exists. Moving it fully outside clip space is the
+    // corresponding no-signal geometry control covered by the pure transform test.
+    const std::array<MeshVertex, 3> modelVertices{MeshVertex{{-0.75F, -0.75F, 0.5F}, {0, 0}},
+                                                  MeshVertex{{0.75F, -0.75F, 0.5F}, {1, 0}},
+                                                  MeshVertex{{0.0F, 0.75F, 0.5F}, {0.5F, 1}}};
+    const MeshResourceView modelMesh{71, 1, modelVertices};
+    const ModelDraw modelDraw{
+        .instance = 72,
+        .mesh = {.resource = 71, .revision = 1, .vertexCount = 3},
+        .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+        .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
+        .material = sb::native_render::UnlitColorMaterial{.baseColor = {1, 0, 0, 1}},
+    };
+    assert(bridge.begin());
+    assert(sb::native_render::submit_model(modelDraw, modelMesh));
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    assert(client.stats().submittedModels == 1 && client.stats().submittedMeshes == 1);
+    assert(client.stats().submittedMeshVertices == 3);
+    assert(client.stats().lastSampleNonClearPixels != 0);
+    assert(client.stats().lastSampleHash != clearHash);
+    const std::uint64_t redModelHash = client.stats().lastSampleHash;
+
+    // The textured model path must show the decoded image rather than falling back to the color
+    // shader. A one-pixel green image over the same white triangle has to produce a different
+    // answer from both the black clear and the red untextured control.
+    const std::array<std::uint8_t, 4> greenRgba{0, 255, 0, 255};
+    const DecodedImageView greenImage{
+        .resource = 73, .revision = 4, .width = 1, .height = 1, .rgba8 = greenRgba};
+    ModelDraw texturedModel = modelDraw;
+    texturedModel.instance = 74;
+    texturedModel.material = sb::native_render::UnlitTexturedMaterial{
+        .texture = {.resource = 73, .revision = 4, .width = 1, .height = 1},
+        .usesVertexColor = false};
+    assert(bridge.begin());
+    assert(sb::native_render::submit_model(texturedModel, modelMesh,
+                                           std::span<const DecodedImageView>(&greenImage, 1)));
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    assert(client.stats().submittedModels == 2);
+    assert(client.stats().lastSampleNonClearPixels != 0);
+    assert(client.stats().lastSampleHash != clearHash);
+    assert(client.stats().lastSampleHash != redModelHash);
+
     assert(bridge.begin());
     assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
     const GlyphCommand auditGlyph{.instance = 100,
@@ -359,9 +411,9 @@ int main() {
     assert(sb::native_render::submit_solid_rectangle(auditFill));
     assert(bridge.seal());
     assert(client.encode_last_sealed(platformError));
-    assert(client.stats().submittedFrames == 2 && client.stats().completedFrames == 2);
-    assert(client.stats().nonEmptyFrames == 1 && client.stats().mixedOperationFrames == 1);
-    assert(client.stats().submittedOperations == 3);
+    assert(client.stats().submittedFrames == 4 && client.stats().completedFrames == 4);
+    assert(client.stats().nonEmptyFrames == 3 && client.stats().mixedOperationFrames == 1);
+    assert(client.stats().submittedOperations == 5);
     assert(client.stats().submittedPictures == 1 && client.stats().submittedGlyphs == 1 &&
            client.stats().submittedSolidRectangles == 1);
     assert(client.stats().submittedJ2dFillBoxes == 1);

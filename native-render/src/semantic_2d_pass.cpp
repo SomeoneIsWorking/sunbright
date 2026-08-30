@@ -3,6 +3,7 @@
 #include "../shaders/picture_frag_spv.h"
 #include "../shaders/picture_vert_spv.h"
 #include "../shaders/solid_rectangle_frag_spv.h"
+#include "sdl_image_cache.h"
 
 #include <algorithm>
 #include <array>
@@ -45,47 +46,6 @@ static_assert(sizeof(GpuVertex) == 32);
 static_assert(sizeof(CanvasUniform) == 16);
 static_assert(sizeof(PictureStyleUniform) == 96);
 
-struct ImageKey {
-    std::uint64_t resource = 0;
-    std::uint64_t revision = 0;
-
-    bool operator==(const ImageKey&) const = default;
-};
-
-struct ImageKeyHash {
-    std::size_t operator()(ImageKey key) const noexcept {
-        return std::hash<std::uint64_t>{}(key.resource) ^
-               (std::hash<std::uint64_t>{}(key.revision) << 1U);
-    }
-};
-
-struct SamplerKey {
-    AddressMode addressU = AddressMode::Clamp;
-    AddressMode addressV = AddressMode::Clamp;
-    FilterMode minFilter = FilterMode::Nearest;
-    FilterMode magFilter = FilterMode::Nearest;
-    MipFilter mipFilter = MipFilter::None;
-
-    bool operator==(const SamplerKey&) const = default;
-};
-
-struct SamplerKeyHash {
-    std::size_t operator()(SamplerKey key) const noexcept {
-        return static_cast<std::size_t>(key.addressU) |
-               (static_cast<std::size_t>(key.addressV) << 2U) |
-               (static_cast<std::size_t>(key.minFilter) << 4U) |
-               (static_cast<std::size_t>(key.magFilter) << 5U) |
-               (static_cast<std::size_t>(key.mipFilter) << 6U);
-    }
-};
-
-struct CachedImage {
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    SDL_GPUTexture* texture = nullptr;
-    SDL_GPUTransferBuffer* upload = nullptr;
-};
-
 struct VertexStorage {
     SDL_GPUBuffer* buffer = nullptr;
     SDL_GPUTransferBuffer* upload = nullptr;
@@ -124,32 +84,6 @@ const PictureCommand* textured_command(const SemanticDraw& draw,
     return nullptr;
 }
 
-SDL_GPUFilter filter(FilterMode value) noexcept {
-    return value == FilterMode::Linear ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
-}
-
-SDL_GPUSamplerMipmapMode mip_filter(MipFilter value) noexcept {
-    return value == MipFilter::Linear ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR
-                                      : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
-}
-
-SDL_GPUSamplerAddressMode address_mode(AddressMode value) noexcept {
-    switch (value) {
-    case AddressMode::Repeat:
-        return SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-    case AddressMode::Mirror:
-        return SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT;
-    case AddressMode::Clamp:
-        return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    }
-    return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-}
-
-SamplerKey sampler_key(const PictureTexture& texture) noexcept {
-    return {texture.addressU, texture.addressV, texture.minFilter, texture.magFilter,
-            texture.mipFilter};
-}
-
 bool wait_for_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) noexcept {
     const auto deadline = std::chrono::steady_clock::now() + kFenceTimeout;
     while (!SDL_QueryGPUFence(device, fence)) {
@@ -178,7 +112,7 @@ std::size_t next_capacity(std::size_t required) noexcept {
 } // namespace
 
 struct Semantic2dPassImpl {
-    explicit Semantic2dPassImpl(SDL_GPUDevice* value) noexcept : device(value) {}
+    explicit Semantic2dPassImpl(SDL_GPUDevice* value) noexcept : device(value), images(value) {}
 
     SDL_GPUDevice* device = nullptr;
     SDL_GPUShader* vertexShader = nullptr;
@@ -186,10 +120,7 @@ struct Semantic2dPassImpl {
     SDL_GPUShader* solidFragmentShader = nullptr;
     std::unordered_map<SDL_GPUTextureFormat, SDL_GPUGraphicsPipeline*> picturePipelines{};
     std::unordered_map<SDL_GPUTextureFormat, SDL_GPUGraphicsPipeline*> solidPipelines{};
-    std::unordered_map<ImageKey, CachedImage, ImageKeyHash> images{};
-    std::unordered_map<ImageKey, CachedImage, ImageKeyHash> pendingImages{};
-    std::vector<ImageKey> currentImages{};
-    std::unordered_map<SamplerKey, SDL_GPUSampler*, SamplerKeyHash> samplers{};
+    SdlImageCache images;
     VertexStorage vertices{};
     std::vector<VertexStorage> retiredVertexStorage{};
     bool encodeActive = false;
@@ -203,21 +134,6 @@ void release_vertex_storage(SDL_GPUDevice* device, VertexStorage storage) noexce
         SDL_ReleaseGPUTransferBuffer(device, storage.upload);
     if (storage.buffer != nullptr)
         SDL_ReleaseGPUBuffer(device, storage.buffer);
-}
-
-void release_image(SDL_GPUDevice* device, CachedImage image) noexcept {
-    if (image.upload != nullptr)
-        SDL_ReleaseGPUTransferBuffer(device, image.upload);
-    if (image.texture != nullptr)
-        SDL_ReleaseGPUTexture(device, image.texture);
-}
-
-const CachedImage* find_image(const Semantic2dPassImpl& impl, ImageKey key) noexcept {
-    if (const auto resident = impl.images.find(key); resident != impl.images.end())
-        return &resident->second;
-    if (const auto pending = impl.pendingImages.find(key); pending != impl.pendingImages.end())
-        return &pending->second;
-    return nullptr;
 }
 
 SDL_GPUGraphicsPipeline*
@@ -308,29 +224,6 @@ bool ensure_vertex_storage(Semantic2dPassImpl& impl, std::size_t required, std::
     return true;
 }
 
-SDL_GPUSampler* ensure_sampler(Semantic2dPassImpl& impl, const PictureTexture& texture,
-                               std::string& error) {
-    const SamplerKey key = sampler_key(texture);
-    const auto existing = impl.samplers.find(key);
-    if (existing != impl.samplers.end())
-        return existing->second;
-    SDL_GPUSamplerCreateInfo info{};
-    info.min_filter = filter(texture.minFilter);
-    info.mag_filter = filter(texture.magFilter);
-    info.mipmap_mode = mip_filter(texture.mipFilter);
-    info.address_mode_u = address_mode(texture.addressU);
-    info.address_mode_v = address_mode(texture.addressV);
-    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    info.max_lod = 0.0f;
-    SDL_GPUSampler* sampler = SDL_CreateGPUSampler(impl.device, &info);
-    if (sampler == nullptr) {
-        error = std::string("picture sampler creation failed: ") + SDL_GetError();
-        return nullptr;
-    }
-    impl.samplers.emplace(key, sampler);
-    return sampler;
-}
-
 } // namespace
 
 Semantic2dPass::Semantic2dPass(SDL_GPUDevice* device) : impl_(new Semantic2dPassImpl(device)) {}
@@ -339,18 +232,6 @@ Semantic2dPass::~Semantic2dPass() {
     if (impl_ != nullptr && impl_->encodeActive)
         std::terminate();
     if (impl_ != nullptr && impl_->device != nullptr) {
-        for (const auto& [key, sampler] : impl_->samplers) {
-            (void)key;
-            SDL_ReleaseGPUSampler(impl_->device, sampler);
-        }
-        for (const auto& [key, image] : impl_->images) {
-            (void)key;
-            release_image(impl_->device, image);
-        }
-        for (const auto& [key, image] : impl_->pendingImages) {
-            (void)key;
-            release_image(impl_->device, image);
-        }
         release_vertex_storage(impl_->device, impl_->vertices);
         for (VertexStorage storage : impl_->retiredVertexStorage)
             release_vertex_storage(impl_->device, storage);
@@ -415,8 +296,6 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
     }
     impl_->encodeActive = true;
     impl_->encodeSucceeded = false;
-    impl_->pendingImages.clear();
-    impl_->currentImages.clear();
     if (!initialize(error))
         return false;
     if (target.commandBuffer == nullptr || target.colorTexture == nullptr) {
@@ -427,6 +306,8 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
         error = "semantic frame has an invalid target extent";
         return false;
     }
+    if (!impl_->images.begin(frame.images, error))
+        return false;
     SDL_GPUGraphicsPipeline* picturePipeline =
         ensure_pipeline(*impl_, impl_->picturePipelines, impl_->pictureFragmentShader,
                         target.colorFormat, "picture", error);
@@ -435,25 +316,6 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
                         target.colorFormat, "solid rectangle", error);
     if (picturePipeline == nullptr || solidPipeline == nullptr)
         return false;
-
-    std::unordered_map<ImageKey, const DecodedImageView*, ImageKeyHash> sources;
-    impl_->currentImages.reserve(frame.images.size());
-    for (const DecodedImageView& image : frame.images) {
-        std::size_t bytes = 0;
-        const ImageKey key{image.resource, image.revision};
-        if (image.resource == 0 || !multiplication_fits(image.width, image.height, bytes) ||
-            image.rgba8.size() != bytes || !sources.emplace(key, &image).second) {
-            error = "semantic frame contains an invalid or duplicate decoded image";
-            return false;
-        }
-        impl_->currentImages.push_back(key);
-        const auto cached = impl_->images.find(key);
-        if (cached != impl_->images.end() &&
-            (cached->second.width != image.width || cached->second.height != image.height)) {
-            error = "picture image revision changed dimensions without changing its semantic key";
-            return false;
-        }
-    }
 
     std::vector<GpuVertex> vertices;
     vertices.reserve(frame.draws.size() * 6U);
@@ -475,26 +337,6 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
         PictureCommand glyphPicture{};
         if (const PictureCommand* command = textured_command(semanticDraw, glyphPicture)) {
             appendMesh(make_mesh(*command));
-            for (std::size_t index = 0; index < command->material.textureCount; ++index) {
-                const PictureTexture& texture = command->material.textures[index];
-                const ImageKey key{texture.resource, texture.revision};
-                const auto source = sources.find(key);
-                const auto cached = impl_->images.find(key);
-                const std::uint32_t width = source != sources.end()         ? source->second->width
-                                            : cached != impl_->images.end() ? cached->second.width
-                                                                            : 0;
-                const std::uint32_t height = source != sources.end() ? source->second->height
-                                             : cached != impl_->images.end() ? cached->second.height
-                                                                             : 0;
-                if (width != texture.width || height != texture.height) {
-                    error = "picture command references an absent or mismatched decoded image";
-                    return false;
-                }
-                if (std::find(impl_->currentImages.begin(), impl_->currentImages.end(), key) ==
-                    impl_->currentImages.end()) {
-                    impl_->currentImages.push_back(key);
-                }
-            }
         } else {
             appendMesh(make_mesh(std::get<SolidRectangleDraw>(semanticDraw).rectangle));
         }
@@ -513,45 +355,6 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
         SDL_UnmapGPUTransferBuffer(impl_->device, impl_->vertices.upload);
     }
 
-    for (const auto& [key, source] : sources) {
-        if (impl_->images.contains(key))
-            continue;
-        std::size_t bytes = 0;
-        (void)multiplication_fits(source->width, source->height, bytes);
-        SDL_GPUTextureCreateInfo textureInfo{};
-        textureInfo.type = SDL_GPU_TEXTURETYPE_2D;
-        textureInfo.format = kImageFormat;
-        textureInfo.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        textureInfo.width = source->width;
-        textureInfo.height = source->height;
-        textureInfo.layer_count_or_depth = 1;
-        textureInfo.num_levels = 1;
-        textureInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        const SDL_GPUTransferBufferCreateInfo uploadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                                                         static_cast<Uint32>(bytes), 0};
-        CachedImage image{source->width, source->height,
-                          SDL_CreateGPUTexture(impl_->device, &textureInfo),
-                          SDL_CreateGPUTransferBuffer(impl_->device, &uploadInfo)};
-        if (image.texture == nullptr || image.upload == nullptr) {
-            if (image.upload != nullptr)
-                SDL_ReleaseGPUTransferBuffer(impl_->device, image.upload);
-            if (image.texture != nullptr)
-                SDL_ReleaseGPUTexture(impl_->device, image.texture);
-            error = std::string("picture image resource allocation failed: ") + SDL_GetError();
-            return false;
-        }
-        void* mapped = SDL_MapGPUTransferBuffer(impl_->device, image.upload, false);
-        if (mapped == nullptr) {
-            SDL_ReleaseGPUTransferBuffer(impl_->device, image.upload);
-            SDL_ReleaseGPUTexture(impl_->device, image.texture);
-            error = std::string("picture image upload map failed: ") + SDL_GetError();
-            return false;
-        }
-        std::memcpy(mapped, source->rgba8.data(), bytes);
-        SDL_UnmapGPUTransferBuffer(impl_->device, image.upload);
-        impl_->pendingImages.emplace(key, image);
-    }
-
     std::vector<std::array<SDL_GPUTextureSamplerBinding, 4>> drawBindings;
     drawBindings.reserve(frame.draws.size());
     for (const SemanticDraw& semanticDraw : frame.draws) {
@@ -561,21 +364,14 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
             for (std::size_t index = 0; index < bindings.size(); ++index) {
                 const PictureTexture& texture = command->material.textures[std::min<std::size_t>(
                     index, command->material.textureCount - 1U)];
-                SDL_GPUSampler* sampler = ensure_sampler(*impl_, texture, error);
-                if (sampler == nullptr)
+                if (!impl_->images.resolve(texture, bindings[index], error))
                     return false;
-                const CachedImage* image = find_image(*impl_, {texture.resource, texture.revision});
-                if (image == nullptr) {
-                    error = "picture image cache lost a validated semantic resource";
-                    return false;
-                }
-                bindings[index] = {image->texture, sampler};
             }
         }
         drawBindings.push_back(bindings);
     }
 
-    if (vertexBytes != 0 || !impl_->pendingImages.empty()) {
+    if (vertexBytes != 0) {
         SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(target.commandBuffer);
         if (copy == nullptr) {
             error = std::string("semantic 2D upload pass creation failed: ") + SDL_GetError();
@@ -587,15 +383,10 @@ bool Semantic2dPass::encode(const SemanticFrame& frame, const Semantic2dPassTarg
                                                   static_cast<Uint32>(vertexBytes)};
             SDL_UploadToGPUBuffer(copy, &source, &destination, true);
         }
-        for (const auto& [key, image] : impl_->pendingImages) {
-            (void)key;
-            const SDL_GPUTextureTransferInfo source{image.upload, 0, image.width, image.height};
-            const SDL_GPUTextureRegion destination{image.texture, 0, 0, 0, 0, 0, image.width,
-                                                   image.height,  1};
-            SDL_UploadToGPUTexture(copy, &source, &destination, false);
-        }
         SDL_EndGPUCopyPass(copy);
     }
+    if (!impl_->images.encode_uploads(target.commandBuffer, error))
+        return false;
 
     const SDL_GPUColorTargetInfo colorTarget{
         target.colorTexture,
@@ -688,37 +479,15 @@ bool Semantic2dPass::complete_encode(bool submitted, std::string& error) noexcep
         return false;
     }
 
-    if (submitted) {
-        for (auto& [key, image] : impl_->pendingImages) {
-            (void)key;
-            SDL_ReleaseGPUTransferBuffer(impl_->device, image.upload);
-            image.upload = nullptr;
-        }
-        impl_->images.merge(impl_->pendingImages);
-        for (auto it = impl_->images.begin(); it != impl_->images.end();) {
-            if (std::find(impl_->currentImages.begin(), impl_->currentImages.end(), it->first) !=
-                impl_->currentImages.end()) {
-                ++it;
-                continue;
-            }
-            release_image(impl_->device, it->second);
-            it = impl_->images.erase(it);
-        }
-    } else {
-        for (const auto& [key, image] : impl_->pendingImages) {
-            (void)key;
-            release_image(impl_->device, image);
-        }
-        impl_->pendingImages.clear();
-    }
-    impl_->currentImages.clear();
+    if (!impl_->images.complete(submitted, error))
+        return false;
     impl_->encodeActive = false;
     impl_->encodeSucceeded = false;
     return true;
 }
 
 std::size_t Semantic2dPass::resident_image_count() const noexcept {
-    return impl_ != nullptr ? impl_->images.size() : 0;
+    return impl_ != nullptr ? impl_->images.resident_count() : 0;
 }
 
 bool Semantic2dPass::render_and_readback(const SemanticFrame& frame, SemanticFramePixels& output,

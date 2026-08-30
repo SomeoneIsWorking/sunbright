@@ -26,6 +26,19 @@ bool reject(const sb::native_render::SemanticDraw&,
     return false;
 }
 
+bool receive_model(const sb::native_render::ModelDraw& draw,
+                   const sb::native_render::MeshResourceView&,
+                   std::span<const sb::native_render::DecodedImageView> images, void* context) {
+    assert(images.empty());
+    *static_cast<std::uint64_t*>(context) = draw.instance;
+    return true;
+}
+
+bool reject_model(const sb::native_render::ModelDraw&, const sb::native_render::MeshResourceView&,
+                  std::span<const sb::native_render::DecodedImageView>, void*) {
+    return false;
+}
+
 sb::native_render::PictureCommand valid_picture() {
     sb::native_render::PictureCommand picture{};
     picture.instance = 7;
@@ -72,7 +85,8 @@ int main() {
 
     std::uint64_t received = 0;
     sb::native_render::SemanticSinkLease lease;
-    assert(sb::native_render::claim_semantic_sink({receive, &received}, lease));
+    assert(sb::native_render::claim_semantic_sink(
+        {.submit = receive, .submitModel = receive_model, .context = &received}, lease));
     assert(sb::native_render::has_semantic_sink());
     assert(sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
     assert(received == 7);
@@ -80,6 +94,18 @@ int main() {
     assert(received == 8);
     assert(sb::native_render::submit_glyph(valid_glyph(), std::span(&image, 1)));
     assert(received == 9);
+    const std::array<sb::native_render::MeshVertex, 3> vertices{
+        sb::native_render::MeshVertex{{0, 0, 0}}, sb::native_render::MeshVertex{{1, 0, 0}},
+        sb::native_render::MeshVertex{{0, 1, 0}}};
+    const sb::native_render::MeshResourceView mesh{2, 1, vertices};
+    const sb::native_render::ModelDraw model{
+        .instance = 10,
+        .mesh = {.resource = 2, .revision = 1, .vertexCount = 3},
+        .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+        .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
+    };
+    assert(sb::native_render::submit_model(model, mesh));
+    assert(received == 10);
 
     auto invalid = valid_draw();
     invalid.picture.material.textureCount = 0;
@@ -98,7 +124,8 @@ int main() {
     assert(received == 0);
 
     assert(sb::native_render::release_semantic_sink(lease));
-    assert(sb::native_render::claim_semantic_sink({reject, nullptr}, lease));
+    assert(sb::native_render::claim_semantic_sink(
+        {.submit = reject, .submitModel = reject_model, .context = nullptr}, lease));
     assert(!sb::native_render::submit_picture(valid_draw(), std::span(&image, 1)));
 
     assert(sb::native_render::release_semantic_sink(lease));

@@ -1,0 +1,314 @@
+#include "semantic_j3d_adapter.h"
+
+#include "guest_j3d_texture_adapter.h"
+#include "semantic_j3d_material_adapter.h"
+
+#include "../runtime/probe_server.h"
+#include "../runtime/render/j3d_decode.h"
+#include "../runtime/render/native_render.h"
+#include "../runtime/render/scene.h"
+#include "../runtime/sb_assert.h"
+
+#include <sunbright/native_render/semantic_sink.h>
+
+#include <algorithm>
+#include <array>
+#include <compare>
+#include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace {
+
+constexpr u32 kJ3dSys = 0x804045DC;
+constexpr u32 kJ3dSysMaterialPacket = 0x3C;
+constexpr u32 kMaterialPacketMaterial = 0x38;
+constexpr u32 kMaterialPacketTexture = 0x40;
+constexpr u32 kShapeElementCount = 0x06;
+constexpr u32 kShapeMatrices = 0x34;
+constexpr u32 kShapeDrawMatrices = 0x50;
+constexpr u32 kShapeCurrentView = 0x58;
+// Retail US J3DShapeMtx constructor 0x802dfcc8 writes this exact CodeWarrior vtable address.
+constexpr u32 kBaseShapeMatrixVptr = 0x803E125C;
+constexpr std::uint32_t kColor0 = 11;
+
+struct Stats {
+    std::uint64_t shapeDraws = 0;
+    std::uint64_t materialMemoryFailures = 0;
+    std::array<std::uint64_t, 9> materialRejections{};
+    std::uint64_t layoutFailures = 0;
+    std::uint64_t projectionFailures = 0;
+    std::uint64_t nonRigidElements = 0;
+    std::uint64_t decodeFailures = 0;
+    std::uint64_t textureTableFailures = 0;
+    std::array<std::uint64_t, 12> textureDecodeFailures{};
+    std::array<std::uint64_t, 10> texturedMaterialRejections{};
+    std::uint64_t submittedModels = 0;
+    std::uint64_t submittedVertices = 0;
+    std::uint64_t unlitTexturedCandidates = 0;
+    std::uint64_t litUntexturedCandidates = 0;
+    std::uint64_t litTexturedCandidates = 0;
+};
+
+struct ProgramKey {
+    bool lighting = false;
+    std::uint8_t stageCount = 0;
+    std::uint16_t textureNumber = 0;
+    std::uint8_t textureCoordinate = 0;
+    std::uint8_t textureMap = 0;
+    std::uint8_t colorChannel = 0;
+    std::array<std::uint8_t, 8> stage{};
+    auto operator<=>(const ProgramKey&) const = default;
+};
+
+Stats g_stats{};
+std::map<ProgramKey, std::uint64_t> g_programs;
+std::vector<J3DVert> g_decoded;
+std::vector<sb::native_render::MeshVertex> g_vertices;
+sb::native_render::DecodedTexture g_texture;
+
+bool readable(u32 address) {
+    return sb_ram_fast(address) != nullptr;
+}
+
+float guest_f32(u32 address) {
+    const u32 bits = sb_r32(address);
+    float value = 0.0F;
+    __builtin_memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+sb::native_render::Matrix4x4 current_projection() {
+    bool is2d = false;
+    const float* source = sbr_gx_current_projection(&is2d);
+    sb::native_render::Matrix4x4 projection{};
+    if (is2d || !sbr_scene_has_projection())
+        return projection;
+    std::copy_n(source, projection.value.size(), projection.value.begin());
+    return sb::native_render::zero_to_one_depth_projection(projection);
+}
+
+const bool g_probe = [] {
+    sb_probe_register("/semantic-j3d", "PC-native rigid unlit J3D model coverage",
+                      [](const ProbeArgs&) { return semantic_j3d_stats_text(); });
+    return true;
+}();
+
+} // namespace
+
+std::string semantic_j3d_stats_text() {
+    std::uint64_t textureDecodeFailures = 0;
+    for (std::uint64_t count : g_stats.textureDecodeFailures)
+        textureDecodeFailures += count;
+    char output[1536];
+    std::snprintf(
+        output, sizeof(output),
+        "J3D native-model coverage: considered=%llu submitted=%llu models/%llu vertices; "
+        "unreadable=%llu layout=%llu projection=%llu non-rigid=%llu decode=%llu "
+        "texture-table=%llu texture-decode=%llu; material "
+        "rejections: colour-block=%llu lighting=%llu missing-channel=%llu texture=%llu "
+        "tev-family=%llu multi-stage=%llu colour-program=%llu missing-vertex-colour=%llu; "
+        "exact next-family candidates: unlit+textured=%llu lit+untextured=%llu "
+        "lit+textured=%llu",
+        static_cast<unsigned long long>(g_stats.shapeDraws),
+        static_cast<unsigned long long>(g_stats.submittedModels),
+        static_cast<unsigned long long>(g_stats.submittedVertices),
+        static_cast<unsigned long long>(g_stats.materialMemoryFailures),
+        static_cast<unsigned long long>(g_stats.layoutFailures),
+        static_cast<unsigned long long>(g_stats.projectionFailures),
+        static_cast<unsigned long long>(g_stats.nonRigidElements),
+        static_cast<unsigned long long>(g_stats.decodeFailures),
+        static_cast<unsigned long long>(g_stats.textureTableFailures),
+        static_cast<unsigned long long>(textureDecodeFailures),
+        static_cast<unsigned long long>(g_stats.materialRejections[1]),
+        static_cast<unsigned long long>(g_stats.materialRejections[2]),
+        static_cast<unsigned long long>(g_stats.materialRejections[3]),
+        static_cast<unsigned long long>(g_stats.materialRejections[4]),
+        static_cast<unsigned long long>(g_stats.materialRejections[5]),
+        static_cast<unsigned long long>(g_stats.materialRejections[6]),
+        static_cast<unsigned long long>(g_stats.materialRejections[7]),
+        static_cast<unsigned long long>(g_stats.materialRejections[8]),
+        static_cast<unsigned long long>(g_stats.unlitTexturedCandidates),
+        static_cast<unsigned long long>(g_stats.litUntexturedCandidates),
+        static_cast<unsigned long long>(g_stats.litTexturedCandidates));
+    std::string report(output);
+    std::vector<std::pair<ProgramKey, std::uint64_t>> programs(g_programs.begin(),
+                                                               g_programs.end());
+    std::ranges::sort(programs, [](const auto& first, const auto& second) {
+        return first.second > second.second;
+    });
+    const std::size_t shown = std::min<std::size_t>(programs.size(), 8);
+    for (std::size_t index = 0; index < shown; ++index) {
+        const ProgramKey& key = programs[index].first;
+        char line[320];
+        std::snprintf(line, sizeof(line),
+                      "; top-program[%zu]=%llu lit=%u stages=%u tex=%04x order=%02x/%02x/%02x "
+                      "stage=%02x%02x%02x%02x%02x%02x%02x%02x",
+                      index, static_cast<unsigned long long>(programs[index].second),
+                      key.lighting ? 1U : 0U, key.stageCount, key.textureNumber,
+                      key.textureCoordinate, key.textureMap, key.colorChannel, key.stage[0],
+                      key.stage[1], key.stage[2], key.stage[3], key.stage[4], key.stage[5],
+                      key.stage[6], key.stage[7]);
+        report += line;
+    }
+    return report;
+}
+
+void submit_semantic_j3d_shape(u32 shape) {
+    if (!sb::native_render::has_semantic_sink())
+        return;
+    ++g_stats.shapeDraws;
+    if (!readable(shape)) {
+        ++g_stats.materialMemoryFailures;
+        return;
+    }
+
+    J3DVertexLayout layout{};
+    if (!j3d_build_layout(shape, layout)) {
+        ++g_stats.layoutFailures;
+        return;
+    }
+    const u32 materialPacket = sb_r32(kJ3dSys + kJ3dSysMaterialPacket);
+    const u32 material =
+        readable(materialPacket) ? sb_r32(materialPacket + kMaterialPacketMaterial) : 0;
+    sb::native_render::J3dUnlitMaterialState materialState{};
+    if (!sb::recomp::capture_guest_j3d_material_state(
+            sb::recomp::live_guest_byte_reader(), material,
+            layout.type[kColor0] !=
+                static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
+            materialState)) {
+        ++g_stats.materialMemoryFailures;
+        return;
+    }
+    ++g_programs[{.lighting = materialState.lightingEnabled,
+                  .stageCount = materialState.tevStageCount,
+                  .textureNumber = materialState.textureNumber0,
+                  .textureCoordinate = materialState.textureCoordinate0,
+                  .textureMap = materialState.textureMap0,
+                  .colorChannel = materialState.colorChannel0,
+                  .stage = materialState.tevStage0}];
+    const sb::native_render::J3dUnlitMaterialFeatures features =
+        sb::native_render::inspect_j3d_unlit_material(materialState);
+    const bool otherwiseExact = features.supportedColorBlock && features.hasColorChannel &&
+                                features.supportedTevBlock && features.singleTevStage &&
+                                features.rasterColorPassThrough &&
+                                features.requiredVertexColorPresent;
+    if (otherwiseExact && !features.lightingEnabled && features.textureBound)
+        ++g_stats.unlitTexturedCandidates;
+    if (otherwiseExact && features.lightingEnabled && !features.textureBound)
+        ++g_stats.litUntexturedCandidates;
+    if (otherwiseExact && features.lightingEnabled && features.textureBound)
+        ++g_stats.litTexturedCandidates;
+    sb::native_render::ModelMaterial semanticMaterial{};
+    std::array<sb::native_render::DecodedImageView, 1> semanticImages{};
+    std::span<const sb::native_render::DecodedImageView> images;
+    sb::native_render::UnlitColorMaterial colorMaterial{};
+    const sb::native_render::J3dUnlitMaterialResult colorResult =
+        sb::native_render::classify_j3d_unlit_material(materialState, colorMaterial);
+    if (colorResult == sb::native_render::J3dUnlitMaterialResult::Success) {
+        semanticMaterial = colorMaterial;
+    } else {
+        const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
+        sb::native_render::UnlitTexturedMaterial texturedMaterial{};
+        const sb::native_render::J3dUnlitTexturedResult family =
+            sb::native_render::classify_j3d_unlit_textured_material(materialState, placeholder,
+                                                                    texturedMaterial);
+        if (family != sb::native_render::J3dUnlitTexturedResult::Success) {
+            ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
+            ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(family)];
+            return;
+        }
+        const u32 textureTable = sb_r32(materialPacket + kMaterialPacketTexture);
+        if (!readable(textureTable)) {
+            ++g_stats.textureTableFailures;
+            return;
+        }
+        sb::native_render::ResTimgDecodeError textureError{};
+        if (!sb::recomp::capture_guest_j3d_texture(sb::recomp::live_guest_byte_reader(),
+                                                   textureTable, materialState.textureNumber0,
+                                                   g_texture, textureError)) {
+            const std::size_t errorIndex = static_cast<std::size_t>(textureError);
+            if (errorIndex < g_stats.textureDecodeFailures.size())
+                ++g_stats.textureDecodeFailures[errorIndex];
+            return;
+        }
+        const sb::native_render::J3dUnlitTexturedResult classified =
+            sb::native_render::classify_j3d_unlit_textured_material(
+                materialState, g_texture.texture, texturedMaterial);
+        SB_ASSERT(classified == sb::native_render::J3dUnlitTexturedResult::Success,
+                  "decoded J3D texture invalidated a preclassified material: result=%s",
+                  sb::native_render::j3d_unlit_textured_result_name(classified));
+        semanticMaterial = texturedMaterial;
+        semanticImages[0] = {g_texture.texture.resource, g_texture.texture.revision,
+                             g_texture.texture.width, g_texture.texture.height, g_texture.rgba8};
+        images = semanticImages;
+    }
+
+    const sb::native_render::Matrix4x4 projection = current_projection();
+    if (std::ranges::all_of(projection.value, [](float value) { return value == 0.0F; })) {
+        ++g_stats.projectionFailures;
+        return;
+    }
+    const u32 matrixObjects = sb_r32(shape + kShapeMatrices);
+    const u32 drawMatrices = sb_r32(shape + kShapeDrawMatrices);
+    const u32 currentViewPointer = sb_r32(shape + kShapeCurrentView);
+    const u32 currentView = readable(currentViewPointer) ? sb_r32(currentViewPointer) : 0;
+    const u32 drawMatrixArray =
+        readable(drawMatrices) && currentView <= 16 ? sb_r32(drawMatrices + currentView * 4) : 0;
+    const u32 elementCount = sb_r16(shape + kShapeElementCount);
+    if (!readable(matrixObjects) || !readable(drawMatrixArray) || elementCount == 0 ||
+        elementCount >= 4096) {
+        ++g_stats.nonRigidElements;
+        return;
+    }
+
+    for (u32 element = 0; element < elementCount; ++element) {
+        const u32 matrixObject = sb_r32(matrixObjects + element * 4);
+        if (!readable(matrixObject) || sb_r32(matrixObject) != kBaseShapeMatrixVptr) {
+            ++g_stats.nonRigidElements;
+            continue;
+        }
+        const u32 matrixIndex = sb_r16(matrixObject + 4);
+        const u32 matrixAddress = drawMatrixArray + matrixIndex * 48;
+        if (!readable(matrixAddress) || !readable(matrixAddress + 47)) {
+            ++g_stats.nonRigidElements;
+            continue;
+        }
+
+        g_decoded.clear();
+        if (!j3d_decode_element(shape, element, layout, g_decoded) || g_decoded.empty()) {
+            ++g_stats.decodeFailures;
+            continue;
+        }
+        if (std::ranges::any_of(
+                g_decoded, [](const J3DVert& vertex) { return vertex.positionMatrixSlot != 0; })) {
+            ++g_stats.nonRigidElements;
+            continue;
+        }
+
+        g_vertices.clear();
+        g_vertices.reserve(g_decoded.size());
+        for (const J3DVert& vertex : g_decoded) {
+            g_vertices.push_back({.position = {vertex.x, vertex.y, vertex.z},
+                                  .uv = {vertex.uv[0][0], vertex.uv[0][1]},
+                                  .color = sb::native_render::color_from_rgba8(vertex.rgba)});
+        }
+        const std::uint64_t resource = (static_cast<std::uint64_t>(shape) << 16U) | element;
+        const std::uint64_t revision = sb::native_render::mesh_revision(g_vertices);
+        sb::native_render::ModelDraw draw{};
+        draw.instance = (static_cast<std::uint64_t>(shape) << 32U) | drawMatrixArray;
+        draw.mesh = {resource, revision, static_cast<std::uint32_t>(g_vertices.size())};
+        for (std::size_t index = 0; index < draw.modelView.value.size(); ++index)
+            draw.modelView.value[index] = guest_f32(matrixAddress + index * 4);
+        draw.projection = projection;
+        draw.material = semanticMaterial;
+        const sb::native_render::MeshResourceView mesh{resource, revision, g_vertices};
+        SB_ASSERT(sb::native_render::submit_model(draw, mesh, images),
+                  "semantic J3D sink rejected validated rigid model: shape=%08x element=%u "
+                  "vertices=%zu",
+                  shape, element, g_vertices.size());
+        ++g_stats.submittedModels;
+        g_stats.submittedVertices += g_vertices.size();
+    }
+}

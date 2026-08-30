@@ -1,5 +1,7 @@
 #include "semantic_render.h"
 
+#include "native_j3d_adapter.h"
+
 #include <sunbright/native_render/sdl_gpu_platform.h>
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
 #include <sunbright/native_render/semantic_frame_bridge.h>
@@ -32,7 +34,8 @@ void report_stats() {
             "semantic summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
             "operations=%llu "
             "pictures=%llu j2d-window-pictures=%llu glyphs=%llu solid-rectangles=%llu "
-            "j2d-fill-boxes=%llu j2d-window-contents=%llu images=%llu "
+            "j2d-fill-boxes=%llu j2d-window-contents=%llu images=%llu models=%llu "
+            "meshes=%llu mesh-vertices=%llu "
             "samples=%llu presented=%llu window-unavailable=%llu "
             "first-nonclear-frame=%llu first-nonclear-pixels=%zu",
             static_cast<unsigned long long>(stats.submittedFrames),
@@ -47,10 +50,14 @@ void report_stats() {
             static_cast<unsigned long long>(stats.submittedJ2dFillBoxes),
             static_cast<unsigned long long>(stats.submittedJ2dWindowContents),
             static_cast<unsigned long long>(stats.submittedImages),
+            static_cast<unsigned long long>(stats.submittedModels),
+            static_cast<unsigned long long>(stats.submittedMeshes),
+            static_cast<unsigned long long>(stats.submittedMeshVertices),
             static_cast<unsigned long long>(stats.sampledFrames),
             static_cast<unsigned long long>(stats.presentedFrames),
             static_cast<unsigned long long>(stats.windowUnavailableFrames),
             static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);
+    sb_native_j3d_report_stats();
     g_statsReported = true;
 }
 
@@ -98,10 +105,11 @@ extern "C" bool sb_semantic_render_initialize(SDL_Window* window) {
         return false;
     }
     if (preview) {
-        sb_logf("semantic", "INCOMPLETE native 2D preview active at 640x480; 3D, particles, "
-                            "lights, and effects are intentionally absent");
+        sb_logf("semantic", "INCOMPLETE native semantic preview active at 640x480; rigid unlit "
+                            "single-texture J3D models and the ported 2D families are present; "
+                            "other materials, particles, lights, and effects are absent");
     } else {
-        sb_logf("semantic", "offscreen semantic 2D frame audit active at 640x480");
+        sb_logf("semantic", "offscreen semantic frame audit active at 640x480");
     }
     return true;
 }

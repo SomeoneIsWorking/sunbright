@@ -1,4 +1,8 @@
 add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/image.cpp src/image_decode.cpp
+                                                 src/j3d_mesh_decode.cpp
+                                                 src/j3d_unlit_material.cpp
+                                                 src/model.cpp
+                                                 src/res_timg_decode.cpp
                                                  src/picture.cpp src/picture_context.cpp
                                                  src/semantic_2d_types.cpp
                                                  src/semantic_frame_mode.cpp
@@ -34,6 +38,22 @@ add_executable(native_render_picture_context_test tests/picture_context_test.cpp
 target_link_libraries(native_render_picture_context_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_picture_context COMMAND native_render_picture_context_test)
 
+add_executable(native_render_model_test tests/model_test.cpp)
+target_link_libraries(native_render_model_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_model COMMAND native_render_model_test)
+
+add_executable(native_render_j3d_mesh_decode_test tests/j3d_mesh_decode_test.cpp)
+target_link_libraries(native_render_j3d_mesh_decode_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_mesh_decode COMMAND native_render_j3d_mesh_decode_test)
+
+add_executable(native_render_j3d_unlit_material_test tests/j3d_unlit_material_test.cpp)
+target_link_libraries(native_render_j3d_unlit_material_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_unlit_material COMMAND native_render_j3d_unlit_material_test)
+
+add_executable(native_render_res_timg_decode_test tests/res_timg_decode_test.cpp)
+target_link_libraries(native_render_res_timg_decode_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_res_timg_decode COMMAND native_render_res_timg_decode_test)
+
 add_executable(native_render_semantic_frame_bridge_test
                tests/semantic_frame_bridge_test.cpp)
 target_link_libraries(native_render_semantic_frame_bridge_test
@@ -41,7 +61,7 @@ target_link_libraries(native_render_semantic_frame_bridge_test
 add_test(NAME native_render_semantic_frame_bridge
          COMMAND native_render_semantic_frame_bridge_test)
 
-add_library(sunbright-native-render-sdl3 STATIC src/semantic_2d_pass.cpp src/sdl_gpu_calls.cpp
+add_library(sunbright-native-render-sdl3 STATIC src/semantic_2d_pass.cpp src/semantic_3d_pass.cpp src/sdl_image_cache.cpp src/sdl_gpu_calls.cpp
                                                 src/sdl_gpu_error.cpp
                                                 src/sdl_gpu_frame_target.cpp
                                                 src/sdl_gpu_platform.cpp

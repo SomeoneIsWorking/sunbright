@@ -3,6 +3,7 @@
 #include <sunbright/native_render/picture.h>
 #include <sunbright/native_render/sdl_gpu_frame_target.h>
 #include <sunbright/native_render/semantic_2d_pass.h>
+#include <sunbright/native_render/semantic_3d_pass.h>
 #include <sunbright/native_render/semantic_frame_bridge.h>
 
 #include <SDL3/SDL_gpu.h>
@@ -20,7 +21,7 @@ struct SdlSemanticFrameClientConfig {
     std::uint32_t width = 640;
     std::uint32_t height = 480;
     SemanticReadbackMode readback = SemanticReadbackMode::UntilNonClear;
-    // A non-null window selects the deliberately incomplete visible native-2D preview. Null keeps
+    // A non-null window selects the deliberately incomplete visible semantic preview. Null keeps
     // the semantic target offscreen for audit while Aurora presents its retained GX reference.
     SDL_Window* presentationWindow = nullptr;
 };
@@ -38,6 +39,9 @@ struct SdlSemanticFrameStats {
     std::uint64_t submittedJ2dFillBoxes = 0;
     std::uint64_t submittedJ2dWindowContents = 0;
     std::uint64_t submittedImages = 0;
+    std::uint64_t submittedModels = 0;
+    std::uint64_t submittedMeshes = 0;
+    std::uint64_t submittedMeshVertices = 0;
     std::uint64_t sampledFrames = 0;
     std::uint64_t presentedFrames = 0;
     std::uint64_t windowUnavailableFrames = 0;
@@ -47,9 +51,9 @@ struct SdlSemanticFrameStats {
     std::size_t firstNonClearPixels = 0;
 };
 
-// SDL3 consumer for the process's sealed semantic 2D frame. It borrows the one process platform
-// and owns its target/pass/readback resources. Audit mode stays offscreen; explicit preview mode
-// attaches the platform's sole presenter and shows this incomplete 2D target. Runtime composition
+// SDL3 consumer for the process's sealed semantic frame. It borrows the one process platform and
+// owns its target/pass/readback resources. Audit mode stays offscreen; explicit preview mode
+// attaches the platform's sole presenter and shows this incomplete target. Runtime composition
 // must initialize it before the first bridge begin, consume once after each seal, and shut it down
 // before the platform and Aurora.
 class SdlSemanticFrameClient {
@@ -86,6 +90,7 @@ class SdlSemanticFrameClient {
     SdlGpuPlatform* platform_ = nullptr;
     SemanticFrameBridge* bridge_ = nullptr;
     SdlGpuFrameTarget target_{};
+    std::unique_ptr<Semantic3dPass> pass3d_{};
     std::unique_ptr<Semantic2dPass> pass_{};
     SDL_GPUTransferBuffer* readback_ = nullptr;
     SdlSemanticFrameClientConfig config_{};

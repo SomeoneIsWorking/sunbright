@@ -6,25 +6,27 @@
 // have to rebuild (TEV combiners and all) just to arrive back where we started.
 //
 // The retired renderer took this same seam (git 9283f44^:native/render/sms_boot_j3d_capture.cpp,
-// "tap J3DShape::draw and capture, per shape: geometry ... material"). The difference here: that ran
-// in the DECOMP runtime where J3D objects are native C++. In the recomp they are guest memory, so
-// every field is read at an RE'd offset — layouts below come from
+// "tap J3DShape::draw and capture, per shape: geometry ... material"). The difference here: that
+// ran in the DECOMP runtime where J3D objects are native C++. In the recomp they are guest memory,
+// so every field is read at an RE'd offset — layouts below come from
 // decomp/sms/include/JSystem/J3D/J3DGraphBase/J3DShape.hpp, which is the structure ground truth.
 //
 // This first step CAPTURES AND REPORTS ONLY — it always runs the real draw, so the picture is
-// unchanged and aurora stays the oracle. Decoding the geometry and rendering it natively comes next.
+// unchanged and aurora stays the oracle. Decoding the geometry and rendering it natively comes
+// next.
 //
 //   SBR_J3D_CAPTURE=1   record shapes; report at the probe's /j3d
 
 #include "overrides.h"
+#include "semantic_j3d_adapter.h"
 
-#include "../runtime/probe_server.h"
-#include "../runtime/render/scene.h"
-#include "../runtime/render/j3d_decode.h"
-#include "../runtime/render/state_oracle.h"
-#include "../frame_interp/stream_interp.h"
 #include "../frame_interp/populations.h"
+#include "../frame_interp/stream_interp.h"
+#include "../runtime/probe_server.h"
+#include "../runtime/render/j3d_decode.h"
 #include "../runtime/render/native_render.h"
+#include "../runtime/render/scene.h"
+#include "../runtime/render/state_oracle.h"
 
 void sbr_mtx_begin_shape(u32 shape);
 void sbr_mtx_end_shape();
@@ -38,13 +40,13 @@ void sbr_mtx_report_index();
 
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <unordered_set>
-#include <map>
 #include <utility>
 #include <vector>
 
-extern "C" void func_802e0390(CPUState&);   // J3DShape::draw() const
+extern "C" void func_802e0390(CPUState&); // J3DShape::draw() const
 
 // Does (shape, mDrawMatrices) actually name ONE object? Measured, not assumed — see
 // frame_interp/shape_identity.cpp.
@@ -53,19 +55,19 @@ void sbr_shape_identity_probe(u32 shape, u32 instance, u32 lr, u32 callerR31);
 namespace {
 
 // J3DShape (J3DShape.hpp): the fields this seam needs.
-constexpr u32 SHAPE_ELEMENT_COUNT = 0x06;   // u16
-constexpr u32 SHAPE_GD_COMMANDS   = 0x28;   // the VCD/VAT setup display list
-constexpr u32 SHAPE_DRAWS         = 0x38;   // J3DShapeDraw** , mElementCount entries
-constexpr u32 SHAPE_VERTEX_DATA   = 0x44;   // J3DVertexData*
-constexpr u32 SHAPE_DRAW_MATRICES = 0x50;   // Mtx**
-constexpr u32 SHAPE_CURRENT_VIEW  = 0x58;   // u32*
+constexpr u32 SHAPE_ELEMENT_COUNT = 0x06; // u16
+constexpr u32 SHAPE_GD_COMMANDS = 0x28;   // the VCD/VAT setup display list
+constexpr u32 SHAPE_DRAWS = 0x38;         // J3DShapeDraw** , mElementCount entries
+constexpr u32 SHAPE_VERTEX_DATA = 0x44;   // J3DVertexData*
+constexpr u32 SHAPE_DRAW_MATRICES = 0x50; // Mtx**
+constexpr u32 SHAPE_CURRENT_VIEW = 0x58;  // u32*
 
 // J3DShapeDraw: vtable at +0x00 (virtual dtor), then size, then the display list.
-constexpr u32 SHAPE_MATRICES = 0x34;   // J3DShapeMtx**
-constexpr u32 SHAPEMTX_SLOT  = 0x04;   // base J3DShapeMtx: u16 unk4 (vptr at +0x00)
+constexpr u32 SHAPE_MATRICES = 0x34; // J3DShapeMtx**
+constexpr u32 SHAPEMTX_SLOT = 0x04;  // base J3DShapeMtx: u16 unk4 (vptr at +0x00)
 
 constexpr u32 SHAPEDRAW_DL_SIZE = 0x04;
-constexpr u32 SHAPEDRAW_DL_PTR  = 0x08;
+constexpr u32 SHAPEDRAW_DL_PTR = 0x08;
 
 bool capture_on() {
     static int v = -1;
@@ -77,23 +79,25 @@ bool capture_on() {
 }
 
 struct Stats {
-    unsigned long shapes = 0;      // J3DShape::draw calls this frame-window
-    unsigned long elements = 0;    // total mtx-group elements walked
-    unsigned long dl_bytes = 0;    // total geometry display-list bytes seen
-    unsigned long no_verts = 0;    // shapes with no vertex data
-    unsigned long no_mtx = 0;      // shapes whose draw matrices are not ready
-    unsigned long distinct = 0;    // distinct shape objects seen
+    unsigned long shapes = 0;   // J3DShape::draw calls this frame-window
+    unsigned long elements = 0; // total mtx-group elements walked
+    unsigned long dl_bytes = 0; // total geometry display-list bytes seen
+    unsigned long no_verts = 0; // shapes with no vertex data
+    unsigned long no_mtx = 0;   // shapes whose draw matrices are not ready
+    unsigned long distinct = 0; // distinct shape objects seen
     unsigned long layout_ok = 0, layout_fail = 0;
     unsigned long decoded = 0, decode_fail = 0;
     unsigned long tris = 0;
-    unsigned long no_load_truth = 0;   // elements with no observable matrix load (ShapeMtxDL)
+    unsigned long no_load_truth = 0; // elements with no observable matrix load (ShapeMtxDL)
 };
 Stats g_st;
 std::unordered_set<u32> g_seen;
 J3DVertexLayout g_layout;
 std::vector<J3DVert> g_tri;
 
-bool ok(u32 p) { return sb_ram_fast(p) != nullptr; }
+bool ok(u32 p) {
+    return sb_ram_fast(p) != nullptr;
+}
 
 // out = a * b, affine 3x4 row-major (implicit last row 0 0 0 1).
 void compose(float out[12], const float a[12], const float b[12]) {
@@ -101,8 +105,8 @@ void compose(float out[12], const float a[12], const float b[12]) {
         for (int c = 0; c < 3; ++c)
             out[r * 4 + c] = a[r * 4 + 0] * b[0 * 4 + c] + a[r * 4 + 1] * b[1 * 4 + c] +
                              a[r * 4 + 2] * b[2 * 4 + c];
-        out[r * 4 + 3] = a[r * 4 + 0] * b[3] + a[r * 4 + 1] * b[7] + a[r * 4 + 2] * b[11] +
-                         a[r * 4 + 3];
+        out[r * 4 + 3] =
+            a[r * 4 + 0] * b[3] + a[r * 4 + 1] * b[7] + a[r * 4 + 2] * b[11] + a[r * 4 + 3];
     }
 }
 
@@ -114,32 +118,35 @@ float guest_f32(u32 addr) {
 }
 
 const bool g_probe = [] {
-    sb_probe_register("/j3d", "J3D shape capture: what the game draws, semantically",
-                      [](const ProbeArgs&) {
-                          char buf[512];
-                          std::snprintf(buf, sizeof buf,
-                                        "capture=%d\n"
-                                        "shape draws      %lu\n"
-                                        "distinct shapes  %lu\n"
-                                        "elements         %lu\n"
-                                        "geometry DL bytes %lu\n"
-                                        "skipped: no vertex data %lu, matrices not ready %lu\n"
-                                        "scene: %d drawables last tick, %d matched the previous "
-                                        "tick (interpolating)\n"
-                                        "layout ok %lu / fail %lu\n"
-                                        "elements decoded %lu / failed %lu -> %lu triangles\n",
-                                        (int)capture_on(), g_st.shapes, g_st.distinct,
-                                        g_st.elements, g_st.dl_bytes, g_st.no_verts, g_st.no_mtx,
-                                        sbr_scene_last_count(), sbr_scene_matched_count(),
-                                        g_st.layout_ok, g_st.layout_fail,
-                                        g_st.decoded, g_st.decode_fail, g_st.tris);
-                          return std::string(buf);
-                      });
+    sb_probe_register(
+        "/j3d", "J3D shape capture: what the game draws, semantically", [](const ProbeArgs&) {
+            char buf[512];
+            std::snprintf(buf, sizeof buf,
+                          "capture=%d\n"
+                          "shape draws      %lu\n"
+                          "distinct shapes  %lu\n"
+                          "elements         %lu\n"
+                          "geometry DL bytes %lu\n"
+                          "skipped: no vertex data %lu, matrices not ready %lu\n"
+                          "scene: %d drawables last tick, %d matched the previous "
+                          "tick (interpolating)\n"
+                          "layout ok %lu / fail %lu\n"
+                          "elements decoded %lu / failed %lu -> %lu triangles\n",
+                          (int)capture_on(), g_st.shapes, g_st.distinct, g_st.elements,
+                          g_st.dl_bytes, g_st.no_verts, g_st.no_mtx, sbr_scene_last_count(),
+                          sbr_scene_matched_count(), g_st.layout_ok, g_st.layout_fail, g_st.decoded,
+                          g_st.decode_fail, g_st.tris);
+            return std::string(buf);
+        });
     return true;
 }();
 
 void ov_shape_draw(CPUState& cpu) {
     const u32 shape = cpu.gpr[3];
+
+    // Publish the narrow PC-native model family exclusively from J3D objects and decoded BMD
+    // assets. This runs before the retained body and does not read the GX FIFO/state capture below.
+    submit_semantic_j3d_shape(shape);
 
     // The REAL DRAW RUNS FIRST, deliberately. J3DShapeMtx::load issues the matrix loads from inside
     // it, so running it first makes the exact slot -> matrix-index mapping the game used available
@@ -157,10 +164,10 @@ void ov_shape_draw(CPUState& cpu) {
     // J3DShapePacket::draw (J3DPacket.cpp:220) writes `unk14->mDrawMatrices = unk18` into that
     // shared shape immediately before calling draw(), i.e. it swaps the INSTANCE's matrices into a
     // shared object per draw. Tagging by shape therefore collapsed every instance of a model into
-    // one identity, and pairing fell back to draw ORDER within it — which is not stable across ticks
-    // (culling and Z-sorting reorder instances), so instance k paired with a different instance's
-    // transform. Measured signature: paired-draw motion of mean 31.9 / max 27943 world units per
-    // 1/30 s with the camera divided out, where a real object moves a fraction of a unit.
+    // one identity, and pairing fell back to draw ORDER within it — which is not stable across
+    // ticks (culling and Z-sorting reorder instances), so instance k paired with a different
+    // instance's transform. Measured signature: paired-draw motion of mean 31.9 / max 27943 world
+    // units per 1/30 s with the camera divided out, where a real object moves a fraction of a unit.
     //
     // mDrawMatrices is the instance's own draw-matrix array, already installed by the packet when
     // this seam is entered, so (shape, instance) is the identity the pairing actually needs. Both
@@ -182,7 +189,8 @@ void ov_shape_draw(CPUState& cpu) {
     // must NOT inherit this shape's identity: it would pair with the wrong object's matrices, which
     // is a wrong answer that looks like a working one. Untagged draws snap, which is correct for
     // exactly those cases.
-    if (sbr_lerp_enabled()) sbr_gxfifo_draw_tag(0);
+    if (sbr_lerp_enabled())
+        sbr_gxfifo_draw_tag(0);
     sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
     // Bring the parsed GX state up to date with what the game has just written, so the texture
     // binding read below is THIS shape's material rather than a stale one.
@@ -192,23 +200,30 @@ void ov_shape_draw(CPUState& cpu) {
     // a new element.
     std::vector<std::map<u16, u16>> segs;
     for (const auto& [id, idx] : sbr_mtx_loads()) {
-        if (id == 0 || segs.empty()) segs.emplace_back();
+        if (id == 0 || segs.empty())
+            segs.emplace_back();
         segs.back()[id] = idx;
     }
 
     if (capture_on() && ok(shape)) {
         ++g_st.shapes;
-        if (g_seen.insert(shape).second) ++g_st.distinct;
+        if (g_seen.insert(shape).second)
+            ++g_st.distinct;
 
         const u32 verts = sb_r32(shape + SHAPE_VERTEX_DATA);
-        const u32 mtx   = sb_r32(shape + SHAPE_DRAW_MATRICES);
-        if (!ok(verts)) ++g_st.no_verts;
+        const u32 mtx = sb_r32(shape + SHAPE_DRAW_MATRICES);
+        if (!ok(verts))
+            ++g_st.no_verts;
         // The owning model may not have been update()d yet (the decomp guards the same case), so a
         // null matrix array is expected early, not a bug.
-        if (!ok(mtx)) ++g_st.no_mtx;
+        if (!ok(mtx))
+            ++g_st.no_mtx;
 
         // One layout per shape (the descriptor and formats are per-shape, not per-element).
-        if (j3d_build_layout(shape, g_layout)) ++g_st.layout_ok; else ++g_st.layout_fail;
+        if (j3d_build_layout(shape, g_layout))
+            ++g_st.layout_ok;
+        else
+            ++g_st.layout_fail;
 
         const u32 n = sb_r16(shape + SHAPE_ELEMENT_COUNT);
         const u32 draws = sb_r32(shape + SHAPE_DRAWS);
@@ -221,11 +236,13 @@ void ov_shape_draw(CPUState& cpu) {
         if (ok(draws) && n > 0 && n < 4096) {
             for (u32 i = 0; i < n; ++i) {
                 const u32 d = sb_r32(draws + i * 4);
-                if (!ok(d)) continue;
+                if (!ok(d))
+                    continue;
                 ++g_st.elements;
-                const u32 dl   = sb_r32(d + SHAPEDRAW_DL_PTR);
+                const u32 dl = sb_r32(d + SHAPEDRAW_DL_PTR);
                 const u32 size = sb_r32(d + SHAPEDRAW_DL_SIZE);
-                if (ok(dl) && size > 0 && size < (16u << 20)) g_st.dl_bytes += size;
+                if (ok(dl) && size > 0 && size < (16u << 20))
+                    g_st.dl_bytes += size;
 
                 // Decode the geometry. The vertex sizing is SELF-CHECKING: a wrong size lands
                 // mid-payload and hits a non-primitive opcode, which j3d_decode_element reports
@@ -247,7 +264,9 @@ void ov_shape_draw(CPUState& cpu) {
                             std::vector<SbrGeomVert> gv;
                             gv.reserve(g_tri.size());
                             for (const J3DVert& v : g_tri) {
-                                SbrGeomVert g{v.x, v.y, v.z, v.nx, v.ny, v.nz, v.pnMtxSlot, {}, v.rgba};
+                                SbrGeomVert g{
+                                    v.x, v.y,   v.z, v.nx, v.ny, v.nz, v.positionMatrixSlot,
+                                    {},  v.rgba};
                                 for (unsigned s = 0; s < 4; ++s) {
                                     g.uv[s][0] = v.uv[s][0];
                                     g.uv[s][1] = v.uv[s][1];
@@ -273,7 +292,8 @@ void ov_shape_draw(CPUState& cpu) {
                     std::map<u16, u16> fallback;
                     if (seg == nullptr || seg->empty()) {
                         const u32 mtxObj = ok(sb_r32(shape + SHAPE_MATRICES))
-                                               ? sb_r32(sb_r32(shape + SHAPE_MATRICES) + i * 4) : 0;
+                                               ? sb_r32(sb_r32(shape + SHAPE_MATRICES) + i * 4)
+                                               : 0;
                         fallback[0] = (u16)(ok(mtxObj) ? sb_r16(mtxObj + SHAPEMTX_SLOT) : 0);
                         seg = &fallback;
                         ++g_st.no_load_truth;
@@ -282,7 +302,8 @@ void ov_shape_draw(CPUState& cpu) {
                     for (const auto& [gxSlot, mtxIndex] : *seg) {
                         sbr_mtx_check_index(shape, (int)i, mtxIndex, mtxIndex, true);
                         const u32 mtxAddr = drawMtxArray + (u32)mtxIndex * 48;
-                        if (!ok(mtxAddr) || !ok(mtxAddr + 47)) continue;
+                        if (!ok(mtxAddr) || !ok(mtxAddr + 47))
+                            continue;
 
                         SbrDrawable dr{};
                         // Stream position of this draw — the key EFB copies are ordered against.
@@ -292,7 +313,8 @@ void ov_shape_draw(CPUState& cpu) {
                         // its own right.
                         dr.key = (key << 8) | (uint64_t)gxSlot;
                         dr.geom = sbr_scene_geometry_for_slot(key, geom, (uint32_t)gxSlot);
-                        if (dr.geom == 0) continue;   // this element has no vertices on that slot
+                        if (dr.geom == 0)
+                            continue; // this element has no vertices on that slot
                         // From the COMMAND STREAM (BP 0x40/0x41), which is where the game puts it.
                         // PROVEN correct rather than preferred: the state oracle compares this
                         // port's raster state against aurora's per draw, and the stream-derived
@@ -306,7 +328,7 @@ void ov_shape_draw(CPUState& cpu) {
                             return e != nullptr && e[0] == 's';
                         }();
                         dr.depth = useSdk ? sbr_gx_current_zmode() : sbr_gx_fifo_zmode();
-                        {   // Do the SDK-captured and FIFO-derived raster states agree? If they do
+                        { // Do the SDK-captured and FIFO-derived raster states agree? If they do
                             // not, every draw this port rendered used state the game never set for
                             // it. Measured before switching the renderer over, not assumed.
                             //
@@ -316,14 +338,13 @@ void ov_shape_draw(CPUState& cpu) {
                             // the default configuration. Two mislabelled columns is how this
                             // project has lost days before, so the labels are now tied to the call
                             // that produced each value.
-                            const SbrDepthState sdkZ  = sbr_gx_current_zmode();
+                            const SbrDepthState sdkZ = sbr_gx_current_zmode();
                             const SbrDepthState fifoZ = sbr_gx_fifo_zmode();
                             static long same = 0, diff = 0;
-                            const bool eq = sdkZ.test == fifoZ.test && sdkZ.func == fifoZ.func &&
-                                            sdkZ.write == fifoZ.write &&
-                                            sdkZ.blend == fifoZ.blend &&
-                                            sdkZ.srcFac == fifoZ.srcFac &&
-                                            sdkZ.dstFac == fifoZ.dstFac;
+                            const bool eq =
+                                sdkZ.test == fifoZ.test && sdkZ.func == fifoZ.func &&
+                                sdkZ.write == fifoZ.write && sdkZ.blend == fifoZ.blend &&
+                                sdkZ.srcFac == fifoZ.srcFac && sdkZ.dstFac == fifoZ.dstFac;
                             eq ? ++same : ++diff;
                             // Report a DISAGREEING pair, not whatever draw the counter happened to
                             // land on. The line prints two state triples next to "N DIFFER", and a
@@ -332,11 +353,16 @@ void ov_shape_draw(CPUState& cpu) {
                             // identical values under a count of 107093 differences.
                             static SbrDepthState lastSdk{}, lastFifo{};
                             static bool haveDiff = false;
-                            if (!eq) { lastSdk = sdkZ; lastFifo = fifoZ; haveDiff = true; }
-                            const SbrDepthState& showSdk  = haveDiff ? lastSdk : sdkZ;
+                            if (!eq) {
+                                lastSdk = sdkZ;
+                                lastFifo = fifoZ;
+                                haveDiff = true;
+                            }
+                            const SbrDepthState& showSdk = haveDiff ? lastSdk : sdkZ;
                             const SbrDepthState& showFifo = haveDiff ? lastFifo : fifoZ;
                             if (((same + diff) % 200000) == 0)
-                                lucent::info("nrender", "raster source check: {} draws agree, {} "
+                                lucent::info("nrender",
+                                             "raster source check: {} draws agree, {} "
                                              "DIFFER — SDK(GXSetZMode/BlendMode) t{}w{}f{} "
                                              "bl{}/{}/{} vs FIFO(BP 0x40/0x41) t{}w{}f{} "
                                              "bl{}/{}/{} ({}). The renderer is using {}.",
@@ -354,9 +380,10 @@ void ov_shape_draw(CPUState& cpu) {
                         // 4x4 null texture (measured: 3 textures for the whole scene).
                         // All four texture units, not just TEXMAP0: a TEV stage names the map it
                         // samples, and most materials here name more than one.
-                        for (unsigned m = 0; m < 8; ++m) dr.tex[m] = sbr_gx_fifo_texture(m);
+                        for (unsigned m = 0; m < 8; ++m)
+                            dr.tex[m] = sbr_gx_fifo_texture(m);
                         dr.tev = sbr_gx_fifo_tev();
-                        dr.xf  = sbr_gx_fifo_xf();
+                        dr.xf = sbr_gx_fifo_xf();
                         // Record the same snapshot for the state oracle, stamped with the parser's
                         // stream position, so "is this snapshot attached to the right draw?" is a
                         // measurement rather than an assumption. See state_oracle.h.
@@ -385,10 +412,9 @@ void ov_shape_draw(CPUState& cpu) {
             }
         }
     }
-
 }
 
 } // namespace
 
 SB_OVERRIDE(0x802e0390u, ov_shape_draw, "J3DShape::draw",
-            "native render: capture the game's geometry at the J3D level (observe only for now)")
+            "publish rigid unlit J3D models and retain the guest draw for A/B reference")

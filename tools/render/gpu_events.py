@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import selectors
 import signal
 import stat
 import subprocess
@@ -52,6 +53,7 @@ DEVCOREDUMP_MAX_BYTES = 64 * 1024 * 1024
 DEVCOREDUMP_MAX_NODES = 2
 DEVCOREDUMP_READ_SECS = 3.0
 DEVCOREDUMP_WAIT_SECS = 1.0
+DEVCOREDUMP_WORKER_START_SECS = 5.0
 DeviceCoredumpIdentity = tuple[int, int, int]
 
 
@@ -206,21 +208,62 @@ def _copy_device_coredump(
     os.close(descriptor)
     staging = Path(staging_name)
     worker: subprocess.Popen[str] | None = None
+    ready_read, ready_write = os.pipe()
     try:
-        worker = subprocess.Popen(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--copy-devcoredump-worker",
-                str(source),
-                str(staging),
-                str(max_bytes),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
+        try:
+            worker = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--copy-devcoredump-worker",
+                    str(source),
+                    str(staging),
+                    str(max_bytes),
+                    str(ready_write),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+                pass_fds=(ready_write,),
+            )
+        finally:
+            os.close(ready_write)
+        with selectors.DefaultSelector() as ready_selector:
+            ready_selector.register(ready_read, selectors.EVENT_READ)
+            ready_events = ready_selector.select(DEVCOREDUMP_WORKER_START_SECS)
+        ready_signal = os.read(ready_read, 1) if ready_events else b""
+        os.close(ready_read)
+        ready_read = -1
+        if not ready_events:
+            worker.kill()
+            try:
+                worker.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                return (
+                    "worker-start-timeout-unreaped",
+                    0,
+                    hashlib.sha256().hexdigest(),
+                    f"reader pid {worker.pid} did not announce readiness inside "
+                    f"{DEVCOREDUMP_WORKER_START_SECS:g}s; SIGKILL did not reap it",
+                )
+            return (
+                "worker-start-timeout",
+                0,
+                hashlib.sha256().hexdigest(),
+                f"reader pid {worker.pid} did not announce readiness inside "
+                f"{DEVCOREDUMP_WORKER_START_SECS:g}s; SIGKILLed and reaped",
+            )
+        if ready_signal != b"R":
+            stdout, stderr = worker.communicate(timeout=1.0)
+            diagnostic = (stdout + stderr).strip()[:400]
+            return (
+                "capture-worker-failed",
+                0,
+                hashlib.sha256().hexdigest(),
+                f"reader pid {worker.pid} did not complete its startup handshake: "
+                f"{diagnostic or 'no diagnostic output'}",
+            )
         try:
             stdout, stderr = worker.communicate(timeout=timeout_secs)
         except subprocess.TimeoutExpired:
@@ -316,6 +359,8 @@ def _copy_device_coredump(
             os.close(directory)
         return status, copied, digest, detail
     finally:
+        if ready_read >= 0:
+            os.close(ready_read)
         if worker is not None and worker.poll() is None:
             worker.kill()
             try:
@@ -668,6 +713,11 @@ def selftest() -> int:
     repo = Path(__file__).resolve().parents[2]
     scratch = repo / "scratch"
     scratch.mkdir(parents=True, exist_ok=True)
+    # These fixtures test byte/status classification, not the timeout. On the shared workstation,
+    # runnable sibling compilers can leave an already-ready Python child unscheduled for seconds.
+    # Keep that scheduling delay out of the semantic controls; the blocked FIFO below is the one
+    # deliberately short deadline control.
+    fixture_read_secs = 30.0
     with tempfile.TemporaryDirectory(
         prefix="gpu-events-selftest-", dir=scratch
     ) as temp_text:
@@ -696,7 +746,7 @@ def selftest() -> int:
             temp / "readable-incident",
             root=readable_root,
             wait_secs=0,
-            read_secs=1,
+            read_secs=fixture_read_secs,
             expected_device_ids={"0000:0b:00.0"},
         )
         assert [evidence.status for evidence in readable] == ["captured"]
@@ -749,7 +799,7 @@ def selftest() -> int:
             temp / "truncated-incident",
             root=truncated_root,
             wait_secs=0,
-            read_secs=1,
+            read_secs=fixture_read_secs,
             max_bytes=8,
         )
         assert truncated[0].status == "truncated"
@@ -767,7 +817,7 @@ def selftest() -> int:
             temp / "empty-incident",
             root=empty_root,
             wait_secs=0,
-            read_secs=1,
+            read_secs=fixture_read_secs,
         )
         assert empty[0].status == "empty"
         assert "before any evidence byte" in "\n".join(empty[0].report)
@@ -821,7 +871,10 @@ def selftest() -> int:
         assert timed_out[0].status == "timeout"
         assert timed_out[0].artifact is None
         assert "SIGKILLed and reaped" in "\n".join(timed_out[0].report)
-        assert elapsed < 1.0, f"blocked reader escaped its deadline: {elapsed:.3f}s"
+        maximum_elapsed = DEVCOREDUMP_WORKER_START_SECS + 0.15 + 2.0
+        assert elapsed < maximum_elapsed, (
+            f"blocked reader escaped its startup/read/reap bounds: {elapsed:.3f}s"
+        )
         assert len(launched_readers) == 1
         assert launched_readers[0].poll() is not None
         assert launched_readers[0].returncode == -signal.SIGKILL
@@ -836,7 +889,7 @@ def selftest() -> int:
             temp / "expired-incident",
             root=expired_root,
             wait_secs=0,
-            read_secs=1,
+            read_secs=fixture_read_secs,
         )
         assert expired[0].status == "expired"
         assert "EXPIRED" in "\n".join(expired[0].report)
@@ -886,8 +939,8 @@ def main() -> int:
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument(
         "--copy-devcoredump-worker",
-        nargs=3,
-        metavar=("SOURCE", "STAGING", "MAX_BYTES"),
+        nargs=4,
+        metavar=("SOURCE", "STAGING", "MAX_BYTES", "READY_FD"),
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
@@ -896,16 +949,17 @@ def main() -> int:
     if args.selftest:
         return selftest()
     if args.copy_devcoredump_worker is not None:
-        source_text, staging_text, max_bytes_text = args.copy_devcoredump_worker
+        source_text, staging_text, max_bytes_text, ready_fd_text = args.copy_devcoredump_worker
         try:
             max_bytes = int(max_bytes_text)
+            ready_fd = int(ready_fd_text)
         except ValueError:
-            parser.error("internal MAX_BYTES must be an integer")
-        if max_bytes <= 0:
-            parser.error("internal MAX_BYTES must be positive")
-        result = _copy_device_coredump_worker(
-            Path(source_text), Path(staging_text), max_bytes
-        )
+            parser.error("internal MAX_BYTES and READY_FD must be integers")
+        if max_bytes <= 0 or ready_fd < 0:
+            parser.error("internal MAX_BYTES must be positive and READY_FD non-negative")
+        os.write(ready_fd, b"R")
+        os.close(ready_fd)
+        result = _copy_device_coredump_worker(Path(source_text), Path(staging_text), max_bytes)
         print(json.dumps(result, sort_keys=True))
         return 0
     parser.error("no action requested")
