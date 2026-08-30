@@ -37,6 +37,7 @@
 
 #include "hud_window_layout.h"
 #include "overrides.h"
+#include "semantic_j2d_window.h"
 
 #include "../frame_interp/tag_2d.h"
 #include "../runtime/probe_server.h"
@@ -338,6 +339,7 @@ void ov_window_private(CPUState& cpu) {
         if (g_active_console != 0)
             write_rect_x(g_active_console + CONSOLE_TELOP_SCISSOR, g_cached_scissor);
     }
+    submit_semantic_j2d_window(cpu);
     func_802d18ec(cpu);
     if (widen) {
         write_rect_x(content, original_content);

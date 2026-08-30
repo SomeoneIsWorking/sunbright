@@ -1,10 +1,8 @@
 #include "j2d_picture_adapter.h"
-
-#include <sunbright/native_render/image_decode.h>
+#include "guest_jut_texture_adapter.h"
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <utility>
 
 namespace sb::recomp {
@@ -17,96 +15,6 @@ bool read_matrix(const BigEndianGuestReader& reader, std::uint32_t address,
                         matrix.value[index]))
             return false;
     }
-    return true;
-}
-
-bool read_texture(const BigEndianGuestReader& reader, std::uint32_t textureAddress,
-                  std::size_t textureIndex, std::uint32_t colorBlend, std::uint32_t alphaBlend,
-                  native_render::PictureTexture& texture,
-                  std::vector<std::uint8_t>& rgba8) noexcept {
-    std::uint32_t resource = 0;
-    std::uint32_t texelAddress = 0;
-    std::uint32_t rawFormat = 0;
-    std::uint32_t hasAlpha = 0;
-    std::uint16_t width = 0;
-    std::uint16_t height = 0;
-    std::uint8_t wrapU = 0;
-    std::uint8_t wrapV = 0;
-    std::uint8_t min = 0;
-    std::uint8_t mag = 0;
-    if (textureAddress == 0 || !reader.u32(textureAddress + 0x20, resource) || resource == 0 ||
-        !reader.u32(textureAddress + 0x24, texelAddress) || texelAddress == 0 ||
-        !reader.u32(textureAddress + 0x34, rawFormat) ||
-        rawFormat > std::numeric_limits<std::uint8_t>::max() ||
-        !reader.u32(textureAddress + 0x38, hasAlpha) || !reader.u16(textureAddress + 0x3c, width) ||
-        !reader.u16(textureAddress + 0x3e, height) || !reader.u8(textureAddress + 0x40, wrapU) ||
-        !reader.u8(textureAddress + 0x41, wrapV) || !reader.u8(textureAddress + 0x42, min) ||
-        !reader.u8(textureAddress + 0x43, mag) || width == 0 || height == 0)
-        return false;
-
-    texture.resource = resource;
-    texture.width = width;
-    texture.height = height;
-    texture.hasAlpha = hasAlpha != 0;
-    if (!native_render::decode_address_mode(wrapU, texture.addressU) ||
-        !native_render::decode_address_mode(wrapV, texture.addressV) ||
-        !native_render::decode_min_filter(min, texture.minFilter, texture.mipFilter) ||
-        !native_render::decode_mag_filter(mag, texture.magFilter))
-        return false;
-    // The current semantic GPU resource has one decoded level. Refuse authored mip sampling rather
-    // than silently advertising a chain that was not captured.
-    if (texture.mipFilter != native_render::MipFilter::None)
-        return false;
-    if (textureIndex != 0 &&
-        (!native_render::decode_blend_factor(colorBlend, textureIndex, texture.colorMix) ||
-         !native_render::decode_blend_factor(alphaBlend, textureIndex, texture.alphaMix)))
-        return false;
-
-    native_render::EncodedImageFormat format{};
-    std::size_t sourceBytes = 0;
-    std::size_t outputBytes = 0;
-    if (!native_render::decode_image_format(static_cast<std::uint8_t>(rawFormat), format) ||
-        !native_render::encoded_image_data_size(width, height, format, sourceBytes) ||
-        !native_render::decoded_image_data_size(width, height, outputBytes)) {
-        return false;
-    }
-    std::vector<std::uint8_t> encoded(sourceBytes);
-    if (!reader.bytes(texelAddress, encoded.data(), encoded.size()))
-        return false;
-
-    native_render::PaletteFormat paletteFormat = native_render::PaletteFormat::Rgb5A3;
-    std::uint32_t paletteEntries = 0;
-    std::vector<std::uint8_t> palette;
-    if (format == native_render::EncodedImageFormat::Indexed4 ||
-        format == native_render::EncodedImageFormat::Indexed8 ||
-        format == native_render::EncodedImageFormat::Indexed14) {
-        std::uint32_t paletteObject = 0;
-        std::uint32_t rawPaletteFormat = 0;
-        std::uint32_t paletteAddress = 0;
-        std::uint16_t paletteEntryCount = 0;
-        if (!reader.u32(textureAddress + 0x2c, paletteObject) || paletteObject == 0 ||
-            !reader.u32(paletteObject + 0x10, rawPaletteFormat) ||
-            rawPaletteFormat > std::numeric_limits<std::uint8_t>::max() ||
-            !native_render::decode_palette_format(static_cast<std::uint8_t>(rawPaletteFormat),
-                                                  paletteFormat) ||
-            !reader.u32(paletteObject + 0x14, paletteAddress) || paletteAddress == 0 ||
-            !reader.u16(paletteObject + 0x18, paletteEntryCount) || paletteEntryCount == 0) {
-            return false;
-        }
-        paletteEntries = paletteEntryCount;
-        palette.resize(static_cast<std::size_t>(paletteEntries) * 2U);
-        if (!reader.bytes(paletteAddress, palette.data(), palette.size()))
-            return false;
-    }
-
-    const native_render::EncodedImageView source{format,        width,          height, encoded,
-                                                 paletteFormat, paletteEntries, palette};
-    rgba8.resize(outputBytes);
-    if (native_render::decode_image_rgba8(source, rgba8) != native_render::ImageDecodeError::None) {
-        return false;
-    }
-    if (!native_render::image_content_revision(source, texture.revision))
-        return false;
     return true;
 }
 
@@ -126,6 +34,7 @@ bool read_picture_material(const BigEndianGuestReader& reader, std::uint32_t sel
     }
 
     result.command.instance = self;
+    result.command.source = native_render::PictureSource::J2dPicture;
     result.command.opacity = static_cast<float>(opacity) / 255.0f;
     result.command.material.textureCount = textureCount;
     result.command.material.black = native_render::color_from_rgba8(black);
@@ -138,11 +47,19 @@ bool read_picture_material(const BigEndianGuestReader& reader, std::uint32_t sel
     }
     for (std::size_t index = 0; index < textureCount; ++index) {
         std::uint32_t textureAddress = 0;
+        CapturedGuestTexture capturedTexture{};
         if (!reader.u32(self + 0xec + static_cast<std::uint32_t>(index * 4), textureAddress) ||
-            !read_texture(reader, textureAddress, index, colorBlend, alphaBlend,
-                          result.command.material.textures[index], result.rgba8[index])) {
+            !capture_guest_jut_texture(reader, textureAddress, capturedTexture)) {
             return false;
         }
+        result.command.material.textures[index] = capturedTexture.texture;
+        result.rgba8[index] = std::move(capturedTexture.rgba8);
+        if (index != 0 &&
+            (!native_render::decode_blend_factor(
+                 colorBlend, index, result.command.material.textures[index].colorMix) ||
+             !native_render::decode_blend_factor(alphaBlend, index,
+                                                 result.command.material.textures[index].alphaMix)))
+            return false;
     }
     result.imageCount = textureCount;
     return true;

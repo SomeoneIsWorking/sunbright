@@ -170,6 +170,8 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
     for (const SemanticDraw& draw : frame->draws) {
         if (std::holds_alternative<PictureDraw>(draw)) {
             ++stats_.submittedPictures;
+            if (std::get<PictureDraw>(draw).picture.source == PictureSource::J2dWindow)
+                ++stats_.submittedJ2dWindowPictures;
             hasPictures = true;
         } else if (std::holds_alternative<GlyphDraw>(draw)) {
             ++stats_.submittedGlyphs;
@@ -179,6 +181,9 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
             if (std::get<SolidRectangleDraw>(draw).rectangle.source ==
                 SolidRectangleSource::J2dGrafContextFillBox) {
                 ++stats_.submittedJ2dFillBoxes;
+            } else if (std::get<SolidRectangleDraw>(draw).rectangle.source ==
+                       SolidRectangleSource::J2dWindowContents) {
+                ++stats_.submittedJ2dWindowContents;
             }
             hasSolidRectangles = true;
         }

@@ -13,7 +13,7 @@ class RenderComposition {
     [[nodiscard]] bool configure(app::Renderer renderer, std::string& error) noexcept;
     [[nodiscard]] bool initialize(SDL_Window* window, std::string& error);
     [[nodiscard]] bool encode_semantic_frame(std::string& error);
-    [[nodiscard]] bool validate_semantic_audit(std::string& error) const noexcept;
+    [[nodiscard]] bool validate_semantic_audit(std::string& error) noexcept;
     [[nodiscard]] bool stop_semantic_collection(std::string& error) noexcept;
     [[nodiscard]] bool shutdown(std::string& error) noexcept;
     [[nodiscard]] bool semantic_active() const noexcept;

@@ -87,10 +87,11 @@ bool RenderComposition::encode_semantic_frame(std::string& error) {
     return native_render::sdl_semantic_frame_client().encode_last_sealed(error);
 }
 
-bool RenderComposition::validate_semantic_audit(std::string& error) const noexcept {
+bool RenderComposition::validate_semantic_audit(std::string& error) noexcept {
     error.clear();
     if (!semantic_active())
         return true;
+    report_semantic_stats();
     return native_render::sdl_semantic_frame_client().validate_audit(error);
 }
 
@@ -128,14 +129,16 @@ void RenderComposition::report_semantic_stats() noexcept {
     const auto& stats = native_render::sdl_semantic_frame_client().stats();
     lucent::info("semantic",
                  "offscreen summary: submitted={} completed={} nonempty={} mixed={} operations={} "
-                 "pictures={} glyphs={} solid-rectangles={} j2d-fill-boxes={} images={} samples={} "
+                 "pictures={} j2d-window-pictures={} glyphs={} solid-rectangles={} "
+                 "j2d-fill-boxes={} j2d-window-contents={} images={} samples={} "
                  "first-nonclear-frame={} "
                  "first-nonclear-pixels={}",
                  stats.submittedFrames, stats.completedFrames, stats.nonEmptyFrames,
                  stats.mixedOperationFrames, stats.submittedOperations, stats.submittedPictures,
-                 stats.submittedGlyphs, stats.submittedSolidRectangles, stats.submittedJ2dFillBoxes,
-                 stats.submittedImages, stats.sampledFrames, stats.firstNonClearFrame,
-                 stats.firstNonClearPixels);
+                 stats.submittedJ2dWindowPictures, stats.submittedGlyphs,
+                 stats.submittedSolidRectangles, stats.submittedJ2dFillBoxes,
+                 stats.submittedJ2dWindowContents, stats.submittedImages, stats.sampledFrames,
+                 stats.firstNonClearFrame, stats.firstNonClearPixels);
     statsReported_ = true;
 }
 

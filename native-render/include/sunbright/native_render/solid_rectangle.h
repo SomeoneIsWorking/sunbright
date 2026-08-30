@@ -11,6 +11,7 @@ enum class SolidRectangleSource : std::uint8_t {
     Unknown,
     Gc2dFillRect,
     J2dGrafContextFillBox,
+    J2dWindowContents,
 };
 
 struct TransformedS16RectangleLayout {

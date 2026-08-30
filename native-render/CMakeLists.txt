@@ -2,7 +2,7 @@ add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/
                                                  src/picture.cpp src/picture_context.cpp
                                                  src/semantic_2d_types.cpp
                                                  src/semantic_frame_bridge.cpp src/semantic_sink.cpp
-                                                 src/solid_rectangle.cpp)
+                                                 src/solid_rectangle.cpp src/window.cpp)
 target_include_directories(sunbright-native-render-core PUBLIC include)
 
 add_executable(native_render_glyph_test tests/glyph_test.cpp)
@@ -12,6 +12,10 @@ add_test(NAME native_render_glyph COMMAND native_render_glyph_test)
 add_executable(native_render_picture_test tests/picture_test.cpp)
 target_link_libraries(native_render_picture_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_picture COMMAND native_render_picture_test)
+
+add_executable(native_render_window_test tests/window_test.cpp)
+target_link_libraries(native_render_window_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_window COMMAND native_render_window_test)
 
 add_executable(native_render_semantic_sink_test tests/semantic_sink_test.cpp)
 target_link_libraries(native_render_semantic_sink_test PRIVATE sunbright-native-render-core)

@@ -8,17 +8,18 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered game-frame J2D pictures, resource-font glyphs, generic J2D filled/gradient boxes, and GC2D solid rectangles to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
-| S005 | The native decomp feeds the same ordered semantic picture/glyph/filled-box stream to that renderer | partial | S002, S004 | G004 |
+| S004 | The recomp feeds ordered game-frame J2D pictures, resource-font glyphs, complete J2D window compositions, generic J2D filled/gradient boxes, and GC2D solid rectangles to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S005 | The native decomp feeds the same ordered semantic J2D picture/glyph/window/filled-box stream to that renderer | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
 
 ## Current focus
 
 S004 is the current focus. The path previously counted toward it is now classified separately as
-compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. The current
-atomic gap is adding J2D window contents and frame pieces to the same ordered stream before semantic
-output can own visible 2D presentation.
+compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. Pictures,
+resource-font text, window contents and frames, and the two filled-rectangle entry points now share
+one ordered J2D stream. The current atomic gap is proving a visible semantic J2D composition against
+the retained Aurora reference without claiming ownership of the still-missing 3D/effect families.
 
 ## Capability details
 
@@ -32,7 +33,9 @@ the Clang runtime test suite covers its hardware/OS seams.
 
 Evidence: the native `decomp/sms` plus Aurora runtime renders the title, file-select, and Delfino
 flow and remains the readable game-behavior oracle. Its boot/runtime ownership is documented in
-`AGENTS.md` and `docs/codemap.md`.
+`AGENTS.md` and `docs/codemap.md`. Issue 30 records a pre-existing stage-one retained-GX path that
+can abort when an indirect draw supplies illegal texture wrap value 3; older captures and the new
+core establish the symptom, but its originating texture-state write is not yet traced.
 
 ### S003 — SDL3-GPU GX compatibility renderer
 
@@ -119,6 +122,18 @@ dedicated runtime statistic distinguishes these boxes from existing GC2D fills. 
 180-present Delfino run did not organically reach this routine, so it is runtime-safety evidence,
 not live filled-box coverage.
 
+`J2DWindow::draw_private` now enters the same ordered stream as a semantic composition rather than
+as GX primitives: one four-corner-colour contents rectangle, an optional centered contents texture,
+four corners, then four edge strips sampled from their owning corner textures. The shared resolver
+owns the matching decomp body's signed-16-bit position narrowing, stored minimum-size gate, matrix
+concatenation, asymmetric corner sizes, centered contents UVs, and all eight mirror bits. It emits
+only the existing renderer-neutral rectangle and one-texture picture commands; no GX window state
+or window-specific shader was added. The recomp adapter reads retail big-endian fields at the
+existing widescreen override after its rectangle/matrix edits and before the retained super-call.
+Its close control parses the actual object offsets, decodes five textures, proves the nine textured
+parts and gradient order, and falsifies malformed sampler input. The original recompiled body stays
+available on every call.
+
 Immediate `J2DPicture::draw` calls are also in the ordered stream. `J2DGrafContext::setup2D`
 publishes the active orthographic canvas independently of a `J2DScreen` scope; the picture override
 retains the complete guest body, then copies the position matrix that body built plus the saved
@@ -154,10 +169,10 @@ already contained 286,720 pixels distinct from clear. The production GPU control
 proves an empty semantic frame stays exactly clear, a planted mixed frame produces a different
 non-clear hash, and a duplicate sequence is refused.
 
-Gap: this remains offscreen liveness and ownership evidence, not visual-correctness, completeness,
-cross-runtime-parity, or visible-presentation evidence. J2D windows, 3D,
-authored mip chains, J3D, particles, lights, and effects are not in the semantic stream, so the
-partial result must not be overlaid or presented as the game frame.
+Gap: this remains offscreen liveness and ownership evidence, not visual-correctness,
+cross-runtime-parity, or visible-presentation evidence. 3D, authored mip chains, J3D, particles,
+lights, and effects are not in the semantic stream, so the partial result must not be presented as
+the complete game frame.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -179,6 +194,14 @@ position matrix, four colours, active canvas, and J2D scissor through a layout-l
 the original GX body. Its production-linked control drives real J2D objects through the shared
 signed-16-bit layout resolver; no guest layout crosses into this adapter.
 
+The matching decomp `J2DWindow::draw_private` body now publishes the same gradient, optional
+contents texture, corners, and edge strips before retaining GX emission. Anonymous members were
+renamed for the palette, five textures, mirror flags, four contents colours, frame remap colours,
+and stored minimum dimensions. The production-linked native-layout control drives a real
+`J2DWindow` through the shipping adapter and observes one rectangle plus nine picture submissions,
+including copied decoded pixels and a balanced host-allocation gate. This extends readable decomp
+behavior alongside the recomp override without sharing object layouts.
+
 The decomp scopes each retained `J2DScreen::draw`, copies the real J2DOrthoGraph values without
 retaining its stack pointer, and publishes the final logical pane clip at picture entry. Its host
 composition activates the same offscreen client. Frame begin, seal, consume, and next begin remain
@@ -187,6 +210,11 @@ Aurora teardown. A guarded 400-present title run completed all 400 semantic fram
 nonempty and eleven contained both operation families. The stream carried 9,271 operations: 9,207
 pictures, 64 solid rectangles, and 9,207 images. Semantic frame 104 was the first sampled nonclear
 frame and contained 149,927 pixels distinct from clear. Aurora remains the visible GX renderer.
+
+The title audit's window-specific counters remained zero, so its 9,271-operation result proves the
+new code is inert when no window is drawn, not live window coverage. A stage-one audit stopped in a
+pre-existing retained-Aurora invalid-wrap failure before any window submission; issue 30 records
+the core and older reproductions rather than attributing that failure to this adapter.
 
 The native decomp `J2DGrafContext::setup2D` and `J2DPicture::draw` now carry the same active-canvas
 and immediate-picture behavior through native source. The call publishes the already-built native
@@ -203,8 +231,9 @@ proves the transient image is copied before return. Bounded title and stage-one 
 exercise a resource-font glyph on their reached paths, so they prove runtime safety but not live
 decomp glyph coverage; that remains explicit rather than inferred from the adapter test.
 
-Gap: the same missing J2D window family described above prevents visible decomp semantic
-presentation.
+Gap: decomp window behavior has close production-linked coverage but not an organically reached
+live window in the bounded title/stage-one routes. Visible semantic presentation and the same 3D
+and effect families remain missing.
 
 ### S006 — Lerp coverage
 

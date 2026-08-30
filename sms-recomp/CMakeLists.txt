@@ -317,11 +317,21 @@ add_test(NAME native_raster_state COMMAND native_raster_state_test)
 
 add_executable(j2d_picture_adapter_test tests/j2d_picture_adapter_test.cpp
                                         overrides/big_endian_guest_reader.cpp
+                                        overrides/guest_jut_texture_adapter.cpp
                                         overrides/j2d_picture_adapter.cpp)
 target_link_libraries(j2d_picture_adapter_test PRIVATE sunbright-native-render-core)
 target_include_directories(j2d_picture_adapter_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
 add_test(NAME j2d_picture_adapter COMMAND j2d_picture_adapter_test)
+
+add_executable(j2d_window_adapter_test tests/j2d_window_adapter_test.cpp
+                                       overrides/big_endian_guest_reader.cpp
+                                       overrides/guest_jut_texture_adapter.cpp
+                                       overrides/j2d_window_adapter.cpp)
+target_link_libraries(j2d_window_adapter_test PRIVATE sunbright-native-render-core)
+target_include_directories(j2d_window_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/overrides")
+add_test(NAME j2d_window_adapter COMMAND j2d_window_adapter_test)
 
 add_executable(j2d_fill_box_adapter_test tests/j2d_fill_box_adapter_test.cpp
                                          overrides/big_endian_guest_reader.cpp

@@ -300,9 +300,11 @@ if(TARGET aurora_core)
     add_library(sms-native-semantic-2d STATIC
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_context.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_fill_box_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_jut_texture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_window_adapter.cpp")
     add_dependencies(sms-native-semantic-2d sms-native-sjis)
     set_target_properties(sms-native-semantic-2d PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
@@ -399,14 +401,17 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/native_picture_adapter_test.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_context.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j2d_fill_box_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_jut_texture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_window_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DGrafContext.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DOrthoGraph.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DPane.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DPicture.cpp"
+        "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DWindow.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/JSupport/JSUList.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/JUtility/JUTRect.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/JUtility/JUTTexture.cpp"

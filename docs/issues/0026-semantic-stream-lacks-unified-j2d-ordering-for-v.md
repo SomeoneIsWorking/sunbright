@@ -1,7 +1,7 @@
 ---
 id: 26
 title: Semantic stream lacks unified J2D ordering for visible presentation
-status: open
+status: resolved
 symptom: The offscreen semantic target preserves picture/GC2D-fill order, but presenting it would still lose authored ordering against text, windows, generic J2D fills, direct picture calls, and later 3D/effect families.
 state_items: S004,S005
 tags: renderer,semantic,j2d,ordering,presentation
@@ -51,8 +51,14 @@ pictures and nine solids without regrouping. The decomp production-linked contro
 same value contract with actual encoded font-page bytes; its bounded title and stage-one runs did
 not happen to reach resource-font glyph drawing, so live decomp glyph coverage is still unmeasured.
 
-## Remaining resolution
+## Resolution
 
-Add window contents/frame pieces and `J2DGrafContext::fillBox` to the same variant stream with
-planted inter-family order controls. Only then can the J2D portion be considered for visible
-presentation; 3D and effect families remain later work.
+The ordered semantic stream now includes both remaining families. `J2DGrafContext::fillBox` emits
+the matching signed-16-bit transformed gradient rectangle. `J2DWindow::draw_private` emits its
+gradient, optional centered contents texture, four corners, and four edge strips through the shared
+rectangle/picture commands. Both recomp and decomp retain their original bodies; close controls
+cover ordering, transforms, colours, mirror bits, retail minimum-size culling, texture decoding,
+and malformed input.
+
+This resolves the missing-J2D-family ordering point. Visible composition and 3D/effect ownership
+are separate capability gaps.

@@ -65,7 +65,10 @@ PictureCommand picture_from_glyph(const GlyphCommand& glyph) noexcept {
     material.textures[0] = glyph.atlas;
     material.black = glyph.black;
     material.white = glyph.white;
-    return {glyph.instance, glyph.positions, glyph.uv, glyph.corner, 1.0f, glyph.clip, material};
+    return {glyph.instance,  PictureSource::Unknown,
+            glyph.positions, glyph.uv,
+            glyph.corner,    1.0f,
+            glyph.clip,      material};
 }
 
 bool valid(const GlyphCommand& glyph) noexcept {

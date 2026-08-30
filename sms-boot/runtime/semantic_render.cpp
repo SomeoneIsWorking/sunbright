@@ -30,7 +30,8 @@ void report_stats() {
     sb_logf("semantic",
             "offscreen summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
             "operations=%llu "
-            "pictures=%llu glyphs=%llu solid-rectangles=%llu j2d-fill-boxes=%llu images=%llu "
+            "pictures=%llu j2d-window-pictures=%llu glyphs=%llu solid-rectangles=%llu "
+            "j2d-fill-boxes=%llu j2d-window-contents=%llu images=%llu "
             "samples=%llu "
             "first-nonclear-frame=%llu first-nonclear-pixels=%zu",
             static_cast<unsigned long long>(stats.submittedFrames),
@@ -39,9 +40,11 @@ void report_stats() {
             static_cast<unsigned long long>(stats.mixedOperationFrames),
             static_cast<unsigned long long>(stats.submittedOperations),
             static_cast<unsigned long long>(stats.submittedPictures),
+            static_cast<unsigned long long>(stats.submittedJ2dWindowPictures),
             static_cast<unsigned long long>(stats.submittedGlyphs),
             static_cast<unsigned long long>(stats.submittedSolidRectangles),
             static_cast<unsigned long long>(stats.submittedJ2dFillBoxes),
+            static_cast<unsigned long long>(stats.submittedJ2dWindowContents),
             static_cast<unsigned long long>(stats.submittedImages),
             static_cast<unsigned long long>(stats.sampledFrames),
             static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);
@@ -103,6 +106,8 @@ extern "C" bool sb_semantic_render_consume(void) {
 extern "C" bool sb_semantic_render_validate(void) {
     g_error.clear();
     auto& client = sb::native_render::sdl_semantic_frame_client();
+    if (client.ready())
+        report_stats();
     return !client.ready() || client.validate_audit(g_error);
 }
 

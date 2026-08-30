@@ -1,23 +1,18 @@
-#include <sunbright/native_render/image.h>
-#include <sunbright/native_render/image_decode.h>
 #include <sunbright/native_render/picture.h>
 #include <sunbright/native_render/semantic_sink.h>
 
 #include "host_allocation_scope.h"
 #include "native_j2d_context.h"
+#include "native_jut_texture_adapter.h"
 
 #include <JSystem/J2D/J2DPicture.hpp>
-#include <JSystem/JUtility/JUTPalette.hpp>
-#include <JSystem/JUtility/JUTTexture.hpp>
 #include <dolphin/os.h>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <span>
-#include <vector>
 
 namespace {
 
@@ -59,6 +54,7 @@ void submit_picture(const void* picturePointer, const void* matrixPointer,
 
     sb::native_render::PictureCommand command{};
     command.instance = reinterpret_cast<std::uintptr_t>(&picture);
+    command.source = sb::native_render::PictureSource::J2dPicture;
     command.opacity = static_cast<float>(picture.mColorAlpha) / 255.0f;
     command.material.textureCount = picture.mTextureNum;
     command.material.black = sb::native_render::color_from_rgba8(static_cast<u32>(picture.mBlack));
@@ -67,32 +63,18 @@ void submit_picture(const void* picturePointer, const void* matrixPointer,
         command.corner[index] =
             sb::native_render::color_from_rgba8(static_cast<u32>(picture.mCornerColor[index]));
 
-    std::array<std::vector<std::uint8_t>, 4> decodedPixels{};
+    std::array<sb::CapturedNativeTexture, 4> capturedTextures{};
     std::array<sb::native_render::DecodedImageView, 4> images{};
     for (std::size_t index = 0; index < picture.mTextureNum; ++index) {
         const JUTTexture* source = picture.mTextures[index];
-        if (source == nullptr || source->mTexInfo == nullptr || source->mTexData == nullptr ||
-            source->mFormat > std::numeric_limits<std::uint8_t>::max()) {
-            fail("missing texture metadata");
+        const char* textureError = "unknown texture error";
+        if (source == nullptr ||
+            !sb::capture_native_jut_texture(*source, capturedTextures[index], textureError)) {
+            fail(textureError);
             return;
         }
         auto& texture = command.material.textures[index];
-        texture.resource = reinterpret_cast<std::uintptr_t>(source->mTexInfo);
-        texture.width = source->mWidth;
-        texture.height = source->mHeight;
-        if (!sb::native_render::decode_address_mode(source->mWrapS, texture.addressU) ||
-            !sb::native_render::decode_address_mode(source->mWrapT, texture.addressV) ||
-            !sb::native_render::decode_min_filter(source->mMinFilter, texture.minFilter,
-                                                  texture.mipFilter) ||
-            !sb::native_render::decode_mag_filter(source->mMagFilter, texture.magFilter)) {
-            fail("unsupported sampler state");
-            return;
-        }
-        if (texture.mipFilter != sb::native_render::MipFilter::None) {
-            fail("mipmapped semantic picture resource is not implemented");
-            return;
-        }
-        texture.hasAlpha = source->mAlphaEnabled != 0;
+        texture = capturedTextures[index].texture;
         if (index != 0 &&
             (!sb::native_render::decode_blend_factor(static_cast<u32>(picture.mBlendKonstColor),
                                                      index, texture.colorMix) ||
@@ -101,54 +83,7 @@ void submit_picture(const void* picturePointer, const void* matrixPointer,
             fail("invalid blend-factor layer");
             return;
         }
-
-        sb::native_render::EncodedImageFormat format{};
-        std::size_t sourceBytes = 0;
-        std::size_t outputBytes = 0;
-        if (!sb::native_render::decode_image_format(static_cast<std::uint8_t>(source->mFormat),
-                                                    format) ||
-            !sb::native_render::encoded_image_data_size(source->mWidth, source->mHeight, format,
-                                                        sourceBytes) ||
-            !sb::native_render::decoded_image_data_size(source->mWidth, source->mHeight,
-                                                        outputBytes)) {
-            fail("unsupported texture encoding or extent");
-            return;
-        }
-
-        sb::native_render::PaletteFormat paletteFormat = sb::native_render::PaletteFormat::Rgb5A3;
-        std::uint32_t paletteEntries = 0;
-        std::span<const std::uint8_t> palette{};
-        if (format == sb::native_render::EncodedImageFormat::Indexed4 ||
-            format == sb::native_render::EncodedImageFormat::Indexed8 ||
-            format == sb::native_render::EncodedImageFormat::Indexed14) {
-            const JUTPalette* activePalette = source->field_0x2c;
-            if (activePalette == nullptr || activePalette->getColorTable() == nullptr ||
-                !sb::native_render::decode_palette_format(activePalette->getFormat(),
-                                                          paletteFormat)) {
-                fail("missing or unsupported active palette");
-                return;
-            }
-            paletteEntries = activePalette->getNumColors();
-            palette = {reinterpret_cast<const std::uint8_t*>(activePalette->getColorTable()),
-                       static_cast<std::size_t>(paletteEntries) * 2U};
-        }
-
-        const sb::native_render::EncodedImageView encoded{
-            format,          source->mWidth,
-            source->mHeight, {static_cast<const std::uint8_t*>(source->mTexData), sourceBytes},
-            paletteFormat,   paletteEntries,
-            palette,
-        };
-        decodedPixels[index].resize(outputBytes);
-        const sb::native_render::ImageDecodeError decodeError =
-            sb::native_render::decode_image_rgba8(encoded, decodedPixels[index]);
-        if (decodeError != sb::native_render::ImageDecodeError::None ||
-            !sb::native_render::image_content_revision(encoded, texture.revision)) {
-            fail(sb::native_render::image_decode_error_name(decodeError));
-            return;
-        }
-        images[index] = {texture.resource, texture.revision, texture.width, texture.height,
-                         decodedPixels[index]};
+        images[index] = capturedTextures[index].image_view();
     }
 
     if (direct == nullptr) {

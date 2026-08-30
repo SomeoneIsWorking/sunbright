@@ -4,6 +4,7 @@
 
 #include <JSystem/J2D/J2DOrthoGraph.hpp>
 #include <JSystem/J2D/J2DPicture.hpp>
+#include <JSystem/J2D/J2DWindow.hpp>
 #include <JSystem/JDrama/JDRRect.hpp>
 #include <JSystem/JUtility/JUTPalette.hpp>
 #include <JSystem/JUtility/JUTTexture.hpp>
@@ -99,6 +100,34 @@ void initialize_texture(JUTTexture& texture, const ResTIMG& identity,
     texture.field_0x4c = nullptr;
     texture.unk50 = 0;
 }
+
+class TestWindow final : public J2DWindow {
+  public:
+    TestWindow(std::array<Texture*, 4> frame, Texture* contents)
+        : J2DWindow(static_cast<const ResTIMG*>(nullptr), nullptr, nullptr, nullptr) {
+        mPalette = nullptr;
+        mFrameTextureTopLeft = frame[0];
+        mFrameTextureTopRight = frame[1];
+        mFrameTextureBottomLeft = frame[2];
+        mFrameTextureBottomRight = frame[3];
+        mContentsTexture = contents;
+        mMirrorFlags = 0;
+        mContentsColorTopLeft.set(0xff0000ff);
+        mContentsColorTopRight.set(0x00ff0080);
+        mContentsColorBottomLeft.set(0x0000ffff);
+        mContentsColorBottomRight.set(0xffffffff);
+        mFrameWhite.set(0xffffffff);
+        mFrameBlack.set(0x00000000);
+        mMinimumWidth = 8;
+        mMinimumHeight = 8;
+        mUnknown138 = 0;
+        mColorAlpha = 128;
+        mClipRect.set(1, 2, 19, 14);
+        identity(mGlobalMtx);
+        mGlobalMtx[0][3] = 5.0f;
+        mGlobalMtx[1][3] = 7.0f;
+    }
+};
 
 } // namespace
 
@@ -302,6 +331,34 @@ int main() {
     assert(receiver.imageCount == 1 && receiver.images[0].rgba8[0] == 77);
     assert(g_hostAllocationDepth == 0);
     sb_native_text_context_pop();
+
+    // Complete native-layout window control: one gradient fill, centered contents texture, four
+    // corners, then four sampled edges. The bridge must use the same shared resolver as recomp.
+    std::array<ResTIMG, 5> windowIdentities{};
+    std::array<std::array<std::uint8_t, 64>, 5> windowTexels{};
+    std::array<J2DWindow::Texture*, 5> windowTextures{};
+    for (std::size_t index = 0; index < windowTextures.size(); ++index) {
+        windowTextures[index] = new J2DWindow::Texture(nullptr);
+        initialize_texture(*windowTextures[index], windowIdentities[index], windowTexels[index],
+                           GX_TF_RGBA8, 4, 4, true, nullptr);
+    }
+    TestWindow window({windowTextures[1], windowTextures[2], windowTextures[3], windowTextures[4]},
+                      windowTextures[0]);
+    JUTRect outer(30, 40, 50, 56);
+    JUTRect windowContents(4, 3, 16, 13);
+    identity(parent);
+    parent[0][3] = 2.0f;
+    parent[1][3] = 3.0f;
+    sb_native_window_submit(&window, &outer, &windowContents, &parent);
+    assert(receiver.calls == 17);
+    assert(receiver.solid.rectangle.source ==
+           sb::native_render::SolidRectangleSource::J2dWindowContents);
+    assert(receiver.solid.rectangle.positions[0] == sb::native_render::Vec2(11.0f, 13.0f));
+    assert(receiver.solid.rectangle.positions[3] == sb::native_render::Vec2(23.0f, 23.0f));
+    assert(receiver.draw.picture.material.textureCount == 1);
+    assert(receiver.draw.picture.source == sb::native_render::PictureSource::J2dWindow);
+    assert(receiver.imageCount == 1);
+    assert(g_hostAllocationDepth == 0);
     sb_native_picture_context_pop();
 
     assert(sb::native_render::release_semantic_sink(sinkLease));

@@ -43,11 +43,14 @@ struct PictureMaterial {
     Color white{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
+enum class PictureSource : std::uint8_t { Unknown, J2dPicture, J2dWindow };
+
 // Final game-semantic J2D picture values. Positions are in the game's logical screen space after
 // its pane/model transform; no GX registers, TEV program, FIFO offset, or EFB operation crosses
 // this boundary. Corner order is top-left, top-right, bottom-left, bottom-right.
 struct PictureCommand {
     std::uint64_t instance = 0;
+    PictureSource source = PictureSource::Unknown;
     std::array<Vec2, 4> positions{};
     std::array<Vec2, 4> uv{};
     std::array<Color, 4> corner{Color{1.0f, 1.0f, 1.0f, 1.0f}, Color{1.0f, 1.0f, 1.0f, 1.0f},
