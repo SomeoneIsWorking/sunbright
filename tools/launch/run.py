@@ -48,6 +48,7 @@ class Invocation:
     runner_args: list[str]
     timeout_secs: float | None
     diagnostic: bool
+    semantic_preview: bool
     renderer_was_forced: bool
     explicit_environment: dict[str, str]
     isolated_environment: bool
@@ -100,6 +101,7 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
     runner = "recomp"
     rom: str | None = None
     diagnostic = False
+    semantic_preview = False
     timeout_option: str | None = None
     index = 0
     after_separator = False
@@ -145,6 +147,11 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
             continue
         if argument == "--diagnostic":
             diagnostic = True
+            index += 1
+            continue
+        if argument == "--semantic-preview":
+            semantic_preview = True
+            set_explicit("SB_SEMANTIC_FRAME_MODE", "preview")
             index += 1
             continue
         if argument == "--isolated-environment":
@@ -199,12 +206,18 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
                 f"SB_RUNNER={legacy_runner} is not supported; choose run-recomp.sh or run-decomp.sh"
             )
         runner = legacy_map[legacy_runner]
-    if runner != "recomp" and not diagnostic:
-        raise ValueError("the decomp oracle requires --diagnostic --runtime decomp")
+    if runner != "recomp" and not diagnostic and not semantic_preview:
+        raise ValueError(
+            "the decomp oracle requires --diagnostic, except for the explicit --semantic-preview"
+        )
     if isolated_environment and not diagnostic:
         raise ValueError("--isolated-environment requires --diagnostic")
     if isolated_environment and runner != "recomp":
         raise ValueError("--isolated-environment currently supports only the recomp runtime")
+    if semantic_preview and diagnostic:
+        raise ValueError("--semantic-preview is visible and cannot be combined with --diagnostic")
+    if semantic_preview and environment.get("SB_HEADLESS") not in (None, "", "0"):
+        raise ValueError("--semantic-preview requires a visible window and cannot use --headless")
 
     if diagnostic:
         for name, value in (
@@ -248,6 +261,7 @@ def parse_invocation(arguments: list[str], inherited: dict[str, str]) -> Invocat
         runner_args,
         timeout_secs,
         diagnostic,
+        semantic_preview,
         renderer_was_forced,
         {name: environment[name] for name in sorted(explicit_names)},
         isolated_environment,
@@ -272,8 +286,9 @@ Normal play is windowed, paced, audible, unlimited, and protected by the live GP
   --run-secs SECONDS      impose a wall-clock limit
   --max-present-hz HZ     cap GPU submission rate
   --diagnostic            conservative headless/muted/60-Hz/240-second defaults
+  --semantic-preview      show the incomplete PC-native 2D frame (3D/effects absent)
   --isolated-environment  clear ambient project knobs (diagnostic recomp only)
-  --runtime decomp        use the decomp oracle (requires --diagnostic)
+  --runtime decomp        use the decomp oracle (diagnostic or semantic preview only)
   -- NAME=VALUE ...       add exact environment settings after launcher options
 """
 
@@ -400,6 +415,11 @@ def _print_controls(invocation: Invocation) -> None:
     )
     if invocation.environment.get("SBR_60FPS") == "1":
         print(" 60 FPS interpolation: ON — game logic remains at 30 Hz.")
+    if invocation.semantic_preview:
+        print(
+            " Native 2D preview: INCOMPLETE — only ported 2D/UI is visible; "
+            "3D, particles, lights, and effects are absent."
+        )
 
 
 def run(invocation: Invocation) -> int:
@@ -462,12 +482,14 @@ def selftest() -> int:
     assert interactive.runner == "recomp"
     assert interactive.timeout_secs is None
     assert not interactive.diagnostic
+    assert not interactive.semantic_preview
     assert not interactive.isolated_environment
     assert interactive.environment["SBR_RENDERER"] == "aurora"
     assert "SB_HEADLESS" not in interactive.environment
 
     diagnostic = parse_invocation(["--diagnostic"], {})
     assert diagnostic.timeout_secs == 240
+    assert not diagnostic.semantic_preview
     assert diagnostic.environment["SB_HEADLESS"] == "1"
     assert diagnostic.environment["SBR_MUTE"] == "1"
     assert diagnostic.environment["SB_MAX_PRESENT_HZ"] == "60"
@@ -508,8 +530,16 @@ def selftest() -> int:
     assert isolated.runner == "recomp"
     assert isolated.isolated_environment
 
+    preview = parse_invocation(["--semantic-preview", "--runtime", "decomp"], {})
+    assert preview.runner == "decomp"
+    assert preview.semantic_preview
+    assert preview.environment["SB_SEMANTIC_FRAME_MODE"] == "preview"
+    assert "SB_HEADLESS" not in preview.environment
+
     for invalid in (
         ["--runtime", "decomp"],
+        ["--semantic-preview", "--headless"],
+        ["--semantic-preview", "--diagnostic"],
         ["--isolated-environment"],
         ["--diagnostic", "--isolated-environment", "--runtime", "decomp"],
         ["--diagnostic", "--max-present-hz", "0"],

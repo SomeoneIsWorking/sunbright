@@ -727,8 +727,8 @@ void present_and_reopen(bool& frameActive) {
         final_reports();
         std::string renderError;
         if (g_quit_requested == kQuitAfterReached &&
-            !sb::host::render_composition().validate_semantic_audit(renderError)) {
-            lucent::error("semantic", "bounded semantic audit failed: {}", renderError);
+            !sb::host::render_composition().validate_semantic_output(renderError)) {
+            lucent::error("semantic", "bounded semantic output failed: {}", renderError);
             std::abort();
         }
         if (!sb::host::render_composition().shutdown(renderError)) {
@@ -1013,7 +1013,7 @@ void present_tail(CPUState& cpu) {
     }
     std::string semanticError;
     if (!sb::host::render_composition().encode_semantic_frame(semanticError)) {
-        lucent::error("semantic", "offscreen semantic frame failed: {}", semanticError);
+        lucent::error("semantic", "semantic frame output failed: {}", semanticError);
         std::abort();
     }
     // Close only after the view-matrix extension is emitted. Building first put that command at

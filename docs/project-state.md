@@ -18,8 +18,10 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 S004 is the current focus. The path previously counted toward it is now classified separately as
 compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. Pictures,
 resource-font text, window contents and frames, and the two filled-rectangle entry points now share
-one ordered J2D stream. The current atomic gap is proving a visible semantic J2D composition against
-the retained Aurora reference without claiming ownership of the still-missing 3D/effect families.
+one ordered J2D stream. That incomplete native 2D frame can now own the live window in an explicit,
+plainly labelled preview while Aurora continues offscreen as the retained reference. The current
+atomic gap is selecting and grounding the first 3D scene/material boundary; 3D, particles, lights,
+and effects remain absent from the native frame.
 
 ## Capability details
 
@@ -92,16 +94,17 @@ They copy the supplied ortho graph's logical rectangle and viewport (or the exac
 The GPU control includes a nonzero sub-viewport known-different answer.
 
 The shared core also owns the one process-level semantic frame bridge, one SDL GPU platform, and the
-offscreen semantic-frame client. The bridge claims the guarded semantic sink by lease and brackets
-the bounded collector at the exact runtime frame boundaries. `SdlSemanticFrameClient` consumes each
-sealed sequence once, owns a 640x480 no-depth target and `Semantic2dPass`, submits with a fence, and
-reads back until it observes pixels different from its controlled black clear. Device-only platform
-initialization creates no SDL window claim; the optional presenter remains the sole window owner for
-GX compatibility. `Semantic2dPass` commits or rolls back its image-cache transaction only after the
-caller reports submission. It opens one render pass and walks the variant sequence in order,
-switching between textured-picture and vertex-colour pipelines without a fake texture or any GX
-state. Its watched GPU control proves solid/picture/solid overlap, the opposite result after
-reordering, clipped-solid no-op behavior, and alpha blending.
+semantic-frame client. The bridge claims the guarded semantic sink by lease and brackets the bounded
+collector at the exact runtime frame boundaries. `SdlSemanticFrameClient` consumes each sealed
+sequence once, owns a 640x480 no-depth target and `Semantic2dPass`, submits with a fence, and reads
+back until it observes pixels different from its controlled black clear. In audit mode it initializes
+the platform without claiming a window. In explicit preview mode it attaches the platform's sole
+presenter, while runtime composition disables Aurora presentation but keeps Aurora rendering
+offscreen as the retained reference. `Semantic2dPass` commits or rolls back its image-cache
+transaction only after the caller reports submission. It opens one render pass and walks the variant
+sequence in order, switching between textured-picture and vertex-colour pipelines without a fake
+texture or any GX state. Its watched GPU control proves solid/picture/solid overlap, the opposite
+result after reordering, clipped-solid no-op behavior, and alpha blending.
 
 The recomp's existing `GC2D fill_rect` override at `0x80140390` now captures the final guest
 `JDrama::TRect` and packed RGBA value after any widescreen expansion, submits a semantic solid
@@ -161,7 +164,7 @@ can reinterpret a base object as the larger derived layout. A known-different co
 stale type under the base vtable and requires refusal; native decomp initializes the base
 discriminator to zero without changing non-native decomp behavior.
 
-With `SB_SEMANTIC_FRAME_AUDIT=1`, recomp host composition now activates that client while Aurora
+With `SB_SEMANTIC_FRAME_MODE=audit`, recomp host composition activates that client while Aurora
 continues to present the visible GX frame. A guarded 100-present title run completed all 50 semantic
 simulation frames. All 50 were nonempty; six contained both operation families. The stream carried
 1,316 operations: 1,302 pictures, 14 solid rectangles, and 1,302 images. Its first sampled frame
@@ -169,10 +172,19 @@ already contained 286,720 pixels distinct from clear. The production GPU control
 proves an empty semantic frame stays exactly clear, a planted mixed frame produces a different
 non-clear hash, and a duplicate sequence is refused.
 
-Gap: this remains offscreen liveness and ownership evidence, not visual-correctness,
-cross-runtime-parity, or visible-presentation evidence. 3D, authored mip chains, J3D, particles,
-lights, and effects are not in the semantic stream, so the partial result must not be presented as
-the complete game frame.
+`./run.sh --semantic-preview` exposes that same target in the live application window without
+letting Aurora present over it. A guarded 130-present recomp run completed and presented all 65
+semantic simulation frames, observed no unavailable-window frame, and sampled 286,720 pixels
+different from clear. The launcher and runtime both identify this as an incomplete native 2D
+preview. The production GPU control separately refuses hidden-window startup, presents a known
+semantic frame, and then counts a window hidden after startup as temporarily unavailable while
+still completing the semantic submission. C091 records the combined window-ownership evidence and
+its falsifier.
+
+Gap: this is visible presentation and ownership evidence, not full-frame visual correctness or
+cross-runtime parity. 3D, authored mip chains, J3D, particles, lights, and effects are not in the
+semantic stream, so the preview intentionally shows the controlled clear wherever those families
+would have rendered and is not a complete product renderer.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -204,12 +216,19 @@ behavior alongside the recomp override without sharing object layouts.
 
 The decomp scopes each retained `J2DScreen::draw`, copies the real J2DOrthoGraph values without
 retaining its stack pointer, and publishes the final logical pane clip at picture entry. Its host
-composition activates the same offscreen client. Frame begin, seal, consume, and next begin remain
+composition activates the same client. Frame begin, seal, consume, and next begin remain
 inside the host-allocation boundary where required, and semantic GPU teardown completes before
 Aurora teardown. A guarded 400-present title run completed all 400 semantic frames; 350 were
 nonempty and eleven contained both operation families. The stream carried 9,271 operations: 9,207
 pictures, 64 solid rectangles, and 9,207 images. Semantic frame 104 was the first sampled nonclear
 frame and contained 149,927 pixels distinct from clear. Aurora remains the visible GX renderer.
+
+The explicit decomp preview uses the same window-claim path while Aurora remains an offscreen
+reference. A guarded 400-present run completed and presented all 400 semantic frames, reported zero
+unavailable-window frames, carried 2,790 native pictures plus 52 solid rectangles, and first
+observed 158,038 non-clear pixels on semantic frame 311. The earlier 130-present attempt correctly
+failed its non-clear evidence gate: it had presented every frame but had not yet reached visible
+semantic content, so presentation count alone was not accepted as proof of useful output.
 
 The title audit's window-specific counters remained zero, so its 9,271-operation result proves the
 new code is inert when no window is drawn, not live window coverage. A stage-one audit stopped in a
@@ -232,8 +251,8 @@ exercise a resource-font glyph on their reached paths, so they prove runtime saf
 decomp glyph coverage; that remains explicit rather than inferred from the adapter test.
 
 Gap: decomp window behavior has close production-linked coverage but not an organically reached
-live window in the bounded title/stage-one routes. Visible semantic presentation and the same 3D
-and effect families remain missing.
+live window in the bounded title/stage-one routes. The same 3D and effect families remain missing
+from its visible native preview.
 
 ### S006 — Lerp coverage
 

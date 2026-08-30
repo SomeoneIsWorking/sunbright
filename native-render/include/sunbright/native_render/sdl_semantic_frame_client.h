@@ -14,16 +14,15 @@
 
 namespace sb::native_render {
 
-enum class SemanticFrameAuditSetting : std::uint8_t { Disabled, Enabled, Invalid };
-
-[[nodiscard]] SemanticFrameAuditSetting parse_semantic_frame_audit(const char* value) noexcept;
-
 enum class SemanticReadbackMode : std::uint8_t { None, UntilNonClear, EveryFrame };
 
 struct SdlSemanticFrameClientConfig {
     std::uint32_t width = 640;
     std::uint32_t height = 480;
     SemanticReadbackMode readback = SemanticReadbackMode::UntilNonClear;
+    // A non-null window selects the deliberately incomplete visible native-2D preview. Null keeps
+    // the semantic target offscreen for audit while Aurora presents its retained GX reference.
+    SDL_Window* presentationWindow = nullptr;
 };
 
 struct SdlSemanticFrameStats {
@@ -40,16 +39,19 @@ struct SdlSemanticFrameStats {
     std::uint64_t submittedJ2dWindowContents = 0;
     std::uint64_t submittedImages = 0;
     std::uint64_t sampledFrames = 0;
+    std::uint64_t presentedFrames = 0;
+    std::uint64_t windowUnavailableFrames = 0;
     std::uint64_t firstNonClearFrame = 0;
     std::uint64_t lastSampleHash = 0;
     std::size_t lastSampleNonClearPixels = 0;
     std::size_t firstNonClearPixels = 0;
 };
 
-// Offscreen SDL3 consumer for the process's sealed semantic 2D frame. It borrows the one
-// process platform, owns only its target/pass/readback resources, and never claims or presents a
-// window. Runtime composition must initialize it before the first bridge begin, consume once after
-// each seal, and shut it down before the platform and Aurora.
+// SDL3 consumer for the process's sealed semantic 2D frame. It borrows the one process platform
+// and owns its target/pass/readback resources. Audit mode stays offscreen; explicit preview mode
+// attaches the platform's sole presenter and shows this incomplete 2D target. Runtime composition
+// must initialize it before the first bridge begin, consume once after each seal, and shut it down
+// before the platform and Aurora.
 class SdlSemanticFrameClient {
   public:
     SdlSemanticFrameClient() = default;
@@ -66,13 +68,15 @@ class SdlSemanticFrameClient {
     [[nodiscard]] bool stop_collection(std::string& error) noexcept;
     // A bounded diagnostic run is evidence only if it completed every submission and the live
     // readback observed semantic output rather than the controlled black clear.
-    [[nodiscard]] bool validate_audit(std::string& error) const noexcept;
+    [[nodiscard]] bool validate_output(std::string& error) const noexcept;
     [[nodiscard]] bool shutdown(std::string& error) noexcept;
 
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] const SdlSemanticFrameStats& stats() const noexcept;
 
   private:
+    [[nodiscard]] bool cancel_encode(SDL_GPUCommandBuffer* commandBuffer,
+                                     std::string& error) noexcept;
     [[nodiscard]] bool should_read_back(const SemanticFrame& frame) const noexcept;
     [[nodiscard]] bool append_readback(SDL_GPUCommandBuffer* commandBuffer,
                                        const SemanticFrame& frame, std::string& error);

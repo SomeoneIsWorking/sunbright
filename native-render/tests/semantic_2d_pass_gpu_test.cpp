@@ -1,6 +1,7 @@
 #include <sunbright/native_render/sdl_gpu_frame_target.h>
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
 #include <sunbright/native_render/semantic_2d_pass.h>
+#include <sunbright/native_render/semantic_frame_mode.h>
 #include <sunbright/native_render/semantic_sink.h>
 
 #include <SDL3/SDL.h>
@@ -317,16 +318,16 @@ int main() {
     auto& sharedPlatform = sb::native_render::sdl_gpu_platform();
     auto& bridge = sb::native_render::semantic_frame_bridge();
     auto& client = sb::native_render::sdl_semantic_frame_client();
-    assert(sb::native_render::parse_semantic_frame_audit(nullptr) ==
-           sb::native_render::SemanticFrameAuditSetting::Disabled);
-    assert(sb::native_render::parse_semantic_frame_audit("0") ==
-           sb::native_render::SemanticFrameAuditSetting::Disabled);
-    assert(sb::native_render::parse_semantic_frame_audit("1") ==
-           sb::native_render::SemanticFrameAuditSetting::Enabled);
-    assert(sb::native_render::parse_semantic_frame_audit("") ==
-           sb::native_render::SemanticFrameAuditSetting::Invalid);
-    assert(sb::native_render::parse_semantic_frame_audit("yes") ==
-           sb::native_render::SemanticFrameAuditSetting::Invalid);
+    assert(sb::native_render::parse_semantic_frame_mode(nullptr) ==
+           sb::native_render::SemanticFrameMode::Disabled);
+    assert(sb::native_render::parse_semantic_frame_mode("off") ==
+           sb::native_render::SemanticFrameMode::Disabled);
+    assert(sb::native_render::parse_semantic_frame_mode("audit") ==
+           sb::native_render::SemanticFrameMode::Audit);
+    assert(sb::native_render::parse_semantic_frame_mode("preview") ==
+           sb::native_render::SemanticFrameMode::Preview);
+    assert(sb::native_render::parse_semantic_frame_mode("") ==
+           sb::native_render::SemanticFrameMode::Invalid);
     assert(sharedPlatform.initialize_device({}, platformError));
     assert(!sharedPlatform.presenter_ready());
     assert(client.initialize(sharedPlatform, bridge,
@@ -340,8 +341,8 @@ int main() {
     const std::uint64_t clearHash = client.stats().lastSampleHash;
     assert(client.stats().sampledFrames == 1);
     assert(client.stats().lastSampleNonClearPixels == 0);
-    assert(!client.validate_audit(platformError));
-    assert(platformError.find("never observed output") != std::string::npos);
+    assert(!client.validate_output(platformError));
+    assert(platformError.find("never observed pixels") != std::string::npos);
 
     assert(bridge.begin());
     assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
@@ -366,12 +367,51 @@ int main() {
     assert(client.stats().submittedJ2dFillBoxes == 1);
     assert(client.stats().lastSampleNonClearPixels != 0);
     assert(client.stats().lastSampleHash != clearHash);
-    assert(client.validate_audit(platformError));
+    assert(client.validate_output(platformError));
     assert(!client.encode_last_sealed(platformError));
     assert(platformError.find("already consumed") != std::string::npos);
 
     assert(client.shutdown(platformError));
     assert(!bridge.active() && !client.ready());
+    assert(sharedPlatform.shutdown(platformError));
+
+    // Preview startup refuses a hidden/headless window instead of running a plausible-looking
+    // present loop that can never display anything.
+    assert(sharedPlatform.initialize_device({}, platformError));
+    assert(!client.initialize(sharedPlatform, bridge,
+                              {.width = 16,
+                               .height = 16,
+                               .readback = sb::native_render::SemanticReadbackMode::None,
+                               .presentationWindow = window},
+                              platformError));
+    assert(platformError.find("requires a visible") != std::string::npos);
+    assert(!client.ready() && !sharedPlatform.presenter_ready());
+
+    // The preview arm must visibly submit the semantic target through the production presenter,
+    // while a window that becomes hidden is reported as unavailable without dropping the frame.
+    assert(SDL_ShowWindow(window));
+    assert(client.initialize(sharedPlatform, bridge,
+                             {.width = 16,
+                              .height = 16,
+                              .readback = sb::native_render::SemanticReadbackMode::None,
+                              .presentationWindow = window},
+                             platformError));
+    assert(sharedPlatform.presenter_ready());
+    assert(bridge.begin());
+    assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    assert(client.stats().presentedFrames == 1);
+    assert(client.stats().windowUnavailableFrames == 0);
+
+    assert(SDL_HideWindow(window));
+    assert(bridge.begin());
+    assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    assert(client.stats().presentedFrames == 1);
+    assert(client.stats().windowUnavailableFrames == 1);
+    assert(client.shutdown(platformError));
     assert(sharedPlatform.shutdown(platformError));
     SDL_DestroyWindow(window);
     SDL_Quit();

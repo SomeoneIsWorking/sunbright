@@ -30,15 +30,14 @@ bool RenderComposition::configure(app::Renderer renderer, std::string& error) no
         return false;
     }
     renderer_ = renderer;
-    const native_render::SemanticFrameAuditSetting audit =
-        native_render::parse_semantic_frame_audit(std::getenv("SB_SEMANTIC_FRAME_AUDIT"));
-    if (audit == native_render::SemanticFrameAuditSetting::Invalid) {
-        error = "SB_SEMANTIC_FRAME_AUDIT accepts only 0 or 1";
+    semanticMode_ = native_render::parse_semantic_frame_mode(std::getenv("SB_SEMANTIC_FRAME_MODE"));
+    if (semanticMode_ == native_render::SemanticFrameMode::Invalid) {
+        error = "SB_SEMANTIC_FRAME_MODE accepts only off, audit, or preview";
         return false;
     }
-    semanticRequested_ = audit == native_render::SemanticFrameAuditSetting::Enabled;
-    if (semanticRequested_ && renderer_ == app::Renderer::GxCompatibility) {
-        error = "semantic frame audit cannot run with the GX compatibility renderer";
+    if (semanticMode_ != native_render::SemanticFrameMode::Disabled &&
+        renderer_ == app::Renderer::GxCompatibility) {
+        error = "semantic frame output cannot run with the GX compatibility renderer";
         return false;
     }
     configured_ = true;
@@ -62,19 +61,29 @@ bool RenderComposition::initialize(SDL_Window* window, std::string& error) {
             error = "GX compatibility renderer could not claim presentation";
             return false;
         }
-    } else if (semanticRequested_) {
+    } else if (semanticMode_ != native_render::SemanticFrameMode::Disabled) {
+        const bool preview = semanticMode_ == native_render::SemanticFrameMode::Preview;
+        if (preview)
+            aurora_set_presentation_enabled(false);
         {
             const PipelineCompilationPause pause;
             if (!platform.initialize_device({}, error))
                 return false;
         }
+        native_render::SdlSemanticFrameClientConfig config{};
+        config.presentationWindow = preview ? window : nullptr;
         if (!native_render::sdl_semantic_frame_client().initialize(
-                platform, native_render::semantic_frame_bridge(), {}, error)) {
+                platform, native_render::semantic_frame_bridge(), config, error)) {
             std::string platformError;
             (void)platform.shutdown(platformError);
             return false;
         }
-        lucent::info("semantic", "offscreen semantic 2D frame audit active at 640x480");
+        if (preview) {
+            lucent::warn("semantic", "INCOMPLETE native 2D preview active at 640x480; 3D, "
+                                     "particles, lights, and effects are intentionally absent");
+        } else {
+            lucent::info("semantic", "offscreen semantic 2D frame audit active at 640x480");
+        }
     }
     initialized_ = true;
     return true;
@@ -87,12 +96,12 @@ bool RenderComposition::encode_semantic_frame(std::string& error) {
     return native_render::sdl_semantic_frame_client().encode_last_sealed(error);
 }
 
-bool RenderComposition::validate_semantic_audit(std::string& error) noexcept {
+bool RenderComposition::validate_semantic_output(std::string& error) noexcept {
     error.clear();
     if (!semantic_active())
         return true;
     report_semantic_stats();
-    return native_render::sdl_semantic_frame_client().validate_audit(error);
+    return native_render::sdl_semantic_frame_client().validate_output(error);
 }
 
 bool RenderComposition::stop_semantic_collection(std::string& error) noexcept {
@@ -128,9 +137,10 @@ void RenderComposition::report_semantic_stats() noexcept {
         return;
     const auto& stats = native_render::sdl_semantic_frame_client().stats();
     lucent::info("semantic",
-                 "offscreen summary: submitted={} completed={} nonempty={} mixed={} operations={} "
+                 "semantic summary: submitted={} completed={} nonempty={} mixed={} operations={} "
                  "pictures={} j2d-window-pictures={} glyphs={} solid-rectangles={} "
-                 "j2d-fill-boxes={} j2d-window-contents={} images={} samples={} "
+                 "j2d-fill-boxes={} j2d-window-contents={} images={} samples={} presented={} "
+                 "window-unavailable={} "
                  "first-nonclear-frame={} "
                  "first-nonclear-pixels={}",
                  stats.submittedFrames, stats.completedFrames, stats.nonEmptyFrames,
@@ -138,7 +148,8 @@ void RenderComposition::report_semantic_stats() noexcept {
                  stats.submittedJ2dWindowPictures, stats.submittedGlyphs,
                  stats.submittedSolidRectangles, stats.submittedJ2dFillBoxes,
                  stats.submittedJ2dWindowContents, stats.submittedImages, stats.sampledFrames,
-                 stats.firstNonClearFrame, stats.firstNonClearPixels);
+                 stats.presentedFrames, stats.windowUnavailableFrames, stats.firstNonClearFrame,
+                 stats.firstNonClearPixels);
     statsReported_ = true;
 }
 

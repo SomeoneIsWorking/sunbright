@@ -1,10 +1,10 @@
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
 
 #include <SDL3/SDL_timer.h>
+#include <SDL3/SDL_video.h>
 
 #include <algorithm>
 #include <chrono>
-#include <cstring>
 #include <exception>
 #include <limits>
 
@@ -32,14 +32,6 @@ bool byte_count(std::uint32_t width, std::uint32_t height, std::size_t& result) 
 
 } // namespace
 
-SemanticFrameAuditSetting parse_semantic_frame_audit(const char* value) noexcept {
-    if (value == nullptr || std::strcmp(value, "0") == 0)
-        return SemanticFrameAuditSetting::Disabled;
-    if (std::strcmp(value, "1") == 0)
-        return SemanticFrameAuditSetting::Enabled;
-    return SemanticFrameAuditSetting::Invalid;
-}
-
 SdlSemanticFrameClient::~SdlSemanticFrameClient() {
     if (active_)
         std::terminate();
@@ -56,6 +48,11 @@ bool SdlSemanticFrameClient::initialize(SdlGpuPlatform& platform, SemanticFrameB
     std::size_t readbackBytes = 0;
     if (!platform.ready() || !byte_count(config.width, config.height, readbackBytes)) {
         error = "semantic SDL frame client has an invalid platform or extent";
+        return false;
+    }
+    if (config.presentationWindow != nullptr && (SDL_GetWindowFlags(config.presentationWindow) &
+                                                 (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) != 0) {
+        error = "native 2D preview requires a visible, non-minimized SDL window";
         return false;
     }
 
@@ -84,6 +81,11 @@ bool SdlSemanticFrameClient::initialize(SdlGpuPlatform& platform, SemanticFrameB
             release_resources();
             return false;
         }
+    }
+    if (config.presentationWindow != nullptr &&
+        !platform.attach_presenter(config.presentationWindow, {}, error)) {
+        release_resources();
+        return false;
     }
     // The live readback instrument has one invariant clear value, independently controlled by the
     // empty-frame GPU test. Keeping it fixed prevents a caller-supplied clear from being mistaken
@@ -124,28 +126,25 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
                                           target_.desc().colorFormat, SDL_GPU_LOADOP_CLEAR,
                                           SDL_GPU_STOREOP_STORE};
     if (!pass_->encode(*frame, passTarget, error)) {
-        std::string cancellationError;
-        const bool cancelled = platform_->cancel_command_buffer(commandBuffer, cancellationError);
-        std::string completionError;
-        const bool completed = pass_->complete_encode(false, completionError);
-        if (!cancelled)
-            error += "; " + cancellationError;
-        if (!completed)
-            error += "; semantic pass rollback failed: " + completionError;
+        (void)cancel_encode(commandBuffer, error);
         return false;
     }
 
     const bool sample = should_read_back(*frame);
     if (sample && !append_readback(commandBuffer, *frame, error)) {
-        std::string cancellationError;
-        const bool cancelled = platform_->cancel_command_buffer(commandBuffer, cancellationError);
-        std::string completionError;
-        const bool completed = pass_->complete_encode(false, completionError);
-        if (!cancelled)
-            error += "; " + cancellationError;
-        if (!completed)
-            error += "; semantic pass rollback failed: " + completionError;
+        (void)cancel_encode(commandBuffer, error);
         return false;
+    }
+
+    PresentResult presentResult = PresentResult::WindowUnavailable;
+    const bool presentationRequested = config_.presentationWindow != nullptr;
+    if (presentationRequested) {
+        presentResult = platform_->encode_present(commandBuffer, target_.color(), config_.width,
+                                                  config_.height, error);
+        if (presentResult == PresentResult::Failed) {
+            (void)cancel_encode(commandBuffer, error);
+            return false;
+        }
     }
 
     SDL_GPUFence* fence = platform_->submit_and_acquire_fence(commandBuffer, error);
@@ -207,6 +206,12 @@ bool SdlSemanticFrameClient::encode_last_sealed(std::string& error) {
     }
     platform_->release_fence(fence);
     ++stats_.completedFrames;
+    if (presentationRequested) {
+        if (presentResult == PresentResult::Presented)
+            ++stats_.presentedFrames;
+        else
+            ++stats_.windowUnavailableFrames;
+    }
     consumedSequence_ = sequence;
     if (sample && !measure_readback(*frame, error))
         return false;
@@ -224,21 +229,25 @@ bool SdlSemanticFrameClient::stop_collection(std::string& error) noexcept {
     return true;
 }
 
-bool SdlSemanticFrameClient::validate_audit(std::string& error) const noexcept {
+bool SdlSemanticFrameClient::validate_output(std::string& error) const noexcept {
     error.clear();
     if (!active_)
         return true;
     if (stats_.submittedFrames == 0) {
-        error = "semantic audit submitted no frames";
+        error = "semantic output submitted no frames";
         return false;
     }
     if (stats_.completedFrames != stats_.submittedFrames) {
-        error = "semantic audit did not complete every submitted frame";
+        error = "semantic output did not complete every submitted frame";
         return false;
     }
     if (config_.readback != SemanticReadbackMode::None &&
         (stats_.sampledFrames == 0 || stats_.firstNonClearFrame == 0)) {
-        error = "semantic audit never observed output distinct from the controlled clear";
+        error = "semantic output never observed pixels distinct from the controlled clear";
+        return false;
+    }
+    if (config_.presentationWindow != nullptr && stats_.presentedFrames == 0) {
+        error = "native 2D preview never presented a frame to the application window";
         return false;
     }
     return true;
@@ -261,11 +270,25 @@ bool SdlSemanticFrameClient::shutdown(std::string& error) noexcept {
 
 bool SdlSemanticFrameClient::ready() const noexcept {
     return active_ && platform_ != nullptr && bridge_ != nullptr && target_.ready() &&
-           pass_ != nullptr;
+           pass_ != nullptr &&
+           (config_.presentationWindow == nullptr || platform_->presenter_ready());
 }
 
 const SdlSemanticFrameStats& SdlSemanticFrameClient::stats() const noexcept {
     return stats_;
+}
+
+bool SdlSemanticFrameClient::cancel_encode(SDL_GPUCommandBuffer* commandBuffer,
+                                           std::string& error) noexcept {
+    std::string cancellationError;
+    const bool cancelled = platform_->cancel_command_buffer(commandBuffer, cancellationError);
+    std::string completionError;
+    const bool completed = pass_->complete_encode(false, completionError);
+    if (!cancelled)
+        error += "; " + cancellationError;
+    if (!completed)
+        error += "; semantic pass rollback failed: " + completionError;
+    return cancelled && completed;
 }
 
 bool SdlSemanticFrameClient::should_read_back(const SemanticFrame& frame) const noexcept {

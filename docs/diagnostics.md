@@ -82,7 +82,7 @@ logger — that is debt to convert, not a feature.
 | `SB_GENOBJ_SKIP_ALL` | 1 | `decomp/sms/src/JSystem/JDrama/JDRNameRef.cpp` |  |
 | `SB_GXBEGIN_TRACE` | 1 | `extern/aurora/lib/dolphin/gx/GXVert.cpp` |  |
 | `SB_H` | 2 | `sms-recomp/host/main.cpp` |  |
-| `SB_HEADLESS` | 3 | `sms-boot/runtime/jas_kernel_native.cpp` |  |
+| `SB_HEADLESS` | 4 | `sms-boot/runtime/jas_kernel_native.cpp` |  |
 | `SB_HEAP_DBG` | 2 | `decomp/sms/src/JSystem/JKernel/JKRExpHeap.cpp` | gated print |
 | `SB_HEAP_GUARD` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
 | `SB_HOST_ALLOC_CAP_MB` | 1 | `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` |  |
@@ -166,7 +166,7 @@ logger — that is debt to convert, not a feature.
 | `SB_SEL_DUMP_SETTLED` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_SEL_PICK` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
 | `SB_SEL_POS` | 1 | `decomp/sms/src/GC2D/CardLoad.cpp` | gated print |
-| `SB_SEMANTIC_FRAME_AUDIT` | 2 | `sms-recomp/host/render_composition.cpp` |  |
+| `SB_SEMANTIC_FRAME_MODE` | 2 | `sms-recomp/host/render_composition.cpp` |  |
 | `SB_SHADER_CHECK` | 1 | `extern/aurora/lib/gx/shader.cpp` |  |
 | `SB_SHADER_DUMP` | 2 | `extern/aurora/lib/gx/shader.cpp` |  |
 | `SB_SHADER_HASH` | 1 | `extern/aurora/lib/gx/command_processor.cpp` | gated print |

@@ -3,6 +3,7 @@
 #include <sunbright/native_render/sdl_gpu_platform.h>
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
 #include <sunbright/native_render/semantic_frame_bridge.h>
+#include <sunbright/native_render/semantic_frame_mode.h>
 
 #include <aurora/aurora.h>
 #include <sb_log.h>
@@ -13,7 +14,7 @@
 namespace {
 
 bool g_configured = false;
-bool g_requested = false;
+sb::native_render::SemanticFrameMode g_mode = sb::native_render::SemanticFrameMode::Disabled;
 bool g_statsReported = false;
 std::string g_error{};
 
@@ -28,11 +29,11 @@ void report_stats() {
         return;
     const auto& stats = sb::native_render::sdl_semantic_frame_client().stats();
     sb_logf("semantic",
-            "offscreen summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
+            "semantic summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
             "operations=%llu "
             "pictures=%llu j2d-window-pictures=%llu glyphs=%llu solid-rectangles=%llu "
             "j2d-fill-boxes=%llu j2d-window-contents=%llu images=%llu "
-            "samples=%llu "
+            "samples=%llu presented=%llu window-unavailable=%llu "
             "first-nonclear-frame=%llu first-nonclear-pixels=%zu",
             static_cast<unsigned long long>(stats.submittedFrames),
             static_cast<unsigned long long>(stats.completedFrames),
@@ -47,6 +48,8 @@ void report_stats() {
             static_cast<unsigned long long>(stats.submittedJ2dWindowContents),
             static_cast<unsigned long long>(stats.submittedImages),
             static_cast<unsigned long long>(stats.sampledFrames),
+            static_cast<unsigned long long>(stats.presentedFrames),
+            static_cast<unsigned long long>(stats.windowUnavailableFrames),
             static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);
     g_statsReported = true;
 }
@@ -59,39 +62,47 @@ extern "C" bool sb_semantic_render_configure(void) {
         g_error = "semantic render composition was configured more than once";
         return false;
     }
-    const auto setting =
-        sb::native_render::parse_semantic_frame_audit(std::getenv("SB_SEMANTIC_FRAME_AUDIT"));
-    if (setting == sb::native_render::SemanticFrameAuditSetting::Invalid) {
-        g_error = "SB_SEMANTIC_FRAME_AUDIT accepts only 0 or 1";
+    g_mode = sb::native_render::parse_semantic_frame_mode(std::getenv("SB_SEMANTIC_FRAME_MODE"));
+    if (g_mode == sb::native_render::SemanticFrameMode::Invalid) {
+        g_error = "SB_SEMANTIC_FRAME_MODE accepts only off, audit, or preview";
         return false;
     }
-    g_requested = setting == sb::native_render::SemanticFrameAuditSetting::Enabled;
     g_configured = true;
     return true;
 }
 
-extern "C" bool sb_semantic_render_initialize(void) {
+extern "C" bool sb_semantic_render_initialize(SDL_Window* window) {
     g_error.clear();
     if (!g_configured) {
         g_error = "semantic render composition was not configured";
         return false;
     }
-    if (!g_requested)
+    if (g_mode == sb::native_render::SemanticFrameMode::Disabled)
         return true;
 
+    const bool preview = g_mode == sb::native_render::SemanticFrameMode::Preview;
+    if (preview)
+        aurora_set_presentation_enabled(false);
     auto& platform = sb::native_render::sdl_gpu_platform();
     {
         const PipelineCompilationPause pause;
         if (!platform.initialize_device({}, g_error))
             return false;
     }
+    sb::native_render::SdlSemanticFrameClientConfig config{};
+    config.presentationWindow = preview ? window : nullptr;
     if (!sb::native_render::sdl_semantic_frame_client().initialize(
-            platform, sb::native_render::semantic_frame_bridge(), {}, g_error)) {
+            platform, sb::native_render::semantic_frame_bridge(), config, g_error)) {
         std::string platformError;
         (void)platform.shutdown(platformError);
         return false;
     }
-    sb_logf("semantic", "offscreen semantic 2D frame audit active at 640x480");
+    if (preview) {
+        sb_logf("semantic", "INCOMPLETE native 2D preview active at 640x480; 3D, particles, "
+                            "lights, and effects are intentionally absent");
+    } else {
+        sb_logf("semantic", "offscreen semantic 2D frame audit active at 640x480");
+    }
     return true;
 }
 
@@ -108,7 +119,7 @@ extern "C" bool sb_semantic_render_validate(void) {
     auto& client = sb::native_render::sdl_semantic_frame_client();
     if (client.ready())
         report_stats();
-    return !client.ready() || client.validate_audit(g_error);
+    return !client.ready() || client.validate_output(g_error);
 }
 
 extern "C" bool sb_semantic_render_shutdown(void) {

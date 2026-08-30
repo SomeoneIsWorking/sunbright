@@ -155,11 +155,11 @@ void sb_frame_present(unsigned retraces) {
                      semanticFrame.last_error());
         std::abort();
     }
-    // The semantic target is offscreen and independent of Aurora surface availability. Every
-    // sealed simulation frame must be consumed exactly once even while the visible window is
-    // unavailable; otherwise a minimized audit could report success after encoding nothing.
+    // The semantic target is independent of Aurora surface availability. Every sealed simulation
+    // frame must be consumed exactly once even when preview presentation is temporarily
+    // unavailable; otherwise a minimized run could report success after encoding nothing.
     if (!sb_semantic_render_consume()) {
-        std::fprintf(stderr, "[sms-boot] offscreen semantic frame failed: %s\n",
+        std::fprintf(stderr, "[sms-boot] semantic frame output failed: %s\n",
                      sb_semantic_render_last_error());
         std::abort();
     }
@@ -195,7 +195,7 @@ void sb_frame_present(unsigned retraces) {
         std::fprintf(stderr, "[sms-boot] %s, exiting\n",
                      quitAfterReached ? "SB_QUIT_AFTER reached" : "window closed");
         if (quitAfterReached && !sb_semantic_render_validate()) {
-            std::fprintf(stderr, "[sms-boot] bounded semantic audit failed: %s\n",
+            std::fprintf(stderr, "[sms-boot] bounded semantic output failed: %s\n",
                          sb_semantic_render_last_error());
             std::abort();
         }

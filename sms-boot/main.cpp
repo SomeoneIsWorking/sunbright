@@ -139,7 +139,7 @@ int main(int argc, char* argv[]) {
     std::fprintf(stdout, "[sms-boot] DVD mounted: %s\n", rom);
     std::fflush(stdout);
 
-    if (!sb_semantic_render_initialize()) {
+    if (!sb_semantic_render_initialize(info.window)) {
         std::fprintf(stderr, "[sms-boot] semantic renderer initialization failed: %s\n",
                      sb_semantic_render_last_error());
         aurora_shutdown();
