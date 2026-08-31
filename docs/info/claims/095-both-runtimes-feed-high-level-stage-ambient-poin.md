@@ -81,11 +81,21 @@ run exited 0 under the live GPU watcher.
 ## Re-confirmed 2026-08-31 — fogged/tinted two-texture Mario materials
 
 The exact reached program is reduced to two ordinary clamps over the base image, detail image,
-animated colour, signed two-light diffuse result, and directional highlight; source-alpha blending,
+animated colour, signed diffuse result from the authored one- or two-light context, and directional highlight; source-alpha blending,
 depth writes, and linear fog remain explicit raster policy. Exact CPU controls reject altered stage
-bytes, the one-light channel, and a missing second light. The watched dedicated shader moved only
+bytes, the one-light channel, and an absent lighting context. The watched dedicated shader moved only
 the matching colour channel when its detail image changed from red to blue and reported no kernel
 GPU fault. A guarded 120-present recomp audit advanced four texture-pair variants through
 50/50 classification, two-image decode, perspective readiness, and native submission each: 200
 models total, contributing to 1,054 lit models among 9,154 native models. The native-layout adapter
 compiled through the same classifier; live decomp coverage remains blocked by issue 30.
+
+## Re-confirmed 2026-08-31 — title one-light tinted-layered context
+
+The exact two-stage tinted-layered program is shared by title materials whose stage-light publisher
+provides only the primary point light. The classifier now preserves either one or two authored point
+lights instead of requiring a second light that is not present; an empty context remains rejected.
+Focused controls pass for both counts and for the missing-context negative. A guarded 120-present
+title audit advanced all 52 one-light instances through classification, both image decodes,
+perspective readiness, and native submission, raising total models from 1,144 to 1,352 and lit models
+from 1,040 to 1,248, with no GPU fault or reset.

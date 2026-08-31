@@ -115,5 +115,10 @@ int main() {
     oneLight.pointLightCount = 1;
     assert(classify_j3d_tinted_layered_material(state, baseTexture, detailTexture, oneLight,
                                                 material) ==
+           J3dTintedLayeredMaterialResult::Success);
+    assert(material.lighting.pointLightCount == 1);
+    oneLight.pointLightCount = 0;
+    assert(classify_j3d_tinted_layered_material(state, baseTexture, detailTexture, oneLight,
+                                                material) ==
            J3dTintedLayeredMaterialResult::MissingLightingContext);
 }

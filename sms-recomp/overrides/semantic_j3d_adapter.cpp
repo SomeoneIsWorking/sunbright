@@ -63,6 +63,7 @@ struct Stats {
     std::array<std::uint64_t, 12> litTexturedMaterialRejections{};
     std::array<std::uint64_t, 11> effectMaterialRejections{};
     std::array<std::uint64_t, 11> effectCandidateRejections{};
+    std::array<std::uint64_t, 12> tintedLayeredMaterialRejections{};
     std::array<std::uint64_t, 15> maskedToonMaterialRejections{};
     std::array<std::uint64_t, 13> specularTexturedMaterialRejections{};
     std::uint64_t submittedModels = 0;
@@ -342,6 +343,24 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[10]),
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[11]));
     report += litRejectionLine;
+    char tintedLayeredRejectionLine[360];
+    std::snprintf(
+        tintedLayeredRejectionLine, sizeof(tintedLayeredRejectionLine),
+        "; tinted-layered rejections: colour-block=%llu channels=%llu secondary-colours=%llu "
+        "tev-block=%llu stages=%llu texcoord=%llu binding=%llu program=%llu normal=%llu "
+        "lighting-context=%llu raster=%llu",
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[1]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[2]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[3]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[4]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[5]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[6]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[7]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[8]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[9]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[10]),
+        static_cast<unsigned long long>(g_stats.tintedLayeredMaterialRejections[11]));
+    report += tintedLayeredRejectionLine;
     char effectRejectionLine[420];
     std::snprintf(effectRejectionLine, sizeof(effectRejectionLine),
                   "; effect-material rejections: colour-block=%llu channels=%llu tev-block=%llu "
@@ -799,6 +818,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
             ++g_stats.effectMaterialRejections[static_cast<std::size_t>(effectFamily)];
+            ++g_stats
+                  .tintedLayeredMaterialRejections[static_cast<std::size_t>(tintedLayeredFamily)];
             ++g_stats.maskedToonMaterialRejections[static_cast<std::size_t>(maskedToonFamily)];
             ++g_stats.specularTexturedMaterialRejections[static_cast<std::size_t>(specularFamily)];
             return;

@@ -198,14 +198,23 @@ clamps: animated colour plus 3/8 of the detail image plus 5/8 signed diffuse lig
 the base image mixed equally with that layer and the authored directional highlight. Material
 alpha, source-alpha blending with depth writes, and linear view-depth fog remain explicit PC raster
 policy. The renderer-neutral contract carries two decoded images, two UV sets, the animated colour,
-two high-level point lights, and the directional highlight; no console selector or colour register
-identity reaches the dedicated shader. Exact CPU controls reject a changed program, wrong light
-mask, or missing second light. The watched GPU control changes only the detail image from red to
+one or two high-level point lights, and the directional highlight; no console selector or colour
+register identity reaches the dedicated shader. Exact CPU controls reject a changed program, wrong
+light mask, or absent light context. The watched GPU control changes only the detail image from red to
 blue and observes the corresponding output-channel change with no kernel GPU fault. In a guarded
 120-present recomp audit, all four texture-pair variants completed 50/50 classification, two-image
 decode, perspective readiness, and PC-native submission: 200 models total, contributing to 1,054
 lit models among 9,154 native models. The native-layout adapter compiles through the same shared
 classifier; issue 30 still prevents equivalent live decomp scene evidence.
+
+The title's matching two-texture tinted-layered variants now also accept the authored one-light
+context. The material equation and shader are unchanged; the previous rejection was an overstrict
+classifier and model invariant requiring a second point light even though the live title stage-light
+publisher supplied a valid primary light only. The classifier now preserves the published count
+(one or two) and still rejects an empty context. Exact CPU controls cover both counts and the missing
+context. A guarded 120-present title audit advanced all 52 one-light instances through classification,
+two-image decode, perspective readiness, and native submission, raising coverage from 1,144 to 1,352
+models and lit models from 1,040 to 1,248; it exited 0 with no GPU fault or reset.
 
 Mario's reached four-image fogged character material now bypasses GX through a dedicated masked
 toon PC material. Its decoded hand-mask alpha selects the main or alternate image at 8-bit threshold

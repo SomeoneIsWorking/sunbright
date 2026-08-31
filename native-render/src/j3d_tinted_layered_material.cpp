@@ -100,7 +100,7 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
     }
     if (!state.hasNormal)
         return J3dTintedLayeredMaterialResult::MissingNormal;
-    if (!valid(lighting) || lighting.pointLightCount < 2)
+    if (!valid(lighting) || lighting.pointLightCount == 0)
         return J3dTintedLayeredMaterialResult::MissingLightingContext;
     ModelRasterPolicy raster{};
     if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
@@ -113,7 +113,6 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
                                                       : lighting.ambientColor;
     material.effectColor = color_from_s10(state.tevColorsS10[0]);
     material.lighting = lighting;
-    material.lighting.pointLightCount = 2;
     tint_directional_specular(material.lighting, color_from_rgba8(state.materialColor1Rgba8));
     material.detailWeight = 3.0F / 8.0F;
     material.layerWeight = 0.5F;

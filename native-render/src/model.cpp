@@ -362,7 +362,7 @@ bool valid(const ModelDraw& draw) noexcept {
                        material.detailTexture.width != 0 && material.detailTexture.height != 0 &&
                        valid(material.baseColor) && valid(material.ambientColor) &&
                        valid(material.effectColor) && valid(material.lighting) &&
-                       material.lighting.pointLightCount == 2 && finite(material.detailWeight) &&
+                       material.lighting.pointLightCount != 0 && finite(material.detailWeight) &&
                        material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
                        finite(material.layerWeight) && material.layerWeight >= 0.0F &&
                        material.layerWeight <= 1.0F;
