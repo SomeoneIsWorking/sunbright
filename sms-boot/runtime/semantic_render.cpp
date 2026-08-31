@@ -1,6 +1,7 @@
 #include "semantic_render.h"
 
 #include "native_j3d_adapter.h"
+#include "native_particle_adapter.h"
 
 #include <sunbright/native_render/sdl_gpu_platform.h>
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
@@ -58,6 +59,7 @@ void report_stats() {
             static_cast<unsigned long long>(stats.windowUnavailableFrames),
             static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);
     sb_native_j3d_report_stats();
+    sb_native_particle_report_stats();
     g_statsReported = true;
 }
 

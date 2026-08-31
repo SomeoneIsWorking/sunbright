@@ -38,7 +38,11 @@ lighting, linear view-depth fog, solid-colour texture masks, independently sampl
 materials, and all four decoded texture-coordinate sets for broader material families. Broader J3D
 materials are next: the remaining lit and multi-stage programs, particles, effects, and image
 producers that do not yet preserve authored lower-resolution levels still fall back to the retained
-renderer.
+renderer. The first particle slice is now wired at the decomp `JPADrawExecBillBoard` boundary:
+standard type-2 direct-texture billboards publish an eye-space quad, decoded image, and ordinary
+depth/alpha/blend policy to the shared semantic pass while retaining the original GX body.
+Unsupported JPA programs are counted and continue through the retained renderer; this is an adapter
+slice, not evidence that all particle effects are covered.
 
 Both runtime adapters now preserve the bounded J3D material inputs needed to classify broader
 families: up to eight texture bindings, sixteen colour stages, and all three programmable colour
@@ -633,8 +637,9 @@ decomp glyph coverage; that remains explicit rather than inferred from the adapt
 
 Gap: decomp window behavior has close production-linked coverage but not an organically reached
 live window in the bounded title/stage-one routes. Custom J3D pixel policies, the remaining lit and
-multi-texture programs, skinning, authored mip chains,
-particles, and effects remain missing from its visible native preview.
+multi-texture programs, skinning, authored mip chains, non-billboard particle programs, and effects
+remain missing from its visible native preview. The short title semantic audit still reaches only
+solid rectangles and correctly refuses to call that content coverage.
 
 ### S006 — Lerp coverage
 

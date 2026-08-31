@@ -303,6 +303,7 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j3d_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j3d_material_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j3d_scene.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_particle_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_jut_texture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_picture_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
