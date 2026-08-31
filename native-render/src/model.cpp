@@ -256,7 +256,8 @@ bool valid(const ModelDraw& draw) noexcept {
                 return valid(material.baseColor);
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
-                       material.texture.height != 0;
+                       material.texture.height != 0 &&
+                       material.textureCoordinates <= ModelTextureCoordinates::Secondary;
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.color) &&
@@ -366,7 +367,13 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
             }
         },
         draw.material);
-    return {position, vertex.uv, vertex.uv1, colors.multiplicative, colors.additive};
+    Vec2 primaryUv = vertex.uv;
+    if (const auto* unlitTexture = std::get_if<UnlitTexturedMaterial>(&draw.material);
+        unlitTexture != nullptr &&
+        unlitTexture->textureCoordinates == ModelTextureCoordinates::Secondary) {
+        primaryUv = vertex.uv1;
+    }
+    return {position, primaryUv, vertex.uv1, colors.multiplicative, colors.additive};
 }
 
 } // namespace sb::native_render

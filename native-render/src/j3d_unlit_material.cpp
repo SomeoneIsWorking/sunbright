@@ -124,6 +124,10 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
         constexpr std::uint8_t kInverseSourceAlpha = 5;
         if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlendNone, kOne, kZero, true)) {
             // Exact expanded form of J3DPEBlockOpa.
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlendNone, kOne, kZero,
+                                       false)) {
+            // Ordinary opaque replacement with depth testing but no depth-buffer update.
+            result.depthWrite = false;
         } else if (full_policy_matches(state, kGreaterOrEqual, 0x80, kLessOrEqual, 0xFF, kBlendNone,
                                        kOne, kZero, true)) {
             result.alphaTest = ModelAlphaTest::GreaterOrEqualHalf;
@@ -207,9 +211,11 @@ classify_j3d_unlit_textured_material(const J3dMaterialState& state, const Pictur
         return J3dUnlitTexturedResult::MultipleTevStages;
     if (state.textureCoordinateCount == 0)
         return J3dUnlitTexturedResult::MissingTextureCoordinate;
-    if (state.textureNumber0 == 0xFFFFU || state.textureCoordinate0 != 0 ||
-        state.textureMap0 != 0 || state.colorChannel0 != kColor0Alpha0 || texture.resource == 0 ||
-        texture.width == 0 || texture.height == 0) {
+    const std::uint16_t textureNumber = j3d_texture_number_for_map(state, state.textureMap0);
+    if (textureNumber == 0xFFFFU || state.textureCoordinate0 > 1 ||
+        state.textureCoordinate0 >= state.textureCoordinateCount ||
+        state.colorChannel0 != kColor0Alpha0 || texture.resource == 0 || texture.width == 0 ||
+        texture.height == 0) {
         return J3dUnlitTexturedResult::UnsupportedTextureBinding;
     }
     if (state.tevStage0 != kTextureTimesRaster)
@@ -221,6 +227,7 @@ classify_j3d_unlit_textured_material(const J3dMaterialState& state, const Pictur
     if (vertexColor && !state.hasVertexColor)
         return J3dUnlitTexturedResult::MissingVertexColor;
     material.texture = texture;
+    material.textureCoordinates = static_cast<ModelTextureCoordinates>(state.textureCoordinate0);
     material.usesVertexColor = vertexColor;
     material.raster = raster;
     return J3dUnlitTexturedResult::Success;

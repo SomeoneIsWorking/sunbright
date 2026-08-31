@@ -168,6 +168,8 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
                                      tevColor0->color.a};
         }
         captured.textureNumber0 = tev->getTexNo(0);
+        if (captured.tevBlockType != static_cast<std::uint32_t>('TVB1'))
+            captured.textureNumber1 = tev->getTexNo(1);
         J3DTevOrder* order = tev->getTevOrder(0);
         J3DTevStage* stage = tev->getTevStage(0);
         if (order == nullptr || stage == nullptr)
@@ -178,7 +180,6 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
         static_assert(sizeof(*stage) == captured.tevStage0.size());
         std::memcpy(captured.tevStage0.data(), stage, captured.tevStage0.size());
         if (captured.tevStageCount >= 2) {
-            captured.textureNumber1 = tev->getTexNo(1);
             J3DTevOrder* secondOrder = tev->getTevOrder(1);
             J3DTevStage* secondStage = tev->getTevStage(1);
             if (secondOrder == nullptr || secondStage == nullptr)
@@ -254,8 +255,11 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     }
     if (textureTable == nullptr)
         return NativeJ3dMaterialResult::MissingTexture;
+    const std::uint16_t firstTextureNumber =
+        isUnlitTextured ? native_render::j3d_texture_number_for_map(state, state.textureMap0)
+                        : state.textureNumber0;
     const NativeJ3dMaterialResult firstTexture =
-        decode_texture(*textureTable, state.textureNumber0, result.textures[0], textureError);
+        decode_texture(*textureTable, firstTextureNumber, result.textures[0], textureError);
     if (firstTexture != NativeJ3dMaterialResult::Success)
         return firstTexture;
     result.textureCount = 1;

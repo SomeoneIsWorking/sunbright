@@ -137,6 +137,34 @@ int main() {
     assert(state.tevColor0S10 == (std::array<std::int16_t, 4>{0x0100, -0x0080, 0x0040, 0x0020}));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
+
+    // A TVB2 block owns two texture bindings even when only one TEV stage is active. Stage zero
+    // may select slot 1 and secondary texture coordinates; stage count does not reduce the binding
+    // table loaded by J3DTevBlock2::load.
+    write_u16(memory, tev + 0x04, 0xFFFF);
+    write_u16(memory, tev + 0x06, 7);
+    memory.bytes[tev + 0x08] = 1;
+    memory.bytes[tev + 0x09] = 1;
+    memory.bytes[tev + 0x0A] = 4;
+    const std::array<std::uint8_t, 8> texturedStage{0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0};
+    std::memcpy(memory.bytes.data() + tev + 0x31, texturedStage.data(), texturedStage.size());
+    write_u32(memory, texgen + 4, 2);
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, true, false, state));
+    assert(state.textureNumber0 == 0xFFFF);
+    assert(state.textureNumber1 == 7);
+    sb::native_render::UnlitTexturedMaterial texturedOutput{};
+    const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
+    assert(sb::native_render::classify_j3d_unlit_textured_material(state, placeholder,
+                                                                   texturedOutput) ==
+           sb::native_render::J3dUnlitTexturedResult::Success);
+
+    write_u16(memory, tev + 0x04, 0xFFFF);
+    write_u16(memory, tev + 0x06, 0xFFFF);
+    memory.bytes[tev + 0x08] = 0xFF;
+    memory.bytes[tev + 0x09] = 0xFF;
+    memory.bytes[tev + 0x0A] = 4;
+    std::memcpy(memory.bytes.data() + tev + 0x31, stage.data(), stage.size());
+    write_u32(memory, texgen + 4, 0);
     memory.bytes[color + 0x14] = 2;
     write_u16(memory, color + 0x1A, 0x1234);
     write_u16(memory, color + 0x1C, 0x5678);

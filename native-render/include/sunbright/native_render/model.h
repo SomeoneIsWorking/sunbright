@@ -68,6 +68,7 @@ enum class ModelDepthCompare : std::uint8_t {
 };
 enum class ModelAlphaTest : std::uint8_t { PassAll, GreaterOrEqualHalf };
 enum class ModelBlendMode : std::uint8_t { Replace, SourceAlpha, PremultipliedAlpha };
+enum class ModelTextureCoordinates : std::uint8_t { Primary, Secondary };
 
 // Ordinary PC raster policy. Runtime adapters derive it from high-level material objects before
 // publication; packed GX registers and compatibility-renderer state never cross this boundary.
@@ -94,6 +95,7 @@ struct UnlitColorMaterial {
 // boundary; the model submission carries one ordinary RGBA image matching this descriptor.
 struct UnlitTexturedMaterial {
     PictureTexture texture{};
+    ModelTextureCoordinates textureCoordinates = ModelTextureCoordinates::Primary;
     bool usesVertexColor = true;
     ModelRasterPolicy raster{};
 };

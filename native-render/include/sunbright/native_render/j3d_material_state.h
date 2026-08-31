@@ -26,12 +26,12 @@ struct J3dMaterialState {
     std::uint32_t tevBlockType = 0;
     bool supportedTevBlock = false;
     std::uint8_t tevStageCount = 0;
-    std::uint16_t textureNumber0 = 0;
+    std::uint16_t textureNumber0 = 0xFFFF;
     std::uint8_t textureCoordinate0 = 0;
     std::uint8_t textureMap0 = 0;
     std::uint8_t colorChannel0 = 0;
     std::array<std::uint8_t, 8> tevStage0{};
-    std::uint16_t textureNumber1 = 0;
+    std::uint16_t textureNumber1 = 0xFFFF;
     std::uint8_t textureCoordinate1 = 0;
     std::uint8_t textureMap1 = 0;
     std::uint8_t colorChannel1 = 0;
@@ -61,5 +61,16 @@ struct J3dMaterialState {
     bool hasVertexColor = false;
     bool hasNormal = false;
 };
+
+// J3D's texture binding slots are independent of its active colour-stage count. A stage order
+// selects one slot by texture-map index; unsupported slots remain explicitly unbound.
+[[nodiscard]] constexpr std::uint16_t j3d_texture_number_for_map(const J3dMaterialState& state,
+                                                                 std::uint8_t textureMap) noexcept {
+    if (textureMap == 0)
+        return state.textureNumber0;
+    if (textureMap == 1)
+        return state.textureNumber1;
+    return 0xFFFF;
+}
 
 } // namespace sb::native_render

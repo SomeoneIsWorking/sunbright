@@ -247,9 +247,11 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
                           captured.tevStage0.size())) {
             return false;
         }
+        if (tevVptr != kTevBlock1Vptr && !reader.u16(tevBlock + 0x06, captured.textureNumber1)) {
+            return false;
+        }
         if (captured.tevStageCount >= 2 &&
-            (!reader.u16(tevBlock + 0x06, captured.textureNumber1) ||
-             !reader.u8(tevBlock + orderOffset + 4, captured.textureCoordinate1) ||
+            (!reader.u8(tevBlock + orderOffset + 4, captured.textureCoordinate1) ||
              !reader.u8(tevBlock + orderOffset + 5, captured.textureMap1) ||
              !reader.u8(tevBlock + orderOffset + 6, captured.colorChannel1) ||
              !reader.bytes(tevBlock + stageOffset + 8, captured.tevStage1.data(),

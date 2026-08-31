@@ -4,12 +4,14 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: renderer,j3d,material,raster
-depends: native-render/src/j3d_unlit_material.cpp#classify_j3d_raster_policy, native-render/src/semantic_3d_pass.cpp#Semantic3dPass, sms-recomp/overrides/semantic_j3d_material_adapter.cpp#capture_guest_j3d_material_state, sms-boot/runtime/native_j3d_material_adapter.cpp#sb_native_capture_j3d_material_state
+depends: native-render/include/sunbright/native_render/j3d_material_state.h#j3d_texture_number_for_map, native-render/src/j3d_unlit_material.cpp#classify_j3d_raster_policy, native-render/src/model.cpp#transform_vertex, native-render/src/semantic_3d_pass.cpp#Semantic3dPass, sms-recomp/overrides/semantic_j3d_material_adapter.cpp#capture_guest_j3d_material_state, sms-boot/runtime/native_j3d_material_adapter.cpp#sb_native_capture_j3d_material_state
 ---
 
 ## Claim
 
-Both semantic J3D adapters carry high-level cull, depth, alpha-cutout, and exact straight- or premultiplied-alpha blend policy into the PC-native renderer without reading GX/FIFO raster state.
+Both semantic J3D adapters carry independent texture-slot/UV selection plus high-level cull, depth,
+alpha-cutout, and exact straight- or premultiplied-alpha blend policy into the PC-native renderer
+without reading GX/FIFO raster state.
 
 ## Evidence
 
@@ -17,7 +19,11 @@ CPU controls cover compact and exact full-block policy families plus one-field r
 
 ## What would falsify it
 
-Either adapter reads GX/FIFO raster state, an exact supported policy maps differently across layouts, a one-field custom policy is accepted, a guarded GPU control no longer produces the known-different cull/alpha/blend/depth answer, a live perspective run submits zero supported models, or an original draw body stops executing.
+Either adapter reads GX/FIFO raster state, derives live texture slots from active colour-stage count,
+selects the wrong decoded image or UV set, an exact supported policy maps differently across
+layouts, a one-field custom policy is accepted, a guarded GPU control no longer produces the
+known-different cull/alpha/blend/depth answer, a live perspective run submits zero supported
+models, or an original draw body stops executing.
 
 ## Re-confirmed 2026-08-31 — premultiplied alpha
 
@@ -31,3 +37,16 @@ straight-alpha destination-blue contribution, and the kernel watcher reported no
 back solely on this blend tuple, raising native model coverage from 15,860 to 15,912. The matching
 native-decomp audit aborted in retained GX code on issue 30's known illegal wrap value 3 before a
 semantic summary, so it provides no decomp live-coverage evidence.
+
+## Re-confirmed 2026-08-31 — independent texture slot and UV selection
+
+J3DTevBlock2 loads both texture bindings regardless of whether one or two colour stages are active.
+Both layout adapters now capture slot 1 independently of active-stage count, while the shared
+classifier resolves stage zero's selected slot and carries only the chosen decoded image plus its
+primary/secondary UV choice into the PC material. Controls cover a two-slot/one-stage big-endian
+guest block, invalid slot refusal, distinct UV results, and the exact opaque replacement policy with
+depth testing but no depth write. In the guarded recomp audit, the reached Mario material using
+slot 1 and secondary UVs changed from 50 observed/0 accepted to a complete
+50 observed/50 accepted/50 decoded/50 perspective-ready/50 submitted path. The native-layout
+adapter compiled through the same shared contract; no decomp live-coverage claim is added while
+issue 30 prevents the bounded audit from completing.

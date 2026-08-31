@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -411,9 +412,9 @@ int main() {
         Semantic3dPass pass(device);
         std::string error;
         const std::array<MeshVertex, 3> vertices{
-            MeshVertex{{-0.75F, -0.75F, 0.5F}, {0, 0}},
-            MeshVertex{{0.0F, 0.75F, 0.5F}, {0.5F, 1}},
-            MeshVertex{{0.75F, -0.75F, 0.5F}, {1, 0}},
+            MeshVertex{.position = {-0.75F, -0.75F, 0.5F}, .uv = {0.25F, 0}, .uv1 = {0.75F, 0}},
+            MeshVertex{.position = {0.0F, 0.75F, 0.5F}, .uv = {0.25F, 0}, .uv1 = {0.75F, 0}},
+            MeshVertex{.position = {0.75F, -0.75F, 0.5F}, .uv = {0.25F, 0}, .uv1 = {0.75F, 0}},
         };
         const MeshResourceView mesh{201, 1, vertices};
         ModelDraw model{
@@ -431,8 +432,11 @@ int main() {
                                            .meshes = std::span<const MeshResourceView>(&mesh, 1),
                                            .images = images};
             SemanticFramePixels result{};
-            assert(encode_3d_and_readback(pass, modelFrame, modelTarget, result, error) &&
-                   error.empty());
+            if (!encode_3d_and_readback(pass, modelFrame, modelTarget, result, error) ||
+                !error.empty()) {
+                std::cerr << "semantic 3D control failed: " << error << '\n';
+                std::abort();
+            }
             return result;
         };
 
@@ -484,6 +488,30 @@ int main() {
             render(std::span<const ModelDraw>(&texturedCutout, 1),
                    std::span<const DecodedImageView>(&cutoutImage, 1));
         assert(pixel(textureAt, 8, 8).r > 0.9F);
+
+        // The shipping upload path must select the material's UV set, not merely carry both sets.
+        // Primary UVs point at red and secondary UVs at green in the same two-texel image.
+        const std::array<std::uint8_t, 8> uvChoiceTexels{255, 0, 0, 255, 0, 255, 0, 255};
+        const DecodedImageView uvChoiceImage{
+            .resource = 218, .revision = 1, .width = 2, .height = 1, .rgba8 = uvChoiceTexels};
+        ModelDraw uvChoice = model;
+        uvChoice.instance = 219;
+        uvChoice.material = sb::native_render::UnlitTexturedMaterial{
+            .texture = {.resource = 218, .revision = 1, .width = 2, .height = 1},
+            .usesVertexColor = false,
+            .raster = {.cull = sb::native_render::ModelCullMode::None},
+        };
+        const SemanticFramePixels primaryUv =
+            render(std::span<const ModelDraw>(&uvChoice, 1),
+                   std::span<const DecodedImageView>(&uvChoiceImage, 1));
+        require_color(pixel(primaryUv, 8, 8), {1, 0, 0, 1});
+        std::get<sb::native_render::UnlitTexturedMaterial>(uvChoice.material).textureCoordinates =
+            sb::native_render::ModelTextureCoordinates::Secondary;
+        const SemanticFramePixels secondaryUv =
+            render(std::span<const ModelDraw>(&uvChoice, 1),
+                   std::span<const DecodedImageView>(&uvChoiceImage, 1));
+        require_color(pixel(secondaryUv, 8, 8), {0, 1, 0, 1});
+        assert(hash(primaryUv) != hash(secondaryUv));
 
         // The solid-colour mask material ignores texture RGB and amplifies only texture alpha.
         // Adjacent 31/32 texels prove its authored 4x alpha scale reaches the shipping fragment

@@ -63,8 +63,26 @@ int main() {
     UnlitTexturedMaterial texturedMaterial{};
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.textureCoordinates == ModelTextureCoordinates::Primary);
     assert(texturedMaterial.texture == texture);
     assert(texturedMaterial.usesVertexColor);
+
+    state.textureNumber0 = 0xFFFF;
+    state.textureNumber1 = 3;
+    state.textureCoordinateCount = 2;
+    state.textureCoordinate0 = 1;
+    state.textureMap0 = 1;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.textureCoordinates == ModelTextureCoordinates::Secondary);
+    state.textureMap0 = 2;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::UnsupportedTextureBinding);
+    state.textureNumber0 = 0;
+    state.textureNumber1 = 0xFFFF;
+    state.textureCoordinateCount = 1;
+    state.textureCoordinate0 = 0;
+    state.textureMap0 = 0;
 
     state.pixelEngineBlockType = 0x50454544U;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
@@ -95,6 +113,12 @@ int main() {
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::Success);
     assert(texturedMaterial.raster == ModelRasterPolicy{.cull = ModelCullMode::Back});
+    state.depthWrite = false;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(!texturedMaterial.raster.depthWrite);
+    assert(texturedMaterial.raster.blend == ModelBlendMode::Replace);
+    state.depthWrite = true;
     // Combining two always-true comparisons with AND, OR, or XNOR has the same pass-all meaning.
     // Normalize that meaning instead of requiring one incidental console encoding.
     state.alphaOperation = 1;

@@ -173,6 +173,20 @@ texture decode, scene readiness, and native submission, raising total native mod
 the pre-existing illegal-wrap-value-3 abort recorded by issue 30. That failed run is not decomp
 evidence for or against the new blend mode.
 
+One-stage unlit textured materials can now select either of J3D's first two independent texture
+binding slots and either of the first two decoded UV sets. The adapters no longer infer the number
+of live texture slots from the number of active colour stages: a two-slot J3D material block loads
+both bindings even when only stage zero is active. The shared semantic material records only the
+chosen primary/secondary UV set and the selected decoded image, so J3D slot numbers do not cross
+into the renderer. The same exact family now accepts opaque replacement with depth testing enabled
+but depth writes disabled, expressed through the existing ordinary depth policy. CPU controls cover
+the two-slot/one-stage guest layout, unsupported slot refusal, primary-versus-secondary UV
+selection, and the exact no-depth-write policy. In a guarded 120-present recomp audit, the reached
+Mario material using slot 1 plus secondary UVs advanced from 50 observed/0 accepted to
+50 observed/50 classified/50 images decoded/50 perspective-ready/50 PC-native models. The decomp
+adapter compiles with the same independent-slot capture; live decomp coverage remains unclaimed
+because issue 30 still prevents the corresponding bounded audit from completing.
+
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission
 sink. The

@@ -198,21 +198,18 @@ void capture_program_names(const ProgramKey& key, ProgramObservation& observatio
     u32 textureNames = 0;
     if (key.modelData == 0 || !reader.u32(key.modelData + kModelDataMaterialNames, materialNames) ||
         !reader.u32(key.modelData + kModelDataTextureNames, textureNames)) {
-        const std::uint64_t unavailableNames =
-            1U + (key.textureNumber != 0xFFFFU ? 1U : 0U) +
-            (key.stageCount >= 2 && key.textureNumber1 != 0xFFFFU ? 1U : 0U);
+        const std::uint64_t unavailableNames = 1U + (key.textureNumber != 0xFFFFU ? 1U : 0U) +
+                                               (key.textureNumber1 != 0xFFFFU ? 1U : 0U);
         g_stats.programNameAttempts += unavailableNames;
         g_stats.programNameFailures += unavailableNames;
         observation.materialName = "<unavailable>";
         observation.textureName0 = key.textureNumber == 0xFFFFU ? "<none>" : "<unavailable>";
-        observation.textureName1 =
-            key.stageCount < 2 || key.textureNumber1 == 0xFFFFU ? "<none>" : "<unavailable>";
+        observation.textureName1 = key.textureNumber1 == 0xFFFFU ? "<none>" : "<unavailable>";
         return;
     }
     observation.materialName = read_j3d_name(reader, materialNames, key.materialIndex);
     observation.textureName0 = read_j3d_name(reader, textureNames, key.textureNumber);
-    observation.textureName1 =
-        key.stageCount >= 2 ? read_j3d_name(reader, textureNames, key.textureNumber1) : "<none>";
+    observation.textureName1 = read_j3d_name(reader, textureNames, key.textureNumber1);
 }
 
 void record_raster(const sb::native_render::ModelMaterial& material) {
@@ -612,9 +609,13 @@ void submit_semantic_j3d_shape(u32 shape) {
             return;
         }
         sb::native_render::ResTimgDecodeError textureError{};
+        const std::uint16_t firstTextureNumber =
+            isUnlitTextured ? sb::native_render::j3d_texture_number_for_map(
+                                  materialState, materialState.textureMap0)
+                            : materialState.textureNumber0;
         if (!sb::recomp::capture_guest_j3d_texture(sb::recomp::live_guest_byte_reader(),
-                                                   textureTable, materialState.textureNumber0,
-                                                   g_textures[0], textureError)) {
+                                                   textureTable, firstTextureNumber, g_textures[0],
+                                                   textureError)) {
             const std::size_t errorIndex = static_cast<std::size_t>(textureError);
             if (errorIndex < g_stats.textureDecodeFailures.size())
                 ++g_stats.textureDecodeFailures[errorIndex];

@@ -65,6 +65,14 @@ int main() {
     const ClipVertex constant = transform_vertex(constantColor, vertex);
     assert(constant.color == constantMaterial.baseColor);
 
+    ModelDraw secondaryUv = draw;
+    secondaryUv.material = UnlitTexturedMaterial{
+        .texture = {.resource = 16, .width = 1, .height = 1},
+        .textureCoordinates = ModelTextureCoordinates::Secondary,
+    };
+    assert(valid(secondaryUv));
+    assert(transform_vertex(secondaryUv, vertex).uv == vertex.uv1);
+
     ModelDraw lit = draw;
     lit.material = LitTexturedMaterial{
         .texture = {.resource = 17, .width = 1, .height = 1},
@@ -156,6 +164,10 @@ int main() {
     assert(!valid(invalid));
     invalid = lit;
     std::get<LitTexturedMaterial>(invalid.material).litColorWeight = 1.1F;
+    assert(!valid(invalid));
+    invalid = secondaryUv;
+    std::get<UnlitTexturedMaterial>(invalid.material).textureCoordinates =
+        static_cast<ModelTextureCoordinates>(0xFF);
     assert(!valid(invalid));
     invalid = litMask;
     std::get<LitTexturedAlphaMaskMaterial>(invalid.material).alphaMaskTexture.resource = 0;
