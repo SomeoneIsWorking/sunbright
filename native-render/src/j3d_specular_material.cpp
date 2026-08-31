@@ -9,6 +9,7 @@ namespace {
 
 constexpr std::uint16_t kDiffuseColorChannel = 0x070E;
 constexpr std::uint16_t kPrimaryLightDiffuseColorChannel = 0x0706;
+constexpr std::uint16_t kPrimaryLightSignedDiffuseColorChannel = 0x0686;
 constexpr std::uint16_t kDiffuseVertexColorChannel = 0x070F;
 constexpr std::uint16_t kMaterialAlphaChannel = 0x0700;
 constexpr std::uint16_t kVertexAlphaChannel = 0x0701;
@@ -32,12 +33,103 @@ constexpr std::array<std::uint8_t, 8> kHalfVertexDiffuseStage{0xC0, 0x0C, 0xFA, 
                                                               0xC1, 0x08, 0xBF, 0xF0};
 constexpr std::array<std::uint8_t, 8> kTintDiffuseSpecularStage{0xC2, 0x18, 0xF0, 0xEA,
                                                                 0xC3, 0x00, 0xE3, 0x50};
+constexpr std::array<std::uint8_t, 8> kSpecularRampCoordinateStage{0xC0, 0x21, 0xFA, 0xEA,
+                                                                   0xC1, 0x08, 0xFF, 0xD0};
+constexpr std::array<std::uint8_t, 8> kSpecularRampColorStage{0xC2, 0x08, 0x42, 0x0A,
+                                                              0xC3, 0x00, 0xFF, 0x80};
 
 bool valid_lighting(const ModelLightingContext& lighting) noexcept {
     return lighting.pointLightCount != 0 && valid(lighting);
 }
 
+Color color_from_s10_rgb(const std::array<std::int16_t, 4>& color) noexcept {
+    constexpr float kScale = 1.0F / 255.0F;
+    return {color[0] * kScale, color[1] * kScale, color[2] * kScale, 1.0F};
+}
+
 } // namespace
+
+const char* j3d_specular_ramp_result_name(J3dSpecularRampResult result) noexcept {
+    switch (result) {
+    case J3dSpecularRampResult::Success:
+        return "success";
+    case J3dSpecularRampResult::UnsupportedColorBlock:
+        return "unsupported colour block";
+    case J3dSpecularRampResult::UnsupportedColorChannels:
+        return "unsupported directional-ramp colour channels";
+    case J3dSpecularRampResult::UnsupportedSecondaryColors:
+        return "unsupported secondary material colours";
+    case J3dSpecularRampResult::UnsupportedTevBlock:
+        return "unsupported colour-stage block";
+    case J3dSpecularRampResult::UnsupportedStageCount:
+        return "unsupported colour-stage count";
+    case J3dSpecularRampResult::UnsupportedTextureBindings:
+        return "unsupported texture-free bindings";
+    case J3dSpecularRampResult::UnsupportedColorProgram:
+        return "unsupported directional colour-ramp program";
+    case J3dSpecularRampResult::MissingRegisterColors:
+        return "missing directional colour-ramp endpoints";
+    case J3dSpecularRampResult::MissingNormal:
+        return "missing normal";
+    case J3dSpecularRampResult::MissingLightingContext:
+        return "missing directional-specular lighting context";
+    case J3dSpecularRampResult::UnsupportedRasterPolicy:
+        return "unsupported raster policy";
+    }
+    return "unknown";
+}
+
+J3dSpecularRampResult
+classify_j3d_specular_ramp_material(const J3dMaterialState& state,
+                                    const ModelLightingContext& lighting,
+                                    LitSpecularRampMaterial& material) noexcept {
+    if (!state.supportedColorBlock)
+        return J3dSpecularRampResult::UnsupportedColorBlock;
+    if (!state.lightingEnabled || state.colorChannelCount != 2 ||
+        state.colorChannelControl != kPrimaryLightSignedDiffuseColorChannel ||
+        state.alphaChannelControl != kMaterialAlphaChannel ||
+        state.colorChannelControl1 != kSpecularColorChannel ||
+        state.alphaChannelControl1 != kUnlitSecondaryAlphaChannel) {
+        return J3dSpecularRampResult::UnsupportedColorChannels;
+    }
+    if (state.materialColor1Rgba8 != 0xFFFFFFFFU || state.ambientColor1Rgba8 != 0)
+        return J3dSpecularRampResult::UnsupportedSecondaryColors;
+    if (!state.supportedTevBlock)
+        return J3dSpecularRampResult::UnsupportedTevBlock;
+    if (state.tevStageCount != 2)
+        return J3dSpecularRampResult::UnsupportedStageCount;
+    if (state.textureBindings[0].textureNumber != 0xFFFFU ||
+        state.textureBindings[1].textureNumber != 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != kNoTexture ||
+        state.tevStages[0].textureMap != kNoTexture ||
+        state.tevStages[0].colorChannel != kColor1Alpha1 ||
+        state.tevStages[1].textureCoordinate != kNoTexture ||
+        state.tevStages[1].textureMap != kNoTexture ||
+        state.tevStages[1].colorChannel != kColor1Alpha1) {
+        return J3dSpecularRampResult::UnsupportedTextureBindings;
+    }
+    if (state.tevStages[0].program != kSpecularRampCoordinateStage ||
+        state.tevStages[1].program != kSpecularRampColorStage ||
+        state.tevStages[0].konstColorSelection != 0) {
+        return J3dSpecularRampResult::UnsupportedColorProgram;
+    }
+    if (!state.hasTevColors)
+        return J3dSpecularRampResult::MissingRegisterColors;
+    if (!state.hasNormal)
+        return J3dSpecularRampResult::MissingNormal;
+    if (!valid(lighting))
+        return J3dSpecularRampResult::MissingLightingContext;
+    ModelRasterPolicy raster{};
+    if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
+        return J3dSpecularRampResult::UnsupportedRasterPolicy;
+
+    material.lowerColor = color_from_s10_rgb(state.tevColorsS10[1]);
+    material.upperColor = color_from_s10_rgb(state.tevColorsS10[0]);
+    material.outputAlpha = color_from_rgba8(state.materialColor1Rgba8).a;
+    material.lighting = lighting;
+    material.raster = raster;
+    return J3dSpecularRampResult::Success;
+}
 
 const char* j3d_specular_color_result_name(J3dSpecularColorResult result) noexcept {
     switch (result) {

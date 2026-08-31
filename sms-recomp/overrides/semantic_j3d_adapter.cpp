@@ -754,6 +754,11 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         lighting != nullptr ? sb::native_render::classify_j3d_lit_color_material(
                                   materialState, *lighting, litColorMaterial)
                             : sb::native_render::J3dLitColorResult::MissingLightingContext;
+    sb::native_render::LitSpecularRampMaterial specularRampMaterial{};
+    const sb::native_render::J3dSpecularRampResult specularRampResult =
+        lighting != nullptr ? sb::native_render::classify_j3d_specular_ramp_material(
+                                  materialState, *lighting, specularRampMaterial)
+                            : sb::native_render::J3dSpecularRampResult::MissingLightingContext;
     sb::native_render::LitSpecularColorMaterial specularColorMaterial{};
     const sb::native_render::J3dSpecularColorResult specularColorResult =
         lighting != nullptr ? sb::native_render::classify_j3d_specular_color_material(
@@ -764,6 +769,10 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         ++observation.materialAccepted;
     } else if (litColorResult == sb::native_render::J3dLitColorResult::Success) {
         semanticMaterial = litColorMaterial;
+        submittedLitMaterial = true;
+        ++observation.materialAccepted;
+    } else if (specularRampResult == sb::native_render::J3dSpecularRampResult::Success) {
+        semanticMaterial = specularRampMaterial;
         submittedLitMaterial = true;
         ++observation.materialAccepted;
     } else if (specularColorResult == sb::native_render::J3dSpecularColorResult::Success) {

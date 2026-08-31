@@ -405,6 +405,10 @@ bool valid(const ModelDraw& draw) noexcept {
                        material.directionalHighlightWeight <= 1.0F &&
                        finite(material.outputAlpha) && material.outputAlpha >= 0.0F &&
                        material.outputAlpha <= 1.0F;
+            } else if constexpr (std::is_same_v<Material, LitSpecularRampMaterial>) {
+                return valid(material.lowerColor) && valid(material.upperColor) &&
+                       finite(material.outputAlpha) && material.outputAlpha >= 0.0F &&
+                       material.outputAlpha <= 1.0F && valid(material.lighting);
             } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {
                 return valid(material.baseColor) && valid(material.ambientColor) &&
                        valid(material.diffuseScale) && material.diffuseScale.r >= 0.0F &&
@@ -596,6 +600,24 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                             material.outputAlpha,
                         },
                     .detailTextureWeight = material.lightRampWeight,
+                };
+            } else if constexpr (std::is_same_v<Material, LitSpecularRampMaterial>) {
+                const Color highlight = directional_specular(material.lighting.specular, normal);
+                const auto ramp = [](float value, float lower, float upper) {
+                    // The authored curve starts beyond the upper endpoint and reaches its fourfold
+                    // shoulder quickly. Keeping the curve here makes it an ordinary PC material;
+                    // the adapter, not the renderer, owns how a source program maps to it.
+                    const float coordinate = std::min(4.0F, 2.0F + 8.0F * value);
+                    return value + std::lerp(lower, upper, coordinate);
+                };
+                return VertexColors{
+                    .multiplicative =
+                        {
+                            ramp(highlight.r, material.lowerColor.r, material.upperColor.r),
+                            ramp(highlight.g, material.lowerColor.g, material.upperColor.g),
+                            ramp(highlight.b, material.lowerColor.b, material.upperColor.b),
+                            material.outputAlpha,
+                        },
                 };
             } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {
                 const Color diffuseSource =

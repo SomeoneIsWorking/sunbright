@@ -226,6 +226,66 @@ int main() {
     assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
            J3dSpecularColorResult::MissingVertexColor);
 
+    // A reached texture-free material uses only the directional highlight channel to drive an
+    // authored two-colour ramp. Stage 0 maps highlight h to min(4, 2 + 8h); stage 1 evaluates
+    // h + lerp(C1, C0, ramp). The classifier must publish those ordinary endpoints and the model
+    // transform must evaluate the same high-level curve without retaining either console stage.
+    state = material_state();
+    state.colorChannelControl = 0x0686;
+    state.textureCoordinateCount = 0;
+    state.textureBindings[0].textureNumber = 0xFFFF;
+    state.textureBindings[1].textureNumber = 0xFFFF;
+    state.tevStages[0] =
+        j3d_tev_stage(0xFF, 0xFF, 5, {0xC0, 0x21, 0xFA, 0xEA, 0xC1, 0x08, 0xFF, 0xD0}, 0x00, 0x1C);
+    state.tevStages[1] =
+        j3d_tev_stage(0xFF, 0xFF, 5, {0xC2, 0x08, 0x42, 0x0A, 0xC3, 0x00, 0xFF, 0x80}, 0x02, 0x1C);
+    state.hasTevColors = true;
+    state.tevColorsS10 = {{{255, 255, 20, 255}, {173, 137, 16, 255}, {105, 93, 178, 255}}};
+    LitSpecularRampMaterial rampMaterial{};
+    assert(classify_j3d_specular_ramp_material(state, lighting, rampMaterial) ==
+           J3dSpecularRampResult::Success);
+    assert(
+        (rampMaterial.lowerColor == Color{173.0F / 255.0F, 137.0F / 255.0F, 16.0F / 255.0F, 1.0F}));
+    assert((rampMaterial.upperColor == Color{1.0F, 1.0F, 20.0F / 255.0F, 1.0F}));
+    assert(near(rampMaterial.outputAlpha, 1.0F));
+
+    ModelLightingContext directionalOnly = lighting;
+    directionalOnly.pointLightCount = 0;
+    assert(classify_j3d_specular_ramp_material(state, directionalOnly, rampMaterial) ==
+           J3dSpecularRampResult::Success);
+    assert(rampMaterial.lighting.pointLightCount == 0);
+    assert(classify_j3d_specular_ramp_material(state, lighting, rampMaterial) ==
+           J3dSpecularRampResult::Success);
+
+    draw.material = rampMaterial;
+    const ClipVertex transformedRamp = transform_vertex(draw, vertex);
+    constexpr float highlight = 0.25F;
+    constexpr float rampCoordinate = 4.0F;
+    assert(near(transformedRamp.color.r,
+                highlight + std::lerp(173.0F / 255.0F, 1.0F, rampCoordinate)));
+    assert(near(transformedRamp.color.g,
+                highlight + std::lerp(137.0F / 255.0F, 1.0F, rampCoordinate)));
+    assert(near(transformedRamp.color.b,
+                highlight + std::lerp(16.0F / 255.0F, 20.0F / 255.0F, rampCoordinate)));
+    assert(near(transformedRamp.color.a, 1.0F));
+
+    MeshVertex backFacing = vertex;
+    backFacing.normal = {0, 0, -1};
+    const ClipVertex transformedShadow = transform_vertex(draw, backFacing);
+    assert(near(transformedShadow.color.b, std::lerp(16.0F / 255.0F, 20.0F / 255.0F, 2.0F)));
+
+    state.tevStages[1].program[2] ^= 1U;
+    assert(classify_j3d_specular_ramp_material(state, lighting, rampMaterial) ==
+           J3dSpecularRampResult::UnsupportedColorProgram);
+    state.tevStages[1].program[2] ^= 1U;
+    state.tevStages[0].colorChannel = 4;
+    assert(classify_j3d_specular_ramp_material(state, lighting, rampMaterial) ==
+           J3dSpecularRampResult::UnsupportedTextureBindings);
+    state.tevStages[0].colorChannel = 5;
+    state.hasTevColors = false;
+    assert(classify_j3d_specular_ramp_material(state, lighting, rampMaterial) ==
+           J3dSpecularRampResult::MissingRegisterColors);
+
     ModelLightingContext invalidLighting = lighting;
     invalidLighting.specular.shininess = 0;
     state = material_state();

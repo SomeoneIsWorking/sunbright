@@ -187,11 +187,17 @@ compiles through the same classifier; issue 30 still prevents equivalent live de
 
 The stage-two semantic audit now reaches the CPU-skinned path after correcting an opt-in matrix
 diagnostic that had asserted unconditionally: this pipeline uses immediate matrix loads, so its
-high-level matrix bindings do not have indexed GX-load records to compare. A guarded 20-present
-rerun completed 20 semantic frames and submitted 1,464 models containing 1,211,328 vertices with
-no GPU fault. It grounded the next classifier target as 300 untextured two-stage lit models
-(`0x0686/0x0700` plus `0x0212/0x0400`); 192 reached perspective scenes and remain named fallback
-until their exact diffuse/specular equation is decoded.
+high-level matrix bindings do not have indexed GX-load records to compare. Its formerly missing
+300-instance untextured material family is now an ordinary PC-native directional colour ramp. For
+each channel it evaluates directional highlight `h`, selects between two authored colours with
+`min(4, 2 + 8h)`, then adds `h`; neither console colour stage nor a fixed-function register crosses
+the renderer boundary. Exact controls cover the reached program and authored colours, deliberately
+changed programs, missing register colours, front- and back-facing normals, and a directional-only
+lighting context. The shared classifier is compiled into both layout-local adapters. A guarded
+20-present recomp audit accepted all 300 observations and submitted all 192 perspective instances,
+raising the run from 1,464 models/1,211,328 vertices to 1,656 models/1,407,168 vertices. It completed
+normally with no kernel GPU fault or reset. The largest remaining perspective rejection in that run
+was a separate 72-instance one-stage textured material family.
 
 The same textured diffuse/specular owner now preserves per-material light selection and coloured
 highlights. A reached orange character material uses only the primary point light for diffuse and

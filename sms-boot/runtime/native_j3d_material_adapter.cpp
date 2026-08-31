@@ -273,6 +273,15 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         return NativeJ3dMaterialResult::Success;
     }
 
+    native_render::LitSpecularRampMaterial specularRampMaterial{};
+    if (lighting != nullptr && native_render::classify_j3d_specular_ramp_material(
+                                   state, *lighting, specularRampMaterial) ==
+                                   native_render::J3dSpecularRampResult::Success) {
+        result.material = specularRampMaterial;
+        captured = std::move(result);
+        return NativeJ3dMaterialResult::Success;
+    }
+
     native_render::LitSpecularColorMaterial specularColorMaterial{};
     if (lighting != nullptr && native_render::classify_j3d_specular_color_material(
                                    state, *lighting, specularColorMaterial) ==

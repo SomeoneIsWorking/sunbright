@@ -294,6 +294,17 @@ struct LitMaskedToonMaterial {
     ModelRasterPolicy raster{};
 };
 
+// Texture-free authored colour ramp driven by one ordinary directional highlight. The runtime
+// adapter resolves the source material's register colours into the two ramp endpoints; no console
+// colour-stage operation or register identity crosses this boundary.
+struct LitSpecularRampMaterial {
+    Color lowerColor{};
+    Color upperColor{};
+    float outputAlpha = 1.0F;
+    ModelLightingContext lighting{};
+    ModelRasterPolicy raster{};
+};
+
 // Texture-free diffuse plus directional-specular lighting. The renderer receives an ordinary
 // diffuse tint and highlight scale; the original console stages do not cross this boundary.
 struct LitSpecularColorMaterial {
@@ -325,7 +336,8 @@ using ModelMaterial =
                  LitDualAlphaEffectMaterial, AlphaMaskedColorMaterial, LitColorMaterial,
                  LitTexturedMaterial, LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial,
                  LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
-                 LitMaskedToonMaterial, LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
+                 LitMaskedToonMaterial, LitSpecularRampMaterial, LitSpecularColorMaterial,
+                 LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 

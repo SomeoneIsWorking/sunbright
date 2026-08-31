@@ -7,6 +7,27 @@
 
 namespace sb::native_render {
 
+enum class J3dSpecularRampResult : std::uint8_t {
+    Success,
+    UnsupportedColorBlock,
+    UnsupportedColorChannels,
+    UnsupportedSecondaryColors,
+    UnsupportedTevBlock,
+    UnsupportedStageCount,
+    UnsupportedTextureBindings,
+    UnsupportedColorProgram,
+    MissingRegisterColors,
+    MissingNormal,
+    MissingLightingContext,
+    UnsupportedRasterPolicy,
+};
+
+[[nodiscard]] const char* j3d_specular_ramp_result_name(J3dSpecularRampResult result) noexcept;
+[[nodiscard]] J3dSpecularRampResult
+classify_j3d_specular_ramp_material(const J3dMaterialState& state,
+                                    const ModelLightingContext& lighting,
+                                    LitSpecularRampMaterial& material) noexcept;
+
 enum class J3dSpecularColorResult : std::uint8_t {
     Success,
     UnsupportedColorBlock,
