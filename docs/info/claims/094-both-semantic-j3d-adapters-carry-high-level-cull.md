@@ -10,7 +10,7 @@ depends: native-render/include/sunbright/native_render/j3d_material_state.h#j3d_
 ## Claim
 
 Both semantic J3D adapters carry independent texture-slot/UV selection plus high-level cull, depth,
-alpha-cutout, and exact straight- or premultiplied-alpha blend policy into the PC-native renderer
+alpha-cutout, exact straight- or premultiplied-alpha blend policy, and linear view-depth fog into the PC-native renderer
 without reading GX/FIFO raster state.
 
 ## Evidence
@@ -24,6 +24,19 @@ selects the wrong decoded image or UV set, an exact supported policy maps differ
 layouts, a one-field custom policy is accepted, a guarded GPU control no longer produces the
 known-different cull/alpha/blend/depth answer, a live perspective run submits zero supported
 models, or an original draw body stops executing.
+
+## Re-confirmed 2026-08-31 — linear view-depth fog
+
+Both layout adapters copy the authored J3D fog type, start/end/near/far values, colour, and
+range-adjustment state. The shared classifier admits ordinary linear fog without range adjustment
+and refuses exponential, reverse, invalid, and range-adjusted variants. The renderer-neutral draw
+carries only linear start/end planes and RGBA colour; transformed vertices carry view depth, and a
+shared shader include applies the same fog after every supported PC material equation. A guarded
+shipping-GPU control keeps the no-fog triangle red and turns the same triangle halfway through blue
+fog into the expected colour-space-correct purple, with no kernel GPU fault. The live recomp census
+also independently observed Mario's stable type-2 values (`199999..200000`, near 10, far 300000,
+magenta-blue colour), falsifying the earlier assumption that reset fog always ends at its stored
+coefficient far plane.
 
 ## Re-confirmed 2026-08-31 — premultiplied alpha
 

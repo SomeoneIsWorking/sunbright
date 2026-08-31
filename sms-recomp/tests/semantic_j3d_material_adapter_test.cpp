@@ -1,6 +1,7 @@
 #include "../overrides/semantic_j3d_material_adapter.h"
 
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cstring>
 
@@ -28,6 +29,10 @@ void write_u32(Memory& memory, std::size_t address, std::uint32_t value) {
     memory.bytes[address + 1] = static_cast<std::uint8_t>(value >> 16U);
     memory.bytes[address + 2] = static_cast<std::uint8_t>(value >> 8U);
     memory.bytes[address + 3] = static_cast<std::uint8_t>(value);
+}
+
+void write_f32(Memory& memory, std::size_t address, float value) {
+    write_u32(memory, address, std::bit_cast<std::uint32_t>(value));
 }
 
 } // namespace
@@ -116,9 +121,41 @@ int main() {
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     memory.bytes[fog] = 2;
+    memory.bytes[fog + 1] = 0;
+    write_u16(memory, fog + 2, 320);
+    write_f32(memory, fog + 4, 300.0F);
+    write_f32(memory, fog + 8, 1500.0F);
+    write_f32(memory, fog + 12, 1.0F);
+    write_f32(memory, fog + 16, 300000.0F);
+    write_u32(memory, fog + 20, 0x102030FFU);
+    for (std::size_t index = 0; index < state.fog.rangeAdjustmentTable.size(); ++index)
+        write_u16(memory, fog + 24 + index * 2, static_cast<std::uint16_t>(100 + index));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
+    assert(state.fog.type == 2);
+    assert(!state.fog.rangeAdjustmentEnabled);
+    assert(state.fog.center == 320);
+    assert(state.fog.start == 300.0F);
+    assert(state.fog.end == 1500.0F);
+    assert(state.fog.near == 1.0F);
+    assert(state.fog.far == 300000.0F);
+    assert(state.fog.colorRgba8 == 0x102030FFU);
+    assert(state.fog.rangeAdjustmentTable[9] == 109);
+    assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
+           sb::native_render::J3dUnlitMaterialResult::Success);
+    sb::native_render::ModelFog modelFog{};
+    assert(sb::native_render::build_model_fog(state.fog, modelFog));
+    assert(modelFog.mode == sb::native_render::ModelFogMode::Linear);
+    assert(modelFog.color == sb::native_render::color_from_rgba8(0x102030FFU));
+    memory.bytes[fog] = 4;
     assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::UnsupportedRasterPolicy);
+    memory.bytes[fog] = 2;
+    memory.bytes[fog + 1] = 1;
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
+    assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
+           sb::native_render::J3dUnlitMaterialResult::UnsupportedRasterPolicy);
+    memory.bytes[fog + 1] = 0;
     write_u32(memory, pixelEngine + 0x04, 0);
     write_u32(memory, pixelEngine, 0x803E0E64);
 

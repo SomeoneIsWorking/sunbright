@@ -25,6 +25,7 @@ enum class NativeJ3dMaterialResult {
 
 struct CapturedNativeJ3dMaterial {
     native_render::ModelMaterial material{};
+    native_render::ModelFog fog{};
     std::array<native_render::DecodedTexture, 2> textures{};
     std::uint8_t textureCount = 0;
 };

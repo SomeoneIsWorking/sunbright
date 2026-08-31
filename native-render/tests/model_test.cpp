@@ -39,12 +39,19 @@ int main() {
     assert(near(transformed.position.y, 21.0F));
     assert(near(transformed.position.z, 36.0F));
     assert(near(transformed.position.w, 1.0F));
+    assert(near(transformed.eyeDepth, -9.0F));
     assert(transformed.uv1 == vertex.uv1);
     assert(near(transformed.color.r, 0.25F));
     assert(near(transformed.color.g, 0.25F));
     assert(near(transformed.color.b, 0.25F));
     assert(near(transformed.color.a, 0.25F));
     assert(transformed.additiveColor == Color{});
+
+    ModelDraw fogged = draw;
+    fogged.fog = {.mode = ModelFogMode::Linear, .start = 8.0F, .end = 10.0F, .color = {1, 0, 0, 1}};
+    assert(valid(fogged));
+    fogged.fog.end = fogged.fog.start;
+    assert(!valid(fogged));
 
     const Matrix4x4 j3dProjection{.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -2, 0, 0, -1, 0}};
     const Matrix4x4 depthConverted = zero_to_one_depth_projection(j3dProjection);

@@ -95,7 +95,8 @@ struct ProgramKey {
     bool depthTest = false;
     std::uint8_t depthCompare = 0;
     bool depthWrite = false;
-    bool fogEnabled = false;
+    std::uint8_t fogType = 0;
+    bool fogRangeAdjustmentEnabled = false;
     std::uint32_t modelData = 0;
     std::uint16_t materialIndex = 0xFFFF;
     std::uint8_t stageCount = 0;
@@ -132,10 +133,12 @@ struct ProgramObservation {
     std::uint32_t firstAmbientColor1 = 0;
     std::array<std::uint32_t, 4> firstKonstColors{};
     std::array<std::int16_t, 4> firstTevColor0{};
+    sb::native_render::J3dFogState firstFog{};
     bool primaryColorsVary = false;
     bool secondaryColorsVary = false;
     bool konstColorsVary = false;
     bool tevColor0Varies = false;
+    bool fogValuesVary = false;
 };
 
 Stats g_stats{};
@@ -401,7 +404,8 @@ std::string semantic_j3d_stats_text() {
             "; top-lit-program[%zu]=%llu mat=%u:\"%s\" normal=%u "
             "channels=%u:%04x/%04x,%04x/%04x stages=%u "
             "pe=%08x cull=%u explicit=%u alpha=%u/%u/%u/%u/%u "
-            "blend=%u/%u/%u/%u depth=%u/%u/%u fog=%u "
+            "blend=%u/%u/%u/%u depth=%u/%u/%u fog=%u/%u "
+            "fogRange=%.1f/%.1f/%.1f/%.1f fogColor=%08x varies=%u "
             "tex=%04x:\"%s\"/%04x:\"%s\" "
             "order0=%02x/%02x/%02x stage0=%02x%02x%02x%02x%02x%02x%02x%02x "
             "order1=%02x/%02x/%02x stage1=%02x%02x%02x%02x%02x%02x%02x%02x "
@@ -419,11 +423,13 @@ std::string semantic_j3d_stats_text() {
             key.hasExplicitPixelPolicy ? 1U : 0U, key.alphaCompare0, key.alphaReference0,
             key.alphaOperation, key.alphaCompare1, key.alphaReference1, key.blendMode,
             key.blendSourceFactor, key.blendDestinationFactor, key.blendLogicOperation,
-            key.depthTest ? 1U : 0U, key.depthCompare, key.depthWrite ? 1U : 0U,
-            key.fogEnabled ? 1U : 0U, key.textureNumber, observation.textureName0.c_str(),
-            key.textureNumber1, observation.textureName1.c_str(), key.textureCoordinate,
-            key.textureMap, key.colorChannel, key.stage[0], key.stage[1], key.stage[2],
-            key.stage[3], key.stage[4], key.stage[5], key.stage[6], key.stage[7],
+            key.depthTest ? 1U : 0U, key.depthCompare, key.depthWrite ? 1U : 0U, key.fogType,
+            key.fogRangeAdjustmentEnabled ? 1U : 0U, observation.firstFog.start,
+            observation.firstFog.end, observation.firstFog.near, observation.firstFog.far,
+            observation.firstFog.colorRgba8, observation.fogValuesVary ? 1U : 0U, key.textureNumber,
+            observation.textureName0.c_str(), key.textureNumber1, observation.textureName1.c_str(),
+            key.textureCoordinate, key.textureMap, key.colorChannel, key.stage[0], key.stage[1],
+            key.stage[2], key.stage[3], key.stage[4], key.stage[5], key.stage[6], key.stage[7],
             key.textureCoordinate1, key.textureMap1, key.colorChannel1, key.stage1[0],
             key.stage1[1], key.stage1[2], key.stage1[3], key.stage1[4], key.stage1[5],
             key.stage1[6], key.stage1[7], static_cast<unsigned long long>(observation.count),
@@ -499,7 +505,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                        .depthTest = materialState.depthTest,
                        .depthCompare = materialState.depthCompare,
                        .depthWrite = materialState.depthWrite,
-                       .fogEnabled = materialState.fogEnabled,
+                       .fogType = materialState.fog.type,
+                       .fogRangeAdjustmentEnabled = materialState.fog.rangeAdjustmentEnabled,
                        .stageCount = materialState.tevStageCount,
                        .textureNumber = materialState.textureNumber0,
                        .textureCoordinate = materialState.textureCoordinate0,
@@ -527,6 +534,7 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         observation.firstAmbientColor1 = materialState.ambientColor1Rgba8;
         observation.firstKonstColors = materialState.konstColorRgba8;
         observation.firstTevColor0 = materialState.tevColor0S10;
+        observation.firstFog = materialState.fog;
     } else {
         if (observation.firstMaterialColor != materialState.materialColorRgba8 ||
             observation.firstAmbientColor != materialState.ambientColorRgba8) {
@@ -540,6 +548,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             observation.konstColorsVary = true;
         if (observation.firstTevColor0 != materialState.tevColor0S10)
             observation.tevColor0Varies = true;
+        if (observation.firstFog != materialState.fog)
+            observation.fogValuesVary = true;
     }
     ++observation.count;
     const sb::native_render::ModelSceneContext* scene = sb::recomp::current_semantic_j3d_scene();
@@ -740,6 +750,10 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         }
         images = std::span(semanticImages).first(textureCount);
     }
+    sb::native_render::ModelFog semanticFog{};
+    SB_ASSERT(sb::native_render::build_model_fog(materialState.fog, semanticFog),
+              "accepted J3D material has no semantic fog representation: type=%u adjusted=%u",
+              materialState.fog.type, materialState.fog.rangeAdjustmentEnabled ? 1U : 0U);
     ++observation.resourcesReady;
 
     if (scene == nullptr ||
@@ -836,6 +850,7 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         draw.pose = pose;
         draw.projection = scene->projection;
         draw.material = semanticMaterial;
+        draw.fog = semanticFog;
         const sb::native_render::MeshResourceView mesh{resource, revision, g_vertices};
         SB_ASSERT(sb::native_render::submit_model(draw, mesh, images),
                   "semantic J3D sink rejected validated model: shape=%08x element=%u "

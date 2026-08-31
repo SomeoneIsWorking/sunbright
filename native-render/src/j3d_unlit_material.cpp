@@ -34,11 +34,13 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
     // The logic-operation field is consumed only when logic blending is selected. It has no
     // observable effect for the replacement and alpha-blend modes admitted here, so do not reject
     // authored stale values.
+    const J3dFogResult fog = classify_j3d_fog(state.fog);
+    const bool fogHasSemanticOwner = fog == J3dFogResult::Disabled || fog == J3dFogResult::Linear;
     return state.hasExplicitPixelPolicy && alphaPolicyMatches && state.blendMode == blendMode &&
            state.blendSourceFactor == blendSource &&
            state.blendDestinationFactor == blendDestination && state.depthTest &&
            state.depthCompare == kDepthLessOrEqual && state.depthWrite == depthWrite &&
-           !state.fogEnabled;
+           fogHasSemanticOwner;
 }
 
 } // namespace

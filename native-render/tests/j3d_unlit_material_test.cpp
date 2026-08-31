@@ -128,10 +128,17 @@ int main() {
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::UnsupportedRasterPolicy);
     state.alphaOperation = 0;
-    state.fogEnabled = true;
+    state.fog = {.type = 2, .start = 300.0F, .end = 1500.0F, .near = 1.0F, .far = 300000.0F};
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    state.fog.type = 4;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::UnsupportedRasterPolicy);
-    state.fogEnabled = false;
+    state.fog.type = 2;
+    state.fog.rangeAdjustmentEnabled = true;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::UnsupportedRasterPolicy);
+    state.fog = {};
     state.alphaCompare0 = 6;
     state.alphaReference0 = 0x80;
     state.alphaCompare1 = 3;

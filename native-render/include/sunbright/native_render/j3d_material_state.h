@@ -1,5 +1,7 @@
 #pragma once
 
+#include <sunbright/native_render/j3d_fog.h>
+
 #include <array>
 #include <cstdint>
 
@@ -57,7 +59,7 @@ struct J3dMaterialState {
     bool depthTest = false;
     std::uint8_t depthCompare = 0;
     bool depthWrite = false;
-    bool fogEnabled = false;
+    J3dFogState fog{};
     bool hasVertexColor = false;
     bool hasNormal = false;
 };

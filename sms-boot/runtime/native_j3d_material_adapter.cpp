@@ -7,6 +7,7 @@
 #include <JSystem/J3D/J3DGraphBase/J3DTexture.hpp>
 #include <JSystem/ResTIMG.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -28,6 +29,11 @@ std::uint32_t pack_rgba8(const J3DGXColor& color) noexcept {
     return static_cast<std::uint32_t>(color.color.r) << 24U |
            static_cast<std::uint32_t>(color.color.g) << 16U |
            static_cast<std::uint32_t>(color.color.b) << 8U | color.color.a;
+}
+
+std::uint32_t pack_rgba8(const GXColor& color) noexcept {
+    return static_cast<std::uint32_t>(color.r) << 24U | static_cast<std::uint32_t>(color.g) << 16U |
+           static_cast<std::uint32_t>(color.b) << 8U | color.a;
 }
 
 native_render::ResTimgDescriptor describe(const ResTIMG& image) noexcept {
@@ -136,7 +142,20 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
         if (alpha == nullptr || blend == nullptr || depth == nullptr)
             return false;
         const J3DFog* fog = pixelEngine->getFog();
-        captured.fogEnabled = fog != nullptr && fog->mType != 0;
+        if (fog != nullptr) {
+            captured.fog = {
+                .type = fog->mType,
+                .rangeAdjustmentEnabled = fog->mAdjEnable != 0,
+                .center = fog->mCenter,
+                .start = fog->mStartZ,
+                .end = fog->mEndZ,
+                .near = fog->mNearZ,
+                .far = fog->mFarZ,
+                .colorRgba8 = pack_rgba8(fog->mColor),
+            };
+            std::copy_n(fog->mFogAdjTable, captured.fog.rangeAdjustmentTable.size(),
+                        captured.fog.rangeAdjustmentTable.begin());
+        }
         if (alpha->mAlphaCmpID != 0xFFFFU && depth->mZModeID != 0xFFFFU) {
             captured.hasExplicitPixelPolicy = true;
             captured.alphaCompare0 = static_cast<std::uint8_t>(alpha->getComp0());
@@ -214,6 +233,8 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         return NativeJ3dMaterialResult::InvalidInput;
 
     CapturedNativeJ3dMaterial result{};
+    if (!native_render::build_model_fog(state.fog, result.fog))
+        return NativeJ3dMaterialResult::UnsupportedProgram;
     native_render::UnlitColorMaterial colorMaterial{};
     if (native_render::classify_j3d_unlit_material(state, colorMaterial) ==
         native_render::J3dUnlitMaterialResult::Success) {

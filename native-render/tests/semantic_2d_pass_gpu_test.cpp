@@ -453,6 +453,28 @@ int main() {
         material.raster.cull = sb::native_render::ModelCullMode::Back;
         const SemanticFramePixels backCull = render(std::span<const ModelDraw>(&model, 1));
         assert(pixel(backCull, 8, 8).r > 0.9F);
+
+        // Linear fog is evaluated from view-space depth in every model fragment shader. The
+        // triangle sits at eye depth -0.5, exactly halfway through [-1, 0], so red material under
+        // blue fog must become purple. Disabling fog is the adjacent control above.
+        ModelDraw fogged = model;
+        fogged.fog = {.mode = sb::native_render::ModelFogMode::Linear,
+                      .start = -1.0F,
+                      .end = 0.0F,
+                      .color = {0, 0, 1, 1}};
+        const SemanticFramePixels foggedFrame = render(std::span<const ModelDraw>(&fogged, 1));
+        const Color foggedPixel = pixel(foggedFrame, 8, 8);
+        const float halfLinearAsSrgb = linear_to_srgb(0.5F);
+        const bool fogAnswer = near(foggedPixel.r, halfLinearAsSrgb) && foggedPixel.g < 0.01F &&
+                               near(foggedPixel.b, halfLinearAsSrgb);
+        if (!fogAnswer) {
+            std::cerr << "linear fog control: got " << foggedPixel.r << ',' << foggedPixel.g << ','
+                      << foggedPixel.b << " expected " << halfLinearAsSrgb << ",0,"
+                      << halfLinearAsSrgb << '\n';
+        }
+        assert(fogAnswer);
+        assert(hash(foggedFrame) != hash(backCull));
+
         material.raster.cull = sb::native_render::ModelCullMode::Front;
         const SemanticFramePixels frontCull = render(std::span<const ModelDraw>(&model, 1));
         require_color(pixel(frontCull, 8, 8), {});

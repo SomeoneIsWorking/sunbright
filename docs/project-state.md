@@ -27,7 +27,7 @@ dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetP
 now supply culling, depth test/write, alpha cutout, straight- and premultiplied-alpha blending,
 decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
-lighting, solid-colour texture masks, and an independent second-UV alpha mask for the exact
+lighting, linear view-depth fog, solid-colour texture masks, and an independent second-UV alpha mask for the exact
 supported families. Broader J3D materials are next: the remaining lit and multi-stage programs,
 authored mip chains, particles, and effects still fall back to the retained renderer.
 
@@ -86,8 +86,10 @@ cutout threshold. A guarded GPU control distinguishes front/back/all culling, al
 replace from source-alpha blending, and depth-write on from off. The post-change guarded recomp run
 exited cleanly after 60 presents with 6,006 cutout/back-cull models and 1,092,366 vertices; it
 separately rejected 682 unsupported textured raster policies rather than approximating them and
-reported no GPU fault. Full blocks with a present but `GX_FOG_NONE` fog object remain eligible;
-actual fog modes fall back.
+reported no GPU fault. Both runtime adapters now normalize authored linear J3D fog into start/end
+view-depth planes and an RGBA colour. The shared vertex path publishes eye depth, and every PC
+material shader blends fog after material colour evaluation without receiving GX coefficients or
+register state. Exponential, reverse, and range-adjusted fog modes still fall back by name.
 
 The first lit 3D family uses one decoded texture multiplied by per-vertex diffuse lighting. The
 shared model contract carries decoded normals, an ordinary ambient colour, and up to two view-space

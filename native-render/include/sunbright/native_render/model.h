@@ -71,6 +71,18 @@ enum class ModelAlphaTest : std::uint8_t { PassAll, GreaterOrEqualHalf };
 enum class ModelBlendMode : std::uint8_t { Replace, SourceAlpha, PremultipliedAlpha };
 enum class ModelTextureCoordinates : std::uint8_t { Primary, Secondary };
 
+enum class ModelFogMode : std::uint8_t { Disabled, Linear };
+
+// Ordinary view-space depth fog. Runtime adapters resolve authored material fog before
+// publication; console coefficient packing and range-adjustment tables do not cross this boundary.
+struct ModelFog {
+    ModelFogMode mode = ModelFogMode::Disabled;
+    float start = 0.0F;
+    float end = 1.0F;
+    Color color{};
+    bool operator==(const ModelFog&) const = default;
+};
+
 // Ordinary PC raster policy. Runtime adapters derive it from high-level material objects before
 // publication; packed GX registers and compatibility-renderer state never cross this boundary.
 struct ModelRasterPolicy {
@@ -250,6 +262,7 @@ struct ModelDraw {
     ModelPose pose{};
     Matrix4x4 projection{};
     ModelMaterial material{UnlitColorMaterial{}};
+    ModelFog fog{};
 };
 
 struct ClipVertex {
@@ -259,12 +272,14 @@ struct ClipVertex {
     Color color{};
     Color additiveColor{};
     float detailTextureWeight = 0.0F;
+    float eyeDepth = 0.0F;
 };
 
 [[nodiscard]] bool valid(const MeshVertex& vertex) noexcept;
 [[nodiscard]] bool valid(const MeshResourceView& mesh) noexcept;
 [[nodiscard]] bool valid(const Matrix4x4& matrix) noexcept;
 [[nodiscard]] bool valid(const ModelRasterPolicy& raster) noexcept;
+[[nodiscard]] bool valid(const ModelFog& fog) noexcept;
 [[nodiscard]] bool valid(const ModelDraw& draw) noexcept;
 [[nodiscard]] bool model_mesh_matches(const ModelDraw& draw, const MeshResourceView& mesh) noexcept;
 // Compacts runtime-specific source slots into a renderer palette and writes the source-to-compact

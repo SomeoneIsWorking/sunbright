@@ -223,6 +223,13 @@ bool valid(const ModelRasterPolicy& raster) noexcept {
            raster.blend <= ModelBlendMode::PremultipliedAlpha;
 }
 
+bool valid(const ModelFog& fog) noexcept {
+    if (fog.mode == ModelFogMode::Disabled)
+        return true;
+    return fog.mode == ModelFogMode::Linear && finite(fog.start) && finite(fog.end) &&
+           fog.start < fog.end && valid(fog.color);
+}
+
 const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept {
     return std::visit([](const auto& value) -> const ModelRasterPolicy& { return value.raster; },
                       material);
@@ -352,7 +359,7 @@ bool valid(const ModelDraw& draw) noexcept {
             [](const Matrix3x4& matrix) { return std::ranges::all_of(matrix.value, finite); });
     return draw.instance != 0 && draw.mesh.resource != 0 && draw.mesh.vertexCount != 0 &&
            draw.mesh.vertexCount % 3U == 0U && validPose && valid(draw.projection) &&
-           validMaterial && valid(raster_policy(draw.material));
+           validMaterial && valid(raster_policy(draw.material)) && valid(draw.fog);
 }
 
 bool model_mesh_matches(const ModelDraw& draw, const MeshResourceView& mesh) noexcept {
@@ -480,9 +487,13 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
         unlitTexture->textureCoordinates == ModelTextureCoordinates::Secondary) {
         primaryUv = vertex.uv1;
     }
-    return {position,        primaryUv,
-            vertex.uv1,      colors.multiplicative,
-            colors.additive, colors.detailTextureWeight};
+    return {position,
+            primaryUv,
+            vertex.uv1,
+            colors.multiplicative,
+            colors.additive,
+            colors.detailTextureWeight,
+            -eyeZ};
 }
 
 } // namespace sb::native_render

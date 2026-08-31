@@ -25,6 +25,7 @@ struct GpuVertex {
     float additiveColor[4];
     float uv1[2];
     float detailTextureWeight;
+    float eyeDepth;
 };
 
 enum class ModelShaderKind : std::uint8_t { Color, Texture, LitAlphaMask, LayeredLit };
@@ -34,6 +35,7 @@ struct DrawBatch {
     Uint32 vertexCount = 0;
     ModelShaderKind shader = ModelShaderKind::Color;
     ModelRasterPolicy raster{};
+    ModelFog fog{};
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     std::array<SDL_GPUTextureSamplerBinding, 2> textures{};
     Uint32 textureCount = 0;
@@ -41,9 +43,11 @@ struct DrawBatch {
 
 struct ModelRasterUniform {
     float alphaTest[4]{};
+    float fogRange[4]{};
+    float fogColor[4]{};
 };
 
-static_assert(sizeof(ModelRasterUniform) == 16);
+static_assert(sizeof(ModelRasterUniform) == 48);
 
 struct VertexStorage {
     SDL_GPUBuffer* buffer = nullptr;
@@ -215,6 +219,8 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
         SDL_GPUVertexAttribute{4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv1)},
         SDL_GPUVertexAttribute{5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT,
                                offsetof(GpuVertex, detailTextureWeight)},
+        SDL_GPUVertexAttribute{6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT,
+                               offsetof(GpuVertex, eyeDepth)},
     };
     SDL_GPUColorTargetDescription colorTarget{};
     colorTarget.format = key.color;
@@ -387,7 +393,8 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
         }
         DrawBatch batch{.firstVertex = static_cast<Uint32>(vertices.size()),
                         .vertexCount = static_cast<Uint32>(mesh->second->vertices.size()),
-                        .raster = raster};
+                        .raster = raster,
+                        .fog = draw.fog};
         batch.textureCount = material_texture_count(draw.material);
         if (batch.textureCount > batch.textures.size()) {
             error = "semantic model material exceeds the supported image count";
@@ -420,7 +427,8 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
                                 {transformed.additiveColor.r, transformed.additiveColor.g,
                                  transformed.additiveColor.b, transformed.additiveColor.a},
                                 {transformed.uv1.x, transformed.uv1.y},
-                                transformed.detailTextureWeight});
+                                transformed.detailTextureWeight,
+                                transformed.eyeDepth});
         }
         batches.push_back(batch);
     }
@@ -471,8 +479,15 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
             SDL_BindGPUGraphicsPipeline(render, batch.pipeline);
             if (batch.textureCount != 0)
                 SDL_BindGPUFragmentSamplers(render, 0, batch.textures.data(), batch.textureCount);
+            const bool fogEnabled = batch.fog.mode == ModelFogMode::Linear;
+            const float inverseFogRange =
+                fogEnabled ? 1.0F / (batch.fog.end - batch.fog.start) : 0.0F;
             const ModelRasterUniform rasterUniform{
-                {alpha_threshold(batch.raster.alphaTest), 0, 0, 0}};
+                .alphaTest = {alpha_threshold(batch.raster.alphaTest), 0, 0, 0},
+                .fogRange = {batch.fog.start, inverseFogRange, fogEnabled ? 1.0F : 0.0F, 0},
+                .fogColor = {batch.fog.color.r, batch.fog.color.g, batch.fog.color.b,
+                             batch.fog.color.a},
+            };
             SDL_PushGPUFragmentUniformData(target.commandBuffer, 0, &rasterUniform,
                                            sizeof(rasterUniform));
             SDL_DrawGPUPrimitives(render, batch.vertexCount, 1, batch.firstVertex, 0);

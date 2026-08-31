@@ -185,10 +185,24 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
             return false;
         }
         if (fog != 0) {
-            std::uint8_t fogType = 0;
-            if (!reader.u8(fog, fogType))
+            std::uint8_t rangeAdjustmentEnabled = 0;
+            if (!reader.u8(fog, captured.fog.type) ||
+                !reader.u8(fog + 0x01, rangeAdjustmentEnabled) ||
+                !reader.u16(fog + 0x02, captured.fog.center) ||
+                !reader.f32(fog + 0x04, captured.fog.start) ||
+                !reader.f32(fog + 0x08, captured.fog.end) ||
+                !reader.f32(fog + 0x0C, captured.fog.near) ||
+                !reader.f32(fog + 0x10, captured.fog.far) ||
+                !reader.u32(fog + 0x14, captured.fog.colorRgba8)) {
                 return false;
-            captured.fogEnabled = fogType != 0;
+            }
+            captured.fog.rangeAdjustmentEnabled = rangeAdjustmentEnabled != 0;
+            for (std::size_t index = 0; index < captured.fog.rangeAdjustmentTable.size(); ++index) {
+                if (!reader.u16(fog + 0x18 + static_cast<std::uint32_t>(index * 2),
+                                captured.fog.rangeAdjustmentTable[index])) {
+                    return false;
+                }
+            }
         }
         if (alphaId != 0xFFFFU && depthId != 0xFFFFU) {
             captured.hasExplicitPixelPolicy = true;

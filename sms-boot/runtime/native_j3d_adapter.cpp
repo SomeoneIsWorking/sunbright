@@ -246,6 +246,7 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         draw.pose = pose;
         draw.projection = scene->projection;
         draw.material = capturedMaterial.material;
+        draw.fog = capturedMaterial.fog;
         const sb::native_render::MeshResourceView mesh{resource, revision, g_vertices};
         if (!sb::native_render::submit_model(draw, mesh, images)) {
             OSPanic(__FILE__, __LINE__,
