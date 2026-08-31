@@ -749,8 +749,7 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             materialState.lightingEnabled && materialState.colorChannelCount == 1 &&
             materialState.colorChannelControl == 0x0706 &&
             materialState.alphaChannelControl == 0x0700 && materialState.tevStageCount == 1 &&
-            materialState.tevStages[0].program ==
-                std::array<std::uint8_t, 8>{0xC0, 0x08, 0xFE, 0x8F, 0xC1, 0x08, 0xE6, 0x70};
+            sb::native_render::is_j3d_effect_material_program(materialState.tevStages[0]);
         if (effectShapeCandidate && !isEffect)
             ++g_stats.effectCandidateRejections[static_cast<std::size_t>(effectFamily)];
         sb::native_render::LitTexturedAlphaMaskMaterial litAlphaMaskMaterial{};

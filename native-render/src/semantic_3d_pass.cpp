@@ -159,7 +159,17 @@ SDL_GPUCompareOp depth_compare(ModelDepthCompare compare) noexcept {
 }
 
 float alpha_threshold(ModelAlphaTest test) noexcept {
-    return test == ModelAlphaTest::GreaterOrEqualHalf ? 128.0F / 255.0F : 0.0F;
+    switch (test) {
+    case ModelAlphaTest::PassAll:
+        return 0.0F;
+    case ModelAlphaTest::GreaterOrEqualHalf:
+        return 128.0F / 255.0F;
+    case ModelAlphaTest::GreaterThan64:
+        // The source comparison is strict on quantised 8-bit alpha, so byte 64 is rejected and
+        // byte 65 is the first passing value.
+        return 65.0F / 255.0F;
+    }
+    return 0.0F;
 }
 
 } // namespace

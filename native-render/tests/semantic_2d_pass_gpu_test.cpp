@@ -641,6 +641,18 @@ int main() {
         const SemanticFramePixels atCutout = render(std::span<const ModelDraw>(&model, 1));
         assert(pixel(atCutout, 8, 8).r > 0.9F);
 
+        // The additive lens effect uses a strict byte-64 alpha comparison. Byte 64 must be
+        // discarded while the adjacent byte 65 must pass, proving the shader keeps the authored
+        // strictness instead of silently turning it into a >= threshold.
+        material.raster.alphaTest = sb::native_render::ModelAlphaTest::GreaterThan64;
+        material.baseColor.a = 64.0F / 255.0F;
+        const SemanticFramePixels effectThresholdBelow =
+            render(std::span<const ModelDraw>(&model, 1));
+        require_color(pixel(effectThresholdBelow, 8, 8), {});
+        material.baseColor.a = 65.0F / 255.0F;
+        const SemanticFramePixels effectThresholdAt = render(std::span<const ModelDraw>(&model, 1));
+        assert(pixel(effectThresholdAt, 8, 8).r > 0.9F);
+
         // The texture fragment shader has its own alpha-rejection code, so exercise the adjacent
         // 127/128 controls there as well instead of inferring coverage from the colour shader.
         std::array<std::uint8_t, 4> cutoutTexel{255, 0, 0, 127};

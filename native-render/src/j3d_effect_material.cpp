@@ -13,6 +13,8 @@ constexpr std::uint8_t kColor0Alpha0 = 4;
 constexpr std::uint8_t kKonstColor0 = 0x0C;
 constexpr std::array<std::uint8_t, 8> kConstantTimesTexture{0xC0, 0x08, 0xFE, 0x8F,
                                                             0xC1, 0x08, 0xE6, 0x70};
+constexpr std::array<std::uint8_t, 8> kRegisterTimesTextureHalfAlpha{0xC0, 0x08, 0xF2, 0x8F,
+                                                                     0xC1, 0x38, 0xE6, 0x70};
 
 Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept {
     constexpr float kScale = 1.0F / 255.0F;
@@ -20,6 +22,12 @@ Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept {
 }
 
 } // namespace
+
+bool is_j3d_effect_material_program(const J3dTevStageState& stage) noexcept {
+    const bool constantTimesTexture =
+        stage.program == kConstantTimesTexture && stage.konstColorSelection == kKonstColor0;
+    return constantTimesTexture || stage.program == kRegisterTimesTextureHalfAlpha;
+}
 
 const char* j3d_effect_material_result_name(J3dEffectMaterialResult result) noexcept {
     switch (result) {
@@ -69,7 +77,10 @@ J3dEffectMaterialResult classify_j3d_effect_material(const J3dMaterialState& sta
         stage.textureMap != 0 || stage.colorChannel != kColor0Alpha0 || texture.resource == 0 ||
         texture.width == 0 || texture.height == 0)
         return J3dEffectMaterialResult::UnsupportedTextureBinding;
-    if (stage.program != kConstantTimesTexture || stage.konstColorSelection != kKonstColor0)
+    const bool constantTimesTexture =
+        stage.program == kConstantTimesTexture && stage.konstColorSelection == kKonstColor0;
+    const bool registerTimesTexture = stage.program == kRegisterTimesTextureHalfAlpha;
+    if (!constantTimesTexture && !registerTimesTexture)
         return J3dEffectMaterialResult::UnsupportedColorProgram;
     if (!state.hasTevColors)
         return J3dEffectMaterialResult::MissingTevColor;
@@ -79,12 +90,15 @@ J3dEffectMaterialResult classify_j3d_effect_material(const J3dMaterialState& sta
     if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
         return J3dEffectMaterialResult::UnsupportedRasterPolicy;
 
-    const Color constant = color_from_rgba8(state.konstColorRgba8[0]);
     const Color registerColor = color_from_s10(state.tevColorsS10[0]);
+    const Color constant = color_from_rgba8(state.konstColorRgba8[0]);
     material.texture = texture;
     material.textureCoordinates = stage.textureCoordinate == 1 ? ModelTextureCoordinates::Secondary
                                                                : ModelTextureCoordinates::Primary;
-    material.modulation = {constant.r, constant.g, constant.b, registerColor.a};
+    material.modulation =
+        registerTimesTexture
+            ? Color{registerColor.r, registerColor.g, registerColor.b, registerColor.a * 0.5F}
+            : Color{constant.r, constant.g, constant.b, registerColor.a};
     material.raster = raster;
     return J3dEffectMaterialResult::Success;
 }

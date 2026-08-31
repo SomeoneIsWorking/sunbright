@@ -142,6 +142,13 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
                                        kInverseSourceAlpha, true)) {
             // Ordinary source-alpha compositing that also records the fragment's depth.
             result.blend = ModelBlendMode::SourceAlpha;
+        } else if (full_policy_matches(state, 4, 64, kAlways, 0, kBlend, kSourceAlpha, kOne, false,
+                                       false)) {
+            // Additive effects can key their glow texture with a strict byte-64 alpha test.
+            result.alphaTest = ModelAlphaTest::GreaterThan64;
+            result.depthTest = false;
+            result.depthWrite = false;
+            result.blend = ModelBlendMode::Additive;
         } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kOne,
                                        kInverseSourceAlpha, false)) {
             result.depthWrite = false;

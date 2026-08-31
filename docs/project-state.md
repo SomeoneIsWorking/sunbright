@@ -235,6 +235,16 @@ raising total models from 988 to 1,092 and lit models from 884 to 988. The run e
 no GPU fault. Other lens-glow combiner variants remain rejected by their distinct stage programs
 and are still explicit fallbacks.
 
+The next 52 reached lens-glow models (`_mat_lens_fx_1`, texture `P_glow3`) now use the same
+semantic effect owner. Their distinct one-stage program is decoded from the authored TEV bytes as
+register-0 RGB times texture RGB, with register-0 alpha times texture alpha at half scale. The
+shared material carries those resolved modulation values, and the shared raster policy now preserves
+the authored strict alpha-greater-than-64 cutout together with additive source-alpha/destination-one
+blending and disabled depth testing. The exact CPU classifier control covers the register-colour
+source, half alpha scale, and byte-64 threshold. A fresh guarded 120-present title audit completed
+with no GPU fault, increased submitted models from 1,092 to 1,144, and reduced effect raster-policy
+rejections for this family to zero; the remaining distinct effect programs stay explicit fallbacks.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

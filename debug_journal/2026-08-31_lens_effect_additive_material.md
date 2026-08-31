@@ -27,3 +27,18 @@ alpha by drawing a half-alpha red triangle over blue (the additive result retain
 The post-change title audit reports `submitted=1092`, `models=1092`, `988 lit models`, and zero
 effect-shape candidate rejections. Other lens variants remain explicit fallbacks because their
 stage programs differ.
+
+## Follow-up: register-colour glow variant
+
+The next 52 perspective-reached glow draws were not the same program: `_mat_lens_fx_1` binds
+`P_glow3` with stage bytes `c008f28fc138e670`. Decoding the GX fields from the tracked SDK packing
+shows colour `C0 * TEXC` (register-0 RGB times texture RGB), and alpha `A0 * TEXA` with scale 0.5
+(register-0 alpha times texture alpha, halved). The full pixel block is an exact strict
+`GREATER 64` alpha test combined with `ALWAYS`, source-alpha/destination-one blending, and disabled
+depth test/write. The shared classifier now publishes those values as `TexturedEffectMaterial`
+plus a `GreaterThan64` raster threshold; the threshold sends byte 64 to discard and byte 65 to pass.
+
+The classifier test is positive for the register-colour and half-alpha equation and for the exact
+byte-64 policy, while the existing changed-program control remains negative. The guarded title audit
+completed 120 diagnostic presents with `effect-material ... raster=0`, submitted 1,144 semantic
+models (52 more than the prior 1,092), and exited 0 without a GPU fault or reset.

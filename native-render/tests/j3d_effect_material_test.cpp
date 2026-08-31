@@ -48,11 +48,20 @@ int main() {
     assert(near(material.modulation.b, 32.0F / 255.0F));
     assert(near(material.modulation.a, 96.0F / 255.0F));
 
+    state = material_state();
+    state.tevStages[0].program = {0xC0, 0x08, 0xF2, 0x8F, 0xC1, 0x38, 0xE6, 0x70};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.r, 12.0F / 255.0F));
+    assert(near(material.modulation.g, 24.0F / 255.0F));
+    assert(near(material.modulation.b, 36.0F / 255.0F));
+    assert(near(material.modulation.a, 48.0F / 255.0F));
+
     state.hasExplicitPixelPolicy = true;
     state.pixelEngineBlockType = 0x5045464CU;
     state.alphaCompare0 = 7;
     state.alphaCompare1 = 7;
-    state.alphaOperation = 0;
+    state.alphaOperation = 1;
     state.blendMode = 1;
     state.blendSourceFactor = 4;
     state.blendDestinationFactor = 1;
@@ -63,6 +72,12 @@ int main() {
            J3dEffectMaterialResult::Success);
     assert(material.raster.blend == ModelBlendMode::Additive);
     assert(!material.raster.depthTest);
+    state.alphaCompare0 = 4;
+    state.alphaReference0 = 64;
+    state.alphaOperation = 0;
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(material.raster.alphaTest == ModelAlphaTest::GreaterThan64);
     state.depthTest = true;
     assert(classify_j3d_effect_material(state, texture, material) ==
            J3dEffectMaterialResult::UnsupportedRasterPolicy);

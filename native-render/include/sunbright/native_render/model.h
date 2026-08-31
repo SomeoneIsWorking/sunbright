@@ -72,7 +72,9 @@ enum class ModelDepthCompare : std::uint8_t {
     GreaterOrEqual,
     Always,
 };
-enum class ModelAlphaTest : std::uint8_t { PassAll, GreaterOrEqualHalf };
+// Alpha tests are expressed as quantised semantic thresholds. The strict byte-64 case preserves
+// the authored source comparison without carrying its packed register into the renderer.
+enum class ModelAlphaTest : std::uint8_t { PassAll, GreaterOrEqualHalf, GreaterThan64 };
 enum class ModelBlendMode : std::uint8_t {
     Replace,
     SourceAlpha,
