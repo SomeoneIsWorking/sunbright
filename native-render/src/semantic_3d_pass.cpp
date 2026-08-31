@@ -4,6 +4,7 @@
 #include "../shaders/model_layered_lit_frag_spv.h"
 #include "../shaders/model_lit_alpha_mask_frag_spv.h"
 #include "../shaders/model_texture_frag_spv.h"
+#include "../shaders/model_tinted_layered_frag_spv.h"
 #include "../shaders/model_vert_spv.h"
 #include "sdl_image_cache.h"
 
@@ -28,7 +29,13 @@ struct GpuVertex {
     float eyeDepth;
 };
 
-enum class ModelShaderKind : std::uint8_t { Color, Texture, LitAlphaMask, LayeredLit };
+enum class ModelShaderKind : std::uint8_t {
+    Color,
+    Texture,
+    LitAlphaMask,
+    LayeredLit,
+    TintedLayered,
+};
 
 struct DrawBatch {
     Uint32 firstVertex = 0;
@@ -162,6 +169,7 @@ struct Semantic3dPassImpl {
     SDL_GPUShader* textureFragmentShader = nullptr;
     SDL_GPUShader* litAlphaMaskFragmentShader = nullptr;
     SDL_GPUShader* layeredLitFragmentShader = nullptr;
+    SDL_GPUShader* tintedLayeredFragmentShader = nullptr;
     std::unordered_map<PipelineKey, SDL_GPUGraphicsPipeline*, PipelineKeyHash> pipelines{};
     VertexStorage vertices{};
     std::vector<VertexStorage> retiredStorage{};
@@ -244,6 +252,9 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
     case ModelShaderKind::LayeredLit:
         info.fragment_shader = impl.layeredLitFragmentShader;
         break;
+    case ModelShaderKind::TintedLayered:
+        info.fragment_shader = impl.tintedLayeredFragmentShader;
+        break;
     }
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.vertex_input_state.vertex_buffer_descriptions = &vertexBuffer;
@@ -304,6 +315,8 @@ Semantic3dPass::~Semantic3dPass() {
             SDL_ReleaseGPUShader(impl_->device, impl_->litAlphaMaskFragmentShader);
         if (impl_->layeredLitFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->layeredLitFragmentShader);
+        if (impl_->tintedLayeredFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->tintedLayeredFragmentShader);
         if (impl_->colorFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->colorFragmentShader);
         if (impl_->vertexShader != nullptr)
@@ -320,7 +333,7 @@ bool Semantic3dPass::initialize(std::string& error) {
     }
     if (impl_->vertexShader != nullptr && impl_->colorFragmentShader != nullptr &&
         impl_->textureFragmentShader != nullptr && impl_->litAlphaMaskFragmentShader != nullptr &&
-        impl_->layeredLitFragmentShader != nullptr)
+        impl_->layeredLitFragmentShader != nullptr && impl_->tintedLayeredFragmentShader != nullptr)
         return true;
     impl_->vertexShader = make_shader(impl_->device, kModelVertSpv, sizeof(kModelVertSpv),
                                       SDL_GPU_SHADERSTAGE_VERTEX);
@@ -336,9 +349,13 @@ bool Semantic3dPass::initialize(std::string& error) {
     impl_->layeredLitFragmentShader =
         make_shader(impl_->device, kModelLayeredLitFragSpv, sizeof(kModelLayeredLitFragSpv),
                     SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
+    impl_->tintedLayeredFragmentShader =
+        make_shader(impl_->device, kModelTintedLayeredFragSpv, sizeof(kModelTintedLayeredFragSpv),
+                    SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     if (impl_->vertexShader == nullptr || impl_->colorFragmentShader == nullptr ||
         impl_->textureFragmentShader == nullptr || impl_->litAlphaMaskFragmentShader == nullptr ||
-        impl_->layeredLitFragmentShader == nullptr) {
+        impl_->layeredLitFragmentShader == nullptr ||
+        impl_->tintedLayeredFragmentShader == nullptr) {
         error = std::string("semantic 3D shader creation failed: ") + SDL_GetError();
         return false;
     }
@@ -411,6 +428,8 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
             batch.shader = ModelShaderKind::LitAlphaMask;
         else if (std::holds_alternative<LitLayeredTexturedMaterial>(draw.material))
             batch.shader = ModelShaderKind::LayeredLit;
+        else if (std::holds_alternative<LitTintedLayeredSpecularMaterial>(draw.material))
+            batch.shader = ModelShaderKind::TintedLayered;
         else if (batch.textureCount == 1)
             batch.shader = ModelShaderKind::Texture;
         batch.pipeline = ensure_pipeline(

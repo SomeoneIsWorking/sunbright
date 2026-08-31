@@ -2,6 +2,7 @@
 
 #include <sunbright/native_render/j3d_alpha_masked_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
+#include <sunbright/native_render/j3d_tinted_layered_material.h>
 
 #include <JSystem/J3D/J3DGraphBase/J3DMaterial.hpp>
 #include <JSystem/J3D/J3DGraphBase/J3DTexture.hpp>
@@ -288,13 +289,19 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         lighting != nullptr && native_render::classify_j3d_layered_material(
                                    state, placeholder, placeholder, *lighting, layeredMaterial) ==
                                    native_render::J3dLayeredMaterialResult::Success;
+    native_render::LitTintedLayeredSpecularMaterial tintedLayeredMaterial{};
+    const bool isTintedLayered =
+        lighting != nullptr &&
+        native_render::classify_j3d_tinted_layered_material(state, placeholder, placeholder,
+                                                            *lighting, tintedLayeredMaterial) ==
+            native_render::J3dTintedLayeredMaterialResult::Success;
     native_render::LitSpecularTexturedMaterial specularMaterial{};
     const bool isSpecularTextured =
         lighting != nullptr && native_render::classify_j3d_specular_textured_material(
                                    state, placeholder, *lighting, specularMaterial) ==
                                    native_render::J3dSpecularTexturedResult::Success;
     if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask && !isLayered &&
-        !isSpecularTextured) {
+        !isTintedLayered && !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
     if (textureTable == nullptr)
@@ -307,7 +314,7 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     if (firstTexture != NativeJ3dMaterialResult::Success)
         return firstTexture;
     result.textureCount = 1;
-    if (isLitAlphaMask || isLayered) {
+    if (isLitAlphaMask || isLayered || isTintedLayered) {
         const NativeJ3dMaterialResult secondTexture =
             decode_texture(*textureTable, state.textureNumber1, result.textures[1], textureError);
         if (secondTexture != NativeJ3dMaterialResult::Success)
@@ -342,6 +349,13 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = layeredMaterial;
+    } else if (isTintedLayered) {
+        if (native_render::classify_j3d_tinted_layered_material(
+                state, result.textures[0].texture, result.textures[1].texture, *lighting,
+                tintedLayeredMaterial) != native_render::J3dTintedLayeredMaterialResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = tintedLayeredMaterial;
     } else if (isLitTextured) {
         if (native_render::classify_j3d_lit_textured_material(state, result.textures[0].texture,
                                                               *lighting, litMaterial) !=

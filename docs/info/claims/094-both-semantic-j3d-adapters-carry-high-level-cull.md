@@ -51,6 +51,14 @@ back solely on this blend tuple, raising native model coverage from 15,860 to 15
 native-decomp audit aborted in retained GX code on issue 30's known illegal wrap value 3 before a
 semantic summary, so it provides no decomp live-coverage evidence.
 
+## Re-confirmed 2026-08-31 — source-alpha blending with depth writes
+
+The full pixel-policy classifier now also maps the exact source-alpha/one-minus-source-alpha tuple
+that retains depth writes to the existing ordinary PC blend and depth policy. The new fogged/tinted
+two-texture classifier exercises that combination directly, and the guarded 120-present recomp
+audit submitted all 200 reached instances instead of rejecting their raster policy. Other factor
+tuples still refuse.
+
 ## Re-confirmed 2026-08-31 — independent texture slot and UV selection
 
 J3DTevBlock2 loads both texture bindings regardless of whether one or two colour stages are active.

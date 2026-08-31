@@ -149,6 +149,10 @@ struct ModelLightingContext {
     bool operator==(const ModelLightingContext&) const = default;
 };
 
+// Apply an authored high-level material tint to the directional highlight. Both material
+// classifiers use this owner so coloured highlights cannot drift between semantic families.
+void tint_directional_specular(ModelLightingContext& lighting, Color tint) noexcept;
+
 enum class ModelDiffuseMode : std::uint8_t { Clamped, Signed };
 
 // Ordinary diffuse-lit colour with no texture. Runtime adapters publish the authored material or
@@ -202,6 +206,21 @@ struct LitLayeredTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
+// Two decoded textures combined with signed diffuse lighting, an authored animated tint, and the
+// directional highlight. The renderer receives the two ordinary clamp layers directly; no console
+// colour-stage selector or register identity crosses this boundary.
+struct LitTintedLayeredSpecularMaterial {
+    PictureTexture baseTexture{};
+    PictureTexture detailTexture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    Color effectColor{};
+    ModelLightingContext lighting{};
+    float detailWeight = 0.0F;
+    float layerWeight = 0.0F;
+    ModelRasterPolicy raster{};
+};
+
 // Texture-free diffuse plus directional-specular lighting. The renderer receives an ordinary
 // diffuse tint and highlight scale; the original console stages do not cross this boundary.
 struct LitSpecularColorMaterial {
@@ -231,7 +250,8 @@ struct LitSpecularTexturedMaterial {
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, AlphaMaskedColorMaterial,
                  LitColorMaterial, LitTexturedMaterial, LitTexturedAlphaMaskMaterial,
-                 LitLayeredTexturedMaterial, LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
+                 LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
+                 LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 
@@ -278,6 +298,7 @@ struct ClipVertex {
 [[nodiscard]] bool valid(const MeshVertex& vertex) noexcept;
 [[nodiscard]] bool valid(const MeshResourceView& mesh) noexcept;
 [[nodiscard]] bool valid(const Matrix4x4& matrix) noexcept;
+[[nodiscard]] bool valid(const ModelLightingContext& lighting) noexcept;
 [[nodiscard]] bool valid(const ModelRasterPolicy& raster) noexcept;
 [[nodiscard]] bool valid(const ModelFog& fog) noexcept;
 [[nodiscard]] bool valid(const ModelDraw& draw) noexcept;

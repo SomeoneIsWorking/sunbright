@@ -3,7 +3,6 @@
 #include <sunbright/native_render/j3d_unlit_material.h>
 
 #include <array>
-#include <cmath>
 
 namespace sb::native_render {
 namespace {
@@ -35,20 +34,7 @@ constexpr std::array<std::uint8_t, 8> kTintDiffuseSpecularStage{0xC2, 0x18, 0xF0
                                                                 0xC3, 0x00, 0xE3, 0x50};
 
 bool valid_lighting(const ModelLightingContext& lighting) noexcept {
-    const DirectionalSpecularLight& specular = lighting.specular;
-    return lighting.pointLightCount != 0 &&
-           lighting.pointLightCount <= lighting.pointLights.size() &&
-           std::isfinite(specular.directionToLight.x) &&
-           std::isfinite(specular.directionToLight.y) &&
-           std::isfinite(specular.directionToLight.z) && std::isfinite(specular.shininess) &&
-           specular.shininess > 0.0F;
-}
-
-void apply_specular_material_color(ModelLightingContext& lighting, std::uint32_t rgba8) noexcept {
-    const Color color = color_from_rgba8(rgba8);
-    lighting.specular.color.r *= color.r;
-    lighting.specular.color.g *= color.g;
-    lighting.specular.color.b *= color.b;
+    return lighting.pointLightCount != 0 && valid(lighting);
 }
 
 } // namespace
@@ -235,7 +221,7 @@ J3dSpecularTexturedResult classify_j3d_specular_textured_material(
     material.lighting = lighting;
     if (primaryLightTintedProgram)
         material.lighting.pointLightCount = 1;
-    apply_specular_material_color(material.lighting, state.materialColor1Rgba8);
+    tint_directional_specular(material.lighting, color_from_rgba8(state.materialColor1Rgba8));
     material.usesVertexRgb = tripleSpecularProgram;
     material.raster = raster;
     return J3dSpecularTexturedResult::Success;

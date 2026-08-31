@@ -31,14 +31,6 @@ bool valid(const DirectionalSpecularLight& light) noexcept {
            light.shininess > 0.0F;
 }
 
-bool valid(const ModelLightingContext& lighting) noexcept {
-    return valid(lighting.ambientColor) && valid(lighting.specular) &&
-           lighting.pointLightCount <= lighting.pointLights.size() &&
-           std::ranges::all_of(lighting.pointLights.begin(),
-                               lighting.pointLights.begin() + lighting.pointLightCount,
-                               [](const PointLight& light) { return valid(light); });
-}
-
 Color multiply(Color first, Color second) noexcept {
     return {first.r * second.r, first.g * second.g, first.b * second.b, first.a * second.a};
 }
@@ -163,6 +155,20 @@ bool valid(const Matrix4x4& matrix) noexcept {
     return std::ranges::all_of(matrix.value, finite);
 }
 
+bool valid(const ModelLightingContext& lighting) noexcept {
+    return valid(lighting.ambientColor) && valid(lighting.specular) &&
+           lighting.pointLightCount <= lighting.pointLights.size() &&
+           std::ranges::all_of(lighting.pointLights.begin(),
+                               lighting.pointLights.begin() + lighting.pointLightCount,
+                               [](const PointLight& light) { return valid(light); });
+}
+
+void tint_directional_specular(ModelLightingContext& lighting, Color tint) noexcept {
+    lighting.specular.color.r *= tint.r;
+    lighting.specular.color.g *= tint.g;
+    lighting.specular.color.b *= tint.b;
+}
+
 std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept {
     constexpr std::uint64_t kOffset = 14695981039346656037ULL;
     constexpr std::uint64_t kPrime = 1099511628211ULL;
@@ -240,7 +246,8 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
         [](const auto& value) -> std::uint8_t {
             using Material = std::remove_cvref_t<decltype(value)>;
             if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial> ||
-                          std::is_same_v<Material, LitLayeredTexturedMaterial>)
+                          std::is_same_v<Material, LitLayeredTexturedMaterial> ||
+                          std::is_same_v<Material, LitTintedLayeredSpecularMaterial>)
                 return 2;
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                           std::is_same_v<Material, AlphaMaskedColorMaterial> ||
@@ -261,7 +268,8 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
                 if (index == 0)
                     return &value.colorTexture;
                 return index == 1 ? &value.alphaMaskTexture : nullptr;
-            } else if constexpr (std::is_same_v<Material, LitLayeredTexturedMaterial>) {
+            } else if constexpr (std::is_same_v<Material, LitLayeredTexturedMaterial> ||
+                                 std::is_same_v<Material, LitTintedLayeredSpecularMaterial>) {
                 if (index == 0)
                     return &value.baseTexture;
                 return index == 1 ? &value.detailTexture : nullptr;
@@ -333,6 +341,16 @@ bool valid(const ModelDraw& draw) noexcept {
                        valid(material.lighting) && finite(material.detailWeight) &&
                        material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
                        material.diffuseMode <= ModelDiffuseMode::Signed;
+            } else if constexpr (std::is_same_v<Material, LitTintedLayeredSpecularMaterial>) {
+                return material.baseTexture.resource != 0 && material.baseTexture.width != 0 &&
+                       material.baseTexture.height != 0 && material.detailTexture.resource != 0 &&
+                       material.detailTexture.width != 0 && material.detailTexture.height != 0 &&
+                       valid(material.baseColor) && valid(material.ambientColor) &&
+                       valid(material.effectColor) && valid(material.lighting) &&
+                       material.lighting.pointLightCount == 2 && finite(material.detailWeight) &&
+                       material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
+                       finite(material.layerWeight) && material.layerWeight >= 0.0F &&
+                       material.layerWeight <= 1.0F;
             } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {
                 return valid(material.baseColor) && valid(material.ambientColor) &&
                        valid(material.diffuseScale) && material.diffuseScale.r >= 0.0F &&
@@ -462,6 +480,29 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                 return VertexColors{
                     .multiplicative = {lit.r * litWeight, lit.g * litWeight, lit.b * litWeight,
                                        material.baseColor.a},
+                    .detailTextureWeight = material.detailWeight,
+                };
+            } else if constexpr (std::is_same_v<Material, LitTintedLayeredSpecularMaterial>) {
+                const Color diffuse =
+                    diffuse_lighting(material.baseColor, material.ambientColor, material.lighting,
+                                     eyePosition, normal, ModelDiffuseMode::Signed);
+                const Color specular = directional_specular(material.lighting.specular, normal);
+                const float diffuseWeight = 1.0F - material.detailWeight;
+                return VertexColors{
+                    .multiplicative =
+                        {
+                            material.effectColor.r + diffuseWeight * diffuse.r - 0.5F,
+                            material.effectColor.g + diffuseWeight * diffuse.g - 0.5F,
+                            material.effectColor.b + diffuseWeight * diffuse.b - 0.5F,
+                            material.baseColor.a,
+                        },
+                    .additive =
+                        {
+                            material.layerWeight * specular.r,
+                            material.layerWeight * specular.g,
+                            material.layerWeight * specular.b,
+                            material.layerWeight,
+                        },
                     .detailTextureWeight = material.detailWeight,
                 };
             } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {

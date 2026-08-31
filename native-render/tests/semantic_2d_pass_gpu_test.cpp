@@ -738,6 +738,57 @@ int main() {
         assert(blueDetailPixel.b > 0.60F);
         assert(hash(redDetail) != hash(blueDetail));
 
+        // Tinted layered control: with a white base image, neutral 1/2 effect colour, no diffuse
+        // source, and a 1/2 outer mix, changing only the independently sampled 3/8 detail image
+        // must move the matching output channel. This exercises the dedicated shipping shader
+        // without routing through the ordinary layered shader or the compatibility renderer.
+        const std::array<std::uint8_t, 4> tintedBaseTexel{255, 255, 255, 255};
+        std::array<std::uint8_t, 4> tintedDetailTexel{255, 0, 0, 255};
+        std::array<DecodedImageView, 2> tintedImages{
+            DecodedImageView{
+                .resource = 224, .revision = 1, .width = 1, .height = 1, .rgba8 = tintedBaseTexel},
+            DecodedImageView{.resource = 225,
+                             .revision = 1,
+                             .width = 1,
+                             .height = 1,
+                             .rgba8 = tintedDetailTexel},
+        };
+        ModelDraw tintedModel = model;
+        tintedModel.instance = 226;
+        tintedModel.material = sb::native_render::LitTintedLayeredSpecularMaterial{
+            .baseTexture = {.resource = 224, .revision = 1, .width = 1, .height = 1},
+            .detailTexture = {.resource = 225, .revision = 1, .width = 1, .height = 1},
+            .baseColor = {0, 0, 0, 1},
+            .effectColor = {0.5F, 0.5F, 0.5F, 1},
+            .lighting = {.pointLights = {{{.position = {0, 0, 1}}, {.position = {0, 0, 1}}}},
+                         .pointLightCount = 2,
+                         .specular = {.color = {0, 0, 0, 1}}},
+            .detailWeight = 3.0F / 8.0F,
+            .layerWeight = 0.5F,
+            .raster = {.cull = sb::native_render::ModelCullMode::None},
+        };
+        const SemanticFramePixels tintedRed =
+            render(std::span<const ModelDraw>(&tintedModel, 1), tintedImages);
+        const Color tintedRedPixel = pixel(tintedRed, 8, 8);
+        tintedDetailTexel = {0, 0, 255, 255};
+        tintedImages[1].revision = 2;
+        std::get<sb::native_render::LitTintedLayeredSpecularMaterial>(tintedModel.material)
+            .detailTexture.revision = 2;
+        const SemanticFramePixels tintedBlue =
+            render(std::span<const ModelDraw>(&tintedModel, 1), tintedImages);
+        const Color tintedBluePixel = pixel(tintedBlue, 8, 8);
+        const bool tintedAnswer = tintedRedPixel.r > tintedBluePixel.r + 0.08F &&
+                                  tintedBluePixel.b > tintedRedPixel.b + 0.08F &&
+                                  near(tintedRedPixel.g, tintedBluePixel.g);
+        if (!tintedAnswer) {
+            std::cerr << "tinted layered control: red-detail=" << tintedRedPixel.r << ','
+                      << tintedRedPixel.g << ',' << tintedRedPixel.b
+                      << " blue-detail=" << tintedBluePixel.r << ',' << tintedBluePixel.g << ','
+                      << tintedBluePixel.b << '\n';
+        }
+        assert(tintedAnswer);
+        assert(hash(tintedRed) != hash(tintedBlue));
+
         // Affine texture control for the specular-material shader path. The baseline exercises
         // texture * diffuse colour; changing only the semantic tint must add red while preserving
         // green. This runs the shipping vertex upload and fragment shader, not a CPU copy.

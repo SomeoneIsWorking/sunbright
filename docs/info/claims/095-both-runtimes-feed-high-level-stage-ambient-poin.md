@@ -4,14 +4,14 @@ kind: claim
 status: holds
 created: 2026-08-31
 tags: renderer,j3d,lighting,recomp,decomp
-depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_color_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/j3d_layered_material.cpp#classify_j3d_layered_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
+depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_color_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/j3d_layered_material.cpp#classify_j3d_layered_material, native-render/src/j3d_tinted_layered_material.cpp#classify_j3d_tinted_layered_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
 reconfirmed: 2026-08-31
 verified_at: 2026-08-31 11:50:12+00:00
 ---
 
 ## Claim
 
-Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact texture-free or single-texture diffuse/specular, solid-colour mask, diffuse-plus-independent-alpha-mask, or weighted two-texture layered material values into the shared PC-native J3D renderer without consuming GX light state.
+Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact texture-free or single-texture diffuse/specular, solid-colour mask, diffuse-plus-independent-alpha-mask, weighted two-texture, or animated-tint two-texture material values into the shared PC-native J3D renderer without consuming GX light state.
 
 ## Evidence
 
@@ -77,3 +77,15 @@ the two-light context and verify the resulting red, green, and zero-blue highlig
 120-present recomp audit advanced all 50 instances from zero acceptance through image decode,
 perspective readiness, and native submission, raising total native models from 8,904 to 8,954. The
 run exited 0 under the live GPU watcher.
+
+## Re-confirmed 2026-08-31 — fogged/tinted two-texture Mario materials
+
+The exact reached program is reduced to two ordinary clamps over the base image, detail image,
+animated colour, signed two-light diffuse result, and directional highlight; source-alpha blending,
+depth writes, and linear fog remain explicit raster policy. Exact CPU controls reject altered stage
+bytes, the one-light channel, and a missing second light. The watched dedicated shader moved only
+the matching colour channel when its detail image changed from red to blue and reported no kernel
+GPU fault. A guarded 120-present recomp audit advanced four texture-pair variants through
+50/50 classification, two-image decode, perspective readiness, and native submission each: 200
+models total, contributing to 1,054 lit models among 9,154 native models. The native-layout adapter
+compiled through the same classifier; live decomp coverage remains blocked by issue 30.

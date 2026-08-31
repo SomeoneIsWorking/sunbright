@@ -27,8 +27,9 @@ dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetP
 now supply culling, depth test/write, alpha cutout, straight- and premultiplied-alpha blending,
 decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
-lighting, linear view-depth fog, solid-colour texture masks, and an independent second-UV alpha mask for the exact
-supported families. Broader J3D materials are next: the remaining lit and multi-stage programs,
+lighting, linear view-depth fog, solid-colour texture masks, independently sampled two-texture
+materials, and an independent second-UV alpha mask for the exact supported families. Broader J3D
+materials are next: the remaining lit and multi-stage programs,
 authored mip chains, particles, and effects still fall back to the retained renderer.
 
 ## Capability details
@@ -178,6 +179,21 @@ only the 3/8 contribution when its detail image changed from red to blue. In a g
 recomp audit, all 50 reached instances completed classification, both image decodes, perspective
 readiness, and native submission, raising native models from 8,800 to 8,850. Both runtime adapters
 compile through the shared classifier; issue 30 still prevents equivalent live decomp scene evidence.
+
+Mario's four reached fogged/tinted two-texture variants now bypass GX through a second, distinct
+layered PC material. The shared classifier reduces their exact high-level result to two ordinary
+clamps: animated colour plus 3/8 of the detail image plus 5/8 signed diffuse lighting, followed by
+the base image mixed equally with that layer and the authored directional highlight. Material
+alpha, source-alpha blending with depth writes, and linear view-depth fog remain explicit PC raster
+policy. The renderer-neutral contract carries two decoded images, two UV sets, the animated colour,
+two high-level point lights, and the directional highlight; no console selector or colour register
+identity reaches the dedicated shader. Exact CPU controls reject a changed program, wrong light
+mask, or missing second light. The watched GPU control changes only the detail image from red to
+blue and observes the corresponding output-channel change with no kernel GPU fault. In a guarded
+120-present recomp audit, all four texture-pair variants completed 50/50 classification, two-image
+decode, perspective readiness, and PC-native submission: 200 models total, contributing to 1,054
+lit models among 9,154 native models. The native-layout adapter compiles through the same shared
+classifier; issue 30 still prevents equivalent live decomp scene evidence.
 
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the

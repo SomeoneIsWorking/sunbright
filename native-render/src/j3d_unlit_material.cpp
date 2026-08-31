@@ -138,6 +138,10 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
                                        kInverseSourceAlpha, false)) {
             result.depthWrite = false;
             result.blend = ModelBlendMode::SourceAlpha;
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kSourceAlpha,
+                                       kInverseSourceAlpha, true)) {
+            // Ordinary source-alpha compositing that also records the fragment's depth.
+            result.blend = ModelBlendMode::SourceAlpha;
         } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kOne,
                                        kInverseSourceAlpha, false)) {
             result.depthWrite = false;
