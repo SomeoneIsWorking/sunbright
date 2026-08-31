@@ -80,3 +80,19 @@ The CPU classifier control checks the decoded RGB difference, additive K0 term, 
 while changed program bytes remain rejected. A guarded 60-present title audit advanced all 22
 instances through classification, image decode, scene readiness, and native submission, raising
 coverage from 1,478 to 1,500 models. It exited 0; the GPU watcher reported no kernel fault or reset.
+
+## Follow-up: additional constant-colour glow variants
+
+The next five exact one-stage forms were decoded and added without a new shader. `_mat_lens_fx_3`
+and `_mat_lens_fx_4` use `c018f28fc108e670`, which is a 2x K0-times-texture colour term with
+the existing sampled-alpha path. `_mat_lens_fx_5` uses `c008fecfc108e670`, equivalent to K0
+times one for colour with the same sampled-alpha path. `_mat_lens_fx_7` uses
+`c008fe8fc118e670`, the existing K0-times-texture colour term with a 2x alpha factor. The two
+P_glow2/P_glow1 forms `_mat_lens_fx_10` and `_mat_lens_fx_11` use K0 as a constant colour with
+sampled alpha at 1x and 2x respectively. The classifier matches every complete program byte
+sequence and expresses the results through the shared texture multiply-plus-add material.
+
+The CPU controls cover each added program and retain changed-byte negatives. A guarded 60-present
+title audit advanced all 132 instances through classification, resource readiness, and native
+submission, raising coverage from 1,500 to 1,632 models. It exited 0; the GPU watcher reported no
+kernel fault or reset. The remaining three-stage lens program is intentionally still rejected.

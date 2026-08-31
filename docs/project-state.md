@@ -300,6 +300,16 @@ program bytes. A guarded 60-present audit advanced all 22 instances through clas
 decode, scene readiness, and native submission, raising coverage from 1,478 to 1,500 models; it
 exited 0 with no kernel GPU fault or reset.
 
+The next 132 perspective-reached lens surfaces now use the same effect owner for five additional
+one-stage programs. `_mat_lens_fx_3` and `_mat_lens_fx_4` use a 2x authored-K0 texture colour
+term; `_mat_lens_fx_5` uses authored K0 as a constant colour; `_mat_lens_fx_7` uses the existing
+K0 texture term with a 2x alpha factor; and `_mat_lens_fx_10`/`_mat_lens_fx_11` use authored K0
+with sampled alpha at 1x/2x. Each form is matched by its complete program bytes and published as
+ordinary texture modulation/addition with the existing authored additive raster policy. A guarded
+60-present audit advanced all 132 instances through native submission, raising coverage from 1,500
+to 1,632 models; it exited 0 with no kernel GPU fault or reset. The distinct three-stage lens
+program remains rejected pending a separate semantic owner.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

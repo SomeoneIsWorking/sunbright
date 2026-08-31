@@ -87,6 +87,44 @@ int main() {
     assert(near(material.additive.b, 32.0F / 255.0F));
 
     state = material_state();
+    state.tevStages[0].program = {0xC0, 0x08, 0xFF, 0xFE, 0xC1, 0x08, 0xF0, 0xF0};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.r, 0.0F));
+    assert(near(material.modulation.g, 0.0F));
+    assert(near(material.modulation.b, 0.0F));
+    assert(near(material.modulation.a, 96.0F / 255.0F));
+    assert(near(material.additive.r, 128.0F / 255.0F));
+    assert(near(material.additive.g, 64.0F / 255.0F));
+    assert(near(material.additive.b, 32.0F / 255.0F));
+    state.tevStages[0].program = {0xC0, 0x08, 0xFF, 0xFE, 0xC1, 0x18, 0xF0, 0xF0};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.a, 192.0F / 255.0F));
+
+    state = material_state();
+    state.tevStages[0].program = {0xC0, 0x18, 0xF2, 0x8F, 0xC1, 0x08, 0xE6, 0x70};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.r, 256.0F / 255.0F));
+    assert(near(material.modulation.g, 128.0F / 255.0F));
+    assert(near(material.modulation.b, 64.0F / 255.0F));
+    assert(near(material.modulation.a, 96.0F / 255.0F));
+    assert(near(material.additive.r, 0.0F));
+
+    state = material_state();
+    state.tevStages[0].program = {0xC0, 0x08, 0xFE, 0xCF, 0xC1, 0x08, 0xE6, 0x70};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.r, 0.0F));
+    assert(near(material.modulation.a, 96.0F / 255.0F));
+    assert(near(material.additive.r, 128.0F / 255.0F));
+    state.tevStages[0].program = {0xC0, 0x08, 0xFE, 0x8F, 0xC1, 0x18, 0xE6, 0x70};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.a, 192.0F / 255.0F));
+
+    state = material_state();
     state.tevStages[0].program = {0xC0, 0x08, 0xF2, 0x8F, 0xC1, 0x38, 0xE6, 0x70};
     assert(classify_j3d_effect_material(state, texture, material) ==
            J3dEffectMaterialResult::Success);
