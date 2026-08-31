@@ -199,6 +199,18 @@ raising the run from 1,464 models/1,211,328 vertices to 1,656 models/1,407,168 v
 normally with no kernel GPU fault or reset. The largest remaining perspective rejection in that run
 was a separate 72-instance one-stage textured material family.
 
+That 72-instance family now reuses the existing PC-native texture-times-diffuse material with its
+independent source choices expressed correctly: RGB comes from diffuse-lit mesh vertex colour,
+while opacity comes from the authored material rather than mesh vertex alpha. The complete colour
+program, texture binding, normal, lighting, and raster policy retain their existing exact gates; a
+deliberately changed program is rejected, and the CPU control verifies that non-default material
+alpha is published while vertex alpha is disabled. Both layout-local adapters already consume this
+shared classifier. A guarded stage-two audit advanced all 72 observations through resource decode,
+scene readiness, and native submission, raising coverage from 1,656 models/1,407,168 vertices to
+1,728 models/1,422,936 vertices, including 1,392 lit models. The game exited normally with no kernel
+GPU fault or reset. The largest remaining perspective rejection is another 72-instance material
+whose distinct colour program remains fallback.
+
 The same textured diffuse/specular owner now preserves per-material light selection and coloured
 highlights. A reached orange character material uses only the primary point light for diffuse and
 multiplies the directional highlight by its authored orange secondary material colour; neither the

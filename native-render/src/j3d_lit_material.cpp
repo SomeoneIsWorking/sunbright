@@ -43,6 +43,10 @@ StandardDiffuseChannels standard_diffuse_channels(const J3dMaterialState& state)
         state.alphaChannelControl == kUnlitVertexAlpha) {
         return {.supported = true, .usesVertexRgb = true, .usesVertexAlpha = true};
     }
+    if (state.colorChannelControl == kDiffuseVertexColor &&
+        state.alphaChannelControl == kUnlitMaterialAlpha) {
+        return {.supported = true, .usesVertexRgb = true};
+    }
     return {};
 }
 

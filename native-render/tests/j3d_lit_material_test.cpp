@@ -122,6 +122,22 @@ int main() {
     assert(material.usesVertexRgb);
     assert(material.usesVertexAlpha);
 
+    // A reached material keeps diffuse-lit vertex RGB but sources opacity from the authored
+    // material. This is a distinct source combination, not a new lighting equation: the same
+    // texture-times-diffuse material must ignore vertex alpha and preserve material alpha.
+    state.alphaChannelControl = 0x0700;
+    state.materialColorRgba8 = 0x80402080;
+    assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
+           J3dLitTexturedResult::Success);
+    assert(material.usesVertexRgb);
+    assert(!material.usesVertexAlpha);
+    assert(near(material.baseColor.a, 128.0F / 255.0F));
+    state.tevStages[0].program[2] ^= 1U;
+    assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
+           J3dLitTexturedResult::UnsupportedColorProgram);
+    state.tevStages[0].program[2] ^= 1U;
+    state.materialColorRgba8 = 0x804020FF;
+
     state.hasNormal = false;
     assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
            J3dLitTexturedResult::MissingNormal);
