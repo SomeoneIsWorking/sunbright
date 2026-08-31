@@ -10,6 +10,7 @@
 #include "../runtime/sb_assert.h"
 
 #include <sunbright/native_render/j3d_alpha_masked_material.h>
+#include <sunbright/native_render/j3d_dual_alpha_effect_material.h>
 #include <sunbright/native_render/j3d_effect_material.h>
 #include <sunbright/native_render/j3d_layered_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
@@ -773,6 +774,12 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 ? sb::native_render::classify_j3d_effect_material(materialState, placeholder,
                                                                   effectMaterial)
                 : sb::native_render::J3dEffectMaterialResult::UnsupportedColorChannels;
+        sb::native_render::LitDualAlphaEffectMaterial dualAlphaEffectMaterial{};
+        const sb::native_render::J3dDualAlphaEffectMaterialResult dualAlphaEffectFamily =
+            lighting != nullptr
+                ? sb::native_render::classify_j3d_dual_alpha_effect_material(
+                      materialState, placeholder, placeholder, *lighting, dualAlphaEffectMaterial)
+                : sb::native_render::J3dDualAlphaEffectMaterialResult::MissingLightingContext;
         const bool isUnlitTextured =
             unlitFamily == sb::native_render::J3dUnlitTexturedResult::Success;
         sb::native_render::AlphaMaskedColorMaterial alphaMaskedMaterial{};
@@ -783,6 +790,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             alphaMaskedFamily == sb::native_render::J3dAlphaMaskedMaterialResult::Success;
         const bool isLitTextured = litFamily == sb::native_render::J3dLitTexturedResult::Success;
         const bool isEffect = effectFamily == sb::native_render::J3dEffectMaterialResult::Success;
+        const bool isDualAlphaEffect =
+            dualAlphaEffectFamily == sb::native_render::J3dDualAlphaEffectMaterialResult::Success;
         const bool effectShapeCandidate =
             materialState.lightingEnabled && materialState.colorChannelCount == 1 &&
             materialState.colorChannelControl == 0x0706 &&
@@ -838,9 +847,9 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 : sb::native_render::J3dSpecularTexturedResult::MissingLightingContext;
         const bool isSpecularTextured =
             specularFamily == sb::native_render::J3dSpecularTexturedResult::Success;
-        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isEffect && !isLitAlphaMask &&
-            !isLitAlphaTint && !isLayered && !isTintedLayered && !isMaskedToon &&
-            !isSpecularTextured) {
+        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isEffect &&
+            !isDualAlphaEffect && !isLitAlphaMask && !isLitAlphaTint && !isLayered &&
+            !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
@@ -872,7 +881,9 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             return;
         }
         const std::size_t textureCount =
-            isMaskedToon ? 4 : (isLitAlphaMask || isLayered || isTintedLayered ? 2 : 1);
+            isMaskedToon
+                ? 4
+                : (isDualAlphaEffect || isLitAlphaMask || isLayered || isTintedLayered ? 2 : 1);
         for (std::size_t index = 1; index < textureCount; ++index) {
             if (!sb::recomp::capture_guest_j3d_texture(
                     sb::recomp::live_guest_byte_reader(), textureTable,
@@ -884,7 +895,18 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 return;
             }
         }
-        if (isAlphaMasked) {
+        if (isDualAlphaEffect) {
+            const sb::native_render::J3dDualAlphaEffectMaterialResult classified =
+                sb::native_render::classify_j3d_dual_alpha_effect_material(
+                    materialState, g_textures[0].texture, g_textures[1].texture, *lighting,
+                    dualAlphaEffectMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dDualAlphaEffectMaterialResult::Success,
+                      "decoded J3D textures invalidated a preclassified dual-alpha effect: "
+                      "result=%s",
+                      sb::native_render::j3d_dual_alpha_effect_material_result_name(classified));
+            semanticMaterial = dualAlphaEffectMaterial;
+            submittedLitMaterial = true;
+        } else if (isAlphaMasked) {
             const sb::native_render::J3dAlphaMaskedMaterialResult classified =
                 sb::native_render::classify_j3d_alpha_masked_material(
                     materialState, g_textures[0].texture, alphaMaskedMaterial);

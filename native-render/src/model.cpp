@@ -227,7 +227,7 @@ bool valid(const MeshResourceView& mesh) noexcept {
 bool valid(const ModelRasterPolicy& raster) noexcept {
     return raster.cull <= ModelCullMode::All && raster.depthCompare <= ModelDepthCompare::Always &&
            raster.alphaTest <= ModelAlphaTest::GreaterThan64 &&
-           raster.blend <= ModelBlendMode::Additive;
+           raster.blend <= ModelBlendMode::SourceAlphaSourceColor;
 }
 
 bool valid(const ModelFog& fog) noexcept {
@@ -246,7 +246,8 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
     return std::visit(
         [](const auto& value) -> std::uint8_t {
             using Material = std::remove_cvref_t<decltype(value)>;
-            if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial> ||
+            if constexpr (std::is_same_v<Material, LitDualAlphaEffectMaterial> ||
+                          std::is_same_v<Material, LitTexturedAlphaMaskMaterial> ||
                           std::is_same_v<Material, LitLayeredTexturedMaterial> ||
                           std::is_same_v<Material, LitTintedLayeredSpecularMaterial>)
                 return 2;
@@ -269,7 +270,11 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
     return std::visit(
         [index](const auto& value) -> const PictureTexture* {
             using Material = std::remove_cvref_t<decltype(value)>;
-            if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>) {
+            if constexpr (std::is_same_v<Material, LitDualAlphaEffectMaterial>) {
+                if (index == 0)
+                    return &value.firstTexture;
+                return index == 1 ? &value.secondTexture : nullptr;
+            } else if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>) {
                 if (index == 0)
                     return &value.colorTexture;
                 return index == 1 ? &value.alphaMaskTexture : nullptr;
@@ -331,6 +336,12 @@ bool valid(const ModelDraw& draw) noexcept {
                        valid(material.additive) &&
                        material.textureCoordinates <= ModelTextureCoordinates::Secondary &&
                        material.alphaMode <= ModelTextureAlphaMode::ReplaceTexture;
+            } else if constexpr (std::is_same_v<Material, LitDualAlphaEffectMaterial>) {
+                return material.firstTexture.resource != 0 && material.firstTexture.width != 0 &&
+                       material.firstTexture.height != 0 && material.secondTexture.resource != 0 &&
+                       material.secondTexture.width != 0 && material.secondTexture.height != 0 &&
+                       valid(material.baseColor) && valid(material.ambientColor) &&
+                       valid(material.additiveColor) && valid(material.lighting);
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.color) &&
@@ -489,6 +500,14 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
             } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
                 return VertexColors{.multiplicative = material.modulation,
                                     .additive = material.additive};
+            } else if constexpr (std::is_same_v<Material, LitDualAlphaEffectMaterial>) {
+                const Color lit = diffuse_lighting(material.baseColor, material.ambientColor,
+                                                   material.lighting, eyePosition, normal);
+                return VertexColors{
+                    .multiplicative = {2.0F * lit.r, 2.0F * lit.g, 2.0F * lit.b,
+                                       material.baseColor.a},
+                    .additive = material.additiveColor,
+                };
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
                 return VertexColors{
                     .multiplicative = {0.0F, 0.0F, 0.0F, material.alphaScale},

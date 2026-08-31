@@ -1,6 +1,7 @@
 #include "native_j3d_material_adapter.h"
 
 #include <sunbright/native_render/j3d_alpha_masked_material.h>
+#include <sunbright/native_render/j3d_dual_alpha_effect_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_tint_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
 #include <sunbright/native_render/j3d_tinted_layered_material.h>
@@ -301,6 +302,12 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         native_render::classify_j3d_lit_alpha_mask_material(state, placeholder, placeholder,
                                                             *lighting, litAlphaMaskMaterial) ==
             native_render::J3dLitAlphaMaskResult::Success;
+    native_render::LitDualAlphaEffectMaterial dualAlphaEffectMaterial{};
+    const bool isDualAlphaEffect =
+        lighting != nullptr &&
+        native_render::classify_j3d_dual_alpha_effect_material(
+            state, placeholder, placeholder, *lighting, dualAlphaEffectMaterial) ==
+            native_render::J3dDualAlphaEffectMaterialResult::Success;
     native_render::LitAlphaTintMaterial litAlphaTintMaterial{};
     const bool isLitAlphaTint =
         lighting != nullptr && native_render::classify_j3d_lit_alpha_tint_material(
@@ -329,7 +336,8 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
                                    state, placeholder, *lighting, specularMaterial) ==
                                    native_render::J3dSpecularTexturedResult::Success;
     if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask &&
-        !isLitAlphaTint && !isLayered && !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
+        !isDualAlphaEffect && !isLitAlphaTint && !isLayered && !isTintedLayered && !isMaskedToon &&
+        !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
     if (textureTable == nullptr)
@@ -344,7 +352,9 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         return firstTexture;
     result.textureCount = 1;
     const std::size_t textureCount =
-        isMaskedToon ? 4 : (isLitAlphaMask || isLayered || isTintedLayered ? 2 : 1);
+        isMaskedToon
+            ? 4
+            : (isDualAlphaEffect || isLitAlphaMask || isLayered || isTintedLayered ? 2 : 1);
     for (std::size_t index = 1; index < textureCount; ++index) {
         const NativeJ3dMaterialResult texture =
             decode_texture(*textureTable, state.textureBindings[index].textureNumber,
@@ -353,7 +363,15 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
             return texture;
     }
     result.textureCount = static_cast<std::uint8_t>(textureCount);
-    if (isAlphaMasked) {
+    if (isDualAlphaEffect) {
+        if (native_render::classify_j3d_dual_alpha_effect_material(
+                state, result.textures[0].texture, result.textures[1].texture, *lighting,
+                dualAlphaEffectMaterial) !=
+            native_render::J3dDualAlphaEffectMaterialResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = dualAlphaEffectMaterial;
+    } else if (isAlphaMasked) {
         if (native_render::classify_j3d_alpha_masked_material(state, result.textures[0].texture,
                                                               alphaMaskedMaterial) !=
             native_render::J3dAlphaMaskedMaterialResult::Success) {

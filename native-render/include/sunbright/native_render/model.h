@@ -80,6 +80,7 @@ enum class ModelBlendMode : std::uint8_t {
     SourceAlpha,
     PremultipliedAlpha,
     Additive,
+    SourceAlphaSourceColor,
 };
 enum class ModelTextureCoordinates : std::uint8_t { Primary, Secondary };
 enum class ModelTextureAlphaMode : std::uint8_t { MultiplyTexture, ReplaceTexture };
@@ -172,6 +173,20 @@ struct ModelLightingContext {
     Color ambientColor{};
     DirectionalSpecularLight specular{};
     bool operator==(const ModelLightingContext&) const = default;
+};
+
+// Two decoded textures contribute alpha while the primary-light colour is combined with an
+// authored constant/register product. The stage program has already been reduced to ordinary
+// diffuse scale, additive colour, and alpha inputs; no console stage or register identity crosses
+// this boundary.
+struct LitDualAlphaEffectMaterial {
+    PictureTexture firstTexture{};
+    PictureTexture secondTexture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{};
+    Color additiveColor{};
+    ModelLightingContext lighting{};
+    ModelRasterPolicy raster{};
 };
 
 // Apply an authored high-level material tint to the directional highlight. Both material
@@ -305,10 +320,10 @@ struct LitSpecularTexturedMaterial {
 
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, TexturedEffectMaterial,
-                 AlphaMaskedColorMaterial, LitColorMaterial, LitTexturedMaterial,
-                 LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial, LitLayeredTexturedMaterial,
-                 LitTintedLayeredSpecularMaterial, LitMaskedToonMaterial, LitSpecularColorMaterial,
-                 LitSpecularTexturedMaterial>;
+                 LitDualAlphaEffectMaterial, AlphaMaskedColorMaterial, LitColorMaterial,
+                 LitTexturedMaterial, LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial,
+                 LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
+                 LitMaskedToonMaterial, LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 

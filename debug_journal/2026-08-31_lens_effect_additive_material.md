@@ -96,3 +96,21 @@ The CPU controls cover each added program and retain changed-byte negatives. A g
 title audit advanced all 132 instances through classification, resource readiness, and native
 submission, raising coverage from 1,500 to 1,632 models. It exited 0; the GPU watcher reported no
 kernel fault or reset. The remaining three-stage lens program is intentionally still rejected.
+
+## Follow-up: dual-alpha three-stage lens family
+
+The remaining 22 perspective-reached lens surfaces use two texture maps and this exact three-stage
+program: `c008fff2c108ffc0`, `c218f40ac310f050`, `c400fff0c500f470`. Stage 0 seeds colour from
+the primary-light raster and alpha from texture 0; stage 1 multiplies that alpha by texture 1 and
+adds the raster alpha, while its colour doubles the previous colour times the primary-light
+contribution and adds the authored register product; stage 2 preserves colour and multiplies alpha
+by the raster alpha. The semantic equation is therefore
+`rgb = clamp(2 * diffuseLighting + 2 * C0 * C1, 0, 1)` and
+`alpha = 2 * rasterAlpha * (texture0Alpha * texture1Alpha + rasterAlpha)` before final clamping.
+
+The existing one-texture effect material could not represent two independent alpha images plus
+lighting, so this family has a dedicated `LitDualAlphaEffectMaterial`, shader, classifier, and
+both-runtime adapters. The renderer carries only decoded images, ordinary lighting, additive
+colour, and the authored source-alpha/source-colour blend policy. Its CPU control rejects a changed
+stage byte; the watched 60-present audit accepted all 22 instances, raising native semantic model
+coverage from 1,632 to 1,654. It exited 0 and the GPU watcher reported no kernel fault or reset.

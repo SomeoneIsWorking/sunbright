@@ -310,6 +310,17 @@ ordinary texture modulation/addition with the existing authored additive raster 
 to 1,632 models; it exited 0 with no kernel GPU fault or reset. The distinct three-stage lens
 program remains rejected pending a separate semantic owner.
 
+The remaining 22 perspective-reached lens surfaces use that dedicated semantic owner now. Their
+three-stage program is `c008fff2c108ffc0`, `c218f40ac310f050`, and `c400fff0c500f470`: two decoded
+textures contribute alpha from independent UV sets, the primary-light diffuse result contributes
+the colour term, and the authored TEV colours contribute an additive `2 * C0 * C1` RGB term. The
+renderer-neutral material carries those two images, ordinary lighting, resolved additive colour,
+and the exact source-alpha/source-colour blend policy; no GX stages or register selectors cross the
+boundary. A guarded 60-present audit advanced all 22 instances through classification, image
+decode, scene readiness, and native submission, raising coverage from 1,632 to 1,654 models and
+lit models from 748 to 770; it exited 0 with no kernel GPU fault or reset. The prior three-stage
+rejection is gone; other unrelated lit programs remain explicit fallbacks.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

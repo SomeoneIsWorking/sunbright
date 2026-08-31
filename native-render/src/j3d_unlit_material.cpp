@@ -124,6 +124,7 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
         constexpr std::uint8_t kZero = 0;
         constexpr std::uint8_t kOne = 1;
         constexpr std::uint8_t kSourceAlpha = 4;
+        constexpr std::uint8_t kSourceColor = 2;
         constexpr std::uint8_t kInverseSourceAlpha = 5;
         if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlendNone, kOne, kZero, true)) {
             // Exact expanded form of J3DPEBlockOpa.
@@ -161,6 +162,12 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
             result.depthTest = false;
             result.depthWrite = false;
             result.blend = ModelBlendMode::Additive;
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kSourceAlpha,
+                                       kSourceColor, false, true)) {
+            // A small lens family uses the GX source-colour destination factor. Keep that
+            // factor explicit so the semantic pipeline does not collapse it into ordinary
+            // source-alpha compositing.
+            result.blend = ModelBlendMode::SourceAlphaSourceColor;
         } else {
             return J3dRasterPolicyResult::UnsupportedPixelEngineBlock;
         }

@@ -82,6 +82,12 @@ SHADERS = (
         "native-render/shaders/model_texture_constant_alpha_frag_spv.h",
     ),
     Shader(
+        "native-render/shaders/model_dual_alpha_effect.frag.glsl",
+        "frag",
+        "kModelDualAlphaEffectFragSpv",
+        "native-render/shaders/model_dual_alpha_effect_frag_spv.h",
+    ),
+    Shader(
         "native-render/shaders/model_lit_alpha_mask.frag.glsl",
         "frag",
         "kModelLitAlphaMaskFragSpv",

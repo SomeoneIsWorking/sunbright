@@ -1,6 +1,7 @@
 #include <sunbright/native_render/semantic_3d_pass.h>
 
 #include "../shaders/model_color_frag_spv.h"
+#include "../shaders/model_dual_alpha_effect_frag_spv.h"
 #include "../shaders/model_layered_lit_frag_spv.h"
 #include "../shaders/model_lit_alpha_mask_frag_spv.h"
 #include "../shaders/model_lit_alpha_tint_frag_spv.h"
@@ -38,6 +39,7 @@ enum class ModelShaderKind : std::uint8_t {
     Color,
     Texture,
     TextureConstantAlpha,
+    DualAlphaEffect,
     LitAlphaMask,
     LitAlphaTint,
     LayeredLit,
@@ -186,6 +188,7 @@ struct Semantic3dPassImpl {
     SDL_GPUShader* colorFragmentShader = nullptr;
     SDL_GPUShader* textureFragmentShader = nullptr;
     SDL_GPUShader* textureConstantAlphaFragmentShader = nullptr;
+    SDL_GPUShader* dualAlphaEffectFragmentShader = nullptr;
     SDL_GPUShader* litAlphaMaskFragmentShader = nullptr;
     SDL_GPUShader* litAlphaTintFragmentShader = nullptr;
     SDL_GPUShader* layeredLitFragmentShader = nullptr;
@@ -272,6 +275,9 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
     case ModelShaderKind::TextureConstantAlpha:
         info.fragment_shader = impl.textureConstantAlphaFragmentShader;
         break;
+    case ModelShaderKind::DualAlphaEffect:
+        info.fragment_shader = impl.dualAlphaEffectFragmentShader;
+        break;
     case ModelShaderKind::LitAlphaMask:
         info.fragment_shader = impl.litAlphaMaskFragmentShader;
         break;
@@ -310,12 +316,15 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
         colorTarget.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
         colorTarget.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
         const bool sourceAlpha = key.raster.blend == ModelBlendMode::SourceAlpha ||
-                                 key.raster.blend == ModelBlendMode::Additive;
+                                 key.raster.blend == ModelBlendMode::Additive ||
+                                 key.raster.blend == ModelBlendMode::SourceAlphaSourceColor;
         const SDL_GPUBlendFactor source =
             sourceAlpha ? SDL_GPU_BLENDFACTOR_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
-        const SDL_GPUBlendFactor destination = key.raster.blend == ModelBlendMode::Additive
-                                                   ? SDL_GPU_BLENDFACTOR_ONE
-                                                   : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        const SDL_GPUBlendFactor destination =
+            key.raster.blend == ModelBlendMode::Additive ? SDL_GPU_BLENDFACTOR_ONE
+            : key.raster.blend == ModelBlendMode::SourceAlphaSourceColor
+                ? SDL_GPU_BLENDFACTOR_SRC_COLOR
+                : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         colorTarget.blend_state.src_color_blendfactor = source;
         colorTarget.blend_state.dst_color_blendfactor = destination;
         colorTarget.blend_state.src_alpha_blendfactor = source;
@@ -349,6 +358,8 @@ Semantic3dPass::~Semantic3dPass() {
             SDL_ReleaseGPUShader(impl_->device, impl_->textureFragmentShader);
         if (impl_->textureConstantAlphaFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->textureConstantAlphaFragmentShader);
+        if (impl_->dualAlphaEffectFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->dualAlphaEffectFragmentShader);
         if (impl_->litAlphaMaskFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->litAlphaMaskFragmentShader);
         if (impl_->layeredLitFragmentShader != nullptr)
@@ -374,6 +385,7 @@ bool Semantic3dPass::initialize(std::string& error) {
     if (impl_->vertexShader != nullptr && impl_->colorFragmentShader != nullptr &&
         impl_->textureFragmentShader != nullptr &&
         impl_->textureConstantAlphaFragmentShader != nullptr &&
+        impl_->dualAlphaEffectFragmentShader != nullptr &&
         impl_->litAlphaMaskFragmentShader != nullptr &&
         impl_->litAlphaTintFragmentShader != nullptr &&
         impl_->layeredLitFragmentShader != nullptr &&
@@ -390,6 +402,9 @@ bool Semantic3dPass::initialize(std::string& error) {
     impl_->textureConstantAlphaFragmentShader =
         make_shader(impl_->device, kModelTextureConstantAlphaFragSpv,
                     sizeof(kModelTextureConstantAlphaFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+    impl_->dualAlphaEffectFragmentShader =
+        make_shader(impl_->device, kModelDualAlphaEffectFragSpv,
+                    sizeof(kModelDualAlphaEffectFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     impl_->litAlphaMaskFragmentShader =
         make_shader(impl_->device, kModelLitAlphaMaskFragSpv, sizeof(kModelLitAlphaMaskFragSpv),
                     SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
@@ -408,6 +423,7 @@ bool Semantic3dPass::initialize(std::string& error) {
     if (impl_->vertexShader == nullptr || impl_->colorFragmentShader == nullptr ||
         impl_->textureFragmentShader == nullptr ||
         impl_->textureConstantAlphaFragmentShader == nullptr ||
+        impl_->dualAlphaEffectFragmentShader == nullptr ||
         impl_->litAlphaMaskFragmentShader == nullptr ||
         impl_->litAlphaTintFragmentShader == nullptr ||
         impl_->layeredLitFragmentShader == nullptr ||
@@ -483,6 +499,8 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
         }
         if (std::holds_alternative<LitTexturedAlphaMaskMaterial>(draw.material))
             batch.shader = ModelShaderKind::LitAlphaMask;
+        else if (std::holds_alternative<LitDualAlphaEffectMaterial>(draw.material))
+            batch.shader = ModelShaderKind::DualAlphaEffect;
         else if (std::holds_alternative<LitAlphaTintMaterial>(draw.material))
             batch.shader = ModelShaderKind::LitAlphaTint;
         else if (std::holds_alternative<LitLayeredTexturedMaterial>(draw.material))
