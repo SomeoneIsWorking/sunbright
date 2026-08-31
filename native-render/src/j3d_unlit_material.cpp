@@ -162,12 +162,13 @@ J3dUnlitMaterialFeatures inspect_j3d_unlit_material(const J3dMaterialState& stat
         .supportedColorBlock = state.supportedColorBlock,
         .lightingEnabled = state.lightingEnabled,
         .hasColorChannel = state.colorChannelCount != 0,
-        .textureBound = state.textureNumber0 != 0xFFFFU || state.textureCoordinate0 != 0xFFU ||
-                        state.textureMap0 != 0xFFU,
+        .textureBound = state.textureBindings[0].textureNumber != 0xFFFFU ||
+                        state.tevStages[0].textureCoordinate != 0xFFU ||
+                        state.tevStages[0].textureMap != 0xFFU,
         .supportedTevBlock = state.supportedTevBlock,
         .singleTevStage = state.tevStageCount == 1,
-        .rasterColorPassThrough =
-            state.colorChannel0 == kColor0Alpha0 && state.tevStage0 == kRasterColorPassThrough,
+        .rasterColorPassThrough = state.tevStages[0].colorChannel == kColor0Alpha0 &&
+                                  state.tevStages[0].program == kRasterColorPassThrough,
         .requiredVertexColorPresent = !vertexColor || state.hasVertexColor,
     };
 }
@@ -218,14 +219,15 @@ classify_j3d_unlit_textured_material(const J3dMaterialState& state, const Pictur
         return J3dUnlitTexturedResult::MultipleTevStages;
     if (state.textureCoordinateCount == 0)
         return J3dUnlitTexturedResult::MissingTextureCoordinate;
-    const std::uint16_t textureNumber = j3d_texture_number_for_map(state, state.textureMap0);
-    if (textureNumber == 0xFFFFU || state.textureCoordinate0 > 1 ||
-        state.textureCoordinate0 >= state.textureCoordinateCount ||
-        state.colorChannel0 != kColor0Alpha0 || texture.resource == 0 || texture.width == 0 ||
-        texture.height == 0) {
+    const std::uint16_t textureNumber =
+        j3d_texture_number_for_map(state, state.tevStages[0].textureMap);
+    if (textureNumber == 0xFFFFU || state.tevStages[0].textureCoordinate > 1 ||
+        state.tevStages[0].textureCoordinate >= state.textureCoordinateCount ||
+        state.tevStages[0].colorChannel != kColor0Alpha0 || texture.resource == 0 ||
+        texture.width == 0 || texture.height == 0) {
         return J3dUnlitTexturedResult::UnsupportedTextureBinding;
     }
-    if (state.tevStage0 != kTextureTimesRaster)
+    if (state.tevStages[0].program != kTextureTimesRaster)
         return J3dUnlitTexturedResult::UnsupportedColorProgram;
     ModelRasterPolicy raster{};
     if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
@@ -234,7 +236,8 @@ classify_j3d_unlit_textured_material(const J3dMaterialState& state, const Pictur
     if (vertexColor && !state.hasVertexColor)
         return J3dUnlitTexturedResult::MissingVertexColor;
     material.texture = texture;
-    material.textureCoordinates = static_cast<ModelTextureCoordinates>(state.textureCoordinate0);
+    material.textureCoordinates =
+        static_cast<ModelTextureCoordinates>(state.tevStages[0].textureCoordinate);
     material.usesVertexColor = vertexColor;
     material.raster = raster;
     return J3dUnlitTexturedResult::Success;

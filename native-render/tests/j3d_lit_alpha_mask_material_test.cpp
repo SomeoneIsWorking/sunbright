@@ -25,16 +25,9 @@ sb::native_render::J3dMaterialState material_state() {
         .tevBlockType = 0x54564232U,
         .supportedTevBlock = true,
         .tevStageCount = 2,
-        .textureNumber0 = 3,
-        .textureCoordinate0 = 0,
-        .textureMap0 = 0,
-        .colorChannel0 = 4,
-        .tevStage0 = {0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xFF, 0xC0},
-        .textureNumber1 = 4,
-        .textureCoordinate1 = 1,
-        .textureMap1 = 1,
-        .colorChannel1 = 0xFF,
-        .tevStage1 = {0xC2, 0x08, 0xFF, 0xF0, 0xC3, 0x28, 0xF0, 0xF0},
+        .textureBindings = {j3d_texture_binding(3), j3d_texture_binding(4)},
+        .tevStages = {j3d_tev_stage(0, 0, 4, {0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xFF, 0xC0}),
+                      j3d_tev_stage(1, 1, 0xFF, {0xC2, 0x08, 0xFF, 0xF0, 0xC3, 0x28, 0xF0, 0xF0})},
         .hasTevColor0 = true,
         .tevColor0S10 = {0, 0, 0, 255},
         .pixelEngineBlockType = 0x5045464CU,
@@ -93,7 +86,7 @@ int main() {
     assert(near(transformed.color.b, (0x20 / 255.0F) * (0x30 / 255.0F)));
     assert(near(transformed.color.a, 4.0F));
 
-    state.tevStage1[5] ^= 0x10;
+    state.tevStages[1].program[5] ^= 0x10;
     assert(classify_j3d_lit_alpha_mask_material(state, colorTexture, alphaMaskTexture, lighting,
                                                 material) ==
            J3dLitAlphaMaskResult::UnsupportedColorProgram);
@@ -103,7 +96,7 @@ int main() {
                                                 material) ==
            J3dLitAlphaMaskResult::UnsupportedRegisterColor);
     state = material_state();
-    state.textureCoordinate1 = 0;
+    state.tevStages[1].textureCoordinate = 0;
     assert(classify_j3d_lit_alpha_mask_material(state, colorTexture, alphaMaskTexture, lighting,
                                                 material) ==
            J3dLitAlphaMaskResult::UnsupportedTextureBindings);

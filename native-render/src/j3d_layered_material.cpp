@@ -77,15 +77,18 @@ classify_j3d_layered_material(const J3dMaterialState& state, const PictureTextur
         return J3dLayeredMaterialResult::UnsupportedStageCount;
     if (state.textureCoordinateCount < 2)
         return J3dLayeredMaterialResult::MissingTextureCoordinates;
-    if (state.textureNumber0 == 0xFFFFU || state.textureNumber1 == 0xFFFFU ||
-        state.textureCoordinate0 != 1 || state.textureMap0 != 1 ||
-        state.colorChannel0 != kColor0Alpha0 || state.textureCoordinate1 != 0 ||
-        state.textureMap1 != 0 || state.colorChannel1 != kColorNull ||
-        !valid_texture(baseTexture) || !valid_texture(detailTexture)) {
+    if (state.textureBindings[0].textureNumber == 0xFFFFU ||
+        state.textureBindings[1].textureNumber == 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != 1 || state.tevStages[0].textureMap != 1 ||
+        state.tevStages[0].colorChannel != kColor0Alpha0 ||
+        state.tevStages[1].textureCoordinate != 0 || state.tevStages[1].textureMap != 0 ||
+        state.tevStages[1].colorChannel != kColorNull || !valid_texture(baseTexture) ||
+        !valid_texture(detailTexture)) {
         return J3dLayeredMaterialResult::UnsupportedTextureBindings;
     }
-    if (state.tevStage0 != kBlendDetailAndLitColor || state.tevStage1 != kMultiplyBaseTexture ||
-        state.konstColorSelection0 != kFiveEighths) {
+    if (state.tevStages[0].program != kBlendDetailAndLitColor ||
+        state.tevStages[1].program != kMultiplyBaseTexture ||
+        state.tevStages[0].konstColorSelection != kFiveEighths) {
         return J3dLayeredMaterialResult::UnsupportedColorProgram;
     }
     if (!state.hasNormal)

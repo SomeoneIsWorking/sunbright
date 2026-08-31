@@ -88,16 +88,22 @@ classify_j3d_specular_color_material(const J3dMaterialState& state,
         return J3dSpecularColorResult::UnsupportedTevBlock;
     if (state.tevStageCount != 2)
         return J3dSpecularColorResult::UnsupportedStageCount;
-    if (state.textureNumber0 != 0xFFFFU || state.textureNumber1 != 0xFFFFU ||
-        state.textureCoordinate0 != kNoTexture || state.textureMap0 != kNoTexture ||
-        state.colorChannel0 != kColor0Alpha0 || state.textureCoordinate1 != kNoTexture ||
-        state.textureMap1 != kNoTexture || state.colorChannel1 != kColor1Alpha1) {
+    if (state.textureBindings[0].textureNumber != 0xFFFFU ||
+        state.textureBindings[1].textureNumber != 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != kNoTexture ||
+        state.tevStages[0].textureMap != kNoTexture ||
+        state.tevStages[0].colorChannel != kColor0Alpha0 ||
+        state.tevStages[1].textureCoordinate != kNoTexture ||
+        state.tevStages[1].textureMap != kNoTexture ||
+        state.tevStages[1].colorChannel != kColor1Alpha1) {
         return J3dSpecularColorResult::UnsupportedTextureBindings;
     }
-    if (state.tevStage0 != kHalfVertexDiffuseStage ||
-        state.tevStage1 != kTintDiffuseSpecularStage || state.konstColorSelection0 != kHalf ||
-        state.konstColorSelection1 != kKonstColor0 || state.konstAlphaSelection0 != kKonstAlpha0 ||
-        state.konstAlphaSelection1 != kKonstAlpha0) {
+    if (state.tevStages[0].program != kHalfVertexDiffuseStage ||
+        state.tevStages[1].program != kTintDiffuseSpecularStage ||
+        state.tevStages[0].konstColorSelection != kHalf ||
+        state.tevStages[1].konstColorSelection != kKonstColor0 ||
+        state.tevStages[0].konstAlphaSelection != kKonstAlpha0 ||
+        state.tevStages[1].konstAlphaSelection != kKonstAlpha0) {
         return J3dSpecularColorResult::UnsupportedColorProgram;
     }
     if (!state.hasNormal)
@@ -178,23 +184,26 @@ J3dSpecularTexturedResult classify_j3d_specular_textured_material(
         return J3dSpecularTexturedResult::UnsupportedStageCount;
     if (state.textureCoordinateCount == 0)
         return J3dSpecularTexturedResult::MissingTextureCoordinate;
-    if (state.textureNumber0 == 0xFFFFU || state.textureNumber1 != 0xFFFFU ||
-        state.textureCoordinate0 != 0 || state.textureMap0 != 0 ||
+    if (state.textureBindings[0].textureNumber == 0xFFFFU ||
+        state.textureBindings[1].textureNumber != 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != 0 || state.tevStages[0].textureMap != 0 ||
         (tintedProgram &&
-         (state.colorChannel0 != kColor0Alpha0 || state.textureCoordinate1 != 0xFFU ||
-          state.textureMap1 != 0xFFU || state.colorChannel1 != kColor1Alpha1)) ||
+         (state.tevStages[0].colorChannel != kColor0Alpha0 ||
+          state.tevStages[1].textureCoordinate != 0xFFU || state.tevStages[1].textureMap != 0xFFU ||
+          state.tevStages[1].colorChannel != kColor1Alpha1)) ||
         (tripleSpecularProgram &&
-         (state.colorChannel0 != kColor1Alpha1 || state.textureCoordinate1 != 0 ||
-          state.textureMap1 != 0 || state.colorChannel1 != kColor0Alpha0)) ||
+         (state.tevStages[0].colorChannel != kColor1Alpha1 ||
+          state.tevStages[1].textureCoordinate != 0 || state.tevStages[1].textureMap != 0 ||
+          state.tevStages[1].colorChannel != kColor0Alpha0)) ||
         texture.resource == 0 || texture.width == 0 || texture.height == 0) {
         return J3dSpecularTexturedResult::UnsupportedTextureBinding;
     }
-    if ((tintedProgram &&
-         (state.tevStage0 != kTintedTextureDiffuseStage || state.tevStage1 != kTintSpecularStage ||
-          state.konstColorSelection0 != kKonstColor0 ||
-          state.konstColorSelection1 != kKonstColor0)) ||
-        (tripleSpecularProgram &&
-         (state.tevStage0 != kTripleSpecularStage || state.tevStage1 != kTextureDiffuseAddStage))) {
+    if ((tintedProgram && (state.tevStages[0].program != kTintedTextureDiffuseStage ||
+                           state.tevStages[1].program != kTintSpecularStage ||
+                           state.tevStages[0].konstColorSelection != kKonstColor0 ||
+                           state.tevStages[1].konstColorSelection != kKonstColor0)) ||
+        (tripleSpecularProgram && (state.tevStages[0].program != kTripleSpecularStage ||
+                                   state.tevStages[1].program != kTextureDiffuseAddStage))) {
         return J3dSpecularTexturedResult::UnsupportedColorProgram;
     }
     if (!state.hasNormal)

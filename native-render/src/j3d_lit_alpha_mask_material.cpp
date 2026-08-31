@@ -70,15 +70,17 @@ J3dLitAlphaMaskResult classify_j3d_lit_alpha_mask_material(
         return J3dLitAlphaMaskResult::UnsupportedStageCount;
     if (state.textureCoordinateCount < 2)
         return J3dLitAlphaMaskResult::MissingTextureCoordinates;
-    if (state.textureNumber0 == 0xFFFFU || state.textureNumber1 == 0xFFFFU ||
-        state.textureCoordinate0 != 0 || state.textureMap0 != 0 ||
-        state.colorChannel0 != kColor0Alpha0 || state.textureCoordinate1 != 1 ||
-        state.textureMap1 != 1 || state.colorChannel1 != kColorNull ||
-        !valid_texture(colorTexture) || !valid_texture(alphaMaskTexture)) {
+    if (state.textureBindings[0].textureNumber == 0xFFFFU ||
+        state.textureBindings[1].textureNumber == 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != 0 || state.tevStages[0].textureMap != 0 ||
+        state.tevStages[0].colorChannel != kColor0Alpha0 ||
+        state.tevStages[1].textureCoordinate != 1 || state.tevStages[1].textureMap != 1 ||
+        state.tevStages[1].colorChannel != kColorNull || !valid_texture(colorTexture) ||
+        !valid_texture(alphaMaskTexture)) {
         return J3dLitAlphaMaskResult::UnsupportedTextureBindings;
     }
-    if (state.tevStage0 != kTextureTimesLitColor ||
-        state.tevStage1 != kKeepRgbApplyScaledMaskAlpha) {
+    if (state.tevStages[0].program != kTextureTimesLitColor ||
+        state.tevStages[1].program != kKeepRgbApplyScaledMaskAlpha) {
         return J3dLitAlphaMaskResult::UnsupportedColorProgram;
     }
     if (!state.hasTevColor0 || state.tevColor0S10 != kBlackOpaqueRegister)

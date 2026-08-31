@@ -25,17 +25,10 @@ sb::native_render::J3dMaterialState material_state() {
         .tevBlockType = 0x54564232U,
         .supportedTevBlock = true,
         .tevStageCount = 2,
-        .textureNumber0 = 1,
-        .textureCoordinate0 = 1,
-        .textureMap0 = 1,
-        .colorChannel0 = 4,
-        .tevStage0 = {0xC0, 0x08, 0x8A, 0xEF, 0xC1, 0x08, 0xFF, 0xD0},
-        .textureNumber1 = 2,
-        .textureCoordinate1 = 0,
-        .textureMap1 = 0,
-        .colorChannel1 = 0xFF,
-        .tevStage1 = {0xC2, 0x08, 0xF0, 0x8F, 0xC3, 0x08, 0xF0, 0x70},
-        .konstColorSelection0 = 0x03,
+        .textureBindings = {j3d_texture_binding(1), j3d_texture_binding(2)},
+        .tevStages = {j3d_tev_stage(1, 1, 4, {0xC0, 0x08, 0x8A, 0xEF, 0xC1, 0x08, 0xFF, 0xD0},
+                                    0x03),
+                      j3d_tev_stage(0, 0, 0xFF, {0xC2, 0x08, 0xF0, 0x8F, 0xC3, 0x08, 0xF0, 0x70})},
         .pixelEngineBlockType = 0x5045464CU,
         .hasExplicitPixelPolicy = true,
         .alphaCompare0 = 6,
@@ -90,7 +83,7 @@ int main() {
     assert(near(transformed.color.a, 0x80 / 255.0F));
     assert(near(transformed.detailTextureWeight, 3.0F / 8.0F));
 
-    state.tevStage0[2] ^= 1U;
+    state.tevStages[0].program[2] ^= 1U;
     assert(classify_j3d_layered_material(state, baseTexture, detailTexture, lighting, material) ==
            J3dLayeredMaterialResult::UnsupportedColorProgram);
     state = material_state();

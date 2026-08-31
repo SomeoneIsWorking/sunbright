@@ -83,15 +83,19 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
         return J3dTintedLayeredMaterialResult::UnsupportedStageCount;
     if (state.textureCoordinateCount < 2)
         return J3dTintedLayeredMaterialResult::MissingTextureCoordinates;
-    if (state.textureNumber0 == 0xFFFFU || state.textureNumber1 == 0xFFFFU ||
-        state.textureCoordinate0 != 1 || state.textureMap0 != 1 ||
-        state.colorChannel0 != kColor0Alpha0 || state.textureCoordinate1 != 0 ||
-        state.textureMap1 != 0 || state.colorChannel1 != kColor1Alpha1 ||
-        !valid_texture(baseTexture) || !valid_texture(detailTexture)) {
+    if (state.textureBindings[0].textureNumber == 0xFFFFU ||
+        state.textureBindings[1].textureNumber == 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != 1 || state.tevStages[0].textureMap != 1 ||
+        state.tevStages[0].colorChannel != kColor0Alpha0 ||
+        state.tevStages[1].textureCoordinate != 0 || state.tevStages[1].textureMap != 0 ||
+        state.tevStages[1].colorChannel != kColor1Alpha1 || !valid_texture(baseTexture) ||
+        !valid_texture(detailTexture)) {
         return J3dTintedLayeredMaterialResult::UnsupportedTextureBindings;
     }
-    if (state.tevStage0 != kTintDetailDiffuseStage || state.tevStage1 != kBaseLayerSpecularStage ||
-        state.konstColorSelection0 != kFiveEighths || state.konstColorSelection1 != kHalf) {
+    if (state.tevStages[0].program != kTintDetailDiffuseStage ||
+        state.tevStages[1].program != kBaseLayerSpecularStage ||
+        state.tevStages[0].konstColorSelection != kFiveEighths ||
+        state.tevStages[1].konstColorSelection != kHalf) {
         return J3dTintedLayeredMaterialResult::UnsupportedColorProgram;
     }
     if (!state.hasNormal)

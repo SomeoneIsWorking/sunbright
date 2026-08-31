@@ -60,12 +60,13 @@ classify_j3d_alpha_masked_material(const J3dMaterialState& state, const PictureT
         return J3dAlphaMaskedMaterialResult::UnsupportedStageCount;
     if (state.textureCoordinateCount == 0)
         return J3dAlphaMaskedMaterialResult::MissingTextureCoordinate;
-    if (state.textureNumber0 == 0xFFFFU || state.textureCoordinate0 != 0 ||
-        state.textureMap0 != 0 || state.colorChannel0 != kColor0Alpha0 || texture.resource == 0 ||
+    if (state.textureBindings[0].textureNumber == 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != 0 || state.tevStages[0].textureMap != 0 ||
+        state.tevStages[0].colorChannel != kColor0Alpha0 || texture.resource == 0 ||
         texture.width == 0 || texture.height == 0) {
         return J3dAlphaMaskedMaterialResult::UnsupportedTextureBinding;
     }
-    if (state.tevStage0 != kBlackRgbTextureAlphaStage)
+    if (state.tevStages[0].program != kBlackRgbTextureAlphaStage)
         return J3dAlphaMaskedMaterialResult::UnsupportedColorProgram;
     if (!state.hasTevColor0 || state.tevColor0S10 != kBlackOpaqueRegister)
         return J3dAlphaMaskedMaterialResult::UnsupportedRegisterColor;

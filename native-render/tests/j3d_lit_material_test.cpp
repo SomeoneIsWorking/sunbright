@@ -26,11 +26,8 @@ sb::native_render::J3dMaterialState material_state() {
         .tevBlockType = 0x54564231U,
         .supportedTevBlock = true,
         .tevStageCount = 1,
-        .textureNumber0 = 3,
-        .textureCoordinate0 = 0,
-        .textureMap0 = 0,
-        .colorChannel0 = 4,
-        .tevStage0 = {0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0},
+        .textureBindings = {j3d_texture_binding(3)},
+        .tevStages = {j3d_tev_stage(0, 0, 4, {0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0})},
         .pixelEngineBlockType = 0x50454F50U,
         .hasNormal = true,
     };
@@ -73,10 +70,10 @@ int main() {
     colorState.colorChannelControl = 0x070F;
     colorState.alphaChannelControl = 0x0701;
     colorState.textureCoordinateCount = 0;
-    colorState.textureNumber0 = 0xFFFF;
-    colorState.textureCoordinate0 = 0xFF;
-    colorState.textureMap0 = 0xFF;
-    colorState.tevStage0 = {0xC0, 0x08, 0xAF, 0xFF, 0xC1, 0x08, 0xBF, 0xF0};
+    colorState.textureBindings[0].textureNumber = 0xFFFF;
+    colorState.tevStages[0].textureCoordinate = 0xFF;
+    colorState.tevStages[0].textureMap = 0xFF;
+    colorState.tevStages[0].program = {0xC0, 0x08, 0xAF, 0xFF, 0xC1, 0x08, 0xBF, 0xF0};
     colorState.hasVertexColor = true;
     LitColorMaterial colorMaterial{};
     assert(classify_j3d_lit_color_material(colorState, lighting, colorMaterial) ==
@@ -84,7 +81,7 @@ int main() {
     assert(colorMaterial.usesVertexRgb);
     assert(colorMaterial.usesVertexAlpha);
     assert(colorMaterial.lighting == lighting);
-    colorState.textureNumber0 = 0;
+    colorState.textureBindings[0].textureNumber = 0;
     assert(classify_j3d_lit_color_material(colorState, lighting, colorMaterial) ==
            J3dLitColorResult::TextureBinding);
 
@@ -129,16 +126,11 @@ int main() {
     // meaning rather than exposing the two console colour stages to the renderer.
     state.colorChannelControl = 0x0707;
     state.alphaChannelControl = 0x0700;
-    state.textureCoordinate0 = 0xFF;
-    state.textureMap0 = 0xFF;
-    state.colorChannel0 = 4;
-    state.tevStage0 = {0xC0, 0x08, 0xCA, 0xEF, 0xC1, 0x08, 0xFF, 0xD0};
-    state.textureNumber1 = 0xFFFF;
-    state.textureCoordinate1 = 0;
-    state.textureMap1 = 0;
-    state.colorChannel1 = 0xFF;
-    state.tevStage1 = {0xC2, 0x08, 0xF0, 0x8F, 0xC3, 0x08, 0xF0, 0x70};
-    state.konstColorSelection0 = 0x04;
+    state.tevStages[0] =
+        j3d_tev_stage(0xFF, 0xFF, 4, {0xC0, 0x08, 0xCA, 0xEF, 0xC1, 0x08, 0xFF, 0xD0}, 0x04);
+    state.textureBindings[1].textureNumber = 0xFFFF;
+    state.tevStages[1] =
+        j3d_tev_stage(0, 0, 0xFF, {0xC2, 0x08, 0xF0, 0x8F, 0xC3, 0x08, 0xF0, 0x70});
     state.pixelEngineBlockType = 0x5045464C;
     state.hasExplicitPixelPolicy = true;
     state.alphaCompare0 = 7;
@@ -160,10 +152,10 @@ int main() {
     assert(near(material.litColorWeight, 0.5F));
     assert(material.raster.blend == ModelBlendMode::SourceAlpha);
     assert(!material.raster.depthWrite);
-    state.konstColorSelection0 = 0x03;
+    state.tevStages[0].konstColorSelection = 0x03;
     assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
            J3dLitTexturedResult::UnsupportedColorProgram);
-    state.konstColorSelection0 = 0x04;
+    state.tevStages[0].konstColorSelection = 0x04;
     state.alphaOperation = 2;
     assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
            J3dLitTexturedResult::UnsupportedRasterPolicy);

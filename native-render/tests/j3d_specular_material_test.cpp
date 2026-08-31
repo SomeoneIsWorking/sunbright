@@ -29,19 +29,12 @@ sb::native_render::J3dMaterialState material_state() {
         .tevBlockType = 0x54564232U,
         .supportedTevBlock = true,
         .tevStageCount = 2,
-        .textureNumber0 = 3,
-        .textureCoordinate0 = 0,
-        .textureMap0 = 0,
-        .colorChannel0 = 4,
-        .tevStage0 = {0xC0, 0x38, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0},
-        .textureNumber1 = 0xFFFF,
-        .textureCoordinate1 = 0xFF,
-        .textureMap1 = 0xFF,
-        .colorChannel1 = 5,
-        .tevStage1 = {0xC2, 0x18, 0xEC, 0x0A, 0xC3, 0x00, 0xBF, 0xF1},
+        .textureBindings = {j3d_texture_binding(3)},
+        .tevStages = {j3d_tev_stage(0, 0, 4, {0xC0, 0x38, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0},
+                                    0x0C),
+                      j3d_tev_stage(0xFF, 0xFF, 5, {0xC2, 0x18, 0xEC, 0x0A, 0xC3, 0x00, 0xBF, 0xF1},
+                                    0x0C)},
         .konstColorRgba8 = {0x1A1A1AFF, 0, 0, 0},
-        .konstColorSelection0 = 0x0C,
-        .konstColorSelection1 = 0x0C,
         .pixelEngineBlockType = 0x5045464CU,
         .hasExplicitPixelPolicy = true,
         .alphaCompare0 = 7,
@@ -106,7 +99,7 @@ int main() {
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::UnsupportedColorChannels);
     state = material_state();
-    state.konstColorSelection1 = 0x0D;
+    state.tevStages[1].konstColorSelection = 0x0D;
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::UnsupportedColorProgram);
     state = material_state();
@@ -114,7 +107,7 @@ int main() {
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::MissingNormal);
     state = material_state();
-    state.tevStage1[0] ^= 1;
+    state.tevStages[1].program[0] ^= 1;
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::UnsupportedColorProgram);
 
@@ -125,12 +118,12 @@ int main() {
     state.colorChannelControl = 0x070F;
     state.materialColorRgba8 = 0x80808080;
     state.hasVertexColor = true;
-    state.colorChannel0 = 5;
-    state.textureCoordinate1 = 0;
-    state.textureMap1 = 0;
-    state.colorChannel1 = 4;
-    state.tevStage0 = {0xC0, 0x18, 0xFD, 0xAA, 0xC1, 0x08, 0xF2, 0xF0};
-    state.tevStage1 = {0xC2, 0x08, 0xFA, 0x80, 0xC3, 0x00, 0xBF, 0xF0};
+    state.tevStages[0].colorChannel = 5;
+    state.tevStages[1].textureCoordinate = 0;
+    state.tevStages[1].textureMap = 0;
+    state.tevStages[1].colorChannel = 4;
+    state.tevStages[0].program = {0xC0, 0x18, 0xFD, 0xAA, 0xC1, 0x08, 0xF2, 0xF0};
+    state.tevStages[1].program = {0xC2, 0x08, 0xFA, 0x80, 0xC3, 0x00, 0xBF, 0xF0};
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::Success);
     assert((material.textureDiffuseScale == Color{1, 1, 1, 1}));
@@ -150,7 +143,7 @@ int main() {
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::MissingVertexColor);
     state.hasVertexColor = true;
-    state.tevStage0[2] ^= 1U;
+    state.tevStages[0].program[2] ^= 1U;
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::UnsupportedColorProgram);
 
@@ -192,21 +185,13 @@ int main() {
     state.colorChannelControl = 0x070F;
     state.alphaChannelControl = 0x0701;
     state.textureCoordinateCount = 0;
-    state.textureNumber0 = 0xFFFF;
-    state.textureCoordinate0 = 0xFF;
-    state.textureMap0 = 0xFF;
-    state.colorChannel0 = 4;
-    state.tevStage0 = {0xC0, 0x0C, 0xFA, 0xEA, 0xC1, 0x08, 0xBF, 0xF0};
-    state.textureNumber1 = 0xFFFF;
-    state.textureCoordinate1 = 0xFF;
-    state.textureMap1 = 0xFF;
-    state.colorChannel1 = 5;
-    state.tevStage1 = {0xC2, 0x18, 0xF0, 0xEA, 0xC3, 0x00, 0xE3, 0x50};
+    state.textureBindings[0].textureNumber = 0xFFFF;
+    state.tevStages[0] =
+        j3d_tev_stage(0xFF, 0xFF, 4, {0xC0, 0x0C, 0xFA, 0xEA, 0xC1, 0x08, 0xBF, 0xF0}, 0x04, 0x1C);
+    state.textureBindings[1].textureNumber = 0xFFFF;
+    state.tevStages[1] =
+        j3d_tev_stage(0xFF, 0xFF, 5, {0xC2, 0x18, 0xF0, 0xEA, 0xC3, 0x00, 0xE3, 0x50}, 0x0C, 0x1C);
     state.konstColorRgba8[0] = 0x898A90FF;
-    state.konstColorSelection0 = 0x04;
-    state.konstColorSelection1 = 0x0C;
-    state.konstAlphaSelection0 = 0x1C;
-    state.konstAlphaSelection1 = 0x1C;
     state.blendMode = 1;
     state.blendSourceFactor = 1;
     state.blendDestinationFactor = 5;
@@ -229,14 +214,14 @@ int main() {
     assert(near(transformedColorSpecular.additiveColor.r, 0.5F));
     assert(near(transformedColorSpecular.color.a, 0.0F));
     assert(near(transformedColorSpecular.additiveColor.a, 1.0F));
-    state.tevStage1[2] ^= 1U;
+    state.tevStages[1].program[2] ^= 1U;
     assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
            J3dSpecularColorResult::UnsupportedColorProgram);
-    state.tevStage1[2] ^= 1U;
-    state.konstAlphaSelection1 = 0;
+    state.tevStages[1].program[2] ^= 1U;
+    state.tevStages[1].konstAlphaSelection = 0;
     assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
            J3dSpecularColorResult::UnsupportedColorProgram);
-    state.konstAlphaSelection1 = 0x1C;
+    state.tevStages[1].konstAlphaSelection = 0x1C;
     state.hasVertexColor = false;
     assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
            J3dSpecularColorResult::MissingVertexColor);

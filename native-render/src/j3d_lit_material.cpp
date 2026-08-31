@@ -86,11 +86,12 @@ J3dLitColorResult classify_j3d_lit_color_material(const J3dMaterialState& state,
         return J3dLitColorResult::UnsupportedTevBlock;
     if (state.tevStageCount != 1)
         return J3dLitColorResult::UnsupportedStageCount;
-    if (state.textureNumber0 != 0xFFFFU || state.textureCoordinate0 != 0xFFU ||
-        state.textureMap0 != 0xFFU || state.colorChannel0 != kColor0Alpha0) {
+    if (state.textureBindings[0].textureNumber != 0xFFFFU ||
+        state.tevStages[0].textureCoordinate != 0xFFU || state.tevStages[0].textureMap != 0xFFU ||
+        state.tevStages[0].colorChannel != kColor0Alpha0) {
         return J3dLitColorResult::TextureBinding;
     }
-    if (state.tevStage0 != kRasterPassThrough)
+    if (state.tevStages[0].program != kRasterPassThrough)
         return J3dLitColorResult::UnsupportedColorProgram;
     if (!state.hasNormal)
         return J3dLitColorResult::MissingNormal;
@@ -162,20 +163,24 @@ J3dLitTexturedResult classify_j3d_lit_textured_material(const J3dMaterialState& 
         return J3dLitTexturedResult::UnsupportedStageCount;
     if (state.textureCoordinateCount == 0)
         return J3dLitTexturedResult::MissingTextureCoordinate;
-    const bool standardBinding = state.textureCoordinate0 == 0 && state.textureMap0 == 0 &&
-                                 state.colorChannel0 == kColor0Alpha0;
+    const bool standardBinding = state.tevStages[0].textureCoordinate == 0 &&
+                                 state.tevStages[0].textureMap == 0 &&
+                                 state.tevStages[0].colorChannel == kColor0Alpha0;
     const bool halfDiffuseBinding =
-        state.textureCoordinate0 == 0xFF && state.textureMap0 == 0xFF &&
-        state.colorChannel0 == kColor0Alpha0 && state.textureNumber1 == 0xFFFFU &&
-        state.textureCoordinate1 == 0 && state.textureMap1 == 0 && state.colorChannel1 == 0xFF;
-    if (state.textureNumber0 == 0xFFFFU || (halfDiffuse ? !halfDiffuseBinding : !standardBinding) ||
-        texture.resource == 0 || texture.width == 0 || texture.height == 0) {
+        state.tevStages[0].textureCoordinate == 0xFF && state.tevStages[0].textureMap == 0xFF &&
+        state.tevStages[0].colorChannel == kColor0Alpha0 &&
+        state.textureBindings[1].textureNumber == 0xFFFFU &&
+        state.tevStages[1].textureCoordinate == 0 && state.tevStages[1].textureMap == 0 &&
+        state.tevStages[1].colorChannel == 0xFF;
+    if (state.textureBindings[0].textureNumber == 0xFFFFU ||
+        (halfDiffuse ? !halfDiffuseBinding : !standardBinding) || texture.resource == 0 ||
+        texture.width == 0 || texture.height == 0) {
         return J3dLitTexturedResult::UnsupportedTextureBinding;
     }
-    const bool standardProgram = state.tevStage0 == kTextureTimesRaster;
-    const bool halfDiffuseProgram = state.tevStage0 == kHalfDiffuseStage &&
-                                    state.tevStage1 == kHalfDiffuseTextureStage &&
-                                    state.konstColorSelection0 == 0x04;
+    const bool standardProgram = state.tevStages[0].program == kTextureTimesRaster;
+    const bool halfDiffuseProgram = state.tevStages[0].program == kHalfDiffuseStage &&
+                                    state.tevStages[1].program == kHalfDiffuseTextureStage &&
+                                    state.tevStages[0].konstColorSelection == 0x04;
     if (halfDiffuse ? !halfDiffuseProgram : !standardProgram)
         return J3dLitTexturedResult::UnsupportedColorProgram;
     if (!state.hasNormal)

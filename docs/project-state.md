@@ -32,6 +32,14 @@ materials, and an independent second-UV alpha mask for the exact supported famil
 materials are next: the remaining lit and multi-stage programs,
 authored mip chains, particles, and effects still fall back to the retained renderer.
 
+Both runtime adapters now preserve the complete bounded J3D material description: up to eight
+texture bindings and sixteen colour stages, rather than silently retaining only the first two of
+each. The production recomp capture has a five-stage control whose fifth stage uses a distinct
+texture map and stage program; a guarded 120-present Delfino run observed the same family using four
+separate image slots (Mario main, hand mask, rack, and toon-ramp variants). Those draws remain
+explicitly rejected by the semantic renderer: the next work is to derive their ordinary material
+meaning above GX, not to replay their console stages.
+
 ## Capability details
 
 ### S001 — Recomp through Aurora GX

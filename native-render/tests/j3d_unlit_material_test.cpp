@@ -15,11 +15,8 @@ int main() {
         .tevBlockType = 0x54564231U,
         .supportedTevBlock = true,
         .tevStageCount = 1,
-        .textureNumber0 = 0xFFFFU,
-        .textureCoordinate0 = 0xFFU,
-        .textureMap0 = 0xFFU,
-        .colorChannel0 = 4,
-        .tevStage0 = {0xC0, 0x40, 0xAF, 0xF0, 0xC1, 0x08, 0xBF, 0x80},
+        .tevStages = {j3d_tev_stage(0xFF, 0xFF, 4,
+                                    {0xC0, 0x40, 0xAF, 0xF0, 0xC1, 0x08, 0xBF, 0x80})},
         .pixelEngineBlockType = 0x50454F50U,
         .hasVertexColor = false,
     };
@@ -43,11 +40,11 @@ int main() {
     assert(material.usesVertexColor);
     assert(material.baseColor == Color(1, 1, 1, 1));
 
-    state.tevStage0[2] = 0;
+    state.tevStages[0].program[2] = 0;
     assert(classify_j3d_unlit_material(state, material) ==
            J3dUnlitMaterialResult::UnsupportedColorProgram);
-    state.tevStage0[2] = 0xAF;
-    state.textureNumber0 = 0;
+    state.tevStages[0].program[2] = 0xAF;
+    state.textureBindings[0].textureNumber = 0;
     const J3dUnlitMaterialFeatures textured = inspect_j3d_unlit_material(state);
     assert(textured.textureBound);
     assert(!textured.lightingEnabled);
@@ -56,9 +53,9 @@ int main() {
     assert(classify_j3d_unlit_material(state, material) == J3dUnlitMaterialResult::TextureBinding);
 
     state.textureCoordinateCount = 1;
-    state.textureCoordinate0 = 0;
-    state.textureMap0 = 0;
-    state.tevStage0 = {0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0};
+    state.tevStages[0].textureCoordinate = 0;
+    state.tevStages[0].textureMap = 0;
+    state.tevStages[0].program = {0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0};
     PictureTexture texture{.resource = 7, .width = 16, .height = 8};
     UnlitTexturedMaterial texturedMaterial{};
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
@@ -67,22 +64,22 @@ int main() {
     assert(texturedMaterial.texture == texture);
     assert(texturedMaterial.usesVertexColor);
 
-    state.textureNumber0 = 0xFFFF;
-    state.textureNumber1 = 3;
+    state.textureBindings[0].textureNumber = 0xFFFF;
+    state.textureBindings[1].textureNumber = 3;
     state.textureCoordinateCount = 2;
-    state.textureCoordinate0 = 1;
-    state.textureMap0 = 1;
+    state.tevStages[0].textureCoordinate = 1;
+    state.tevStages[0].textureMap = 1;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::Success);
     assert(texturedMaterial.textureCoordinates == ModelTextureCoordinates::Secondary);
-    state.textureMap0 = 2;
+    state.tevStages[0].textureMap = 2;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::UnsupportedTextureBinding);
-    state.textureNumber0 = 0;
-    state.textureNumber1 = 0xFFFF;
+    state.textureBindings[0].textureNumber = 0;
+    state.textureBindings[1].textureNumber = 0xFFFF;
     state.textureCoordinateCount = 1;
-    state.textureCoordinate0 = 0;
-    state.textureMap0 = 0;
+    state.tevStages[0].textureCoordinate = 0;
+    state.tevStages[0].textureMap = 0;
 
     state.pixelEngineBlockType = 0x50454544U;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
@@ -166,7 +163,7 @@ int main() {
     state.blendSourceFactor = 4;
     state.pixelEngineBlockType = 0x50454F50U;
 
-    state.tevStage0[2] ^= 1U;
+    state.tevStages[0].program[2] ^= 1U;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::UnsupportedColorProgram);
 }

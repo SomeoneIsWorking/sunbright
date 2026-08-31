@@ -217,27 +217,39 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
     std::uint32_t stageCountOffset = 0;
     std::uint32_t orderOffset = 0;
     std::uint32_t stageOffset = 0;
+    std::size_t textureBindingCount = 0;
+    std::size_t stageCapacity = 0;
     if (tevVptr == kTevBlock1Vptr) {
         captured.tevStageCount = 1;
         orderOffset = 0x06;
         stageOffset = 0x0A;
+        textureBindingCount = 1;
+        stageCapacity = 1;
     } else if (tevVptr == kTevBlock2Vptr) {
         stageCountOffset = 0x30;
         orderOffset = 0x08;
         stageOffset = 0x31;
+        textureBindingCount = 2;
+        stageCapacity = 2;
     } else if (tevVptr == kTevBlock4Vptr) {
         stageCountOffset = 0x1C;
         orderOffset = 0x0C;
         stageOffset = 0x1D;
+        textureBindingCount = 4;
+        stageCapacity = 4;
     } else if (tevVptr == kTevBlock16Vptr) {
         stageCountOffset = 0x54;
         orderOffset = 0x14;
         stageOffset = 0x55;
+        textureBindingCount = 8;
+        stageCapacity = 16;
     }
     captured.supportedTevBlock = orderOffset != 0;
     if (stageCountOffset != 0 && !reader.u8(tevBlock + stageCountOffset, captured.tevStageCount)) {
         return false;
     }
+    if (captured.tevStageCount > stageCapacity)
+        return false;
     captured.hasVertexColor = hasVertexColor;
     captured.hasNormal = hasNormal;
     if (captured.supportedTevBlock) {
@@ -253,26 +265,24 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
                 captured.tevColor0S10[component] = static_cast<std::int16_t>(raw);
             }
         }
-        if (!reader.u16(tevBlock + 0x04, captured.textureNumber0) ||
-            !reader.u8(tevBlock + orderOffset, captured.textureCoordinate0) ||
-            !reader.u8(tevBlock + orderOffset + 1, captured.textureMap0) ||
-            !reader.u8(tevBlock + orderOffset + 2, captured.colorChannel0) ||
-            !reader.bytes(tevBlock + stageOffset, captured.tevStage0.data(),
-                          captured.tevStage0.size())) {
-            return false;
+        for (std::size_t bindingIndex = 0; bindingIndex < textureBindingCount; ++bindingIndex) {
+            if (!reader.u16(tevBlock + 0x04U + static_cast<std::uint32_t>(bindingIndex * 2U),
+                            captured.textureBindings[bindingIndex].textureNumber)) {
+                return false;
+            }
         }
-        if (tevVptr != kTevBlock1Vptr && !reader.u16(tevBlock + 0x06, captured.textureNumber1)) {
-            return false;
+        for (std::size_t stageIndex = 0; stageIndex < captured.tevStageCount; ++stageIndex) {
+            native_render::J3dTevStageState& stage = captured.tevStages[stageIndex];
+            const std::uint32_t order = orderOffset + static_cast<std::uint32_t>(stageIndex * 4U);
+            const std::uint32_t program = stageOffset + static_cast<std::uint32_t>(stageIndex * 8U);
+            if (!reader.u8(tevBlock + order, stage.textureCoordinate) ||
+                !reader.u8(tevBlock + order + 1U, stage.textureMap) ||
+                !reader.u8(tevBlock + order + 2U, stage.colorChannel) ||
+                !reader.bytes(tevBlock + program, stage.program.data(), stage.program.size())) {
+                return false;
+            }
         }
-        if (captured.tevStageCount >= 2 &&
-            (!reader.u8(tevBlock + orderOffset + 4, captured.textureCoordinate1) ||
-             !reader.u8(tevBlock + orderOffset + 5, captured.textureMap1) ||
-             !reader.u8(tevBlock + orderOffset + 6, captured.colorChannel1) ||
-             !reader.bytes(tevBlock + stageOffset + 8, captured.tevStage1.data(),
-                           captured.tevStage1.size()))) {
-            return false;
-        }
-        if (captured.tevStageCount >= 2) {
+        if (tevVptr != kTevBlock1Vptr) {
             std::uint32_t colorOffset = 0;
             std::uint32_t colorSelectionOffset = 0;
             std::uint32_t alphaSelectionOffset = 0;
@@ -287,11 +297,16 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
                     return false;
                 }
             }
-            if (!reader.u8(tevBlock + colorSelectionOffset, captured.konstColorSelection0) ||
-                !reader.u8(tevBlock + colorSelectionOffset + 1, captured.konstColorSelection1) ||
-                !reader.u8(tevBlock + alphaSelectionOffset, captured.konstAlphaSelection0) ||
-                !reader.u8(tevBlock + alphaSelectionOffset + 1, captured.konstAlphaSelection1)) {
-                return false;
+            for (std::size_t stageIndex = 0; stageIndex < stageCapacity; ++stageIndex) {
+                native_render::J3dTevStageState& stage = captured.tevStages[stageIndex];
+                if (!reader.u8(tevBlock + colorSelectionOffset +
+                                   static_cast<std::uint32_t>(stageIndex),
+                               stage.konstColorSelection) ||
+                    !reader.u8(tevBlock + alphaSelectionOffset +
+                                   static_cast<std::uint32_t>(stageIndex),
+                               stage.konstAlphaSelection)) {
+                    return false;
+                }
             }
         }
     }

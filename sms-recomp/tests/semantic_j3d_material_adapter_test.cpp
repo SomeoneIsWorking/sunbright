@@ -187,8 +187,8 @@ int main() {
     std::memcpy(memory.bytes.data() + tev + 0x31, texturedStage.data(), texturedStage.size());
     write_u32(memory, texgen + 4, 2);
     assert(sb::recomp::capture_guest_j3d_material_state(reader, material, true, false, state));
-    assert(state.textureNumber0 == 0xFFFF);
-    assert(state.textureNumber1 == 7);
+    assert(state.textureBindings[0].textureNumber == 0xFFFF);
+    assert(state.textureBindings[1].textureNumber == 7);
     sb::native_render::UnlitTexturedMaterial texturedOutput{};
     const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
     assert(sb::native_render::classify_j3d_unlit_textured_material(state, placeholder,
@@ -226,12 +226,41 @@ int main() {
     assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(state.konstColorRgba8 ==
            (std::array<std::uint32_t, 4>{0x10203040, 0x50607080, 0x90A0B0C0, 0xD0E0F000}));
-    assert(state.konstColorSelection0 == 0x0C);
-    assert(state.konstColorSelection1 == 0x1D);
-    assert(state.konstAlphaSelection0 == 0x1C);
-    assert(state.konstAlphaSelection1 == 0x07);
+    assert(state.tevStages[0].konstColorSelection == 0x0C);
+    assert(state.tevStages[1].konstColorSelection == 0x1D);
+    assert(state.tevStages[0].konstAlphaSelection == 0x1C);
+    assert(state.tevStages[1].konstAlphaSelection == 0x07);
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::MultipleTevStages);
+
+    // TV16 has eight texture bindings and sixteen stage slots. Capture every active stage rather
+    // than silently truncating a five-stage material to the first two entries.
+    write_u32(memory, tev, 0x803E0A14);
+    memory.bytes[tev + 0x54] = 5;
+    for (std::size_t binding = 0; binding < 8; ++binding)
+        write_u16(memory, tev + 0x04 + binding * 2, static_cast<std::uint16_t>(20 + binding));
+    for (std::size_t stageIndex = 0; stageIndex < 5; ++stageIndex) {
+        memory.bytes[tev + 0x14 + stageIndex * 4] = static_cast<std::uint8_t>(stageIndex % 2);
+        memory.bytes[tev + 0x15 + stageIndex * 4] = static_cast<std::uint8_t>(stageIndex + 2);
+        memory.bytes[tev + 0x16 + stageIndex * 4] = static_cast<std::uint8_t>(4 + stageIndex);
+        const std::array<std::uint8_t, 8> fiveStage{
+            0xC0, static_cast<std::uint8_t>(0x10 + stageIndex), 0x80, 0xF0, 0xC1, 0x08,
+            0xF0, static_cast<std::uint8_t>(0x80 + stageIndex)};
+        std::memcpy(memory.bytes.data() + tev + 0x55 + stageIndex * fiveStage.size(),
+                    fiveStage.data(), fiveStage.size());
+        memory.bytes[tev + 0x106 + stageIndex] = static_cast<std::uint8_t>(0x03 + stageIndex);
+        memory.bytes[tev + 0x116 + stageIndex] = static_cast<std::uint8_t>(0x10 + stageIndex);
+    }
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
+    assert(state.tevStageCount == 5);
+    assert(state.textureBindings[7].textureNumber == 27);
+    assert(state.tevStages[4].textureCoordinate == 0);
+    assert(state.tevStages[4].textureMap == 6);
+    assert(state.tevStages[4].colorChannel == 8);
+    assert(state.tevStages[4].program ==
+           (std::array<std::uint8_t, 8>{0xC0, 0x14, 0x80, 0xF0, 0xC1, 0x08, 0xF0, 0x84}));
+    assert(state.tevStages[4].konstColorSelection == 0x07);
+    assert(state.tevStages[4].konstAlphaSelection == 0x14);
 
     write_u32(memory, material + 0x20, 0xFFFF);
     assert(!sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));

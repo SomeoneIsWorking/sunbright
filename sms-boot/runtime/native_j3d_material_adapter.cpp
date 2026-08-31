@@ -178,6 +178,23 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
                                  captured.tevBlockType == static_cast<std::uint32_t>('TVB4') ||
                                  captured.tevBlockType == static_cast<std::uint32_t>('TV16');
     captured.tevStageCount = tev->getTevStageNum();
+    std::size_t textureBindingCount = 0;
+    std::size_t stageCapacity = 0;
+    if (captured.tevBlockType == static_cast<std::uint32_t>('TVB1')) {
+        textureBindingCount = 1;
+        stageCapacity = 1;
+    } else if (captured.tevBlockType == static_cast<std::uint32_t>('TVB2')) {
+        textureBindingCount = 2;
+        stageCapacity = 2;
+    } else if (captured.tevBlockType == static_cast<std::uint32_t>('TVB4')) {
+        textureBindingCount = 4;
+        stageCapacity = 4;
+    } else if (captured.tevBlockType == static_cast<std::uint32_t>('TV16')) {
+        textureBindingCount = 8;
+        stageCapacity = 16;
+    }
+    if (captured.tevStageCount > stageCapacity)
+        return false;
     captured.hasVertexColor = hasVertexColor;
     captured.hasNormal = hasNormal;
     if (captured.supportedTevBlock) {
@@ -187,27 +204,21 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
             captured.tevColor0S10 = {tevColor0->color.r, tevColor0->color.g, tevColor0->color.b,
                                      tevColor0->color.a};
         }
-        captured.textureNumber0 = tev->getTexNo(0);
-        if (captured.tevBlockType != static_cast<std::uint32_t>('TVB1'))
-            captured.textureNumber1 = tev->getTexNo(1);
-        J3DTevOrder* order = tev->getTevOrder(0);
-        J3DTevStage* stage = tev->getTevStage(0);
-        if (order == nullptr || stage == nullptr)
-            return false;
-        captured.textureCoordinate0 = order->mTexCoord;
-        captured.textureMap0 = order->mTexMap;
-        captured.colorChannel0 = order->mColorChan;
-        static_assert(sizeof(*stage) == captured.tevStage0.size());
-        std::memcpy(captured.tevStage0.data(), stage, captured.tevStage0.size());
-        if (captured.tevStageCount >= 2) {
-            J3DTevOrder* secondOrder = tev->getTevOrder(1);
-            J3DTevStage* secondStage = tev->getTevStage(1);
-            if (secondOrder == nullptr || secondStage == nullptr)
+        for (std::size_t bindingIndex = 0; bindingIndex < textureBindingCount; ++bindingIndex)
+            captured.textureBindings[bindingIndex].textureNumber = tev->getTexNo(bindingIndex);
+        for (std::size_t stageIndex = 0; stageIndex < captured.tevStageCount; ++stageIndex) {
+            J3DTevOrder* order = tev->getTevOrder(stageIndex);
+            J3DTevStage* stage = tev->getTevStage(stageIndex);
+            if (order == nullptr || stage == nullptr)
                 return false;
-            captured.textureCoordinate1 = secondOrder->mTexCoord;
-            captured.textureMap1 = secondOrder->mTexMap;
-            captured.colorChannel1 = secondOrder->mColorChan;
-            std::memcpy(captured.tevStage1.data(), secondStage, captured.tevStage1.size());
+            native_render::J3dTevStageState& capturedStage = captured.tevStages[stageIndex];
+            capturedStage.textureCoordinate = order->mTexCoord;
+            capturedStage.textureMap = order->mTexMap;
+            capturedStage.colorChannel = order->mColorChan;
+            static_assert(sizeof(*stage) == sizeof(std::array<std::uint8_t, 8>));
+            std::memcpy(capturedStage.program.data(), stage, capturedStage.program.size());
+        }
+        if (captured.tevBlockType != static_cast<std::uint32_t>('TVB1')) {
             for (std::size_t colorIndex = 0; colorIndex < captured.konstColorRgba8.size();
                  ++colorIndex) {
                 J3DGXColor* konstColor = tev->getTevKColor(colorIndex);
@@ -215,10 +226,12 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
                     return false;
                 captured.konstColorRgba8[colorIndex] = pack_rgba8(*konstColor);
             }
-            captured.konstColorSelection0 = tev->getTevKColorSel(0);
-            captured.konstColorSelection1 = tev->getTevKColorSel(1);
-            captured.konstAlphaSelection0 = tev->getTevKAlphaSel(0);
-            captured.konstAlphaSelection1 = tev->getTevKAlphaSel(1);
+            for (std::size_t stageIndex = 0; stageIndex < stageCapacity; ++stageIndex) {
+                captured.tevStages[stageIndex].konstColorSelection =
+                    tev->getTevKColorSel(stageIndex);
+                captured.tevStages[stageIndex].konstAlphaSelection =
+                    tev->getTevKAlphaSel(stageIndex);
+            }
         }
     }
     state = captured;
@@ -307,8 +320,9 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     if (textureTable == nullptr)
         return NativeJ3dMaterialResult::MissingTexture;
     const std::uint16_t firstTextureNumber =
-        isUnlitTextured ? native_render::j3d_texture_number_for_map(state, state.textureMap0)
-                        : state.textureNumber0;
+        isUnlitTextured
+            ? native_render::j3d_texture_number_for_map(state, state.tevStages[0].textureMap)
+            : state.textureBindings[0].textureNumber;
     const NativeJ3dMaterialResult firstTexture =
         decode_texture(*textureTable, firstTextureNumber, result.textures[0], textureError);
     if (firstTexture != NativeJ3dMaterialResult::Success)
@@ -316,7 +330,8 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     result.textureCount = 1;
     if (isLitAlphaMask || isLayered || isTintedLayered) {
         const NativeJ3dMaterialResult secondTexture =
-            decode_texture(*textureTable, state.textureNumber1, result.textures[1], textureError);
+            decode_texture(*textureTable, state.textureBindings[1].textureNumber,
+                           result.textures[1], textureError);
         if (secondTexture != NativeJ3dMaterialResult::Success)
             return secondTexture;
         result.textureCount = 2;

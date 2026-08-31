@@ -22,11 +22,8 @@ sb::native_render::J3dMaterialState material_state() {
         .tevBlockType = 0x54564232U,
         .supportedTevBlock = true,
         .tevStageCount = 1,
-        .textureNumber0 = 0,
-        .textureCoordinate0 = 0,
-        .textureMap0 = 0,
-        .colorChannel0 = 4,
-        .tevStage0 = {0xC0, 0x08, 0xF2, 0xAF, 0xC1, 0x28, 0xF0, 0xF0},
+        .textureBindings = {j3d_texture_binding(0)},
+        .tevStages = {j3d_tev_stage(0, 0, 4, {0xC0, 0x08, 0xF2, 0xAF, 0xC1, 0x28, 0xF0, 0xF0})},
         .hasTevColor0 = true,
         .tevColor0S10 = {0, 0, 0, 255},
         .pixelEngineBlockType = 0x5045464CU,
@@ -81,7 +78,7 @@ int main() {
     assert(classify_j3d_alpha_masked_material(state, texture, material) ==
            J3dAlphaMaskedMaterialResult::UnsupportedRegisterColor);
     state = material_state();
-    state.tevStage0[5] ^= 0x10;
+    state.tevStages[0].program[5] ^= 0x10;
     assert(classify_j3d_alpha_masked_material(state, texture, material) ==
            J3dAlphaMaskedMaterialResult::UnsupportedColorProgram);
     state = material_state();

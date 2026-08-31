@@ -101,20 +101,10 @@ struct ProgramKey {
     std::uint32_t modelData = 0;
     std::uint16_t materialIndex = 0xFFFF;
     std::uint8_t stageCount = 0;
-    std::uint16_t textureNumber = 0;
-    std::uint8_t textureCoordinate = 0;
-    std::uint8_t textureMap = 0;
-    std::uint8_t colorChannel = 0;
-    std::array<std::uint8_t, 8> stage{};
-    std::uint16_t textureNumber1 = 0;
-    std::uint8_t textureCoordinate1 = 0;
-    std::uint8_t textureMap1 = 0;
-    std::uint8_t colorChannel1 = 0;
-    std::array<std::uint8_t, 8> stage1{};
-    std::uint8_t konstColorSelection0 = 0;
-    std::uint8_t konstColorSelection1 = 0;
-    std::uint8_t konstAlphaSelection0 = 0;
-    std::uint8_t konstAlphaSelection1 = 0;
+    std::array<sb::native_render::J3dTextureBinding, sb::native_render::kMaxJ3dTextureMaps>
+        textureBindings{};
+    std::array<sb::native_render::J3dTevStageState, sb::native_render::kMaxJ3dTevStages>
+        tevStages{};
     auto operator<=>(const ProgramKey&) const = default;
 };
 
@@ -126,8 +116,7 @@ struct ProgramObservation {
     std::uint64_t perspectiveReady = 0;
     std::uint64_t submittedModels = 0;
     std::string materialName;
-    std::string textureName0;
-    std::string textureName1;
+    std::array<std::string, sb::native_render::kMaxJ3dTextureMaps> textureNames;
     std::uint32_t firstMaterialColor = 0;
     std::uint32_t firstAmbientColor = 0;
     std::uint32_t firstMaterialColor1 = 0;
@@ -204,18 +193,23 @@ void capture_program_names(const ProgramKey& key, ProgramObservation& observatio
     u32 textureNames = 0;
     if (key.modelData == 0 || !reader.u32(key.modelData + kModelDataMaterialNames, materialNames) ||
         !reader.u32(key.modelData + kModelDataTextureNames, textureNames)) {
-        const std::uint64_t unavailableNames = 1U + (key.textureNumber != 0xFFFFU ? 1U : 0U) +
-                                               (key.textureNumber1 != 0xFFFFU ? 1U : 0U);
+        const std::uint64_t unavailableNames =
+            1U + std::ranges::count_if(key.textureBindings, [](const auto& binding) {
+                return binding.textureNumber != 0xFFFFU;
+            });
         g_stats.programNameAttempts += unavailableNames;
         g_stats.programNameFailures += unavailableNames;
         observation.materialName = "<unavailable>";
-        observation.textureName0 = key.textureNumber == 0xFFFFU ? "<none>" : "<unavailable>";
-        observation.textureName1 = key.textureNumber1 == 0xFFFFU ? "<none>" : "<unavailable>";
+        for (std::size_t textureMap = 0; textureMap < key.textureBindings.size(); ++textureMap)
+            observation.textureNames[textureMap] =
+                key.textureBindings[textureMap].textureNumber == 0xFFFFU ? "<none>"
+                                                                         : "<unavailable>";
         return;
     }
     observation.materialName = read_j3d_name(reader, materialNames, key.materialIndex);
-    observation.textureName0 = read_j3d_name(reader, textureNames, key.textureNumber);
-    observation.textureName1 = read_j3d_name(reader, textureNames, key.textureNumber1);
+    for (std::size_t textureMap = 0; textureMap < key.textureBindings.size(); ++textureMap)
+        observation.textureNames[textureMap] =
+            read_j3d_name(reader, textureNames, key.textureBindings[textureMap].textureNumber);
 }
 
 void record_raster(const sb::native_render::ModelMaterial& material) {
@@ -367,17 +361,19 @@ std::string semantic_j3d_stats_text() {
         const ProgramKey& key = programs[index].first;
         const ProgramObservation& observation = programs[index].second;
         char line[640];
-        std::snprintf(line, sizeof(line),
-                      "; top-program[%zu]=%llu mat=%u:\"%s\" lit=%u normal=%u chan=%04x/%04x "
-                      "stages=%u tex=%04x:\"%s\" order=%02x/%02x/%02x "
-                      "stage=%02x%02x%02x%02x%02x%02x%02x%02x",
-                      index, static_cast<unsigned long long>(observation.count), key.materialIndex,
-                      observation.materialName.c_str(), key.lighting ? 1U : 0U,
-                      key.hasNormal ? 1U : 0U, key.channelControl, key.alphaChannelControl,
-                      key.stageCount, key.textureNumber, observation.textureName0.c_str(),
-                      key.textureCoordinate, key.textureMap, key.colorChannel, key.stage[0],
-                      key.stage[1], key.stage[2], key.stage[3], key.stage[4], key.stage[5],
-                      key.stage[6], key.stage[7]);
+        std::snprintf(
+            line, sizeof(line),
+            "; top-program[%zu]=%llu mat=%u:\"%s\" lit=%u normal=%u chan=%04x/%04x "
+            "stages=%u tex=%04x:\"%s\" order=%02x/%02x/%02x "
+            "stage=%02x%02x%02x%02x%02x%02x%02x%02x",
+            index, static_cast<unsigned long long>(observation.count), key.materialIndex,
+            observation.materialName.c_str(), key.lighting ? 1U : 0U, key.hasNormal ? 1U : 0U,
+            key.channelControl, key.alphaChannelControl, key.stageCount,
+            key.textureBindings[0].textureNumber, observation.textureNames[0].c_str(),
+            key.tevStages[0].textureCoordinate, key.tevStages[0].textureMap,
+            key.tevStages[0].colorChannel, key.tevStages[0].program[0], key.tevStages[0].program[1],
+            key.tevStages[0].program[2], key.tevStages[0].program[3], key.tevStages[0].program[4],
+            key.tevStages[0].program[5], key.tevStages[0].program[6], key.tevStages[0].program[7]);
         report += line;
     }
     std::vector<std::pair<ProgramKey, ProgramObservation>> litPrograms;
@@ -399,7 +395,7 @@ std::string semantic_j3d_stats_text() {
     }
     for (std::size_t litIndex = 0; litIndex < litCount; ++litIndex) {
         const auto& [key, observation] = litPrograms[litIndex];
-        char line[1280];
+        char line[3072];
         std::snprintf(
             line, sizeof(line),
             "; top-lit-program[%zu]=%llu mat=%u:\"%s\" normal=%u "
@@ -407,15 +403,19 @@ std::string semantic_j3d_stats_text() {
             "pe=%08x cull=%u explicit=%u alpha=%u/%u/%u/%u/%u "
             "blend=%u/%u/%u/%u depth=%u/%u/%u fog=%u/%u "
             "fogRange=%.1f/%.1f/%.1f/%.1f fogColor=%08x varies=%u "
-            "tex=%04x:\"%s\"/%04x:\"%s\" "
+            "tex0=%04x:\"%s\" tex1=%04x:\"%s\" tex2=%04x:\"%s\" tex3=%04x:\"%s\" "
+            "tex4=%04x:\"%s\" tex5=%04x:\"%s\" tex6=%04x:\"%s\" tex7=%04x:\"%s\" "
             "order0=%02x/%02x/%02x stage0=%02x%02x%02x%02x%02x%02x%02x%02x "
             "order1=%02x/%02x/%02x stage1=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "order2=%02x/%02x/%02x stage2=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "order3=%02x/%02x/%02x stage3=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "order4=%02x/%02x/%02x stage4=%02x%02x%02x%02x%02x%02x%02x%02x "
             "path=%llu-observed/%llu-perspective/%llu-accepted/%llu-resources/%llu-ready/"
             "%llu-models "
             "primaryColor=%08x/%08x varies=%u "
             "secondColor=%08x/%08x varies=%u "
             "tevColor0=%d/%d/%d/%d varies=%u "
-            "konstSel=%02x/%02x alphaSel=%02x/%02x "
+            "konstSel=%02x/%02x/%02x/%02x/%02x alphaSel=%02x/%02x/%02x/%02x/%02x "
             "konst=%08x/%08x/%08x/%08x varies=%u",
             litIndex, static_cast<unsigned long long>(observation.count), key.materialIndex,
             observation.materialName.c_str(), key.hasNormal ? 1U : 0U, key.colorChannelCount,
@@ -427,13 +427,36 @@ std::string semantic_j3d_stats_text() {
             key.depthTest ? 1U : 0U, key.depthCompare, key.depthWrite ? 1U : 0U, key.fogType,
             key.fogRangeAdjustmentEnabled ? 1U : 0U, observation.firstFog.start,
             observation.firstFog.end, observation.firstFog.near, observation.firstFog.far,
-            observation.firstFog.colorRgba8, observation.fogValuesVary ? 1U : 0U, key.textureNumber,
-            observation.textureName0.c_str(), key.textureNumber1, observation.textureName1.c_str(),
-            key.textureCoordinate, key.textureMap, key.colorChannel, key.stage[0], key.stage[1],
-            key.stage[2], key.stage[3], key.stage[4], key.stage[5], key.stage[6], key.stage[7],
-            key.textureCoordinate1, key.textureMap1, key.colorChannel1, key.stage1[0],
-            key.stage1[1], key.stage1[2], key.stage1[3], key.stage1[4], key.stage1[5],
-            key.stage1[6], key.stage1[7], static_cast<unsigned long long>(observation.count),
+            observation.firstFog.colorRgba8, observation.fogValuesVary ? 1U : 0U,
+            key.textureBindings[0].textureNumber, observation.textureNames[0].c_str(),
+            key.textureBindings[1].textureNumber, observation.textureNames[1].c_str(),
+            key.textureBindings[2].textureNumber, observation.textureNames[2].c_str(),
+            key.textureBindings[3].textureNumber, observation.textureNames[3].c_str(),
+            key.textureBindings[4].textureNumber, observation.textureNames[4].c_str(),
+            key.textureBindings[5].textureNumber, observation.textureNames[5].c_str(),
+            key.textureBindings[6].textureNumber, observation.textureNames[6].c_str(),
+            key.textureBindings[7].textureNumber, observation.textureNames[7].c_str(),
+            key.tevStages[0].textureCoordinate, key.tevStages[0].textureMap,
+            key.tevStages[0].colorChannel, key.tevStages[0].program[0], key.tevStages[0].program[1],
+            key.tevStages[0].program[2], key.tevStages[0].program[3], key.tevStages[0].program[4],
+            key.tevStages[0].program[5], key.tevStages[0].program[6], key.tevStages[0].program[7],
+            key.tevStages[1].textureCoordinate, key.tevStages[1].textureMap,
+            key.tevStages[1].colorChannel, key.tevStages[1].program[0], key.tevStages[1].program[1],
+            key.tevStages[1].program[2], key.tevStages[1].program[3], key.tevStages[1].program[4],
+            key.tevStages[1].program[5], key.tevStages[1].program[6], key.tevStages[1].program[7],
+            key.tevStages[2].textureCoordinate, key.tevStages[2].textureMap,
+            key.tevStages[2].colorChannel, key.tevStages[2].program[0], key.tevStages[2].program[1],
+            key.tevStages[2].program[2], key.tevStages[2].program[3], key.tevStages[2].program[4],
+            key.tevStages[2].program[5], key.tevStages[2].program[6], key.tevStages[2].program[7],
+            key.tevStages[3].textureCoordinate, key.tevStages[3].textureMap,
+            key.tevStages[3].colorChannel, key.tevStages[3].program[0], key.tevStages[3].program[1],
+            key.tevStages[3].program[2], key.tevStages[3].program[3], key.tevStages[3].program[4],
+            key.tevStages[3].program[5], key.tevStages[3].program[6], key.tevStages[3].program[7],
+            key.tevStages[4].textureCoordinate, key.tevStages[4].textureMap,
+            key.tevStages[4].colorChannel, key.tevStages[4].program[0], key.tevStages[4].program[1],
+            key.tevStages[4].program[2], key.tevStages[4].program[3], key.tevStages[4].program[4],
+            key.tevStages[4].program[5], key.tevStages[4].program[6], key.tevStages[4].program[7],
+            static_cast<unsigned long long>(observation.count),
             static_cast<unsigned long long>(observation.perspectiveObserved),
             static_cast<unsigned long long>(observation.materialAccepted),
             static_cast<unsigned long long>(observation.resourcesReady),
@@ -444,11 +467,14 @@ std::string semantic_j3d_stats_text() {
             observation.firstAmbientColor1, observation.secondaryColorsVary ? 1U : 0U,
             observation.firstTevColor0[0], observation.firstTevColor0[1],
             observation.firstTevColor0[2], observation.firstTevColor0[3],
-            observation.tevColor0Varies ? 1U : 0U, key.konstColorSelection0,
-            key.konstColorSelection1, key.konstAlphaSelection0, key.konstAlphaSelection1,
-            observation.firstKonstColors[0], observation.firstKonstColors[1],
-            observation.firstKonstColors[2], observation.firstKonstColors[3],
-            observation.konstColorsVary ? 1U : 0U);
+            observation.tevColor0Varies ? 1U : 0U, key.tevStages[0].konstColorSelection,
+            key.tevStages[1].konstColorSelection, key.tevStages[2].konstColorSelection,
+            key.tevStages[3].konstColorSelection, key.tevStages[4].konstColorSelection,
+            key.tevStages[0].konstAlphaSelection, key.tevStages[1].konstAlphaSelection,
+            key.tevStages[2].konstAlphaSelection, key.tevStages[3].konstAlphaSelection,
+            key.tevStages[4].konstAlphaSelection, observation.firstKonstColors[0],
+            observation.firstKonstColors[1], observation.firstKonstColors[2],
+            observation.firstKonstColors[3], observation.konstColorsVary ? 1U : 0U);
         report += line;
     }
     return report;
@@ -509,20 +535,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                        .fogType = materialState.fog.type,
                        .fogRangeAdjustmentEnabled = materialState.fog.rangeAdjustmentEnabled,
                        .stageCount = materialState.tevStageCount,
-                       .textureNumber = materialState.textureNumber0,
-                       .textureCoordinate = materialState.textureCoordinate0,
-                       .textureMap = materialState.textureMap0,
-                       .colorChannel = materialState.colorChannel0,
-                       .stage = materialState.tevStage0,
-                       .textureNumber1 = materialState.textureNumber1,
-                       .textureCoordinate1 = materialState.textureCoordinate1,
-                       .textureMap1 = materialState.textureMap1,
-                       .colorChannel1 = materialState.colorChannel1,
-                       .stage1 = materialState.tevStage1,
-                       .konstColorSelection0 = materialState.konstColorSelection0,
-                       .konstColorSelection1 = materialState.konstColorSelection1,
-                       .konstAlphaSelection0 = materialState.konstAlphaSelection0,
-                       .konstAlphaSelection1 = materialState.konstAlphaSelection1};
+                       .textureBindings = materialState.textureBindings,
+                       .tevStages = materialState.tevStages};
     capture_program_owner(material, program);
     auto [programEntry, inserted] = g_programs.try_emplace(program);
     const ProgramKey& capturedProgram = programEntry->first;
@@ -670,8 +684,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         sb::native_render::ResTimgDecodeError textureError{};
         const std::uint16_t firstTextureNumber =
             isUnlitTextured ? sb::native_render::j3d_texture_number_for_map(
-                                  materialState, materialState.textureMap0)
-                            : materialState.textureNumber0;
+                                  materialState, materialState.tevStages[0].textureMap)
+                            : materialState.textureBindings[0].textureNumber;
         if (!sb::recomp::capture_guest_j3d_texture(sb::recomp::live_guest_byte_reader(),
                                                    textureTable, firstTextureNumber, g_textures[0],
                                                    textureError)) {
@@ -682,9 +696,9 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         }
         std::size_t textureCount = 1;
         if (isLitAlphaMask || isLayered || isTintedLayered) {
-            if (!sb::recomp::capture_guest_j3d_texture(sb::recomp::live_guest_byte_reader(),
-                                                       textureTable, materialState.textureNumber1,
-                                                       g_textures[1], textureError)) {
+            if (!sb::recomp::capture_guest_j3d_texture(
+                    sb::recomp::live_guest_byte_reader(), textureTable,
+                    materialState.textureBindings[1].textureNumber, g_textures[1], textureError)) {
                 const std::size_t errorIndex = static_cast<std::size_t>(textureError);
                 if (errorIndex < g_stats.textureDecodeFailures.size())
                     ++g_stats.textureDecodeFailures[errorIndex];
