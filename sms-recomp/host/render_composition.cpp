@@ -1,6 +1,7 @@
 #include "render_composition.h"
 
 #include "../overrides/semantic_j3d_adapter.h"
+#include "../overrides/semantic_particle_adapter.h"
 #include "../runtime/render/native_render.h"
 
 #include <sunbright/native_render/sdl_gpu_platform.h>
@@ -140,6 +141,7 @@ void RenderComposition::report_semantic_stats() noexcept {
         return;
     const auto& stats = native_render::sdl_semantic_frame_client().stats();
     lucent::info("semantic", "{}", semantic_j3d_stats_text());
+    sb::recomp::report_semantic_particle_stats();
     lucent::info("semantic",
                  "semantic summary: submitted={} completed={} nonempty={} mixed={} operations={} "
                  "pictures={} j2d-window-pictures={} glyphs={} solid-rectangles={} "

@@ -36,12 +36,14 @@ decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
 lighting, linear view-depth fog, solid-colour texture masks, independently sampled two-texture
 materials, and all four decoded texture-coordinate sets for broader material families. Broader J3D
-materials are next: the remaining lit and multi-stage programs, particles, effects, and image
-producers that do not yet preserve authored lower-resolution levels still fall back to the retained
-renderer. The first particle slice is now wired at the decomp `JPADrawExecBillBoard` boundary:
-standard type-2 direct-texture billboards publish an eye-space quad, decoded image, and ordinary
-depth/alpha/blend policy to the shared semantic pass while retaining the original GX body.
-Unsupported JPA programs are counted and continue through the retained renderer; this is an adapter
+materials are next: the remaining lit and multi-stage programs, non-billboard particles, effects,
+and image producers that do not yet preserve authored lower-resolution levels still fall back to the
+retained renderer. The first particle slice is now wired at the standard JPA billboard boundary in
+both runtimes: type-2 billboards publish an eye-space quad, decoded image, and ordinary
+depth/alpha/blend policy to the shared semantic pass while retaining the original GX body. The
+recomp path also reduces the reached colour-register program and destination-alpha blend policy to
+the renderer's ordinary modulation and `DestinationAlpha` values. Unsupported JPA programs and
+undecodable textures are counted and continue through the retained renderer; this is an adapter
 slice, not evidence that all particle effects are covered.
 
 Both runtime adapters now preserve the bounded J3D material inputs needed to classify broader
@@ -537,8 +539,8 @@ its falsifier.
 
 Gap: this is a real model path, not full-frame visual correctness. Custom pixel policies and
 unsupported J3D programs are refused rather than approximated. The remaining lit and multi-texture
-programs, skinning, particles, effects, and image producers that do not yet preserve authored lower
-levels remain absent, so the preview is not yet a complete product renderer.
+programs, skinning, non-billboard particles, effects, and image producers that do not yet preserve
+authored lower levels remain absent, so the preview is not yet a complete product renderer.
 
 ### S005 — Decomp PC-native semantic renderer
 

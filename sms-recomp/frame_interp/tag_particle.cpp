@@ -42,6 +42,7 @@
 //   SBR_TAGPARTICLE=0   disable (the draws revert to the camera delta alone)
 
 #include "../overrides/overrides.h"
+#include "../overrides/semantic_particle_adapter.h"
 #include "populations.h"
 
 #include <intrinsics.h>
@@ -62,8 +63,8 @@ void set_tag_world_pos(uint64_t tag, float x, float y, float z);
 namespace {
 
 // JPABaseParticle (decomp JSystem/JParticle/JPAParticle.hpp).
-constexpr u32 PART_GLOBAL = 0x2C;   // JGeometry::TVec3<f32> mGlobalPosition
-constexpr u32 PART_AGE    = 0x44;   // f32 mAge
+constexpr u32 PART_GLOBAL = 0x2C; // JGeometry::TVec3<f32> mGlobalPosition
+constexpr u32 PART_AGE = 0x44;    // f32 mAge
 
 bool enabled() {
     static const bool v = [] {
@@ -100,7 +101,7 @@ void tag_and_run(CPUState& cpu, void (*body)(CPUState&)) {
         Slot& slot = g_slots[particle];
         const float age = guest_f32(particle + PART_AGE);
         if (!(age > slot.lastAge)) {
-            ++slot.generation;   // this address is a DIFFERENT particle than the one seen before
+            ++slot.generation; // this address is a DIFFERENT particle than the one seen before
             ++g_born;
         }
         slot.lastAge = age;
@@ -113,7 +114,8 @@ void tag_and_run(CPUState& cpu, void (*body)(CPUState&)) {
         ++g_tagged;
     }
     body(cpu);
-    if (tag != 0) sbr_gxfifo_draw_tag(0);
+    if (tag != 0)
+        sbr_gxfifo_draw_tag(0);
     sbr_gxfifo_draw_pop(SB_POP_UNLABELLED);
 }
 
@@ -155,17 +157,29 @@ void tag_and_run(CPUState& cpu, void (*body)(CPUState&)) {
 // The emitter-level visitors (Stripe, StripeCross) are deliberately NOT here: they draw a whole
 // particle CHAIN as one strip, so there is no single particle whose position could displace it.
 // Interpolating those needs the vertex path, and their registry rows say so.
-#define SB_JPA_VISITOR(hexaddr, name)                                                          \
-    extern "C" void func_##hexaddr(CPUState&);                                                 \
-    namespace {                                                                                \
-    void ov_jpa_##hexaddr(CPUState& cpu) { tag_and_run(cpu, func_##hexaddr); }                 \
-    }                                                                                          \
-    SB_OVERRIDE(0x##hexaddr##u, ov_jpa_##hexaddr, name,                                        \
-                "60fps: identity + world position for a per-particle JPA draw, so the "        \
-                "particle's own motion interpolates as a translation (its position is baked "  \
+#define SB_JPA_VISITOR(hexaddr, name)                                                              \
+    extern "C" void func_##hexaddr(CPUState&);                                                     \
+    namespace {                                                                                    \
+    void ov_jpa_##hexaddr(CPUState& cpu) {                                                         \
+        tag_and_run(cpu, func_##hexaddr);                                                          \
+    }                                                                                              \
+    }                                                                                              \
+    SB_OVERRIDE(0x##hexaddr##u, ov_jpa_##hexaddr, name,                                            \
+                "60fps: identity + world position for a per-particle JPA draw, so the "            \
+                "particle's own motion interpolates as a translation (its position is baked "      \
                 "into the vertex stream, not carried in a matrix)")
 
-SB_JPA_VISITOR(8033025c, "JPADrawExecBillBoard::exec")
+extern "C" void func_8033025c(CPUState&);
+namespace {
+void ov_jpa_8033025c(CPUState& cpu) {
+    (void)sb::recomp::submit_guest_particle_billboard(
+        static_cast<u32>(cpu.gpr[4]), static_cast<u32>(cpu.gpr[5]), static_cast<u32>(cpu.gpr[13]));
+    tag_and_run(cpu, func_8033025c);
+}
+} // namespace
+SB_OVERRIDE(0x8033025cu, ov_jpa_8033025c, "JPADrawExecBillBoard::exec",
+            "native semantic standard billboard submission plus the retained interpolated body")
+
 SB_JPA_VISITOR(80330434, "JPADrawExecRotBillBoard::exec")
 SB_JPA_VISITOR(80330650, "JPADrawExecYBillBoard::exec")
 SB_JPA_VISITOR(80330d8c, "JPADrawExecDirectional::exec")
@@ -178,15 +192,15 @@ SB_JPA_VISITOR(8033266c, "JPADrawExecRotationCross::exec")
 SB_JPA_VISITOR(803329d8, "JPADrawExecPoint::exec")
 
 void sbr_tag_particle_report() {
-    if (!enabled() || !sbr_lerp_enabled()) return;
-    lucent::info("taggap",
-                 "particles: {} billboard draw(s) tagged and positioned, {} pooled-address reuse(s) "
-                 "detected by a non-increasing age, {} distinct address(es) seen{}",
-                 g_tagged, g_born, g_slots.size(),
-                 g_tagged == 0
-                     ? "   <-- NONE. Either no particle drew in this scene or the hook never fired; "
-                       "those are different answers and this line cannot tell them apart."
-                     : "");
+    if (!enabled() || !sbr_lerp_enabled())
+        return;
+    lucent::info(
+        "taggap",
+        "particles: {} billboard draw(s) tagged and positioned, {} pooled-address reuse(s) "
+        "detected by a non-increasing age, {} distinct address(es) seen{}",
+        g_tagged, g_born, g_slots.size(),
+        g_tagged == 0
+            ? "   <-- NONE. Either no particle drew in this scene or the hook never fired; "
+              "those are different answers and this line cannot tell them apart."
+            : "");
 }
-
-

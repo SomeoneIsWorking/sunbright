@@ -315,13 +315,16 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
         colorTarget.blend_state.enable_blend = true;
         colorTarget.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
         colorTarget.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        const bool destinationAlpha = key.raster.blend == ModelBlendMode::DestinationAlpha;
         const bool sourceAlpha = key.raster.blend == ModelBlendMode::SourceAlpha ||
                                  key.raster.blend == ModelBlendMode::Additive ||
                                  key.raster.blend == ModelBlendMode::SourceAlphaSourceColor;
-        const SDL_GPUBlendFactor source =
-            sourceAlpha ? SDL_GPU_BLENDFACTOR_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
+        const SDL_GPUBlendFactor source = destinationAlpha ? SDL_GPU_BLENDFACTOR_DST_ALPHA
+                                          : sourceAlpha    ? SDL_GPU_BLENDFACTOR_SRC_ALPHA
+                                                           : SDL_GPU_BLENDFACTOR_ONE;
         const SDL_GPUBlendFactor destination =
-            key.raster.blend == ModelBlendMode::Additive ? SDL_GPU_BLENDFACTOR_ONE
+            destinationAlpha                               ? SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA
+            : key.raster.blend == ModelBlendMode::Additive ? SDL_GPU_BLENDFACTOR_ONE
             : key.raster.blend == ModelBlendMode::SourceAlphaSourceColor
                 ? SDL_GPU_BLENDFACTOR_SRC_COLOR
                 : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;

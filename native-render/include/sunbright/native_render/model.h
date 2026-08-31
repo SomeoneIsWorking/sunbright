@@ -81,6 +81,7 @@ enum class ModelBlendMode : std::uint8_t {
     PremultipliedAlpha,
     Additive,
     SourceAlphaSourceColor,
+    DestinationAlpha,
 };
 enum class ModelTextureCoordinates : std::uint8_t { Primary, Secondary };
 enum class ModelTextureAlphaMode : std::uint8_t { MultiplyTexture, ReplaceTexture };
