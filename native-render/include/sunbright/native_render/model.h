@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sunbright/native_render/image.h>
 #include <sunbright/native_render/picture.h>
 
 #include <array>
@@ -35,6 +36,7 @@ struct Matrix4x4 {
 struct MeshVertex {
     Vec3 position{};
     Vec2 uv{};
+    Vec2 uv1{};
     Color color{1.0F, 1.0F, 1.0F, 1.0F};
     Vec3 normal{0.0F, 0.0F, 1.0F};
     bool operator==(const MeshVertex&) const = default;
@@ -146,6 +148,18 @@ struct LitTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
+// One decoded colour texture modulated by ordinary diffuse lighting, plus an independently
+// decoded alpha-mask texture. The mask has its own texture coordinates and never contributes RGB.
+struct LitTexturedAlphaMaskMaterial {
+    PictureTexture colorTexture{};
+    PictureTexture alphaMaskTexture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    ModelLightingContext lighting{};
+    float alphaScale = 1.0F;
+    ModelRasterPolicy raster{};
+};
+
 // One decoded texture with ordinary diffuse and directional-specular lighting. Its authored tint
 // is expressed as an affine texture operation: texture * per-vertex multiplier + additive colour.
 struct TintedSpecularTexturedMaterial {
@@ -159,7 +173,7 @@ struct TintedSpecularTexturedMaterial {
 
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, AlphaMaskedColorMaterial,
-                 LitTexturedMaterial, TintedSpecularTexturedMaterial>;
+                 LitTexturedMaterial, LitTexturedAlphaMaskMaterial, TintedSpecularTexturedMaterial>;
 
 struct ModelDraw {
     std::uint64_t instance = 0;
@@ -172,6 +186,7 @@ struct ModelDraw {
 struct ClipVertex {
     Vec4 position{};
     Vec2 uv{};
+    Vec2 uv1{};
     Color color{};
     Color additiveColor{};
 };
@@ -182,7 +197,11 @@ struct ClipVertex {
 [[nodiscard]] bool valid(const ModelRasterPolicy& raster) noexcept;
 [[nodiscard]] bool valid(const ModelDraw& draw) noexcept;
 [[nodiscard]] const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept;
-[[nodiscard]] const PictureTexture* material_texture(const ModelMaterial& material) noexcept;
+[[nodiscard]] std::uint8_t material_texture_count(const ModelMaterial& material) noexcept;
+[[nodiscard]] const PictureTexture* material_texture(const ModelMaterial& material,
+                                                     std::uint8_t index = 0) noexcept;
+[[nodiscard]] bool material_images_match(const ModelMaterial& material,
+                                         std::span<const DecodedImageView> images) noexcept;
 [[nodiscard]] std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept;
 // J3D camera matrices produce clip depth in [-w, 0]. The renderer-neutral model contract uses
 // [0, w], so each runtime adapter applies this conversion before publishing a draw.

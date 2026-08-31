@@ -167,15 +167,14 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         return;
     }
 
-    std::array<sb::native_render::DecodedImageView, 1> image{};
+    std::array<sb::native_render::DecodedImageView, 2> image{};
     std::span<const sb::native_render::DecodedImageView> images;
-    if (capturedMaterial.hasTexture) {
-        image[0] = {capturedMaterial.texture.texture.resource,
-                    capturedMaterial.texture.texture.revision,
-                    capturedMaterial.texture.texture.width, capturedMaterial.texture.texture.height,
-                    capturedMaterial.texture.rgba8};
-        images = image;
+    for (std::size_t index = 0; index < capturedMaterial.textureCount; ++index) {
+        const auto& texture = capturedMaterial.textures[index];
+        image[index] = {texture.texture.resource, texture.texture.revision, texture.texture.width,
+                        texture.texture.height, texture.rgba8};
     }
+    images = std::span(image).first(capturedMaterial.textureCount);
     for (std::uint32_t element = 0; element < shape.mElementCount; ++element) {
         J3DShapeMtx* matrixObject = shape.getShapeMtx(element);
         if (matrixObject == nullptr || matrixObject->getType() != static_cast<int>('SMTX') ||
@@ -198,6 +197,7 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         for (const auto& vertex : g_decoded) {
             g_vertices.push_back({.position = {vertex.x, vertex.y, vertex.z},
                                   .uv = {vertex.uv[0][0], vertex.uv[0][1]},
+                                  .uv1 = {vertex.uv[1][0], vertex.uv[1][1]},
                                   .color = sb::native_render::color_from_rgba8(vertex.rgba),
                                   .normal = {vertex.nx, vertex.ny, vertex.nz}});
         }
@@ -222,6 +222,8 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         record_raster(capturedMaterial.material);
         ++g_stats.submittedModels;
         if (std::holds_alternative<sb::native_render::LitTexturedMaterial>(
+                capturedMaterial.material) ||
+            std::holds_alternative<sb::native_render::LitTexturedAlphaMaskMaterial>(
                 capturedMaterial.material) ||
             std::holds_alternative<sb::native_render::TintedSpecularTexturedMaterial>(
                 capturedMaterial.material)) {

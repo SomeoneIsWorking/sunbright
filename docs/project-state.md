@@ -8,7 +8,7 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit, solid-colour mask, and first diffuse- and specular-lit single-texture J3D material families to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit, solid-colour mask, diffuse/specular single-texture, and diffuse-plus-independent-alpha-mask two-texture J3D material families to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
 | S005 | The native decomp feeds the same semantic 2D/UI and J3D material families to that renderer through native-layout adapters | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
@@ -26,8 +26,8 @@ dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetP
 `GXGetProjectionv`, FIFO, or compatibility-renderer state. The same high-level J3D material objects
 now supply culling, depth test/write, alpha cutout, source-alpha blending, decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
-lighting, and solid-colour texture masks for the exact supported families. Broader J3D materials
-are next: the remaining lit and multi-stage programs,
+lighting, solid-colour texture masks, and an independent second-UV alpha mask for the exact
+supported families. Broader J3D materials are next: the remaining lit and multi-stage programs,
 skinning, authored mip chains, particles, and effects still fall back to the retained renderer.
 
 ## Capability details
@@ -140,6 +140,24 @@ instances through classification, texture decode, scene readiness, and native su
 the total from 3,320 to 3,360 models and cutout models from 2,900 to 2,940. The independent guarded
 400-present native-decomp run remained healthy at 42,033 total/666 lit models but encountered zero
 instances of this exact family, so it is not claimed as decomp reached-scene evidence.
+
+Mario's reached two-texture hand material now has a PC-native semantic owner as well. Its first
+ordinary RGBA texture supplies colour and is multiplied by the same high-level diffuse lighting as
+the single-texture family. A second decoded texture, sampled with the model's second UV set,
+supplies alpha only; its RGB is ignored and its alpha is amplified fourfold before the authored
+half-opacity cutout. The renderer-neutral model submission and bounded frame collector carry both
+images in material order, and the SDL pass binds them to a dedicated two-sampler shader rather
+than interpreting the original two console colour stages. Exact CPU controls reject altered stage
+bytes, register alpha, texture/coordinate bindings, missing normal or light context, and raster
+policy. The watched shipping-GPU control uses a deliberately magenta mask and adjacent alpha 31/32
+texels: 31 is rejected, 32 produces only the separate green colour texture, and the kernel watcher
+reported no fault. A guarded 120-present recomp run advanced all 52 perspective-reached instances
+through exact classification, both texture decodes, scene readiness, and native submission; it
+submitted 572 lit models among 15,860 total with zero layout, projection, rigid-matrix, or mesh
+decode failures. The independent guarded 400-present native-decomp run remained healthy at 42,033
+total/666 lit models but did not encounter this exact dynamic two-stage material, so decomp
+reached-scene coverage remains unclaimed even though its native-layout adapter carries the same
+two decoded images and second UV values.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission
@@ -304,9 +322,9 @@ into `sms-boot`, while the decomp callback remains weak so decomp-only tests do 
 renderer dependency. The native-layout audit independently exercises material, normal, ambient, and
 light extraction while sharing only the renderer-neutral lighting calculation with recomp; its
 reached-model evidence is recorded once in C095. The latest guarded 400-present run submitted 666
-lit models among 42,033 total after the shared specular hand material was admitted. It encountered
-zero instances of the newer solid-colour mask family in that bounded scene window; the native-layout
-adapter is production-linked, but live decomp reach for that exact family remains unproven.
+lit models among 42,033 total. It encountered zero instances of either the newer solid-colour mask
+or dynamic two-texture hand family in that bounded scene window; the native-layout adapter is
+production-linked for both, but live decomp reach for those exact families remains unproven.
 
 The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic command from native
 J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only

@@ -76,17 +76,8 @@ bool submit_model(const ModelDraw& draw, const MeshResourceView& mesh,
         draw.mesh.vertexCount != mesh.vertices.size()) {
         return false;
     }
-    const PictureTexture* texture = material_texture(draw.material);
-    if ((texture == nullptr && !images.empty()) || (texture != nullptr && images.size() != 1))
+    if (!material_images_match(draw.material, images))
         return false;
-    if (texture != nullptr) {
-        const DecodedImageView& image = images.front();
-        if (!valid(image) || image.resource != texture->resource ||
-            image.revision != texture->revision || image.width != texture->width ||
-            image.height != texture->height) {
-            return false;
-        }
-    }
     return g_sink.submitModel(draw, mesh, images, g_sink.context);
 }
 

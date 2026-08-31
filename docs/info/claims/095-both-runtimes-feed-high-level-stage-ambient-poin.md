@@ -4,14 +4,14 @@ kind: claim
 status: holds
 created: 2026-08-31
 tags: renderer,j3d,lighting,recomp,decomp
-depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
+depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
 reconfirmed: 2026-08-31
 verified_at: 2026-08-31 08:14:31+00:00
 ---
 
 ## Claim
 
-Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact single-texture diffuse/specular or solid-colour mask material values into the shared PC-native J3D renderer without consuming GX light state.
+Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact single-texture diffuse/specular, solid-colour mask, or diffuse-plus-independent-alpha-mask material values into the shared PC-native J3D renderer without consuming GX light state.
 
 ## Evidence
 
@@ -40,3 +40,18 @@ perspective-reached instances as solid-colour masks, raising native model covera
 3,360. The guarded 400-present native-decomp run remained healthy at 42,033 models but encountered
 zero instances of this exact family; it is therefore not evidence that the decomp scene reached the
 new classifier.
+
+## Re-confirmed 2026-08-31 — independently sampled colour and alpha mask
+
+The reached two-stage Mario hand program was decoded as an ordinary high-level equation: its first
+texture supplies RGB multiplied by diffuse stage lighting; its second texture supplies alpha only,
+through texture-coordinate set 1, with a fourfold scale before the half-opacity cutout. Exact CPU
+controls reject changed stage bytes, register alpha, either texture binding, the second coordinate,
+normal, lighting, or raster policy. The watched shipping-GPU control used a green colour texture and
+a deliberately magenta two-texel mask: source alpha 31 was rejected, while source alpha 32 produced
+green without leaking mask RGB, and no kernel GPU fault was observed. A guarded 120-present recomp
+audit advanced all 52 perspective observations through classification, both resource decodes,
+scene readiness, and native submission, reaching 572 lit models among 15,860 total with zero layout,
+projection, rigid-matrix, or mesh-decode failures. The independent guarded 400-present native-decomp
+run remained healthy at 42,033 total/666 lit models but encountered zero instances of this exact
+dynamic material, so it is not claimed as decomp reached-scene evidence.

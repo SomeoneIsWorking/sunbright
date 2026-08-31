@@ -1,6 +1,7 @@
 #include <sunbright/native_render/semantic_3d_pass.h>
 
 #include "../shaders/model_color_frag_spv.h"
+#include "../shaders/model_lit_alpha_mask_frag_spv.h"
 #include "../shaders/model_texture_frag_spv.h"
 #include "../shaders/model_vert_spv.h"
 #include "sdl_image_cache.h"
@@ -21,15 +22,19 @@ struct GpuVertex {
     float uv[2];
     float color[4];
     float additiveColor[4];
+    float uv1[2];
 };
+
+enum class ModelShaderKind : std::uint8_t { Color, Texture, LitAlphaMask };
 
 struct DrawBatch {
     Uint32 firstVertex = 0;
     Uint32 vertexCount = 0;
-    bool textured = false;
+    ModelShaderKind shader = ModelShaderKind::Color;
     ModelRasterPolicy raster{};
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
-    SDL_GPUTextureSamplerBinding texture{};
+    std::array<SDL_GPUTextureSamplerBinding, 2> textures{};
+    Uint32 textureCount = 0;
 };
 
 struct ModelRasterUniform {
@@ -47,17 +52,17 @@ struct VertexStorage {
 struct PipelineKey {
     SDL_GPUTextureFormat color = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUTextureFormat depth = SDL_GPU_TEXTUREFORMAT_INVALID;
-    bool textured = false;
+    ModelShaderKind shader = ModelShaderKind::Color;
     ModelRasterPolicy raster{};
     bool operator==(const PipelineKey&) const = default;
 };
 
 struct PipelineKeyHash {
     std::size_t operator()(PipelineKey key) const noexcept {
-        std::size_t value = static_cast<std::size_t>(key.color) |
-                            (static_cast<std::size_t>(key.depth) << 16U) |
-                            (static_cast<std::size_t>(key.textured) << 31U);
+        std::size_t value =
+            static_cast<std::size_t>(key.color) | (static_cast<std::size_t>(key.depth) << 16U);
         const auto append = [&](std::size_t field) { value = (value * 131U) ^ field; };
+        append(static_cast<std::size_t>(key.shader));
         append(static_cast<std::size_t>(key.raster.cull));
         append(key.raster.depthTest);
         append(static_cast<std::size_t>(key.raster.depthCompare));
@@ -149,6 +154,7 @@ struct Semantic3dPassImpl {
     SDL_GPUShader* vertexShader = nullptr;
     SDL_GPUShader* colorFragmentShader = nullptr;
     SDL_GPUShader* textureFragmentShader = nullptr;
+    SDL_GPUShader* litAlphaMaskFragmentShader = nullptr;
     std::unordered_map<PipelineKey, SDL_GPUGraphicsPipeline*, PipelineKeyHash> pipelines{};
     VertexStorage vertices{};
     std::vector<VertexStorage> retiredStorage{};
@@ -203,6 +209,7 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
                                offsetof(GpuVertex, color)},
         SDL_GPUVertexAttribute{3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
                                offsetof(GpuVertex, additiveColor)},
+        SDL_GPUVertexAttribute{4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv1)},
     };
     SDL_GPUColorTargetDescription colorTarget{};
     colorTarget.format = key.color;
@@ -213,7 +220,17 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = impl.vertexShader;
-    info.fragment_shader = key.textured ? impl.textureFragmentShader : impl.colorFragmentShader;
+    switch (key.shader) {
+    case ModelShaderKind::Color:
+        info.fragment_shader = impl.colorFragmentShader;
+        break;
+    case ModelShaderKind::Texture:
+        info.fragment_shader = impl.textureFragmentShader;
+        break;
+    case ModelShaderKind::LitAlphaMask:
+        info.fragment_shader = impl.litAlphaMaskFragmentShader;
+        break;
+    }
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.vertex_input_state.vertex_buffer_descriptions = &vertexBuffer;
     info.vertex_input_state.num_vertex_buffers = 1;
@@ -266,6 +283,8 @@ Semantic3dPass::~Semantic3dPass() {
             release_storage(impl_->device, storage);
         if (impl_->textureFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->textureFragmentShader);
+        if (impl_->litAlphaMaskFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->litAlphaMaskFragmentShader);
         if (impl_->colorFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->colorFragmentShader);
         if (impl_->vertexShader != nullptr)
@@ -281,7 +300,7 @@ bool Semantic3dPass::initialize(std::string& error) {
         return false;
     }
     if (impl_->vertexShader != nullptr && impl_->colorFragmentShader != nullptr &&
-        impl_->textureFragmentShader != nullptr)
+        impl_->textureFragmentShader != nullptr && impl_->litAlphaMaskFragmentShader != nullptr)
         return true;
     impl_->vertexShader = make_shader(impl_->device, kModelVertSpv, sizeof(kModelVertSpv),
                                       SDL_GPU_SHADERSTAGE_VERTEX);
@@ -291,8 +310,11 @@ bool Semantic3dPass::initialize(std::string& error) {
     impl_->textureFragmentShader =
         make_shader(impl_->device, kModelTextureFragSpv, sizeof(kModelTextureFragSpv),
                     SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+    impl_->litAlphaMaskFragmentShader =
+        make_shader(impl_->device, kModelLitAlphaMaskFragSpv, sizeof(kModelLitAlphaMaskFragSpv),
+                    SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     if (impl_->vertexShader == nullptr || impl_->colorFragmentShader == nullptr ||
-        impl_->textureFragmentShader == nullptr) {
+        impl_->textureFragmentShader == nullptr || impl_->litAlphaMaskFragmentShader == nullptr) {
         error = std::string("semantic 3D shader creation failed: ") + SDL_GetError();
         return false;
     }
@@ -349,14 +371,24 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
         DrawBatch batch{.firstVertex = static_cast<Uint32>(vertices.size()),
                         .vertexCount = static_cast<Uint32>(mesh->second->vertices.size()),
                         .raster = raster};
-        const PictureTexture* texture = material_texture(draw.material);
-        if (texture != nullptr) {
-            batch.textured = true;
-            if (!impl_->images.resolve(*texture, batch.texture, error))
-                return false;
+        batch.textureCount = material_texture_count(draw.material);
+        if (batch.textureCount > batch.textures.size()) {
+            error = "semantic model material exceeds the supported image count";
+            return false;
         }
+        for (Uint32 textureIndex = 0; textureIndex < batch.textureCount; ++textureIndex) {
+            const PictureTexture* texture = material_texture(draw.material, textureIndex);
+            if (texture == nullptr ||
+                !impl_->images.resolve(*texture, batch.textures[textureIndex], error)) {
+                return false;
+            }
+        }
+        if (std::holds_alternative<LitTexturedAlphaMaskMaterial>(draw.material))
+            batch.shader = ModelShaderKind::LitAlphaMask;
+        else if (batch.textureCount == 1)
+            batch.shader = ModelShaderKind::Texture;
         batch.pipeline = ensure_pipeline(
-            *impl_, {target.colorFormat, target.depthFormat, batch.textured, raster}, error);
+            *impl_, {target.colorFormat, target.depthFormat, batch.shader, raster}, error);
         if (batch.pipeline == nullptr)
             return false;
         for (const MeshVertex& source : mesh->second->vertices) {
@@ -367,7 +399,8 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
                                 {transformed.color.r, transformed.color.g, transformed.color.b,
                                  transformed.color.a},
                                 {transformed.additiveColor.r, transformed.additiveColor.g,
-                                 transformed.additiveColor.b, transformed.additiveColor.a}});
+                                 transformed.additiveColor.b, transformed.additiveColor.a},
+                                {transformed.uv1.x, transformed.uv1.y}});
         }
         batches.push_back(batch);
     }
@@ -416,8 +449,8 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
         SDL_BindGPUVertexBuffers(render, 0, &binding, 1);
         for (const DrawBatch& batch : batches) {
             SDL_BindGPUGraphicsPipeline(render, batch.pipeline);
-            if (batch.textured)
-                SDL_BindGPUFragmentSamplers(render, 0, &batch.texture, 1);
+            if (batch.textureCount != 0)
+                SDL_BindGPUFragmentSamplers(render, 0, batch.textures.data(), batch.textureCount);
             const ModelRasterUniform rasterUniform{
                 {alpha_threshold(batch.raster.alphaTest), 0, 0, 0}};
             SDL_PushGPUFragmentUniformData(target.commandBuffer, 0, &rasterUniform,

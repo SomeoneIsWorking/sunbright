@@ -15,7 +15,10 @@ bool near(float actual, float expected) {
 int main() {
     using namespace sb::native_render;
 
-    const MeshVertex vertex{{1.0F, 2.0F, 3.0F}, {0.25F, 0.5F}, {0.5F, 0.25F, 1.0F, 0.5F}};
+    const MeshVertex vertex{.position = {1.0F, 2.0F, 3.0F},
+                            .uv = {0.25F, 0.5F},
+                            .uv1 = {0.75F, 0.125F},
+                            .color = {0.5F, 0.25F, 1.0F, 0.5F}};
     const ModelDraw draw{
         .instance = 7,
         .mesh = {.resource = 11, .revision = 2, .vertexCount = 3},
@@ -28,12 +31,14 @@ int main() {
     assert(valid(vertex));
     assert(valid(draw));
     assert(raster_policy(draw.material) == ModelRasterPolicy{});
+    assert(material_texture_count(draw.material) == 0);
     assert(material_texture(draw.material) == nullptr);
     const ClipVertex transformed = transform_vertex(draw, vertex);
     assert(near(transformed.position.x, 10.0F));
     assert(near(transformed.position.y, 21.0F));
     assert(near(transformed.position.z, 36.0F));
     assert(near(transformed.position.w, 1.0F));
+    assert(transformed.uv1 == vertex.uv1);
     assert(near(transformed.color.r, 0.25F));
     assert(near(transformed.color.g, 0.25F));
     assert(near(transformed.color.b, 0.25F));
@@ -70,6 +75,8 @@ int main() {
                      .pointLightCount = 1},
     };
     assert(material_texture(lit.material) == &std::get<LitTexturedMaterial>(lit.material).texture);
+    assert(material_texture_count(lit.material) == 1);
+    assert(material_texture(lit.material, 1) == nullptr);
     const ClipVertex litVertex = transform_vertex(lit, vertex);
     assert(near(litVertex.color.r, 0.3F));
     assert(near(litVertex.color.g, 0.225F));
@@ -88,6 +95,30 @@ int main() {
     const ClipVertex maskedVertex = transform_vertex(masked, vertex);
     assert(maskedVertex.color == (Color{0.0F, 0.0F, 0.0F, 4.0F}));
     assert(maskedVertex.additiveColor == (Color{0.25F, 0.5F, 0.75F, 0.0F}));
+
+    ModelDraw litMask = draw;
+    litMask.material = LitTexturedAlphaMaskMaterial{
+        .colorTexture = {.resource = 20, .width = 1, .height = 1},
+        .alphaMaskTexture = {.resource = 21, .width = 1, .height = 1},
+        .baseColor = {0.5F, 0.5F, 0.5F, 1.0F},
+        .ambientColor = {0.1F, 0.2F, 0.3F, 1.0F},
+        .lighting = {.pointLights = {{{.position = {5.0F, 7.0F, 19.0F},
+                                       .color = {0.5F, 0.25F, 0.0F, 1.0F}}}},
+                     .pointLightCount = 1},
+        .alphaScale = 4.0F,
+    };
+    assert(material_texture_count(litMask.material) == 2);
+    const auto& litMaskMaterial = std::get<LitTexturedAlphaMaskMaterial>(litMask.material);
+    assert(material_texture(litMask.material, 0) == &litMaskMaterial.colorTexture);
+    assert(material_texture(litMask.material, 1) == &litMaskMaterial.alphaMaskTexture);
+    assert(material_texture(litMask.material, 2) == nullptr);
+    const ClipVertex litMaskVertex = transform_vertex(litMask, vertex);
+    assert(litMaskVertex.uv == vertex.uv);
+    assert(litMaskVertex.uv1 == vertex.uv1);
+    assert(near(litMaskVertex.color.r, 0.3F));
+    assert(near(litMaskVertex.color.g, 0.225F));
+    assert(near(litMaskVertex.color.b, 0.15F));
+    assert(near(litMaskVertex.color.a, 4.0F));
 
     // The lighting accumulator saturates before material multiplication. This distinguishes the
     // shipping equation from final-product clamping: 0.5 * clamp(0.8 + 0.8) is 0.5, not 0.8.
@@ -125,5 +156,8 @@ int main() {
     assert(!valid(invalid));
     invalid = lit;
     std::get<LitTexturedMaterial>(invalid.material).litColorWeight = 1.1F;
+    assert(!valid(invalid));
+    invalid = litMask;
+    std::get<LitTexturedAlphaMaskMaterial>(invalid.material).alphaMaskTexture.resource = 0;
     assert(!valid(invalid));
 }

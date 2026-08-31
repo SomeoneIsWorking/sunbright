@@ -152,6 +152,8 @@ std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept {
         append(vertex.position.z);
         append(vertex.uv.x);
         append(vertex.uv.y);
+        append(vertex.uv1.x);
+        append(vertex.uv1.y);
         append(vertex.color.r);
         append(vertex.color.g);
         append(vertex.color.b);
@@ -171,8 +173,8 @@ Matrix4x4 zero_to_one_depth_projection(Matrix4x4 projection) noexcept {
 
 bool valid(const MeshVertex& vertex) noexcept {
     return finite(vertex.position.x) && finite(vertex.position.y) && finite(vertex.position.z) &&
-           finite(vertex.uv.x) && finite(vertex.uv.y) && valid(vertex.color) &&
-           valid(vertex.normal);
+           finite(vertex.uv.x) && finite(vertex.uv.y) && finite(vertex.uv1.x) &&
+           finite(vertex.uv1.y) && valid(vertex.color) && valid(vertex.normal);
 }
 
 bool valid(const MeshResourceView& mesh) noexcept {
@@ -192,20 +194,58 @@ const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept {
                       material);
 }
 
-const PictureTexture* material_texture(const ModelMaterial& material) noexcept {
+std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
     return std::visit(
-        [](const auto& value) -> const PictureTexture* {
+        [](const auto& value) -> std::uint8_t {
             using Material = std::remove_cvref_t<decltype(value)>;
+            if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>)
+                return 2;
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                           std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                           std::is_same_v<Material, LitTexturedMaterial> ||
                           std::is_same_v<Material, TintedSpecularTexturedMaterial>) {
-                return &value.texture;
+                return 1;
+            }
+            return 0;
+        },
+        material);
+}
+
+const PictureTexture* material_texture(const ModelMaterial& material, std::uint8_t index) noexcept {
+    return std::visit(
+        [index](const auto& value) -> const PictureTexture* {
+            using Material = std::remove_cvref_t<decltype(value)>;
+            if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>) {
+                if (index == 0)
+                    return &value.colorTexture;
+                return index == 1 ? &value.alphaMaskTexture : nullptr;
+            } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
+                                 std::is_same_v<Material, AlphaMaskedColorMaterial> ||
+                                 std::is_same_v<Material, LitTexturedMaterial> ||
+                                 std::is_same_v<Material, TintedSpecularTexturedMaterial>) {
+                return index == 0 ? &value.texture : nullptr;
             } else {
                 return nullptr;
             }
         },
         material);
+}
+
+bool material_images_match(const ModelMaterial& material,
+                           std::span<const DecodedImageView> images) noexcept {
+    if (images.size() != material_texture_count(material))
+        return false;
+    for (std::size_t index = 0; index < images.size(); ++index) {
+        const PictureTexture* texture =
+            material_texture(material, static_cast<std::uint8_t>(index));
+        const DecodedImageView& image = images[index];
+        if (texture == nullptr || !valid(image) || image.resource != texture->resource ||
+            image.revision != texture->revision || image.width != texture->width ||
+            image.height != texture->height) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool valid(const ModelDraw& draw) noexcept {
@@ -227,6 +267,14 @@ bool valid(const ModelDraw& draw) noexcept {
                        valid(material.ambientColor) && valid(material.lighting) &&
                        finite(material.litColorWeight) && material.litColorWeight >= 0.0F &&
                        material.litColorWeight <= 1.0F;
+            } else if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>) {
+                return material.colorTexture.resource != 0 && material.colorTexture.width != 0 &&
+                       material.colorTexture.height != 0 &&
+                       material.alphaMaskTexture.resource != 0 &&
+                       material.alphaMaskTexture.width != 0 &&
+                       material.alphaMaskTexture.height != 0 && valid(material.baseColor) &&
+                       valid(material.ambientColor) && valid(material.lighting) &&
+                       finite(material.alphaScale) && material.alphaScale >= 0.0F;
             } else {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
@@ -291,6 +339,10 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                                         std::lerp(1.0F, lit.b, weight),
                                         alphaSource,
                                     }};
+            } else if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>) {
+                const Color lit = diffuse_lighting(material.baseColor, material.ambientColor,
+                                                   material.lighting, eyePosition, normal);
+                return VertexColors{.multiplicative = {lit.r, lit.g, lit.b, material.alphaScale}};
             } else {
                 const Color diffuse = diffuse_lighting(material.baseColor, material.ambientColor,
                                                        material.lighting, eyePosition, normal);
@@ -314,7 +366,7 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
             }
         },
         draw.material);
-    return {position, vertex.uv, colors.multiplicative, colors.additive};
+    return {position, vertex.uv, vertex.uv1, colors.multiplicative, colors.additive};
 }
 
 } // namespace sb::native_render

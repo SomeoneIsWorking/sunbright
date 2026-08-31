@@ -11,6 +11,10 @@ using sb::native_render::Canvas;
 using sb::native_render::Color;
 using sb::native_render::DecodedImageView;
 using sb::native_render::GlyphDraw;
+using sb::native_render::LitTexturedAlphaMaskMaterial;
+using sb::native_render::MeshResourceView;
+using sb::native_render::MeshVertex;
+using sb::native_render::ModelDraw;
 using sb::native_render::PictureCommand;
 using sb::native_render::PictureDraw;
 using sb::native_render::PictureTexture;
@@ -134,6 +138,31 @@ int main() {
     assert(frame.images.size() == 2);
     assert(frame.images[0].rgba8[0] != frame.images[1].rgba8[0]);
     assert(sb::native_render::canvas(frame.draws[0]) != sb::native_render::canvas(frame.draws[1]));
+
+    // A two-image model stores both resources atomically and preserves material order. This is the
+    // production collector path used by independently sampled colour and alpha-mask textures.
+    const std::array<MeshVertex, 3> modelVertices{MeshVertex{{0, 0, 0}}, MeshVertex{{1, 0, 0}},
+                                                  MeshVertex{{0, 1, 0}}};
+    const MeshResourceView modelMesh{30, 1, modelVertices};
+    const ModelDraw litMaskModel{
+        .instance = 31,
+        .mesh = {.resource = 30, .revision = 1, .vertexCount = 3},
+        .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+        .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
+        .material =
+            LitTexturedAlphaMaskMaterial{
+                .colorTexture = {.resource = 7, .revision = 1, .width = 1, .height = 1},
+                .alphaMaskTexture = {.resource = 8, .revision = 1, .width = 1, .height = 1},
+                .lighting = {.pointLights = {{{.position = {0, 0, 1}}}}, .pointLightCount = 1}},
+    };
+    auto maskImage = image(8, 1, blue);
+    const std::array<DecodedImageView, 2> modelImages{firstImage, maskImage};
+    assert(collector.begin(1280, 960, {}));
+    assert(collector.append_model(litMaskModel, modelMesh, modelImages));
+    assert(collector.decoded_image_bytes() == 8);
+    assert(collector.seal(frame));
+    assert(frame.models.size() == 1 && frame.images.size() == 2);
+    assert(frame.images[0].resource == 7 && frame.images[1].resource == 8);
 
     SemanticFrameCollector commandBound{{.commands = 1, .images = 2, .decodedImageBytes = 8}};
     assert(commandBound.begin(1280, 960, {}));

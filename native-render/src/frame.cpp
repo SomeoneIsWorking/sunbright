@@ -216,19 +216,12 @@ bool SemanticFrameCollector::append_model(const ModelDraw& draw, const MeshResou
     if (draws_.size() + models_.size() >= limits_.commands)
         return fail(SemanticFrameError::CommandLimit);
 
-    const PictureTexture* texture = material_texture(draw.material);
-    if ((texture == nullptr && !images.empty()) || (texture != nullptr && images.size() != 1))
+    if (!material_images_match(draw.material, images))
         return fail(SemanticFrameError::InvalidSubmission);
 
     std::vector<StoredImage> pendingImages;
     std::size_t pendingImageBytes = 0;
-    if (texture != nullptr) {
-        const DecodedImageView& image = images.front();
-        if (!valid(image) || image.resource != texture->resource ||
-            image.revision != texture->revision || image.width != texture->width ||
-            image.height != texture->height) {
-            return fail(SemanticFrameError::InvalidSubmission);
-        }
+    for (const DecodedImageView& image : images) {
         const auto storedImage =
             std::find_if(images_.begin(), images_.end(), [&](const StoredImage& candidate) {
                 return candidate.resource == image.resource && candidate.revision == image.revision;
@@ -239,18 +232,32 @@ bool SemanticFrameCollector::append_model(const ModelDraw& draw, const MeshResou
                             image.rgba8.begin(), image.rgba8.end())) {
                 return fail(SemanticFrameError::ConflictingImage);
             }
+        } else if (const auto pendingImage =
+                       std::find_if(pendingImages.begin(), pendingImages.end(),
+                                    [&](const StoredImage& candidate) {
+                                        return candidate.resource == image.resource &&
+                                               candidate.revision == image.revision;
+                                    });
+                   pendingImage != pendingImages.end()) {
+            if (pendingImage->width != image.width || pendingImage->height != image.height ||
+                !std::equal(pendingImage->rgba8.begin(), pendingImage->rgba8.end(),
+                            image.rgba8.begin(), image.rgba8.end())) {
+                return fail(SemanticFrameError::ConflictingImage);
+            }
         } else {
-            if (images_.size() >= limits_.images)
+            if (images_.size() + pendingImages.size() >= limits_.images)
                 return fail(SemanticFrameError::ImageLimit);
             if (decodedImageBytes_ > limits_.decodedImageBytes ||
-                image.rgba8.size() > limits_.decodedImageBytes - decodedImageBytes_) {
+                pendingImageBytes > limits_.decodedImageBytes - decodedImageBytes_ ||
+                image.rgba8.size() >
+                    limits_.decodedImageBytes - decodedImageBytes_ - pendingImageBytes) {
                 return fail(SemanticFrameError::ImageByteLimit);
             }
             try {
                 pendingImages.push_back(
                     {image.resource, image.revision, image.width, image.height,
                      std::vector<std::uint8_t>(image.rgba8.begin(), image.rgba8.end())});
-                pendingImageBytes = image.rgba8.size();
+                pendingImageBytes += image.rgba8.size();
             } catch (const std::bad_alloc&) {
                 return fail(SemanticFrameError::AllocationFailure);
             }

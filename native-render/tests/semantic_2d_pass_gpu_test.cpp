@@ -513,6 +513,62 @@ int main() {
         assert(pixel(maskAt, 8, 8).g > 0.9F);
         assert(pixel(maskAt, 8, 8).r < 0.01F);
 
+        // The two-texture material must sample colour from UV0 and alpha from UV1. The mask's
+        // magenta RGB is deliberately wrong and must be ignored. A 31-alpha mask is rejected after
+        // the authored 4x scale, while the adjacent 32-alpha texel selected only by UV1 is
+        // accepted.
+        const std::array<std::uint8_t, 4> litColorTexel{0, 255, 0, 255};
+        const std::array<std::uint8_t, 8> litMaskTexels{255, 0, 255, 31, 255, 0, 255, 32};
+        const DecodedImageView litColorImage{
+            .resource = 210, .revision = 1, .width = 1, .height = 1, .rgba8 = litColorTexel};
+        const DecodedImageView litMaskImage{
+            .resource = 211, .revision = 1, .width = 2, .height = 1, .rgba8 = litMaskTexels};
+        std::array<MeshVertex, 3> litMaskVertices = vertices;
+        for (MeshVertex& litMaskVertex : litMaskVertices)
+            litMaskVertex.uv1 = {0.25F, 0.5F};
+        MeshResourceView litMaskMesh{212, 1, litMaskVertices};
+        ModelDraw litAlphaMask = model;
+        litAlphaMask.instance = 213;
+        litAlphaMask.mesh = {.resource = 212, .revision = 1, .vertexCount = 3};
+        litAlphaMask.material = sb::native_render::LitTexturedAlphaMaskMaterial{
+            .colorTexture = {.resource = 210, .revision = 1, .width = 1, .height = 1},
+            .alphaMaskTexture = {.resource = 211,
+                                 .revision = 1,
+                                 .width = 2,
+                                 .height = 1,
+                                 .minFilter = sb::native_render::FilterMode::Nearest,
+                                 .magFilter = sb::native_render::FilterMode::Nearest},
+            .baseColor = {1, 1, 1, 1},
+            .ambientColor = {1, 1, 1, 1},
+            .lighting = {.pointLights = {{{.position = {0, 0, 1}}}}, .pointLightCount = 1},
+            .alphaScale = 4,
+            .raster = {.cull = sb::native_render::ModelCullMode::None,
+                       .alphaTest = sb::native_render::ModelAlphaTest::GreaterOrEqualHalf},
+        };
+        const std::array<DecodedImageView, 2> litMaskImages{litColorImage, litMaskImage};
+        const auto renderLitMask = [&] {
+            const SemanticFrame modelFrame{
+                .targetWidth = 16,
+                .targetHeight = 16,
+                .models = std::span<const ModelDraw>(&litAlphaMask, 1),
+                .meshes = std::span<const MeshResourceView>(&litMaskMesh, 1),
+                .images = litMaskImages,
+            };
+            SemanticFramePixels result{};
+            assert(encode_3d_and_readback(pass, modelFrame, modelTarget, result, error) &&
+                   error.empty());
+            return result;
+        };
+        const SemanticFramePixels litMaskBelow = renderLitMask();
+        require_color(pixel(litMaskBelow, 8, 8), {});
+        for (MeshVertex& litMaskVertex : litMaskVertices)
+            litMaskVertex.uv1 = {0.75F, 0.5F};
+        litMaskMesh.revision = 2;
+        litAlphaMask.mesh.revision = 2;
+        const SemanticFramePixels litMaskAt = renderLitMask();
+        assert(pixel(litMaskAt, 8, 8).g > 0.9F);
+        assert(pixel(litMaskAt, 8, 8).r < 0.01F && pixel(litMaskAt, 8, 8).b < 0.01F);
+
         // Affine texture control for the specular-material shader path. The baseline exercises
         // texture * diffuse colour; changing only the semantic tint must add red while preserving
         // green. This runs the shipping vertex upload and fragment shader, not a CPU copy.

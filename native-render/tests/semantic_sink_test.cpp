@@ -29,7 +29,7 @@ bool reject(const sb::native_render::SemanticDraw&,
 bool receive_model(const sb::native_render::ModelDraw& draw,
                    const sb::native_render::MeshResourceView&,
                    std::span<const sb::native_render::DecodedImageView> images, void* context) {
-    assert(images.size() == (sb::native_render::material_texture(draw.material) ? 1U : 0U));
+    assert(images.size() == sb::native_render::material_texture_count(draw.material));
     *static_cast<std::uint64_t*>(context) = draw.instance;
     return true;
 }
@@ -114,6 +114,22 @@ int main() {
     };
     assert(sb::native_render::submit_model(litModel, mesh, std::span(&image, 1)));
     assert(received == 11);
+    const std::array<std::uint8_t, 4> maskRgba{0, 0, 0, 255};
+    const sb::native_render::DecodedImageView maskImage{
+        .resource = 3, .width = 1, .height = 1, .rgba8 = maskRgba};
+    auto litMaskModel = model;
+    litMaskModel.instance = 12;
+    litMaskModel.material = sb::native_render::LitTexturedAlphaMaskMaterial{
+        .colorTexture = {.resource = 1, .width = 1, .height = 1},
+        .alphaMaskTexture = {.resource = 3, .width = 1, .height = 1},
+        .lighting = {.pointLights = {{{.position = {0, 0, 1}}}}, .pointLightCount = 1},
+    };
+    const std::array<sb::native_render::DecodedImageView, 2> litMaskImages{image, maskImage};
+    assert(sb::native_render::submit_model(litMaskModel, mesh, litMaskImages));
+    assert(received == 12);
+    const std::array<sb::native_render::DecodedImageView, 2> reversedImages{maskImage, image};
+    assert(!sb::native_render::submit_model(litMaskModel, mesh, reversedImages));
+    assert(!sb::native_render::submit_model(litMaskModel, mesh, std::span(&image, 1)));
 
     auto invalid = valid_draw();
     invalid.picture.material.textureCount = 0;

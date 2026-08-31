@@ -10,6 +10,7 @@
 #include "../runtime/sb_assert.h"
 
 #include <sunbright/native_render/j3d_alpha_masked_material.h>
+#include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
@@ -123,10 +124,13 @@ struct ProgramObservation {
     std::string materialName;
     std::string textureName0;
     std::string textureName1;
+    std::uint32_t firstMaterialColor = 0;
+    std::uint32_t firstAmbientColor = 0;
     std::uint32_t firstMaterialColor1 = 0;
     std::uint32_t firstAmbientColor1 = 0;
     std::array<std::uint32_t, 4> firstKonstColors{};
     std::array<std::int16_t, 4> firstTevColor0{};
+    bool primaryColorsVary = false;
     bool secondaryColorsVary = false;
     bool konstColorsVary = false;
     bool tevColor0Varies = false;
@@ -136,7 +140,7 @@ Stats g_stats{};
 std::map<ProgramKey, ProgramObservation> g_programs;
 std::vector<J3DVert> g_decoded;
 std::vector<sb::native_render::MeshVertex> g_vertices;
-sb::native_render::DecodedTexture g_texture;
+std::array<sb::native_render::DecodedTexture, 2> g_textures;
 
 bool readable(u32 address) {
     return sb_ram_fast(address) != nullptr;
@@ -396,6 +400,7 @@ std::string semantic_j3d_stats_text() {
             "order1=%02x/%02x/%02x stage1=%02x%02x%02x%02x%02x%02x%02x%02x "
             "path=%llu-observed/%llu-perspective/%llu-accepted/%llu-resources/%llu-ready/"
             "%llu-models "
+            "primaryColor=%08x/%08x varies=%u "
             "secondColor=%08x/%08x varies=%u "
             "tevColor0=%d/%d/%d/%d varies=%u "
             "konstSel=%02x/%02x konst=%08x/%08x/%08x/%08x varies=%u",
@@ -419,11 +424,13 @@ std::string semantic_j3d_stats_text() {
             static_cast<unsigned long long>(observation.resourcesReady),
             static_cast<unsigned long long>(observation.perspectiveReady),
             static_cast<unsigned long long>(observation.submittedModels),
-            observation.firstMaterialColor1, observation.firstAmbientColor1,
-            observation.secondaryColorsVary ? 1U : 0U, observation.firstTevColor0[0],
-            observation.firstTevColor0[1], observation.firstTevColor0[2],
-            observation.firstTevColor0[3], observation.tevColor0Varies ? 1U : 0U,
-            key.konstColorSelection0, key.konstColorSelection1, observation.firstKonstColors[0],
+            observation.firstMaterialColor, observation.firstAmbientColor,
+            observation.primaryColorsVary ? 1U : 0U, observation.firstMaterialColor1,
+            observation.firstAmbientColor1, observation.secondaryColorsVary ? 1U : 0U,
+            observation.firstTevColor0[0], observation.firstTevColor0[1],
+            observation.firstTevColor0[2], observation.firstTevColor0[3],
+            observation.tevColor0Varies ? 1U : 0U, key.konstColorSelection0,
+            key.konstColorSelection1, observation.firstKonstColors[0],
             observation.firstKonstColors[1], observation.firstKonstColors[2],
             observation.firstKonstColors[3], observation.konstColorsVary ? 1U : 0U);
         report += line;
@@ -503,11 +510,17 @@ void submit_semantic_j3d_shape(u32 shape) {
     ProgramObservation& observation = programEntry->second;
     if (inserted) {
         capture_program_names(capturedProgram, observation);
+        observation.firstMaterialColor = materialState.materialColorRgba8;
+        observation.firstAmbientColor = materialState.ambientColorRgba8;
         observation.firstMaterialColor1 = materialState.materialColor1Rgba8;
         observation.firstAmbientColor1 = materialState.ambientColor1Rgba8;
         observation.firstKonstColors = materialState.konstColorRgba8;
         observation.firstTevColor0 = materialState.tevColor0S10;
     } else {
+        if (observation.firstMaterialColor != materialState.materialColorRgba8 ||
+            observation.firstAmbientColor != materialState.ambientColorRgba8) {
+            observation.primaryColorsVary = true;
+        }
         if (observation.firstMaterialColor1 != materialState.materialColor1Rgba8 ||
             observation.firstAmbientColor1 != materialState.ambientColor1Rgba8) {
             observation.secondaryColorsVary = true;
@@ -538,7 +551,7 @@ void submit_semantic_j3d_shape(u32 shape) {
     sb::native_render::ModelMaterial semanticMaterial{};
     bool submittedLitMaterial = false;
     bool submittedAlphaMaskedMaterial = false;
-    std::array<sb::native_render::DecodedImageView, 1> semanticImages{};
+    std::array<sb::native_render::DecodedImageView, 2> semanticImages{};
     std::span<const sb::native_render::DecodedImageView> images;
     sb::native_render::UnlitColorMaterial colorMaterial{};
     const sb::native_render::J3dUnlitMaterialResult colorResult =
@@ -568,6 +581,14 @@ void submit_semantic_j3d_shape(u32 shape) {
         const bool isAlphaMasked =
             alphaMaskedFamily == sb::native_render::J3dAlphaMaskedMaterialResult::Success;
         const bool isLitTextured = litFamily == sb::native_render::J3dLitTexturedResult::Success;
+        sb::native_render::LitTexturedAlphaMaskMaterial litAlphaMaskMaterial{};
+        const sb::native_render::J3dLitAlphaMaskResult litAlphaMaskFamily =
+            lighting != nullptr
+                ? sb::native_render::classify_j3d_lit_alpha_mask_material(
+                      materialState, placeholder, placeholder, *lighting, litAlphaMaskMaterial)
+                : sb::native_render::J3dLitAlphaMaskResult::MissingLightingContext;
+        const bool isLitAlphaMask =
+            litAlphaMaskFamily == sb::native_render::J3dLitAlphaMaskResult::Success;
         sb::native_render::TintedSpecularTexturedMaterial specularMaterial{};
         const sb::native_render::J3dSpecularTexturedResult specularFamily =
             lighting != nullptr
@@ -576,7 +597,8 @@ void submit_semantic_j3d_shape(u32 shape) {
                 : sb::native_render::J3dSpecularTexturedResult::MissingLightingContext;
         const bool isSpecularTextured =
             specularFamily == sb::native_render::J3dSpecularTexturedResult::Success;
-        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isSpecularTextured) {
+        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask &&
+            !isSpecularTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
@@ -592,16 +614,28 @@ void submit_semantic_j3d_shape(u32 shape) {
         sb::native_render::ResTimgDecodeError textureError{};
         if (!sb::recomp::capture_guest_j3d_texture(sb::recomp::live_guest_byte_reader(),
                                                    textureTable, materialState.textureNumber0,
-                                                   g_texture, textureError)) {
+                                                   g_textures[0], textureError)) {
             const std::size_t errorIndex = static_cast<std::size_t>(textureError);
             if (errorIndex < g_stats.textureDecodeFailures.size())
                 ++g_stats.textureDecodeFailures[errorIndex];
             return;
         }
+        std::size_t textureCount = 1;
+        if (isLitAlphaMask) {
+            if (!sb::recomp::capture_guest_j3d_texture(sb::recomp::live_guest_byte_reader(),
+                                                       textureTable, materialState.textureNumber1,
+                                                       g_textures[1], textureError)) {
+                const std::size_t errorIndex = static_cast<std::size_t>(textureError);
+                if (errorIndex < g_stats.textureDecodeFailures.size())
+                    ++g_stats.textureDecodeFailures[errorIndex];
+                return;
+            }
+            textureCount = 2;
+        }
         if (isAlphaMasked) {
             const sb::native_render::J3dAlphaMaskedMaterialResult classified =
                 sb::native_render::classify_j3d_alpha_masked_material(
-                    materialState, g_texture.texture, alphaMaskedMaterial);
+                    materialState, g_textures[0].texture, alphaMaskedMaterial);
             SB_ASSERT(classified == sb::native_render::J3dAlphaMaskedMaterialResult::Success,
                       "decoded J3D texture invalidated a preclassified alpha-mask material: "
                       "result=%s",
@@ -611,17 +645,28 @@ void submit_semantic_j3d_shape(u32 shape) {
         } else if (isSpecularTextured) {
             const sb::native_render::J3dSpecularTexturedResult classified =
                 sb::native_render::classify_j3d_specular_textured_material(
-                    materialState, g_texture.texture, *lighting, specularMaterial);
+                    materialState, g_textures[0].texture, *lighting, specularMaterial);
             SB_ASSERT(classified == sb::native_render::J3dSpecularTexturedResult::Success,
                       "decoded J3D texture invalidated a preclassified specular material: "
                       "result=%s",
                       sb::native_render::j3d_specular_textured_result_name(classified));
             semanticMaterial = specularMaterial;
             submittedLitMaterial = true;
+        } else if (isLitAlphaMask) {
+            const sb::native_render::J3dLitAlphaMaskResult classified =
+                sb::native_render::classify_j3d_lit_alpha_mask_material(
+                    materialState, g_textures[0].texture, g_textures[1].texture, *lighting,
+                    litAlphaMaskMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dLitAlphaMaskResult::Success,
+                      "decoded J3D textures invalidated a preclassified lit alpha-mask material: "
+                      "result=%s",
+                      sb::native_render::j3d_lit_alpha_mask_result_name(classified));
+            semanticMaterial = litAlphaMaskMaterial;
+            submittedLitMaterial = true;
         } else if (isLitTextured) {
             const sb::native_render::J3dLitTexturedResult classified =
                 sb::native_render::classify_j3d_lit_textured_material(
-                    materialState, g_texture.texture, *lighting, litMaterial);
+                    materialState, g_textures[0].texture, *lighting, litMaterial);
             SB_ASSERT(classified == sb::native_render::J3dLitTexturedResult::Success,
                       "decoded J3D texture invalidated a preclassified lit material: result=%s",
                       sb::native_render::j3d_lit_textured_result_name(classified));
@@ -630,15 +675,18 @@ void submit_semantic_j3d_shape(u32 shape) {
         } else {
             const sb::native_render::J3dUnlitTexturedResult classified =
                 sb::native_render::classify_j3d_unlit_textured_material(
-                    materialState, g_texture.texture, texturedMaterial);
+                    materialState, g_textures[0].texture, texturedMaterial);
             SB_ASSERT(classified == sb::native_render::J3dUnlitTexturedResult::Success,
                       "decoded J3D texture invalidated a preclassified material: result=%s",
                       sb::native_render::j3d_unlit_textured_result_name(classified));
             semanticMaterial = texturedMaterial;
         }
-        semanticImages[0] = {g_texture.texture.resource, g_texture.texture.revision,
-                             g_texture.texture.width, g_texture.texture.height, g_texture.rgba8};
-        images = semanticImages;
+        for (std::size_t index = 0; index < textureCount; ++index) {
+            const auto& texture = g_textures[index];
+            semanticImages[index] = {texture.texture.resource, texture.texture.revision,
+                                     texture.texture.width, texture.texture.height, texture.rgba8};
+        }
+        images = std::span(semanticImages).first(textureCount);
     }
     ++observation.resourcesReady;
 
@@ -690,6 +738,7 @@ void submit_semantic_j3d_shape(u32 shape) {
         for (const J3DVert& vertex : g_decoded) {
             g_vertices.push_back({.position = {vertex.x, vertex.y, vertex.z},
                                   .uv = {vertex.uv[0][0], vertex.uv[0][1]},
+                                  .uv1 = {vertex.uv[1][0], vertex.uv[1][1]},
                                   .color = sb::native_render::color_from_rgba8(vertex.rgba),
                                   .normal = {vertex.nx, vertex.ny, vertex.nz}});
         }

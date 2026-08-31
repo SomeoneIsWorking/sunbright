@@ -45,6 +45,23 @@ native_render::ResTimgDescriptor describe(const ResTIMG& image) noexcept {
             .imageOffset = static_cast<std::int32_t>(image.imageDataOffset)};
 }
 
+NativeJ3dMaterialResult decode_texture(J3DTexture& textureTable, std::uint16_t textureNumber,
+                                       native_render::DecodedTexture& texture,
+                                       native_render::ResTimgDecodeError& textureError) noexcept {
+    if (textureNumber >= textureTable.getNum())
+        return NativeJ3dMaterialResult::MissingTexture;
+    ResTIMG* image = textureTable.getResTIMG(textureNumber);
+    if (image == nullptr)
+        return NativeJ3dMaterialResult::MissingTexture;
+    const native_render::ByteAddress address = native_render::ByteAddress::native(image);
+    textureError =
+        native_render::decode_res_timg({read_native_memory, nullptr}, describe(*image), address,
+                                       reinterpret_cast<std::uintptr_t>(image), texture);
+    return textureError == native_render::ResTimgDecodeError::None
+               ? NativeJ3dMaterialResult::Success
+               : NativeJ3dMaterialResult::TextureDecodeFailure;
+}
+
 } // namespace
 
 bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColor, bool hasNormal,
@@ -220,56 +237,71 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         lighting != nullptr && native_render::classify_j3d_lit_textured_material(
                                    state, placeholder, *lighting, litMaterial) ==
                                    native_render::J3dLitTexturedResult::Success;
+    native_render::LitTexturedAlphaMaskMaterial litAlphaMaskMaterial{};
+    const bool isLitAlphaMask =
+        lighting != nullptr &&
+        native_render::classify_j3d_lit_alpha_mask_material(state, placeholder, placeholder,
+                                                            *lighting, litAlphaMaskMaterial) ==
+            native_render::J3dLitAlphaMaskResult::Success;
     native_render::TintedSpecularTexturedMaterial specularMaterial{};
     const bool isSpecularTextured =
         lighting != nullptr && native_render::classify_j3d_specular_textured_material(
                                    state, placeholder, *lighting, specularMaterial) ==
                                    native_render::J3dSpecularTexturedResult::Success;
-    if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isSpecularTextured) {
+    if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask &&
+        !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
-    if (textureTable == nullptr || state.textureNumber0 >= textureTable->getNum())
+    if (textureTable == nullptr)
         return NativeJ3dMaterialResult::MissingTexture;
-
-    ResTIMG* image = textureTable->getResTIMG(state.textureNumber0);
-    if (image == nullptr)
-        return NativeJ3dMaterialResult::MissingTexture;
-    const native_render::ByteAddress address = native_render::ByteAddress::native(image);
-    textureError =
-        native_render::decode_res_timg({read_native_memory, nullptr}, describe(*image), address,
-                                       reinterpret_cast<std::uintptr_t>(image), result.texture);
-    if (textureError != native_render::ResTimgDecodeError::None)
-        return NativeJ3dMaterialResult::TextureDecodeFailure;
+    const NativeJ3dMaterialResult firstTexture =
+        decode_texture(*textureTable, state.textureNumber0, result.textures[0], textureError);
+    if (firstTexture != NativeJ3dMaterialResult::Success)
+        return firstTexture;
+    result.textureCount = 1;
+    if (isLitAlphaMask) {
+        const NativeJ3dMaterialResult secondTexture =
+            decode_texture(*textureTable, state.textureNumber1, result.textures[1], textureError);
+        if (secondTexture != NativeJ3dMaterialResult::Success)
+            return secondTexture;
+        result.textureCount = 2;
+    }
     if (isAlphaMasked) {
-        if (native_render::classify_j3d_alpha_masked_material(state, result.texture.texture,
+        if (native_render::classify_j3d_alpha_masked_material(state, result.textures[0].texture,
                                                               alphaMaskedMaterial) !=
             native_render::J3dAlphaMaskedMaterialResult::Success) {
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = alphaMaskedMaterial;
     } else if (isSpecularTextured) {
-        if (native_render::classify_j3d_specular_textured_material(state, result.texture.texture,
-                                                                   *lighting, specularMaterial) !=
+        if (native_render::classify_j3d_specular_textured_material(
+                state, result.textures[0].texture, *lighting, specularMaterial) !=
             native_render::J3dSpecularTexturedResult::Success) {
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = specularMaterial;
+    } else if (isLitAlphaMask) {
+        if (native_render::classify_j3d_lit_alpha_mask_material(
+                state, result.textures[0].texture, result.textures[1].texture, *lighting,
+                litAlphaMaskMaterial) != native_render::J3dLitAlphaMaskResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = litAlphaMaskMaterial;
     } else if (isLitTextured) {
-        if (native_render::classify_j3d_lit_textured_material(state, result.texture.texture,
+        if (native_render::classify_j3d_lit_textured_material(state, result.textures[0].texture,
                                                               *lighting, litMaterial) !=
             native_render::J3dLitTexturedResult::Success) {
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = litMaterial;
     } else {
-        if (native_render::classify_j3d_unlit_textured_material(state, result.texture.texture,
+        if (native_render::classify_j3d_unlit_textured_material(state, result.textures[0].texture,
                                                                 texturedMaterial) !=
             native_render::J3dUnlitTexturedResult::Success) {
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = texturedMaterial;
     }
-    result.hasTexture = true;
     captured = std::move(result);
     return NativeJ3dMaterialResult::Success;
 }
