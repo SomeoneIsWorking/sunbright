@@ -209,7 +209,7 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                           std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                           std::is_same_v<Material, LitTexturedMaterial> ||
-                          std::is_same_v<Material, TintedSpecularTexturedMaterial>) {
+                          std::is_same_v<Material, LitSpecularTexturedMaterial>) {
                 return 1;
             }
             return 0;
@@ -228,7 +228,7 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                                  std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                                  std::is_same_v<Material, LitTexturedMaterial> ||
-                                 std::is_same_v<Material, TintedSpecularTexturedMaterial>) {
+                                 std::is_same_v<Material, LitSpecularTexturedMaterial>) {
                 return index == 0 ? &value.texture : nullptr;
             } else {
                 return nullptr;
@@ -288,10 +288,12 @@ bool valid(const ModelDraw& draw) noexcept {
             } else {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
-                       valid(material.ambientColor) && valid(material.tintColor) &&
-                       material.tintColor.r >= 0.0F && material.tintColor.r <= 1.0F &&
-                       material.tintColor.g >= 0.0F && material.tintColor.g <= 1.0F &&
-                       material.tintColor.b >= 0.0F && material.tintColor.b <= 1.0F &&
+                       valid(material.ambientColor) && valid(material.textureDiffuseScale) &&
+                       valid(material.additiveColor) && material.textureDiffuseScale.r >= 0.0F &&
+                       material.textureDiffuseScale.g >= 0.0F &&
+                       material.textureDiffuseScale.b >= 0.0F && material.additiveColor.r >= 0.0F &&
+                       material.additiveColor.g >= 0.0F && material.additiveColor.b >= 0.0F &&
+                       finite(material.specularScale) && material.specularScale >= 0.0F &&
                        valid(material.lighting);
             }
         },
@@ -399,23 +401,25 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                                                    material.lighting, eyePosition, normal);
                 return VertexColors{.multiplicative = {lit.r, lit.g, lit.b, material.alphaScale}};
             } else {
-                const Color diffuse = diffuse_lighting(material.baseColor, material.ambientColor,
+                const Color diffuseSource =
+                    material.usesVertexRgb ? vertex.color : material.baseColor;
+                const Color diffuse = diffuse_lighting(diffuseSource, material.ambientColor,
                                                        material.lighting, eyePosition, normal);
                 const Color specular = directional_specular(material.lighting.specular, normal);
                 return VertexColors{
                     .multiplicative =
                         {
-                            diffuse.r * (1.0F - material.tintColor.r),
-                            diffuse.g * (1.0F - material.tintColor.g),
-                            diffuse.b * (1.0F - material.tintColor.b),
+                            diffuse.r * material.textureDiffuseScale.r,
+                            diffuse.g * material.textureDiffuseScale.g,
+                            diffuse.b * material.textureDiffuseScale.b,
                             0.0F,
                         },
                     .additive =
                         {
-                            2.0F * (material.tintColor.r + specular.r),
-                            2.0F * (material.tintColor.g + specular.g),
-                            2.0F * (material.tintColor.b + specular.b),
-                            1.0F,
+                            material.additiveColor.r + material.specularScale * specular.r,
+                            material.additiveColor.g + material.specularScale * specular.g,
+                            material.additiveColor.b + material.specularScale * specular.b,
+                            material.baseColor.a,
                         },
                 };
             }

@@ -18,6 +18,7 @@ enum class J3dSpecularTexturedResult : std::uint8_t {
     UnsupportedTextureBinding,
     UnsupportedColorProgram,
     MissingNormal,
+    MissingVertexColor,
     MissingLightingContext,
     UnsupportedRasterPolicy,
 };
@@ -26,6 +27,6 @@ enum class J3dSpecularTexturedResult : std::uint8_t {
 j3d_specular_textured_result_name(J3dSpecularTexturedResult result) noexcept;
 [[nodiscard]] J3dSpecularTexturedResult classify_j3d_specular_textured_material(
     const J3dMaterialState& state, const PictureTexture& texture,
-    const ModelLightingContext& lighting, TintedSpecularTexturedMaterial& material) noexcept;
+    const ModelLightingContext& lighting, LitSpecularTexturedMaterial& material) noexcept;
 
 } // namespace sb::native_render

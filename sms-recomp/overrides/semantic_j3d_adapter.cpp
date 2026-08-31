@@ -594,7 +594,7 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 : sb::native_render::J3dLitAlphaMaskResult::MissingLightingContext;
         const bool isLitAlphaMask =
             litAlphaMaskFamily == sb::native_render::J3dLitAlphaMaskResult::Success;
-        sb::native_render::TintedSpecularTexturedMaterial specularMaterial{};
+        sb::native_render::LitSpecularTexturedMaterial specularMaterial{};
         const sb::native_render::J3dSpecularTexturedResult specularFamily =
             lighting != nullptr
                 ? sb::native_render::classify_j3d_specular_textured_material(

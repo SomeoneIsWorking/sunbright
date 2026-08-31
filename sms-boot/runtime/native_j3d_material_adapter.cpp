@@ -253,7 +253,7 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         native_render::classify_j3d_lit_alpha_mask_material(state, placeholder, placeholder,
                                                             *lighting, litAlphaMaskMaterial) ==
             native_render::J3dLitAlphaMaskResult::Success;
-    native_render::TintedSpecularTexturedMaterial specularMaterial{};
+    native_render::LitSpecularTexturedMaterial specularMaterial{};
     const bool isSpecularTextured =
         lighting != nullptr && native_render::classify_j3d_specular_textured_material(
                                    state, placeholder, *lighting, specularMaterial) ==

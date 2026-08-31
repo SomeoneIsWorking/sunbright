@@ -72,12 +72,16 @@ int main() {
                      .color = {0.25F, 0.25F, 0.25F, 1},
                      .shininess = 50},
     };
-    TintedSpecularTexturedMaterial material{};
+    LitSpecularTexturedMaterial material{};
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::Success);
     assert(material.baseColor == color_from_rgba8(state.materialColorRgba8));
     assert(material.ambientColor == lighting.ambientColor);
-    assert(material.tintColor == color_from_rgba8(state.konstColorRgba8[0]));
+    const float tint = 0x1A / 255.0F;
+    assert(near(material.textureDiffuseScale.r, 1.0F - tint));
+    assert(near(material.additiveColor.r, 2.0F * tint));
+    assert(near(material.specularScale, 2.0F));
+    assert(!material.usesVertexRgb);
     assert(material.raster.cull == ModelCullMode::Back);
     state.usesMaterialAmbient = true;
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
@@ -93,7 +97,6 @@ int main() {
                    .material = material};
     const MeshVertex vertex{.normal = {0, 0, 1}};
     const ClipVertex transformed = transform_vertex(draw, vertex);
-    const float tint = 0x1A / 255.0F;
     assert(near(transformed.color.r, (0x80 / 255.0F) * (1.0F - tint)));
     assert(near(transformed.additiveColor.r, 2.0F * (tint + 0.25F)));
     assert(near(transformed.color.a, 0.0F));
@@ -112,6 +115,42 @@ int main() {
            J3dSpecularTexturedResult::MissingNormal);
     state = material_state();
     state.tevStage1[0] ^= 1;
+    assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
+           J3dSpecularTexturedResult::UnsupportedColorProgram);
+
+    // A second reached Mario program adds the same texture multiplied by vertex-colour diffuse
+    // lighting to three times the directional specular channel. Its two stages both sample the
+    // same texture, but the first stage uses only the secondary raster channel for the highlight.
+    state = material_state();
+    state.colorChannelControl = 0x070F;
+    state.materialColorRgba8 = 0x80808080;
+    state.hasVertexColor = true;
+    state.colorChannel0 = 5;
+    state.textureCoordinate1 = 0;
+    state.textureMap1 = 0;
+    state.colorChannel1 = 4;
+    state.tevStage0 = {0xC0, 0x18, 0xFD, 0xAA, 0xC1, 0x08, 0xF2, 0xF0};
+    state.tevStage1 = {0xC2, 0x08, 0xFA, 0x80, 0xC3, 0x00, 0xBF, 0xF0};
+    assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
+           J3dSpecularTexturedResult::Success);
+    assert((material.textureDiffuseScale == Color{1, 1, 1, 1}));
+    assert((material.additiveColor == Color{}));
+    assert(near(material.specularScale, 3.0F));
+    assert(material.usesVertexRgb);
+
+    draw.material = material;
+    MeshVertex vertexLit = vertex;
+    vertexLit.color = {0.25F, 0.5F, 0.75F, 0.8F};
+    const ClipVertex transformedLit = transform_vertex(draw, vertexLit);
+    assert(near(transformedLit.color.r, 0.25F));
+    assert(near(transformedLit.color.g, 0.5F));
+    assert(near(transformedLit.additiveColor.r, 0.75F));
+    assert(near(transformedLit.additiveColor.a, 0x80 / 255.0F));
+    state.hasVertexColor = false;
+    assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
+           J3dSpecularTexturedResult::MissingVertexColor);
+    state.hasVertexColor = true;
+    state.tevStage0[2] ^= 1U;
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::UnsupportedColorProgram);
 

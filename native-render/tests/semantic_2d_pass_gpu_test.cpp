@@ -637,7 +637,7 @@ int main() {
             .resource = 206, .revision = 1, .width = 1, .height = 1, .rgba8 = affineTexel};
         ModelDraw affineModel = model;
         affineModel.instance = 207;
-        affineModel.material = sb::native_render::TintedSpecularTexturedMaterial{
+        affineModel.material = sb::native_render::LitSpecularTexturedMaterial{
             .texture = {.resource = 206, .revision = 1, .width = 1, .height = 1},
             .baseColor = {0.5F, 0.5F, 0.5F, 1},
             .ambientColor = {1, 1, 1, 1},
@@ -648,8 +648,11 @@ int main() {
         const SemanticFramePixels affineBaseline =
             render(std::span<const ModelDraw>(&affineModel, 1),
                    std::span<const DecodedImageView>(&affineImage, 1));
-        std::get<sb::native_render::TintedSpecularTexturedMaterial>(affineModel.material)
-            .tintColor = {0.25F, 0, 0, 1};
+        auto& affineMaterial =
+            std::get<sb::native_render::LitSpecularTexturedMaterial>(affineModel.material);
+        affineMaterial.textureDiffuseScale = {0.75F, 1, 1, 1};
+        affineMaterial.additiveColor = {0.5F, 0, 0, 0};
+        affineMaterial.specularScale = 2.0F;
         const SemanticFramePixels affineTinted =
             render(std::span<const ModelDraw>(&affineModel, 1),
                    std::span<const DecodedImageView>(&affineImage, 1));

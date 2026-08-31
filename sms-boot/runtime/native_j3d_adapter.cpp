@@ -260,7 +260,7 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
                 capturedMaterial.material) ||
             std::holds_alternative<sb::native_render::LitTexturedAlphaMaskMaterial>(
                 capturedMaterial.material) ||
-            std::holds_alternative<sb::native_render::TintedSpecularTexturedMaterial>(
+            std::holds_alternative<sb::native_render::LitSpecularTexturedMaterial>(
                 capturedMaterial.material)) {
             ++g_stats.submittedLitModels;
         }

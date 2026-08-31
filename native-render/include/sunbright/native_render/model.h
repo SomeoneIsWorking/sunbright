@@ -174,20 +174,23 @@ struct LitTexturedAlphaMaskMaterial {
     ModelRasterPolicy raster{};
 };
 
-// One decoded texture with ordinary diffuse and directional-specular lighting. Its authored tint
-// is expressed as an affine texture operation: texture * per-vertex multiplier + additive colour.
-struct TintedSpecularTexturedMaterial {
+// One decoded texture with ordinary diffuse and directional-specular lighting. The authored J3D
+// program is reduced to one affine PC operation: texture * diffuse * scale + additive + specular.
+struct LitSpecularTexturedMaterial {
     PictureTexture texture{};
     Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
     Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
-    Color tintColor{};
+    Color textureDiffuseScale{1.0F, 1.0F, 1.0F, 1.0F};
+    Color additiveColor{};
+    float specularScale = 1.0F;
     ModelLightingContext lighting{};
+    bool usesVertexRgb = false;
     ModelRasterPolicy raster{};
 };
 
 using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial,
                                    AlphaMaskedColorMaterial, LitColorMaterial, LitTexturedMaterial,
-                                   LitTexturedAlphaMaskMaterial, TintedSpecularTexturedMaterial>;
+                                   LitTexturedAlphaMaskMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 

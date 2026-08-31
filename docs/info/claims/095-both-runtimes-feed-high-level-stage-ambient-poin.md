@@ -6,7 +6,7 @@ created: 2026-08-31
 tags: renderer,j3d,lighting,recomp,decomp
 depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
 reconfirmed: 2026-08-31
-verified_at: 2026-08-31 08:14:31+00:00
+verified_at: 2026-08-31 10:42:13+00:00
 ---
 
 ## Claim
@@ -21,7 +21,7 @@ Focused CPU controls passed; a guarded 60-present recomp Delfino audit published
 
 Either adapter reads GX/XF/FIFO light state, the source-native and recomp high-level light inputs no longer classify the same exact material families, the focused lighting controls fail, a reached guarded Delfino run submits zero lit models, an altered specular channel/program is accepted, or an original J3D/setLight body stops executing.
 
-## Re-confirmed 2026-08-31
+## Re-confirmed 2026-08-31 — diffuse-lit baseline
 
 Focused CPU material/model controls passed; a guarded 60-present recomp Delfino audit published 400/400 high-level light updates and submitted 100 lit models among 3,260 total; a guarded 400-present native-decomp Delfino audit submitted 630 lit models among 41,997 total; both exited 0 under the live GPU watcher. The pass-all alpha-policy control accepts the equivalent AND/OR/XNOR encodings and rejects XOR.
 
@@ -55,3 +55,7 @@ scene readiness, and native submission, reaching 572 lit models among 15,860 tot
 projection, rigid-matrix, or mesh-decode failures. The independent guarded 400-present native-decomp
 run remained healthy at 42,033 total/666 lit models but encountered zero instances of this exact
 dynamic material, so it is not claimed as decomp reached-scene evidence.
+
+## Re-confirmed 2026-08-31 — vertex-diffuse plus triple specular
+
+Exact CPU controls decode the second two-channel program as texture times vertex-colour diffuse plus three times directional specular and reject a changed stage or missing vertex colour. The watched shipping affine GPU control remained clean. A guarded 120-present recomp audit advanced both reached texture variants through 100/100 classification, decode, perspective readiness, and native submission, raising total models from 8,704 to 8,804 and exiting 0 under the live GPU watcher.

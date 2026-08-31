@@ -129,6 +129,18 @@ submissions, raising lit models from 100 to 160 and total models from 3,260 to 3
 400-present native-decomp run raised lit models from 630 to 666 among 42,033 total models. Both runs
 exited cleanly under the live GPU watcher.
 
+The same affine diffuse/specular owner now covers a second exact two-stage Mario program. Its first
+stage turns the high-level directional-specular channel into a threefold additive highlight; its
+second adds the decoded texture multiplied by diffuse-lit vertex RGB and preserves material alpha.
+The shared material expresses those ordinary terms directly as texture/diffuse scale, additive
+colour, specular scale, and vertex/material source choice, so neither console stage survives into
+the PC shader interface. Exact controls reject a changed stage or missing vertex colour and retain
+the previous tint-plus-specular equation through the same implementation. In the guarded
+120-present recomp audit, both reached texture variants advanced through 100/100 classification,
+image decode, perspective readiness, and native submission, raising total native models from 8,704
+to 8,804. The run exited cleanly under the live GPU watcher. The native-layout adapter compiles
+through the same shared classifier; issue 30 still prevents equivalent live decomp evidence.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies
