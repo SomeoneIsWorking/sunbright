@@ -57,6 +57,15 @@ int main() {
     assert(near(material.modulation.b, 36.0F / 255.0F));
     assert(near(material.modulation.a, 48.0F / 255.0F));
 
+    state = material_state();
+    state.tevStages[0].program = {0xC0, 0x08, 0xEC, 0x8F, 0xC1, 0x08, 0xE6, 0x70};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.r, 1.0F));
+    assert(near(material.modulation.g, 1.0F));
+    assert(near(material.modulation.b, 1.0F));
+    assert(near(material.modulation.a, 96.0F / 255.0F));
+
     state.hasExplicitPixelPolicy = true;
     state.pixelEngineBlockType = 0x5045464CU;
     state.alphaCompare0 = 7;
@@ -83,7 +92,7 @@ int main() {
            J3dEffectMaterialResult::UnsupportedRasterPolicy);
     state.depthTest = false;
 
-    state.tevStages[0].program[2] ^= 1U;
+    state.tevStages[0].program = {0xC0, 0x08, 0xED, 0x8F, 0xC1, 0x08, 0xE6, 0x70};
     assert(classify_j3d_effect_material(state, texture, material) ==
            J3dEffectMaterialResult::UnsupportedColorProgram);
     state = material_state();

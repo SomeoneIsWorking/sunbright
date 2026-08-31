@@ -254,6 +254,14 @@ source, half alpha scale, and byte-64 threshold. A fresh guarded 120-present tit
 with no GPU fault, increased submitted models from 1,092 to 1,144, and reduced effect raster-policy
 rejections for this family to zero; the remaining distinct effect programs stay explicit fallbacks.
 
+The next 52 perspective-reached hand surfaces use the same effect owner with an exact passthrough
+program: texture RGB multiplied by one, with its authored texture-alpha path and ordinary raster
+policy. The classifier now publishes white modulation instead of treating the enabled diffuse
+channel as an unfulfilled lighting dependency. Its changed-program control remains negative. A
+guarded 120-present title audit advanced all 52 instances through classification, image decode,
+perspective readiness, and native submission, raising coverage from 1,352 to 1,404 models and lit
+models from 1,248 to 1,300; it exited 0 with no GPU fault or reset.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

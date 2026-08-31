@@ -13,6 +13,8 @@ constexpr std::uint8_t kColor0Alpha0 = 4;
 constexpr std::uint8_t kKonstColor0 = 0x0C;
 constexpr std::array<std::uint8_t, 8> kConstantTimesTexture{0xC0, 0x08, 0xFE, 0x8F,
                                                             0xC1, 0x08, 0xE6, 0x70};
+constexpr std::array<std::uint8_t, 8> kTexturePassthrough{0xC0, 0x08, 0xEC, 0x8F,
+                                                          0xC1, 0x08, 0xE6, 0x70};
 constexpr std::array<std::uint8_t, 8> kRegisterTimesTextureHalfAlpha{0xC0, 0x08, 0xF2, 0x8F,
                                                                      0xC1, 0x38, 0xE6, 0x70};
 
@@ -26,7 +28,8 @@ Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept {
 bool is_j3d_effect_material_program(const J3dTevStageState& stage) noexcept {
     const bool constantTimesTexture =
         stage.program == kConstantTimesTexture && stage.konstColorSelection == kKonstColor0;
-    return constantTimesTexture || stage.program == kRegisterTimesTextureHalfAlpha;
+    return constantTimesTexture || stage.program == kTexturePassthrough ||
+           stage.program == kRegisterTimesTextureHalfAlpha;
 }
 
 const char* j3d_effect_material_result_name(J3dEffectMaterialResult result) noexcept {
@@ -79,8 +82,9 @@ J3dEffectMaterialResult classify_j3d_effect_material(const J3dMaterialState& sta
         return J3dEffectMaterialResult::UnsupportedTextureBinding;
     const bool constantTimesTexture =
         stage.program == kConstantTimesTexture && stage.konstColorSelection == kKonstColor0;
+    const bool texturePassthrough = stage.program == kTexturePassthrough;
     const bool registerTimesTexture = stage.program == kRegisterTimesTextureHalfAlpha;
-    if (!constantTimesTexture && !registerTimesTexture)
+    if (!constantTimesTexture && !texturePassthrough && !registerTimesTexture)
         return J3dEffectMaterialResult::UnsupportedColorProgram;
     if (!state.hasTevColors)
         return J3dEffectMaterialResult::MissingTevColor;
@@ -98,7 +102,8 @@ J3dEffectMaterialResult classify_j3d_effect_material(const J3dMaterialState& sta
     material.modulation =
         registerTimesTexture
             ? Color{registerColor.r, registerColor.g, registerColor.b, registerColor.a * 0.5F}
-            : Color{constant.r, constant.g, constant.b, registerColor.a};
+        : texturePassthrough ? Color{1.0F, 1.0F, 1.0F, registerColor.a}
+                             : Color{constant.r, constant.g, constant.b, registerColor.a};
     material.raster = raster;
     return J3dEffectMaterialResult::Success;
 }

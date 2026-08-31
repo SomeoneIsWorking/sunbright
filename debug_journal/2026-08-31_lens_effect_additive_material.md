@@ -42,3 +42,13 @@ The classifier test is positive for the register-colour and half-alpha equation 
 byte-64 policy, while the existing changed-program control remains negative. The guarded title audit
 completed 120 diagnostic presents with `effect-material ... raster=0`, submitted 1,144 semantic
 models (52 more than the prior 1,092), and exited 0 without a GPU fault or reset.
+
+## Follow-up: texture passthrough hand variant
+
+The next 52 perspective-reached hand surfaces use `c008ec8fc108e670`. Its colour fields are
+`TEXC * ONE`, while the alpha fields match the already understood texture-alpha path. The earlier
+effect classifier rejected it because the enabled diffuse channel was mistaken for a required
+lighting contribution; the authored combiner cancels that contribution. It now publishes white
+texture modulation through the same effect material. A changed-byte CPU control remains negative,
+and the guarded title audit advanced all 52 instances to native submission with no GPU fault or
+reset.
