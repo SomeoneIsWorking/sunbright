@@ -186,7 +186,7 @@ bool valid(const MeshResourceView& mesh) noexcept {
 bool valid(const ModelRasterPolicy& raster) noexcept {
     return raster.cull <= ModelCullMode::All && raster.depthCompare <= ModelDepthCompare::Always &&
            raster.alphaTest <= ModelAlphaTest::GreaterOrEqualHalf &&
-           raster.blend <= ModelBlendMode::SourceAlpha;
+           raster.blend <= ModelBlendMode::PremultipliedAlpha;
 }
 
 const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept {

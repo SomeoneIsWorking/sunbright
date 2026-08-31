@@ -24,7 +24,8 @@ their original draw bodies for A/B. Camera projection now comes directly from th
 value written by the game's camera and is scoped around high-level `TViewObj::testPerform` draw
 dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetProjection`,
 `GXGetProjectionv`, FIFO, or compatibility-renderer state. The same high-level J3D material objects
-now supply culling, depth test/write, alpha cutout, source-alpha blending, decoded normals,
+now supply culling, depth test/write, alpha cutout, straight- and premultiplied-alpha blending,
+decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
 lighting, solid-colour texture masks, and an independent second-UV alpha mask for the exact
 supported families. Broader J3D materials are next: the remaining lit and multi-stage programs,
@@ -158,6 +159,19 @@ decode failures. The independent guarded 400-present native-decomp run remained 
 total/666 lit models but did not encounter this exact dynamic two-stage material, so decomp
 reached-scene coverage remains unclaimed even though its native-layout adapter carries the same
 two decoded images and second UV values.
+
+The ordinary unlit texture-times-vertex-colour family now also accepts the exact premultiplied-alpha
+raster policy used by a reached translucent Mario texture: source factor one, destination factor
+one-minus-source-alpha, depth test enabled, and depth writes disabled. This is an explicit
+PC-native blend mode, not a general packed raster-state escape hatch. The CPU classifier control
+distinguishes it from straight source-alpha blending and rejects any other factor tuple. The watched
+shipping-GPU control draws translucent red over blue and proves premultiplied source RGB is not
+scaled a second time while the destination contribution remains identical, with no kernel fault.
+A guarded 120-present recomp run advanced all 52 perspective observations through classification,
+texture decode, scene readiness, and native submission, raising total native models from 15,860 to
+15,912. The corresponding native-decomp audit did not reach its summary: retained GX rendering hit
+the pre-existing illegal-wrap-value-3 abort recorded by issue 30. That failed run is not decomp
+evidence for or against the new blend mode.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission

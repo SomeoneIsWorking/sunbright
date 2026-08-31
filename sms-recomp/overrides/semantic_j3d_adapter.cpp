@@ -385,7 +385,7 @@ std::string semantic_j3d_stats_text() {
             return first.second.perspectiveObserved > second.second.perspectiveObserved;
         return first.second.count > second.second.count;
     });
-    const std::size_t litCount = std::min<std::size_t>(litPrograms.size(), 8);
+    const std::size_t litCount = std::min<std::size_t>(litPrograms.size(), 16);
     for (std::size_t litIndex = 0; litIndex < litCount; ++litIndex) {
         const auto& [key, observation] = litPrograms[litIndex];
         char line[1280];

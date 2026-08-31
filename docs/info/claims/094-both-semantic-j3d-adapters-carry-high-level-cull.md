@@ -9,7 +9,7 @@ depends: native-render/src/j3d_unlit_material.cpp#classify_j3d_raster_policy, na
 
 ## Claim
 
-Both semantic J3D adapters carry high-level cull, depth, alpha-cutout, and blend policy into the PC-native renderer without reading GX/FIFO raster state.
+Both semantic J3D adapters carry high-level cull, depth, alpha-cutout, and exact straight- or premultiplied-alpha blend policy into the PC-native renderer without reading GX/FIFO raster state.
 
 ## Evidence
 
@@ -18,3 +18,16 @@ CPU controls cover compact and exact full-block policy families plus one-field r
 ## What would falsify it
 
 Either adapter reads GX/FIFO raster state, an exact supported policy maps differently across layouts, a one-field custom policy is accepted, a guarded GPU control no longer produces the known-different cull/alpha/blend/depth answer, a live perspective run submits zero supported models, or an original draw body stops executing.
+
+## Re-confirmed 2026-08-31 — premultiplied alpha
+
+The full J3D pixel-policy classifier now maps only the exact source-one,
+one-minus-source-alpha, depth-test-without-write tuple to an ordinary premultiplied-alpha blend
+mode. Its CPU control distinguishes that tuple from straight source-alpha and changes one source
+factor to prove the answers differ. The watched shipping-GPU control draws translucent red over an
+opaque blue destination: premultiplied blending preserves more source red while matching the
+straight-alpha destination-blue contribution, and the kernel watcher reported no fault. A guarded
+120-present recomp audit submitted all 52 perspective-reached instances that had previously fallen
+back solely on this blend tuple, raising native model coverage from 15,860 to 15,912. The matching
+native-decomp audit aborted in retained GX code on issue 30's known illegal wrap value 3 before a
+semantic summary, so it provides no decomp live-coverage evidence.

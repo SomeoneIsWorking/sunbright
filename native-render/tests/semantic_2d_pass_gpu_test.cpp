@@ -617,6 +617,33 @@ int main() {
         assert(pixel(blended, 8, 8).r > 0.65F && pixel(blended, 8, 8).r < 0.80F);
         assert(hash(replaced) != hash(blended));
 
+        // Premultiplied-alpha blending keeps source RGB unscaled while applying the same
+        // one-minus-source-alpha destination factor. Draw over blue so this cannot collapse to
+        // the replace result: only red differs from straight-alpha blending, while blue matches.
+        ModelDraw blueBackground = model;
+        auto& blueMaterial =
+            std::get<sb::native_render::UnlitColorMaterial>(blueBackground.material);
+        blueMaterial.baseColor = {0, 0, 1, 1};
+        blueMaterial.raster.blend = sb::native_render::ModelBlendMode::Replace;
+        blueMaterial.raster.depthWrite = false;
+        ModelDraw translucentRed = model;
+        translucentRed.instance = 214;
+        auto& translucentMaterial =
+            std::get<sb::native_render::UnlitColorMaterial>(translucentRed.material);
+        translucentMaterial.baseColor = {0.25F, 0, 0, 0.5F};
+        translucentMaterial.raster.depthWrite = false;
+        translucentMaterial.raster.blend = sb::native_render::ModelBlendMode::SourceAlpha;
+        std::array<ModelDraw, 2> blendLayers{blueBackground, translucentRed};
+        const SemanticFramePixels straightBlend = render(blendLayers);
+        std::get<sb::native_render::UnlitColorMaterial>(blendLayers[1].material).raster.blend =
+            sb::native_render::ModelBlendMode::PremultipliedAlpha;
+        const SemanticFramePixels premultipliedBlend = render(blendLayers);
+        const Color straightPixel = pixel(straightBlend, 8, 8);
+        const Color premultipliedPixel = pixel(premultipliedBlend, 8, 8);
+        assert(premultipliedPixel.r > straightPixel.r + 0.1F);
+        assert(near(premultipliedPixel.b, straightPixel.b));
+        assert(hash(premultipliedBlend) != hash(straightBlend));
+
         // Depth-write control: a near red draw prevents a later far green draw only when the near
         // material writes depth. Both cases retain LEQUAL testing, isolating the write bit.
         ModelDraw near = model;

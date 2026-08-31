@@ -131,6 +131,10 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
                                        kInverseSourceAlpha, false)) {
             result.depthWrite = false;
             result.blend = ModelBlendMode::SourceAlpha;
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kOne,
+                                       kInverseSourceAlpha, false)) {
+            result.depthWrite = false;
+            result.blend = ModelBlendMode::PremultipliedAlpha;
         } else {
             return J3dRasterPolicyResult::UnsupportedPixelEngineBlock;
         }

@@ -248,13 +248,16 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
     info.depth_stencil_state.enable_depth_test = key.raster.depthTest;
     info.depth_stencil_state.enable_depth_write = key.raster.depthWrite;
     info.depth_stencil_state.compare_op = depth_compare(key.raster.depthCompare);
-    if (key.raster.blend == ModelBlendMode::SourceAlpha) {
+    if (key.raster.blend != ModelBlendMode::Replace) {
         colorTarget.blend_state.enable_blend = true;
         colorTarget.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
         colorTarget.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-        colorTarget.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        const SDL_GPUBlendFactor source = key.raster.blend == ModelBlendMode::SourceAlpha
+                                              ? SDL_GPU_BLENDFACTOR_SRC_ALPHA
+                                              : SDL_GPU_BLENDFACTOR_ONE;
+        colorTarget.blend_state.src_color_blendfactor = source;
         colorTarget.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        colorTarget.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        colorTarget.blend_state.src_alpha_blendfactor = source;
         colorTarget.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     }
     SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(impl.device, &info);
