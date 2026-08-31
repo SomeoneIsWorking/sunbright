@@ -188,10 +188,10 @@ std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept {
         append(vertex.position.x);
         append(vertex.position.y);
         append(vertex.position.z);
-        append(vertex.uv.x);
-        append(vertex.uv.y);
-        append(vertex.uv1.x);
-        append(vertex.uv1.y);
+        for (const Vec2 uv : {vertex.uv, vertex.uv1, vertex.uv2, vertex.uv3}) {
+            append(uv.x);
+            append(uv.y);
+        }
         append(vertex.color.r);
         append(vertex.color.g);
         append(vertex.color.b);
@@ -211,10 +211,11 @@ Matrix4x4 zero_to_one_depth_projection(Matrix4x4 projection) noexcept {
 }
 
 bool valid(const MeshVertex& vertex) noexcept {
+    const std::array textureCoordinates{vertex.uv, vertex.uv1, vertex.uv2, vertex.uv3};
     return finite(vertex.position.x) && finite(vertex.position.y) && finite(vertex.position.z) &&
-           finite(vertex.uv.x) && finite(vertex.uv.y) && finite(vertex.uv1.x) &&
-           finite(vertex.uv1.y) && valid(vertex.color) && valid(vertex.normal) &&
-           vertex.matrixIndex < kMaxModelMatrices;
+           std::ranges::all_of(textureCoordinates,
+                               [](Vec2 uv) { return finite(uv.x) && finite(uv.y); }) &&
+           valid(vertex.color) && valid(vertex.normal) && vertex.matrixIndex < kMaxModelMatrices;
 }
 
 bool valid(const MeshResourceView& mesh) noexcept {
@@ -531,6 +532,8 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
     return {position,
             primaryUv,
             vertex.uv1,
+            vertex.uv2,
+            vertex.uv3,
             colors.multiplicative,
             colors.additive,
             colors.detailTextureWeight,

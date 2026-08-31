@@ -18,6 +18,8 @@ int main() {
     const MeshVertex vertex{.position = {1.0F, 2.0F, 3.0F},
                             .uv = {0.25F, 0.5F},
                             .uv1 = {0.75F, 0.125F},
+                            .uv2 = {0.5F, 0.875F},
+                            .uv3 = {0.125F, 0.25F},
                             .color = {0.5F, 0.25F, 1.0F, 0.5F}};
     const ModelDraw draw{
         .instance = 7,
@@ -41,6 +43,8 @@ int main() {
     assert(near(transformed.position.w, 1.0F));
     assert(near(transformed.eyeDepth, -9.0F));
     assert(transformed.uv1 == vertex.uv1);
+    assert(transformed.uv2 == vertex.uv2);
+    assert(transformed.uv3 == vertex.uv3);
     assert(near(transformed.color.r, 0.25F));
     assert(near(transformed.color.g, 0.25F));
     assert(near(transformed.color.b, 0.25F));
@@ -65,6 +69,9 @@ int main() {
     assert(mesh_revision(revisions) != mesh_revision(changed));
     changed[1] = vertex;
     changed[1].normal.x += 1.0F;
+    assert(mesh_revision(revisions) != mesh_revision(changed));
+    changed[1] = vertex;
+    changed[1].uv3.x += 1.0F;
     assert(mesh_revision(revisions) != mesh_revision(changed));
     changed[1] = vertex;
     changed[1].matrixIndex = 1;

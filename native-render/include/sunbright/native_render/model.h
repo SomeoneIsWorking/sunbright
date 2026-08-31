@@ -37,6 +37,11 @@ struct MeshVertex {
     Vec3 position{};
     Vec2 uv{};
     Vec2 uv1{};
+    // J3D models can select any of the first four authored texture-coordinate sets. Keep them as
+    // semantic vertex values so a material that needs more than two images never falls back to a
+    // GX texture-generator or silently reuses another set.
+    Vec2 uv2{};
+    Vec2 uv3{};
     Color color{1.0F, 1.0F, 1.0F, 1.0F};
     Vec3 normal{0.0F, 0.0F, 1.0F};
     std::uint8_t matrixIndex = 0;
@@ -289,6 +294,8 @@ struct ClipVertex {
     Vec4 position{};
     Vec2 uv{};
     Vec2 uv1{};
+    Vec2 uv2{};
+    Vec2 uv3{};
     Color color{};
     Color additiveColor{};
     float detailTextureWeight = 0.0F;

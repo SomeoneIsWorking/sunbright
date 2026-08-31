@@ -25,6 +25,8 @@ struct GpuVertex {
     float color[4];
     float additiveColor[4];
     float uv1[2];
+    float uv2[2];
+    float uv3[2];
     float detailTextureWeight;
     float eyeDepth;
 };
@@ -229,6 +231,8 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
                                offsetof(GpuVertex, detailTextureWeight)},
         SDL_GPUVertexAttribute{6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT,
                                offsetof(GpuVertex, eyeDepth)},
+        SDL_GPUVertexAttribute{7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv2)},
+        SDL_GPUVertexAttribute{8, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv3)},
     };
     SDL_GPUColorTargetDescription colorTarget{};
     colorTarget.format = key.color;
@@ -446,6 +450,8 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
                                 {transformed.additiveColor.r, transformed.additiveColor.g,
                                  transformed.additiveColor.b, transformed.additiveColor.a},
                                 {transformed.uv1.x, transformed.uv1.y},
+                                {transformed.uv2.x, transformed.uv2.y},
+                                {transformed.uv3.x, transformed.uv3.y},
                                 transformed.detailTextureWeight,
                                 transformed.eyeDepth});
         }

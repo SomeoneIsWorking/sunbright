@@ -877,6 +877,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             g_vertices.push_back({.position = {vertex.x, vertex.y, vertex.z},
                                   .uv = {vertex.uv[0][0], vertex.uv[0][1]},
                                   .uv1 = {vertex.uv[1][0], vertex.uv[1][1]},
+                                  .uv2 = {vertex.uv[2][0], vertex.uv[2][1]},
+                                  .uv3 = {vertex.uv[3][0], vertex.uv[3][1]},
                                   .color = sb::native_render::color_from_rgba8(vertex.rgba),
                                   .normal = {vertex.nx, vertex.ny, vertex.nz},
                                   .matrixIndex = sourceToCompact[vertex.positionMatrixSlot]});

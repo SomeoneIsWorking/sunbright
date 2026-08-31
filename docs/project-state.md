@@ -28,7 +28,7 @@ now supply culling, depth test/write, alpha cutout, straight- and premultiplied-
 decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
 lighting, linear view-depth fog, solid-colour texture masks, independently sampled two-texture
-materials, and an independent second-UV alpha mask for the exact supported families. Broader J3D
+materials, and all four decoded texture-coordinate sets for broader material families. Broader J3D
 materials are next: the remaining lit and multi-stage programs,
 authored mip chains, particles, and effects still fall back to the retained renderer.
 
