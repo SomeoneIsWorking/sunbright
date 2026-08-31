@@ -36,6 +36,7 @@ struct MeshVertex {
     Vec3 position{};
     Vec2 uv{};
     Color color{1.0F, 1.0F, 1.0F, 1.0F};
+    Vec3 normal{0.0F, 0.0F, 1.0F};
     bool operator==(const MeshVertex&) const = default;
 };
 
@@ -95,7 +96,36 @@ struct UnlitTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
-using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial>;
+// Ordinary view-space point light. Runtime adapters resolve the game's light owner and transform
+// its world-space position before publication; no GX light object or register encoding crosses
+// this boundary.
+struct PointLight {
+    Vec3 position{};
+    Color color{1.0F, 1.0F, 1.0F, 1.0F};
+    Vec3 distanceAttenuation{1.0F, 0.0F, 0.0F};
+    bool operator==(const PointLight&) const = default;
+};
+
+struct ModelLightingContext {
+    std::array<PointLight, 2> pointLights{};
+    std::uint8_t pointLightCount = 0;
+    Color ambientColor{};
+    bool operator==(const ModelLightingContext&) const = default;
+};
+
+// One decoded texture modulated by J3D's authored per-vertex diffuse lighting. This is a semantic
+// PC material: ambient and point-light values are already resolved, and its channel policy is
+// expressed as the choice between material and vertex colour rather than packed console bits.
+struct LitTexturedMaterial {
+    PictureTexture texture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    ModelLightingContext lighting{};
+    bool usesVertexColor = false;
+    ModelRasterPolicy raster{};
+};
+
+using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial, LitTexturedMaterial>;
 
 struct ModelDraw {
     std::uint64_t instance = 0;
@@ -117,6 +147,7 @@ struct ClipVertex {
 [[nodiscard]] bool valid(const ModelRasterPolicy& raster) noexcept;
 [[nodiscard]] bool valid(const ModelDraw& draw) noexcept;
 [[nodiscard]] const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept;
+[[nodiscard]] const PictureTexture* material_texture(const ModelMaterial& material) noexcept;
 [[nodiscard]] std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept;
 // J3D camera matrices produce clip depth in [-w, 0]. The renderer-neutral model contract uses
 // [0, w], so each runtime adapter applies this conversion before publishing a draw.

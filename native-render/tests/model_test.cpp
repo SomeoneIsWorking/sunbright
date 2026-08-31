@@ -28,6 +28,7 @@ int main() {
     assert(valid(vertex));
     assert(valid(draw));
     assert(raster_policy(draw.material) == ModelRasterPolicy{});
+    assert(material_texture(draw.material) == nullptr);
     const ClipVertex transformed = transform_vertex(draw, vertex);
     assert(near(transformed.position.x, 10.0F));
     assert(near(transformed.position.y, 21.0F));
@@ -48,12 +49,41 @@ int main() {
     MeshVertex changed[2]{vertex, vertex};
     changed[1].position.x += 1.0F;
     assert(mesh_revision(revisions) != mesh_revision(changed));
+    changed[1] = vertex;
+    changed[1].normal.x += 1.0F;
+    assert(mesh_revision(revisions) != mesh_revision(changed));
 
     ModelDraw constantColor = draw;
     auto& constantMaterial = std::get<UnlitColorMaterial>(constantColor.material);
     constantMaterial.usesVertexColor = false;
     const ClipVertex constant = transform_vertex(constantColor, vertex);
     assert(constant.color == constantMaterial.baseColor);
+
+    ModelDraw lit = draw;
+    lit.material = LitTexturedMaterial{
+        .texture = {.resource = 17, .width = 1, .height = 1},
+        .baseColor = {0.5F, 0.5F, 0.5F, 0.8F},
+        .ambientColor = {0.1F, 0.2F, 0.3F, 1.0F},
+        .lighting = {.pointLights = {{{.position = {5.0F, 7.0F, 19.0F},
+                                       .color = {0.5F, 0.25F, 0.0F, 1.0F}}}},
+                     .pointLightCount = 1},
+    };
+    assert(material_texture(lit.material) == &std::get<LitTexturedMaterial>(lit.material).texture);
+    const ClipVertex litVertex = transform_vertex(lit, vertex);
+    assert(near(litVertex.color.r, 0.3F));
+    assert(near(litVertex.color.g, 0.225F));
+    assert(near(litVertex.color.b, 0.15F));
+    assert(near(litVertex.color.a, 0.8F));
+
+    // The lighting accumulator saturates before material multiplication. This distinguishes the
+    // shipping equation from final-product clamping: 0.5 * clamp(0.8 + 0.8) is 0.5, not 0.8.
+    auto& saturatedMaterial = std::get<LitTexturedMaterial>(lit.material);
+    saturatedMaterial.ambientColor = {0.8F, 0.8F, 0.8F, 1.0F};
+    saturatedMaterial.lighting.pointLights[0].color = {0.8F, 0.8F, 0.8F, 1.0F};
+    const ClipVertex saturated = transform_vertex(lit, vertex);
+    assert(near(saturated.color.r, 0.5F));
+    assert(near(saturated.color.g, 0.5F));
+    assert(near(saturated.color.b, 0.5F));
 
     MeshResourceView mesh{11, 2, std::span(&vertex, 1)};
     assert(!valid(mesh));

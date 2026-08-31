@@ -4,7 +4,7 @@
 
 int main() {
     using namespace sb::native_render;
-    J3dUnlitMaterialState state{
+    J3dMaterialState state{
         .supportedColorBlock = true,
         .cullMode = 2,
         .lightingEnabled = false,

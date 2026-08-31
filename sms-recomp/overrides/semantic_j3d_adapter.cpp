@@ -1,6 +1,7 @@
 #include "semantic_j3d_adapter.h"
 
 #include "guest_j3d_texture_adapter.h"
+#include "semantic_j3d_lighting.h"
 #include "semantic_j3d_material_adapter.h"
 #include "semantic_j3d_scene.h"
 
@@ -8,6 +9,8 @@
 #include "../runtime/render/j3d_decode.h"
 #include "../runtime/sb_assert.h"
 
+#include <sunbright/native_render/j3d_lit_material.h>
+#include <sunbright/native_render/j3d_stage_lighting.h>
 #include <sunbright/native_render/model_context.h>
 #include <sunbright/native_render/semantic_sink.h>
 
@@ -32,6 +35,7 @@ constexpr u32 kShapeCurrentView = 0x58;
 // Retail US J3DShapeMtx constructor 0x802dfcc8 writes this exact CodeWarrior vtable address.
 constexpr u32 kBaseShapeMatrixVptr = 0x803E125C;
 constexpr std::uint32_t kColor0 = 11;
+constexpr std::uint32_t kNormal = 10;
 
 struct Stats {
     std::uint64_t shapeDraws = 0;
@@ -44,7 +48,9 @@ struct Stats {
     std::uint64_t textureTableFailures = 0;
     std::array<std::uint64_t, 12> textureDecodeFailures{};
     std::array<std::uint64_t, 11> texturedMaterialRejections{};
+    std::array<std::uint64_t, 12> litTexturedMaterialRejections{};
     std::uint64_t submittedModels = 0;
+    std::uint64_t submittedLitModels = 0;
     std::uint64_t submittedVertices = 0;
     std::uint64_t unlitTexturedCandidates = 0;
     std::uint64_t litUntexturedCandidates = 0;
@@ -55,12 +61,20 @@ struct Stats {
 
 struct ProgramKey {
     bool lighting = false;
+    bool hasNormal = false;
+    std::uint16_t channelControl = 0;
+    std::uint16_t alphaChannelControl = 0;
     std::uint8_t stageCount = 0;
     std::uint16_t textureNumber = 0;
     std::uint8_t textureCoordinate = 0;
     std::uint8_t textureMap = 0;
     std::uint8_t colorChannel = 0;
     std::array<std::uint8_t, 8> stage{};
+    std::uint16_t textureNumber1 = 0;
+    std::uint8_t textureCoordinate1 = 0;
+    std::uint8_t textureMap1 = 0;
+    std::uint8_t colorChannel1 = 0;
+    std::array<std::uint8_t, 8> stage1{};
     auto operator<=>(const ProgramKey&) const = default;
 };
 
@@ -107,7 +121,8 @@ std::string semantic_j3d_stats_text() {
     char output[1792];
     std::snprintf(
         output, sizeof(output),
-        "J3D native-model coverage: considered=%llu submitted=%llu models/%llu vertices; "
+        "J3D native-model coverage: considered=%llu submitted=%llu models/%llu vertices "
+        "(%llu lit models); "
         "unreadable=%llu layout=%llu no-perspective-context=%llu non-rigid=%llu decode=%llu "
         "texture-table=%llu texture-decode=%llu; material "
         "rejections: colour-block=%llu lighting=%llu missing-channel=%llu texture=%llu "
@@ -120,6 +135,7 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.shapeDraws),
         static_cast<unsigned long long>(g_stats.submittedModels),
         static_cast<unsigned long long>(g_stats.submittedVertices),
+        static_cast<unsigned long long>(g_stats.submittedLitModels),
         static_cast<unsigned long long>(g_stats.materialMemoryFailures),
         static_cast<unsigned long long>(g_stats.layoutFailures),
         static_cast<unsigned long long>(g_stats.noPerspectiveContexts),
@@ -149,6 +165,8 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.litTexturedCandidates));
     std::string report(output);
     const sb::recomp::SemanticJ3dSceneStats sceneStats = sb::recomp::semantic_j3d_scene_stats();
+    const sb::recomp::SemanticJ3dLightingStats lightingStats =
+        sb::recomp::semantic_j3d_lighting_stats();
     char sceneLine[240];
     std::snprintf(sceneLine, sizeof(sceneLine),
                   "; high-level camera dispatches: perspective=%llu orthographic=%llu "
@@ -157,6 +175,35 @@ std::string semantic_j3d_stats_text() {
                   static_cast<unsigned long long>(sceneStats.orthographicDispatches),
                   static_cast<unsigned long long>(sceneStats.unavailableDispatches));
     report += sceneLine;
+    char lightingLine[280];
+    std::snprintf(lightingLine, sizeof(lightingLine),
+                  "; high-level stage lights: published=%llu/%llu failures(view=%llu "
+                  "primary-position=%llu manager=%llu effect=%llu)",
+                  static_cast<unsigned long long>(lightingStats.published),
+                  static_cast<unsigned long long>(lightingStats.attempts),
+                  static_cast<unsigned long long>(lightingStats.viewFailures),
+                  static_cast<unsigned long long>(lightingStats.primaryPositionFailures),
+                  static_cast<unsigned long long>(lightingStats.managerFailures),
+                  static_cast<unsigned long long>(lightingStats.effectFailures));
+    report += lightingLine;
+    char litRejectionLine[420];
+    std::snprintf(
+        litRejectionLine, sizeof(litRejectionLine),
+        "; lit-textured rejections: colour-block=%llu channels=%llu tev-block=%llu stages=%llu "
+        "texcoord=%llu binding=%llu program=%llu normal=%llu vertex-colour=%llu "
+        "lighting-context=%llu raster=%llu",
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[1]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[2]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[3]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[4]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[5]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[6]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[7]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[8]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[9]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[10]),
+        static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[11]));
+    report += litRejectionLine;
     std::vector<std::pair<ProgramKey, std::uint64_t>> programs(g_programs.begin(),
                                                                g_programs.end());
     std::ranges::sort(programs, [](const auto& first, const auto& second) {
@@ -167,14 +214,37 @@ std::string semantic_j3d_stats_text() {
         const ProgramKey& key = programs[index].first;
         char line[320];
         std::snprintf(line, sizeof(line),
-                      "; top-program[%zu]=%llu lit=%u stages=%u tex=%04x order=%02x/%02x/%02x "
+                      "; top-program[%zu]=%llu lit=%u normal=%u chan=%04x/%04x stages=%u tex=%04x "
+                      "order=%02x/%02x/%02x "
                       "stage=%02x%02x%02x%02x%02x%02x%02x%02x",
                       index, static_cast<unsigned long long>(programs[index].second),
-                      key.lighting ? 1U : 0U, key.stageCount, key.textureNumber,
+                      key.lighting ? 1U : 0U, key.hasNormal ? 1U : 0U, key.channelControl,
+                      key.alphaChannelControl, key.stageCount, key.textureNumber,
                       key.textureCoordinate, key.textureMap, key.colorChannel, key.stage[0],
                       key.stage[1], key.stage[2], key.stage[3], key.stage[4], key.stage[5],
                       key.stage[6], key.stage[7]);
         report += line;
+    }
+    std::size_t litShown = 0;
+    for (const auto& [key, count] : programs) {
+        if (!key.lighting)
+            continue;
+        char line[440];
+        std::snprintf(
+            line, sizeof(line),
+            "; top-lit-program[%zu]=%llu normal=%u chan=%04x/%04x stages=%u tex=%04x/%04x "
+            "order0=%02x/%02x/%02x stage0=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "order1=%02x/%02x/%02x stage1=%02x%02x%02x%02x%02x%02x%02x%02x",
+            litShown, static_cast<unsigned long long>(count), key.hasNormal ? 1U : 0U,
+            key.channelControl, key.alphaChannelControl, key.stageCount, key.textureNumber,
+            key.textureNumber1, key.textureCoordinate, key.textureMap, key.colorChannel,
+            key.stage[0], key.stage[1], key.stage[2], key.stage[3], key.stage[4], key.stage[5],
+            key.stage[6], key.stage[7], key.textureCoordinate1, key.textureMap1, key.colorChannel1,
+            key.stage1[0], key.stage1[1], key.stage1[2], key.stage1[3], key.stage1[4],
+            key.stage1[5], key.stage1[6], key.stage1[7]);
+        report += line;
+        if (++litShown == 8)
+            break;
     }
     return report;
 }
@@ -196,22 +266,33 @@ void submit_semantic_j3d_shape(u32 shape) {
     const u32 materialPacket = sb_r32(kJ3dSys + kJ3dSysMaterialPacket);
     const u32 material =
         readable(materialPacket) ? sb_r32(materialPacket + kMaterialPacketMaterial) : 0;
-    sb::native_render::J3dUnlitMaterialState materialState{};
+    sb::native_render::J3dMaterialState materialState{};
     if (!sb::recomp::capture_guest_j3d_material_state(
             sb::recomp::live_guest_byte_reader(), material,
             layout.type[kColor0] !=
+                static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
+            layout.type[kNormal] !=
                 static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
             materialState)) {
         ++g_stats.materialMemoryFailures;
         return;
     }
     ++g_programs[{.lighting = materialState.lightingEnabled,
+                  .hasNormal = layout.type[kNormal] !=
+                               static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
+                  .channelControl = materialState.colorChannelControl,
+                  .alphaChannelControl = materialState.alphaChannelControl,
                   .stageCount = materialState.tevStageCount,
                   .textureNumber = materialState.textureNumber0,
                   .textureCoordinate = materialState.textureCoordinate0,
                   .textureMap = materialState.textureMap0,
                   .colorChannel = materialState.colorChannel0,
-                  .stage = materialState.tevStage0}];
+                  .stage = materialState.tevStage0,
+                  .textureNumber1 = materialState.textureNumber1,
+                  .textureCoordinate1 = materialState.textureCoordinate1,
+                  .textureMap1 = materialState.textureMap1,
+                  .colorChannel1 = materialState.colorChannel1,
+                  .stage1 = materialState.tevStage1}];
     const sb::native_render::J3dUnlitMaterialFeatures features =
         sb::native_render::inspect_j3d_unlit_material(materialState);
     const bool otherwiseExact = features.supportedColorBlock && features.hasColorChannel &&
@@ -225,6 +306,7 @@ void submit_semantic_j3d_shape(u32 shape) {
     if (otherwiseExact && features.lightingEnabled && features.textureBound)
         ++g_stats.litTexturedCandidates;
     sb::native_render::ModelMaterial semanticMaterial{};
+    bool submittedLitMaterial = false;
     std::array<sb::native_render::DecodedImageView, 1> semanticImages{};
     std::span<const sb::native_render::DecodedImageView> images;
     sb::native_render::UnlitColorMaterial colorMaterial{};
@@ -235,12 +317,23 @@ void submit_semantic_j3d_shape(u32 shape) {
     } else {
         const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
         sb::native_render::UnlitTexturedMaterial texturedMaterial{};
-        const sb::native_render::J3dUnlitTexturedResult family =
+        const sb::native_render::J3dUnlitTexturedResult unlitFamily =
             sb::native_render::classify_j3d_unlit_textured_material(materialState, placeholder,
                                                                     texturedMaterial);
-        if (family != sb::native_render::J3dUnlitTexturedResult::Success) {
+        const sb::native_render::ModelLightingContext* lighting =
+            sb::native_render::current_j3d_stage_lighting();
+        sb::native_render::LitTexturedMaterial litMaterial{};
+        const sb::native_render::J3dLitTexturedResult litFamily =
+            lighting != nullptr ? sb::native_render::classify_j3d_lit_textured_material(
+                                      materialState, placeholder, *lighting, litMaterial)
+                                : sb::native_render::J3dLitTexturedResult::MissingLightingContext;
+        const bool isUnlitTextured =
+            unlitFamily == sb::native_render::J3dUnlitTexturedResult::Success;
+        const bool isLitTextured = litFamily == sb::native_render::J3dLitTexturedResult::Success;
+        if (!isUnlitTextured && !isLitTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
-            ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(family)];
+            ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
+            ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
             return;
         }
         const u32 textureTable = sb_r32(materialPacket + kMaterialPacketTexture);
@@ -257,13 +350,24 @@ void submit_semantic_j3d_shape(u32 shape) {
                 ++g_stats.textureDecodeFailures[errorIndex];
             return;
         }
-        const sb::native_render::J3dUnlitTexturedResult classified =
-            sb::native_render::classify_j3d_unlit_textured_material(
-                materialState, g_texture.texture, texturedMaterial);
-        SB_ASSERT(classified == sb::native_render::J3dUnlitTexturedResult::Success,
-                  "decoded J3D texture invalidated a preclassified material: result=%s",
-                  sb::native_render::j3d_unlit_textured_result_name(classified));
-        semanticMaterial = texturedMaterial;
+        if (isLitTextured) {
+            const sb::native_render::J3dLitTexturedResult classified =
+                sb::native_render::classify_j3d_lit_textured_material(
+                    materialState, g_texture.texture, *lighting, litMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dLitTexturedResult::Success,
+                      "decoded J3D texture invalidated a preclassified lit material: result=%s",
+                      sb::native_render::j3d_lit_textured_result_name(classified));
+            semanticMaterial = litMaterial;
+            submittedLitMaterial = true;
+        } else {
+            const sb::native_render::J3dUnlitTexturedResult classified =
+                sb::native_render::classify_j3d_unlit_textured_material(
+                    materialState, g_texture.texture, texturedMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dUnlitTexturedResult::Success,
+                      "decoded J3D texture invalidated a preclassified material: result=%s",
+                      sb::native_render::j3d_unlit_textured_result_name(classified));
+            semanticMaterial = texturedMaterial;
+        }
         semanticImages[0] = {g_texture.texture.resource, g_texture.texture.revision,
                              g_texture.texture.width, g_texture.texture.height, g_texture.rgba8};
         images = semanticImages;
@@ -317,7 +421,8 @@ void submit_semantic_j3d_shape(u32 shape) {
         for (const J3DVert& vertex : g_decoded) {
             g_vertices.push_back({.position = {vertex.x, vertex.y, vertex.z},
                                   .uv = {vertex.uv[0][0], vertex.uv[0][1]},
-                                  .color = sb::native_render::color_from_rgba8(vertex.rgba)});
+                                  .color = sb::native_render::color_from_rgba8(vertex.rgba),
+                                  .normal = {vertex.nx, vertex.ny, vertex.nz}});
         }
         const std::uint64_t resource = (static_cast<std::uint64_t>(shape) << 16U) | element;
         const std::uint64_t revision = sb::native_render::mesh_revision(g_vertices);
@@ -335,6 +440,8 @@ void submit_semantic_j3d_shape(u32 shape) {
                   shape, element, g_vertices.size());
         record_raster(semanticMaterial);
         ++g_stats.submittedModels;
+        if (submittedLitMaterial)
+            ++g_stats.submittedLitModels;
         g_stats.submittedVertices += g_vertices.size();
     }
 }

@@ -13,7 +13,7 @@ constexpr std::uint32_t kPixelEngineTextureEdge = 0x50454544U; // 'PEED'
 constexpr std::uint32_t kPixelEngineTranslucent = 0x5045584CU; // 'PEXL'
 constexpr std::uint32_t kPixelEngineFull = 0x5045464CU;        // 'PEFL'
 
-bool full_policy_matches(const J3dUnlitMaterialState& state, std::uint8_t alphaCompare0,
+bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompare0,
                          std::uint8_t alphaReference0, std::uint8_t alphaCompare1,
                          std::uint8_t alphaReference1, std::uint8_t blendMode,
                          std::uint8_t blendSource, std::uint8_t blendDestination,
@@ -87,7 +87,7 @@ const char* j3d_unlit_textured_result_name(J3dUnlitTexturedResult result) noexce
     return "unknown";
 }
 
-J3dRasterPolicyResult classify_j3d_raster_policy(const J3dUnlitMaterialState& state,
+J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
                                                  ModelRasterPolicy& policy) noexcept {
     if (state.cullMode > static_cast<std::uint8_t>(ModelCullMode::All))
         return J3dRasterPolicyResult::UnsupportedCullMode;
@@ -132,7 +132,7 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dUnlitMaterialState& st
     return J3dRasterPolicyResult::Success;
 }
 
-J3dUnlitMaterialFeatures inspect_j3d_unlit_material(const J3dUnlitMaterialState& state) noexcept {
+J3dUnlitMaterialFeatures inspect_j3d_unlit_material(const J3dMaterialState& state) noexcept {
     const bool vertexColor = (state.colorChannelControl & 0x0001U) != 0;
     return {
         .supportedColorBlock = state.supportedColorBlock,
@@ -148,7 +148,7 @@ J3dUnlitMaterialFeatures inspect_j3d_unlit_material(const J3dUnlitMaterialState&
     };
 }
 
-J3dUnlitMaterialResult classify_j3d_unlit_material(const J3dUnlitMaterialState& state,
+J3dUnlitMaterialResult classify_j3d_unlit_material(const J3dMaterialState& state,
                                                    UnlitColorMaterial& material) noexcept {
     const J3dUnlitMaterialFeatures features = inspect_j3d_unlit_material(state);
     if (!features.supportedColorBlock)
@@ -180,8 +180,7 @@ J3dUnlitMaterialResult classify_j3d_unlit_material(const J3dUnlitMaterialState& 
 }
 
 J3dUnlitTexturedResult
-classify_j3d_unlit_textured_material(const J3dUnlitMaterialState& state,
-                                     const PictureTexture& texture,
+classify_j3d_unlit_textured_material(const J3dMaterialState& state, const PictureTexture& texture,
                                      UnlitTexturedMaterial& material) noexcept {
     if (!state.supportedColorBlock)
         return J3dUnlitTexturedResult::UnsupportedColorBlock;

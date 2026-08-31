@@ -346,9 +346,10 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
         DrawBatch batch{.firstVertex = static_cast<Uint32>(vertices.size()),
                         .vertexCount = static_cast<Uint32>(mesh->second->vertices.size()),
                         .raster = raster};
-        if (const auto* material = std::get_if<UnlitTexturedMaterial>(&draw.material)) {
+        const PictureTexture* texture = material_texture(draw.material);
+        if (texture != nullptr) {
             batch.textured = true;
-            if (!impl_->images.resolve(material->texture, batch.texture, error))
+            if (!impl_->images.resolve(*texture, batch.texture, error))
                 return false;
         }
         batch.pipeline = ensure_pipeline(

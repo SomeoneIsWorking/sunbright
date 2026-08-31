@@ -8,8 +8,8 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit single-texture J3D models to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
-| S005 | The native decomp feeds the same semantic 2D/UI and first J3D model family to that renderer through native-layout adapters | partial | S002, S004 | G004 |
+| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit plus first diffuse-lit single-texture J3D models to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S005 | The native decomp feeds the same semantic 2D/UI and J3D material families to that renderer through native-layout adapters | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
 
@@ -24,10 +24,11 @@ their original draw bodies for A/B. Camera projection now comes directly from th
 value written by the game's camera and is scoped around high-level `TViewObj::testPerform` draw
 dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetProjection`,
 `GXGetProjectionv`, FIFO, or compatibility-renderer state. The same high-level J3D material objects
-now supply culling, depth test/write, alpha cutout, and source-alpha blending for the exact common
-opaque, texture-edge, and translucent policy families. Broader J3D materials are next: lighting,
-multiple texture stages, custom pixel policies, skinning, authored mip chains, particles, and
-effects still fall back to the retained renderer.
+now supply culling, depth test/write, alpha cutout, source-alpha blending, decoded normals,
+material/vertex colour choice, ambient colour, and stage point lights for the exact supported
+families. Broader J3D materials are next: the remaining lit channel programs, multiple texture
+stages, custom pixel policies, skinning, authored mip chains, particles, and effects still fall
+back to the retained renderer.
 
 ## Capability details
 
@@ -86,6 +87,17 @@ exited cleanly after 60 presents with 6,006 cutout/back-cull models and 1,092,36
 separately rejected 682 unsupported textured raster policies rather than approximating them and
 reported no GPU fault. Full blocks with a present but `GX_FOG_NONE` fog object remain eligible;
 actual fog modes fall back.
+
+The first lit 3D family uses one decoded texture multiplied by per-vertex diffuse lighting. The
+shared model contract carries decoded normals, an ordinary ambient colour, and up to two view-space
+point lights with authored distance falloff. The recomp override runs the real
+`TLightCommon::setLight` body, then reads the same high-level world positions, colours, ambient, and
+camera matrix through the game's getters; it does not read a GX light object, XF register, FIFO, or
+compatibility-renderer mirror. The classifier admits only the observed one-stage texture-times-
+raster program with the exact material-colour or vertex-colour channel policy. Guarded Delfino
+audits reached nonzero lit models without a GPU fault; C095 owns the exact denominators, cross-runtime
+evidence, and falsifier. Other lit programs and unsupported raster policies fell back to the retained
+renderer by named rejection.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission
@@ -217,9 +229,9 @@ still completing the semantic submission. C091 records the combined window-owner
 its falsifier.
 
 Gap: this is a real model path, not full-frame visual correctness. Custom pixel policies and
-unsupported J3D programs are refused rather than approximated. Lighting, skinning, multiple texture
-stages, authored mip chains, particles, and effects remain absent, so the preview is not yet a
-complete product renderer.
+unsupported J3D programs are refused rather than approximated. The remaining diffuse/specular
+channel programs, skinning, multiple texture stages, authored mip chains, particles, and effects
+remain absent, so the preview is not yet a complete product renderer.
 
 ### S005 — Decomp PC-native semantic renderer
 
@@ -242,6 +254,13 @@ After the shared raster-policy integration, a guarded 120-present run exited cle
 failures. The first cold run exceeded the default 15-second in-process watchdog while Aurora was
 creating a pipeline; rerunning with a 60-second diagnostic watchdog completed normally, so the
 aborted cold run is recorded as startup-cost evidence rather than silently discarded.
+
+Native `TLightCommon::setLight` now publishes the same high-level stage-light input through a small
+value-only bridge after using those values for the retained GX body. The bridge is linked directly
+into `sms-boot`, while the decomp callback remains weak so decomp-only tests do not acquire a host
+renderer dependency. The native-layout audit independently exercises material, normal, ambient, and
+light extraction while sharing only the renderer-neutral lighting calculation with recomp; its
+reached-model evidence is recorded once in C095.
 
 The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic command from native
 J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only
@@ -306,9 +325,9 @@ exercise a resource-font glyph on their reached paths, so they prove runtime saf
 decomp glyph coverage; that remains explicit rather than inferred from the adapter test.
 
 Gap: decomp window behavior has close production-linked coverage but not an organically reached
-live window in the bounded title/stage-one routes. Custom J3D pixel policies, lighting, skinning,
-multiple texture stages, authored mip chains, particles, and effects remain missing from its visible
-native preview.
+live window in the bounded title/stage-one routes. Custom J3D pixel policies, the remaining
+diffuse/specular channel programs, skinning, multiple texture stages, authored mip chains,
+particles, and effects remain missing from its visible native preview.
 
 ### S006 — Lerp coverage
 

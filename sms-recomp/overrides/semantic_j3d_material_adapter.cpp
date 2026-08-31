@@ -60,8 +60,8 @@ std::uint32_t pixel_engine_type(std::uint32_t vptr) noexcept {
 } // namespace
 
 bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::uint32_t material,
-                                      bool hasVertexColor,
-                                      native_render::J3dUnlitMaterialState& state) noexcept {
+                                      bool hasVertexColor, bool hasNormal,
+                                      native_render::J3dMaterialState& state) noexcept {
     if (material == 0)
         return false;
     const BigEndianGuestReader reader(byteReader);
@@ -77,7 +77,7 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
         return false;
     }
 
-    native_render::J3dUnlitMaterialState captured{};
+    native_render::J3dMaterialState captured{};
     std::uint32_t colorVptr = 0;
     std::uint32_t textureGenerationVptr = 0;
     std::uint32_t tevVptr = 0;
@@ -102,9 +102,15 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
             return false;
     }
     captured.supportedColorBlock = channelCountOffset != 0;
+    captured.usesMaterialAmbient = colorVptr == kColorBlockLightOnVptr;
     if (captured.supportedColorBlock &&
         (!reader.u8(colorBlock + channelCountOffset, captured.colorChannelCount) ||
-         !reader.u16(colorBlock + channelControlOffset, captured.colorChannelControl))) {
+         !reader.u16(colorBlock + channelControlOffset, captured.colorChannelControl) ||
+         !reader.u16(colorBlock + channelControlOffset + 2, captured.alphaChannelControl))) {
+        return false;
+    }
+    if (colorVptr == kColorBlockLightOnVptr &&
+        !reader.u32(colorBlock + 0x0C, captured.ambientColorRgba8)) {
         return false;
     }
     captured.lightingEnabled = (captured.colorChannelControl & 0x0002U) != 0;
@@ -171,6 +177,7 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
         return false;
     }
     captured.hasVertexColor = hasVertexColor;
+    captured.hasNormal = hasNormal;
     if (captured.supportedTevBlock) {
         if (!reader.u16(tevBlock + 0x04, captured.textureNumber0) ||
             !reader.u8(tevBlock + orderOffset, captured.textureCoordinate0) ||
@@ -178,6 +185,15 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
             !reader.u8(tevBlock + orderOffset + 2, captured.colorChannel0) ||
             !reader.bytes(tevBlock + stageOffset, captured.tevStage0.data(),
                           captured.tevStage0.size())) {
+            return false;
+        }
+        if (captured.tevStageCount >= 2 &&
+            (!reader.u16(tevBlock + 0x06, captured.textureNumber1) ||
+             !reader.u8(tevBlock + orderOffset + 4, captured.textureCoordinate1) ||
+             !reader.u8(tevBlock + orderOffset + 5, captured.textureMap1) ||
+             !reader.u8(tevBlock + orderOffset + 6, captured.colorChannel1) ||
+             !reader.bytes(tevBlock + stageOffset + 8, captured.tevStage1.data(),
+                           captured.tevStage1.size()))) {
             return false;
         }
     }

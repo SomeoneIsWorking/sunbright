@@ -216,18 +216,17 @@ bool SemanticFrameCollector::append_model(const ModelDraw& draw, const MeshResou
     if (draws_.size() + models_.size() >= limits_.commands)
         return fail(SemanticFrameError::CommandLimit);
 
-    const auto* textured = std::get_if<UnlitTexturedMaterial>(&draw.material);
-    if ((textured == nullptr && !images.empty()) || (textured != nullptr && images.size() != 1))
+    const PictureTexture* texture = material_texture(draw.material);
+    if ((texture == nullptr && !images.empty()) || (texture != nullptr && images.size() != 1))
         return fail(SemanticFrameError::InvalidSubmission);
 
     std::vector<StoredImage> pendingImages;
     std::size_t pendingImageBytes = 0;
-    if (textured != nullptr) {
+    if (texture != nullptr) {
         const DecodedImageView& image = images.front();
-        const PictureTexture& texture = textured->texture;
-        if (!valid(image) || image.resource != texture.resource ||
-            image.revision != texture.revision || image.width != texture.width ||
-            image.height != texture.height) {
+        if (!valid(image) || image.resource != texture->resource ||
+            image.revision != texture->revision || image.width != texture->width ||
+            image.height != texture->height) {
             return fail(SemanticFrameError::InvalidSubmission);
         }
         const auto storedImage =

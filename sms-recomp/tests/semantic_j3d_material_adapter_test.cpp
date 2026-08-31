@@ -61,8 +61,8 @@ int main() {
     write_u32(memory, pixelEngine, 0x803E0E64);
 
     const sb::recomp::GuestByteReader reader{&memory, read};
-    sb::native_render::J3dUnlitMaterialState state{};
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    sb::native_render::J3dMaterialState state{};
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     sb::native_render::UnlitColorMaterial output{};
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
@@ -75,18 +75,18 @@ int main() {
     memory.bytes[color + 0x14] = 1;
     write_u16(memory, color + 0x16, 0);
     memory.bytes[color + 0x40] = 1;
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     assert(output.raster.cull == sb::native_render::ModelCullMode::Front);
 
     write_u32(memory, pixelEngine, 0x803E0E00);
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     assert(output.raster.alphaTest == sb::native_render::ModelAlphaTest::GreaterOrEqualHalf);
     write_u32(memory, pixelEngine, 0x803E0D9C);
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     assert(output.raster.blend == sb::native_render::ModelBlendMode::SourceAlpha);
@@ -100,23 +100,23 @@ int main() {
     memory.bytes[pixelEngine + 0x0E] = 0;
     memory.bytes[pixelEngine + 0x0F] = 3;
     write_u16(memory, pixelEngine + 0x10, 0x0017);
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     assert(output.raster ==
            sb::native_render::ModelRasterPolicy{.cull = sb::native_render::ModelCullMode::Front});
     memory.bytes[pixelEngine + 0x0C] = 2;
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::UnsupportedRasterPolicy);
     memory.bytes[pixelEngine + 0x0C] = 0;
     write_u32(memory, pixelEngine + 0x04, fog);
     memory.bytes[fog] = 0;
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     memory.bytes[fog] = 2;
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::UnsupportedRasterPolicy);
     write_u32(memory, pixelEngine + 0x04, 0);
@@ -128,14 +128,14 @@ int main() {
     memory.bytes[tev + 0x09] = 0xFF;
     memory.bytes[tev + 0x0A] = 4;
     std::memcpy(memory.bytes.data() + tev + 0x31, stage.data(), stage.size());
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     memory.bytes[tev + 0x30] = 2;
-    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::MultipleTevStages);
 
     write_u32(memory, material + 0x20, 0xFFFF);
-    assert(!sb::recomp::capture_guest_j3d_material_state(reader, material, false, state));
+    assert(!sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
 }

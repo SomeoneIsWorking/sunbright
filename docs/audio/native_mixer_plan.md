@@ -27,8 +27,9 @@ over the decomp's live DSPBuffer array:
 per 5ms DAC frame (x subframes):
   for each active voice (DSPBuffer, BE fields):
     - fetch/decode samples: AFC/ADPCM (coef table), PCM8/PCM16 — decoders exist,
-      PROVEN, in the recovered recomp-era engine (scratch/audio_ref/
-      native_jas_recomp_era.cpp — AFC decode verified bit-perfect by ear vs ROM)
+      PROVEN, in historical `runtime/native_jas.cpp` (DELETED; recoverable from Git before
+      `5736439`) — AFC decode
+      verified bit-perfect by ear vs ROM)
     - resample by pitch ratio (u16 fixed-point), maintain fractional position
     - volume ramps + 6-bus mixer (L/R/aux gains, targetVolume->currentVolume)
     - write back voice state (position, loop, predictor/history)
@@ -44,7 +45,8 @@ Per-voice render params (set by DSPBuffer::setWaveInfo/setOscInfo/setPitch/setMi
 in JASDSPInterface.cpp):
 - `unk110` (s16*) = decoded/encoded wave base; `unk114` = length; `unk118` = loop/osc info.
 - format decided in setWaveInfo (param_2): PCM16 / PCM8 / **AFC** (the common case) — decode
-  with the PROVEN `afc_decode()` in scratch/audio_ref/native_jas_recomp_era.cpp:205
+  with the PROVEN `afc_decode()` in historical `runtime/native_jas.cpp:205` (DELETED; recoverable
+  from Git before `5736439`)
   (verified bit-exact vs ROM by ear; coefficients in docs/audio/data_formats.md).
 - pitch = setPitch(u16) (fixed-point ratio) → fractional resample step.
 - volume = the `Channel unk10[6]` bus entries (targetVolume/currentVolume ramps) + pan.
@@ -80,10 +82,11 @@ than duplicating state.
 
 ## References
 
-- `scratch/audio_ref/native_jas_recomp_era.cpp` (recovered from git 5736439^:
-  runtime/native_jas.cpp) — proven AFC decoder, IBNK/WSYS parsing, ADSR.
-- `scratch/audio_ref/native_audio_engine.md` + `audio_data_formats.md` — the
-  recomp-era engine docs (also recovered; formats + verified test vectors).
+- Historical `runtime/native_jas.cpp` (DELETED; recoverable from Git before `5736439`) — proven
+  AFC decoder, IBNK/WSYS parsing, ADSR.
+- `docs/audio/audio_data_formats.md` plus historical `native_audio_engine.md` (DELETED;
+  recoverable from Git before `5736439`) — recomp-era engine docs with formats and verified test
+  vectors.
 - Dolphin `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.cpp` (in the Dolphin fork, not this repo) — the same ucode's HLE,
   field-by-field reference for the VPB semantics (consult for layout/semantics;
   implement from the decomp + RE, keep provenance clean).
@@ -97,7 +100,8 @@ currently memsets bufL/bufR to silence) needs the exact DSPBuffer VPB semantics.
 JASDSPInterface.cpp setters (the fields the native sequencer fills each frame):
 
 - **Pitch**: `unk4` (u16, clamped to 0x7fff) — `setPitch`. Fixed-point resample ratio; the
-  reference engine's step = pitch / 0x?  (confirm scale vs native_jas_recomp_era resample).
+  reference engine's step = pitch / 0x? (confirm scale against historical
+  `runtime/native_jas.cpp` (DELETED; recoverable from Git before `5736439`)).
 - **Mixer buses**: `unk10[6]` = `Channel{ u16 id; u16 targetVolume; u16 currentVolume; u16 unkC }`.
   - `setMixerVolume(bus, vol, dpage)`: `targetVolume=vol`, ramp delta in `unkC` hi byte. Gated
     by `unk10A` (returns early if set — the lock flag).
@@ -109,7 +113,8 @@ JASDSPInterface.cpp setters (the fields the native sequencer fills each frame):
   - `unk118 = (s16*)dataPtr` — encoded sample base.
   - format index = `Wave_.unk1`; `unk64 = COMP_BLOCKSAMPLES[fmt]` (AFC fmt0/1 = 16, PCM = 1),
     `unk100 = COMP_BLOCKBYTES[fmt]` ({9,5,8,16,1,1,1,1}). **fmt ≤ 1 → AFC, else PCM** — matches
-    `native_jas_recomp_era.cpp:393` (`wv.fmt<=1 → afc_decode(hq = fmt==0)`).
+    historical `runtime/native_jas.cpp:393` (DELETED; recoverable from Git before `5736439`;
+    `wv.fmt<=1 → afc_decode(hq = fmt==0)`).
   - loop: `unk102 = Wave_.unk10` (loop flag); if looping, `unk110 = Wave_.unk14` (loop base),
     `unk114 = Wave_.unk18` (loop length), `unk104/unk106 = Wave_.unk20/unk22` (loop
     predictor/history for AFC continuation). Non-loop: `unk114 = unk11C = Wave_.unk1C` (length).
@@ -124,14 +129,16 @@ JASDSPInterface.cpp setters (the fields the native sequencer fills each frame):
 - The per-voice SAMPLE CURSOR / fractional position: the ucode maintains playback position +
   loop wrap in the VPB (likely `unk68`/`unk6C`, the ucode's writeback addr) and the
   predictor/history for AFC continuation across frames. Decide: read/write those VPB fields, OR
-  keep a host-side Voice[64] state (as native_jas_recomp_era.cpp does) keyed by DSPCH index +
+  keep a host-side Voice[64] state (as historical `runtime/native_jas.cpp` (DELETED; recoverable
+  from Git before `5736439`) does) keyed by DSPCH index +
   re-trigger detection. Host-side state is cleaner (the ucode's exact writeback addr semantics
   are fiddly) — confirm the re-trigger signal (playStart/unk10A transition, or unk2 "needs work").
 - `DSPCH[64]` access: `JASystem::TDSPChannel::DSPCH` is static in JASDSPChannel.cpp — add a
   small extern accessor (plan §M2) rather than duplicating.
 
 ### v1 scope (next iteration)
-PCM16 + AFC (reuse `afc_decode` @ native_jas_recomp_era.cpp:205, proven), linear resample by
+PCM16 + AFC (reuse proven `afc_decode` from historical `runtime/native_jas.cpp:205` (DELETED;
+recoverable from Git before `5736439`)), linear resample by
 `unk4` step, L/R (buses 0/1) volume-ramp mix into bufL/bufR, host-side Voice[64] state. No
 aux/filters/osc. Target: title BGM audible. Unit test: afc_decode vs the recomp-era test vector.
 
@@ -146,7 +153,8 @@ aux/filters/osc. Target: title BGM audible. Unit test: afc_decode vs the recomp-
   `DSPCH[i]` when `DSPCH[i].unk1 != 1` (allocated, not free) AND its VPB (`DSPCH[i].unkC`) has
   a wave (`unk118`/`unk110` set) AND not paused (`unkC == 0`). `unk10A` = mixer gate.
   `DSPCH` is `TDSPChannel::DSPCH` (static, JASDSPChannel.cpp:13), 64 entries.
-- **Decode**: reuse `afc_decode` (native_jas_recomp_era.cpp:205, proven bit-exact) for fmt≤1
+- **Decode**: reuse `afc_decode` (historical `runtime/native_jas.cpp:205` (DELETED; recoverable
+  from Git before `5736439`), proven bit-exact) for fmt≤1
   (fmt0 hq=9B/16smp, fmt1=5B/16smp); PCM16/PCM8 for fmt≥2. Decode the WHOLE wave once to a
   cached s16 vector (reference approach), then resample from the cache with a fractional cursor
   — avoids per-frame AFC predictor-continuation bookkeeping.

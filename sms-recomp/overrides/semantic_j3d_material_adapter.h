@@ -10,7 +10,7 @@ namespace sb::recomp {
 
 [[nodiscard]] bool
 capture_guest_j3d_material_state(const GuestByteReader& reader, std::uint32_t material,
-                                 bool hasVertexColor,
-                                 native_render::J3dUnlitMaterialState& state) noexcept;
+                                 bool hasVertexColor, bool hasNormal,
+                                 native_render::J3dMaterialState& state) noexcept;
 
 } // namespace sb::recomp

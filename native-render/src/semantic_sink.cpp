@@ -76,15 +76,14 @@ bool submit_model(const ModelDraw& draw, const MeshResourceView& mesh,
         draw.mesh.vertexCount != mesh.vertices.size()) {
         return false;
     }
-    const auto* textured = std::get_if<UnlitTexturedMaterial>(&draw.material);
-    if ((textured == nullptr && !images.empty()) || (textured != nullptr && images.size() != 1))
+    const PictureTexture* texture = material_texture(draw.material);
+    if ((texture == nullptr && !images.empty()) || (texture != nullptr && images.size() != 1))
         return false;
-    if (textured != nullptr) {
+    if (texture != nullptr) {
         const DecodedImageView& image = images.front();
-        const PictureTexture& texture = textured->texture;
-        if (!valid(image) || image.resource != texture.resource ||
-            image.revision != texture.revision || image.width != texture.width ||
-            image.height != texture.height) {
+        if (!valid(image) || image.resource != texture->resource ||
+            image.revision != texture->revision || image.width != texture->width ||
+            image.height != texture->height) {
             return false;
         }
     }

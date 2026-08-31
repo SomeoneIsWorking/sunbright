@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_unlit_material.h>
 #include <sunbright/native_render/res_timg_decode.h>
 
@@ -23,11 +24,11 @@ struct CapturedNativeJ3dMaterial {
 };
 
 [[nodiscard]] bool
-capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColor,
-                                  native_render::J3dUnlitMaterialState& state) noexcept;
+capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColor, bool hasNormal,
+                                  native_render::J3dMaterialState& state) noexcept;
 [[nodiscard]] NativeJ3dMaterialResult
 capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, bool hasVertexColor,
-                            CapturedNativeJ3dMaterial& captured,
+                            bool hasNormal, CapturedNativeJ3dMaterial& captured,
                             native_render::ResTimgDecodeError& textureError) noexcept;
 
 } // namespace sb

@@ -24,10 +24,12 @@
 namespace {
 
 constexpr std::uint32_t kColor0 = 11;
+constexpr std::uint32_t kNormal = 10;
 
 struct Stats {
     std::uint64_t considered = 0;
     std::uint64_t submittedModels = 0;
+    std::uint64_t submittedLitModels = 0;
     std::uint64_t submittedVertices = 0;
     std::uint64_t layoutFailures = 0;
     std::uint64_t materialFailures = 0;
@@ -144,6 +146,8 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
             *material, materialPacket->mTexture,
             layout.type[kColor0] !=
                 static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
+            layout.type[kNormal] !=
+                static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
             capturedMaterial, textureError) != sb::NativeJ3dMaterialResult::Success) {
         ++g_stats.materialFailures;
         return;
@@ -193,7 +197,8 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         for (const auto& vertex : g_decoded) {
             g_vertices.push_back({.position = {vertex.x, vertex.y, vertex.z},
                                   .uv = {vertex.uv[0][0], vertex.uv[0][1]},
-                                  .color = sb::native_render::color_from_rgba8(vertex.rgba)});
+                                  .color = sb::native_render::color_from_rgba8(vertex.rgba),
+                                  .normal = {vertex.nx, vertex.ny, vertex.nz}});
         }
         J3DShapeDraw* shapeDraw = shape.getShapeDraw(element);
         const std::uint64_t resource = reinterpret_cast<std::uintptr_t>(shapeDraw);
@@ -215,6 +220,10 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         }
         record_raster(capturedMaterial.material);
         ++g_stats.submittedModels;
+        if (std::holds_alternative<sb::native_render::LitTexturedMaterial>(
+                capturedMaterial.material)) {
+            ++g_stats.submittedLitModels;
+        }
         g_stats.submittedVertices += g_vertices.size();
     }
 }
@@ -223,6 +232,7 @@ extern "C" void sb_native_j3d_report_stats(void) {
     const sb::NativeJ3dSceneStats sceneStats = sb::native_j3d_scene_stats();
     sb_logf("semantic",
             "native J3D models: considered=%llu submitted=%llu models/%llu vertices "
+            "(%llu lit models) "
             "rejected(layout=%llu material=%llu no-perspective-context=%llu non-rigid=%llu "
             "decode=%llu); high-level camera dispatches: perspective=%llu orthographic=%llu "
             "unavailable-before-camera=%llu; published raster families: opaque=%llu cutout=%llu "
@@ -230,6 +240,7 @@ extern "C" void sb_native_j3d_report_stats(void) {
             static_cast<unsigned long long>(g_stats.considered),
             static_cast<unsigned long long>(g_stats.submittedModels),
             static_cast<unsigned long long>(g_stats.submittedVertices),
+            static_cast<unsigned long long>(g_stats.submittedLitModels),
             static_cast<unsigned long long>(g_stats.layoutFailures),
             static_cast<unsigned long long>(g_stats.materialFailures),
             static_cast<unsigned long long>(g_stats.noPerspectiveContexts),

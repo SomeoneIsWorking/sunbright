@@ -29,7 +29,7 @@ bool reject(const sb::native_render::SemanticDraw&,
 bool receive_model(const sb::native_render::ModelDraw& draw,
                    const sb::native_render::MeshResourceView&,
                    std::span<const sb::native_render::DecodedImageView> images, void* context) {
-    assert(images.empty());
+    assert(images.size() == (sb::native_render::material_texture(draw.material) ? 1U : 0U));
     *static_cast<std::uint64_t*>(context) = draw.instance;
     return true;
 }
@@ -106,6 +106,14 @@ int main() {
     };
     assert(sb::native_render::submit_model(model, mesh));
     assert(received == 10);
+    auto litModel = model;
+    litModel.instance = 11;
+    litModel.material = sb::native_render::LitTexturedMaterial{
+        .texture = {.resource = 1, .width = 1, .height = 1},
+        .lighting = {.pointLights = {{{.position = {0, 0, 1}}}}, .pointLightCount = 1},
+    };
+    assert(sb::native_render::submit_model(litModel, mesh, std::span(&image, 1)));
+    assert(received == 11);
 
     auto invalid = valid_draw();
     invalid.picture.material.textureCount = 0;
