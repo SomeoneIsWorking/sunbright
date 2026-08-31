@@ -45,6 +45,7 @@ int main() {
         .view = {.value = {1, 0, 0, 10, 0, 1, 0, 20, 0, 0, 1, 30}},
         .primaryWorldPosition = {1, 2, 3},
         .primaryColor = {1, 0.5F, 0.25F, 1},
+        .shininess = 50.0F,
         .ambientColor = {0.2F, 0.3F, 0.4F, 1},
         .effectEnabled = true,
         .effectWorldPosition = {4, 5, 6},
@@ -58,6 +59,10 @@ int main() {
     assert((lighting.pointLights[1].position == Vec3{14, 25, 36}));
     assert(near(lighting.pointLights[1].distanceAttenuation.y, 0.0005F));
     assert(near(lighting.pointLights[1].distanceAttenuation.z, 0.0000005F));
+    assert(near(lighting.specular.directionToLight.x,
+                11.0F / std::sqrt(11.0F * 11.0F + 22.0F * 22.0F + 33.0F * 33.0F)));
+    assert(lighting.specular.color == input.primaryColor);
+    assert(near(lighting.specular.shininess, input.shininess));
     clear_j3d_stage_lighting();
     assert(current_j3d_stage_lighting() == nullptr);
     publish_j3d_stage_lighting(input);

@@ -1,6 +1,7 @@
 add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/image.cpp src/image_decode.cpp
                                                  src/j3d_mesh_decode.cpp
                                                  src/j3d_lit_material.cpp
+                                                 src/j3d_specular_material.cpp
                                                  src/j3d_stage_lighting.cpp
                                                  src/j3d_unlit_material.cpp
                                                  src/model.cpp src/model_context.cpp
@@ -59,6 +60,10 @@ add_test(NAME native_render_j3d_unlit_material COMMAND native_render_j3d_unlit_m
 add_executable(native_render_j3d_lit_material_test tests/j3d_lit_material_test.cpp)
 target_link_libraries(native_render_j3d_lit_material_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_lit_material COMMAND native_render_j3d_lit_material_test)
+
+add_executable(native_render_j3d_specular_material_test tests/j3d_specular_material_test.cpp)
+target_link_libraries(native_render_j3d_specular_material_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_specular_material COMMAND native_render_j3d_specular_material_test)
 
 add_executable(native_render_res_timg_decode_test tests/res_timg_decode_test.cpp)
 target_link_libraries(native_render_res_timg_decode_test PRIVATE sunbright-native-render-core)

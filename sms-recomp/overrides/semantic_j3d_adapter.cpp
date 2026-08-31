@@ -10,6 +10,7 @@
 #include "../runtime/sb_assert.h"
 
 #include <sunbright/native_render/j3d_lit_material.h>
+#include <sunbright/native_render/j3d_specular_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
 #include <sunbright/native_render/model_context.h>
 #include <sunbright/native_render/semantic_sink.h>
@@ -55,6 +56,7 @@ struct Stats {
     std::array<std::uint64_t, 12> textureDecodeFailures{};
     std::array<std::uint64_t, 11> texturedMaterialRejections{};
     std::array<std::uint64_t, 12> litTexturedMaterialRejections{};
+    std::array<std::uint64_t, 13> specularTexturedMaterialRejections{};
     std::uint64_t submittedModels = 0;
     std::uint64_t submittedLitModels = 0;
     std::uint64_t submittedVertices = 0;
@@ -70,8 +72,11 @@ struct Stats {
 struct ProgramKey {
     bool lighting = false;
     bool hasNormal = false;
+    std::uint8_t colorChannelCount = 0;
     std::uint16_t channelControl = 0;
     std::uint16_t alphaChannelControl = 0;
+    std::uint16_t channelControl1 = 0;
+    std::uint16_t alphaChannelControl1 = 0;
     std::uint8_t cullMode = 0xFF;
     std::uint32_t pixelEngineBlockType = 0;
     bool hasExplicitPixelPolicy = false;
@@ -116,7 +121,10 @@ struct ProgramObservation {
     std::string materialName;
     std::string textureName0;
     std::string textureName1;
+    std::uint32_t firstMaterialColor1 = 0;
+    std::uint32_t firstAmbientColor1 = 0;
     std::array<std::uint32_t, 4> firstKonstColors{};
+    bool secondaryColorsVary = false;
     bool konstColorsVary = false;
 };
 
@@ -287,18 +295,19 @@ std::string semantic_j3d_stats_text() {
                   static_cast<unsigned long long>(sceneStats.unavailableDispatches));
     report += sceneLine;
     char lightingLine[352];
-    std::snprintf(
-        lightingLine, sizeof(lightingLine),
-        "; high-level stage lights: published=%llu/%llu failures(view=%llu "
-        "primary-position=%llu manager=%llu effect=%llu); program-name failures=%llu/%llu",
-        static_cast<unsigned long long>(lightingStats.published),
-        static_cast<unsigned long long>(lightingStats.attempts),
-        static_cast<unsigned long long>(lightingStats.viewFailures),
-        static_cast<unsigned long long>(lightingStats.primaryPositionFailures),
-        static_cast<unsigned long long>(lightingStats.managerFailures),
-        static_cast<unsigned long long>(lightingStats.effectFailures),
-        static_cast<unsigned long long>(g_stats.programNameFailures),
-        static_cast<unsigned long long>(g_stats.programNameAttempts));
+    std::snprintf(lightingLine, sizeof(lightingLine),
+                  "; high-level stage lights: published=%llu/%llu failures(view=%llu "
+                  "shininess=%llu primary-position=%llu manager=%llu effect=%llu); program-name "
+                  "failures=%llu/%llu",
+                  static_cast<unsigned long long>(lightingStats.published),
+                  static_cast<unsigned long long>(lightingStats.attempts),
+                  static_cast<unsigned long long>(lightingStats.viewFailures),
+                  static_cast<unsigned long long>(lightingStats.shininessFailures),
+                  static_cast<unsigned long long>(lightingStats.primaryPositionFailures),
+                  static_cast<unsigned long long>(lightingStats.managerFailures),
+                  static_cast<unsigned long long>(lightingStats.effectFailures),
+                  static_cast<unsigned long long>(g_stats.programNameFailures),
+                  static_cast<unsigned long long>(g_stats.programNameAttempts));
     report += lightingLine;
     char litRejectionLine[420];
     std::snprintf(
@@ -318,6 +327,24 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[10]),
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[11]));
     report += litRejectionLine;
+    char specularRejectionLine[480];
+    std::snprintf(
+        specularRejectionLine, sizeof(specularRejectionLine),
+        "; specular-textured rejections: colour-block=%llu channels=%llu secondary-colours=%llu "
+        "tev-block=%llu stages=%llu texcoord=%llu binding=%llu program=%llu normal=%llu "
+        "lighting-context=%llu raster=%llu",
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[1]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[2]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[3]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[4]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[5]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[6]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[7]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[8]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[9]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[10]),
+        static_cast<unsigned long long>(g_stats.specularTexturedMaterialRejections[11]));
+    report += specularRejectionLine;
     std::vector<std::pair<ProgramKey, ProgramObservation>> programs(g_programs.begin(),
                                                                     g_programs.end());
     std::ranges::sort(programs, [](const auto& first, const auto& second) {
@@ -352,10 +379,11 @@ std::string semantic_j3d_stats_text() {
     const std::size_t litCount = std::min<std::size_t>(litPrograms.size(), 8);
     for (std::size_t litIndex = 0; litIndex < litCount; ++litIndex) {
         const auto& [key, observation] = litPrograms[litIndex];
-        char line[1152];
+        char line[1280];
         std::snprintf(
             line, sizeof(line),
-            "; top-lit-program[%zu]=%llu mat=%u:\"%s\" normal=%u chan=%04x/%04x stages=%u "
+            "; top-lit-program[%zu]=%llu mat=%u:\"%s\" normal=%u "
+            "channels=%u:%04x/%04x,%04x/%04x stages=%u "
             "pe=%08x cull=%u explicit=%u alpha=%u/%u/%u/%u/%u "
             "blend=%u/%u/%u/%u depth=%u/%u/%u fog=%u "
             "tex=%04x:\"%s\"/%04x:\"%s\" "
@@ -363,10 +391,12 @@ std::string semantic_j3d_stats_text() {
             "order1=%02x/%02x/%02x stage1=%02x%02x%02x%02x%02x%02x%02x%02x "
             "path=%llu-observed/%llu-perspective/%llu-accepted/%llu-resources/%llu-ready/"
             "%llu-models "
+            "secondColor=%08x/%08x varies=%u "
             "konstSel=%02x/%02x konst=%08x/%08x/%08x/%08x varies=%u",
             litIndex, static_cast<unsigned long long>(observation.count), key.materialIndex,
-            observation.materialName.c_str(), key.hasNormal ? 1U : 0U, key.channelControl,
-            key.alphaChannelControl, key.stageCount, key.pixelEngineBlockType, key.cullMode,
+            observation.materialName.c_str(), key.hasNormal ? 1U : 0U, key.colorChannelCount,
+            key.channelControl, key.alphaChannelControl, key.channelControl1,
+            key.alphaChannelControl1, key.stageCount, key.pixelEngineBlockType, key.cullMode,
             key.hasExplicitPixelPolicy ? 1U : 0U, key.alphaCompare0, key.alphaReference0,
             key.alphaOperation, key.alphaCompare1, key.alphaReference1, key.blendMode,
             key.blendSourceFactor, key.blendDestinationFactor, key.blendLogicOperation,
@@ -382,7 +412,9 @@ std::string semantic_j3d_stats_text() {
             static_cast<unsigned long long>(observation.materialAccepted),
             static_cast<unsigned long long>(observation.resourcesReady),
             static_cast<unsigned long long>(observation.perspectiveReady),
-            static_cast<unsigned long long>(observation.submittedModels), key.konstColorSelection0,
+            static_cast<unsigned long long>(observation.submittedModels),
+            observation.firstMaterialColor1, observation.firstAmbientColor1,
+            observation.secondaryColorsVary ? 1U : 0U, key.konstColorSelection0,
             key.konstColorSelection1, observation.firstKonstColors[0],
             observation.firstKonstColors[1], observation.firstKonstColors[2],
             observation.firstKonstColors[3], observation.konstColorsVary ? 1U : 0U);
@@ -423,8 +455,11 @@ void submit_semantic_j3d_shape(u32 shape) {
                        .hasNormal =
                            layout.type[kNormal] !=
                            static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
+                       .colorChannelCount = materialState.colorChannelCount,
                        .channelControl = materialState.colorChannelControl,
                        .alphaChannelControl = materialState.alphaChannelControl,
+                       .channelControl1 = materialState.colorChannelControl1,
+                       .alphaChannelControl1 = materialState.alphaChannelControl1,
                        .cullMode = materialState.cullMode,
                        .pixelEngineBlockType = materialState.pixelEngineBlockType,
                        .hasExplicitPixelPolicy = materialState.hasExplicitPixelPolicy,
@@ -460,9 +495,16 @@ void submit_semantic_j3d_shape(u32 shape) {
     ProgramObservation& observation = programEntry->second;
     if (inserted) {
         capture_program_names(capturedProgram, observation);
+        observation.firstMaterialColor1 = materialState.materialColor1Rgba8;
+        observation.firstAmbientColor1 = materialState.ambientColor1Rgba8;
         observation.firstKonstColors = materialState.konstColorRgba8;
-    } else if (observation.firstKonstColors != materialState.konstColorRgba8) {
-        observation.konstColorsVary = true;
+    } else {
+        if (observation.firstMaterialColor1 != materialState.materialColor1Rgba8 ||
+            observation.firstAmbientColor1 != materialState.ambientColor1Rgba8) {
+            observation.secondaryColorsVary = true;
+        }
+        if (observation.firstKonstColors != materialState.konstColorRgba8)
+            observation.konstColorsVary = true;
     }
     ++observation.count;
     const sb::native_render::ModelSceneContext* scene = sb::recomp::current_semantic_j3d_scene();
@@ -508,10 +550,19 @@ void submit_semantic_j3d_shape(u32 shape) {
         const bool isUnlitTextured =
             unlitFamily == sb::native_render::J3dUnlitTexturedResult::Success;
         const bool isLitTextured = litFamily == sb::native_render::J3dLitTexturedResult::Success;
-        if (!isUnlitTextured && !isLitTextured) {
+        sb::native_render::TintedSpecularTexturedMaterial specularMaterial{};
+        const sb::native_render::J3dSpecularTexturedResult specularFamily =
+            lighting != nullptr
+                ? sb::native_render::classify_j3d_specular_textured_material(
+                      materialState, placeholder, *lighting, specularMaterial)
+                : sb::native_render::J3dSpecularTexturedResult::MissingLightingContext;
+        const bool isSpecularTextured =
+            specularFamily == sb::native_render::J3dSpecularTexturedResult::Success;
+        if (!isUnlitTextured && !isLitTextured && !isSpecularTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
+            ++g_stats.specularTexturedMaterialRejections[static_cast<std::size_t>(specularFamily)];
             return;
         }
         ++observation.materialAccepted;
@@ -529,7 +580,17 @@ void submit_semantic_j3d_shape(u32 shape) {
                 ++g_stats.textureDecodeFailures[errorIndex];
             return;
         }
-        if (isLitTextured) {
+        if (isSpecularTextured) {
+            const sb::native_render::J3dSpecularTexturedResult classified =
+                sb::native_render::classify_j3d_specular_textured_material(
+                    materialState, g_texture.texture, *lighting, specularMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dSpecularTexturedResult::Success,
+                      "decoded J3D texture invalidated a preclassified specular material: "
+                      "result=%s",
+                      sb::native_render::j3d_specular_textured_result_name(classified));
+            semanticMaterial = specularMaterial;
+            submittedLitMaterial = true;
+        } else if (isLitTextured) {
             const sb::native_render::J3dLitTexturedResult classified =
                 sb::native_render::classify_j3d_lit_textured_material(
                     materialState, g_texture.texture, *lighting, litMaterial);

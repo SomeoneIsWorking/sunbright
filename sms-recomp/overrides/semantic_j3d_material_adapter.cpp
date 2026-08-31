@@ -134,8 +134,18 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
          !reader.u16(colorBlock + channelControlOffset + 2, captured.alphaChannelControl))) {
         return false;
     }
+    if (captured.colorChannelCount > 1 &&
+        (!reader.u16(colorBlock + channelControlOffset + 4, captured.colorChannelControl1) ||
+         !reader.u16(colorBlock + channelControlOffset + 6, captured.alphaChannelControl1) ||
+         !reader.u32(colorBlock + 0x08, captured.materialColor1Rgba8))) {
+        return false;
+    }
     if (colorVptr == kColorBlockLightOnVptr &&
         !reader.u32(colorBlock + 0x0C, captured.ambientColorRgba8)) {
+        return false;
+    }
+    if (colorVptr == kColorBlockLightOnVptr && captured.colorChannelCount > 1 &&
+        !reader.u32(colorBlock + 0x10, captured.ambientColor1Rgba8)) {
         return false;
     }
     captured.lightingEnabled = (captured.colorChannelControl & 0x0002U) != 0;

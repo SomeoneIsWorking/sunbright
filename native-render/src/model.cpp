@@ -26,8 +26,13 @@ bool valid(const PointLight& light) noexcept {
            light.distanceAttenuation.z >= 0.0F;
 }
 
+bool valid(const DirectionalSpecularLight& light) noexcept {
+    return valid(light.directionToLight) && valid(light.color) && finite(light.shininess) &&
+           light.shininess > 0.0F;
+}
+
 bool valid(const ModelLightingContext& lighting) noexcept {
-    return valid(lighting.ambientColor) &&
+    return valid(lighting.ambientColor) && valid(lighting.specular) &&
            lighting.pointLightCount <= lighting.pointLights.size() &&
            std::ranges::all_of(lighting.pointLights.begin(),
                                lighting.pointLights.begin() + lighting.pointLightCount,
@@ -36,6 +41,92 @@ bool valid(const ModelLightingContext& lighting) noexcept {
 
 Color multiply(Color first, Color second) noexcept {
     return {first.r * second.r, first.g * second.g, first.b * second.b, first.a * second.a};
+}
+
+struct VertexColors {
+    Color multiplicative{};
+    Color additive{};
+};
+
+float dot(Vec3 first, Vec3 second) noexcept {
+    return first.x * second.x + first.y * second.y + first.z * second.z;
+}
+
+Vec3 normalized(Vec3 value) noexcept {
+    const float length = std::sqrt(dot(value, value));
+    if (length <= 0.0F)
+        return {};
+    return {value.x / length, value.y / length, value.z / length};
+}
+
+Vec3 transformed_normal(const Matrix3x4& matrix, Vec3 source) noexcept {
+    const auto& value = matrix.value;
+    const float a = value[0];
+    const float b = value[1];
+    const float c = value[2];
+    const float d = value[4];
+    const float e = value[5];
+    const float f = value[6];
+    const float g = value[8];
+    const float h = value[9];
+    const float i = value[10];
+    const float determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (std::fabs(determinant) <= 1.0e-12F)
+        return {};
+    const float inverse = 1.0F / determinant;
+    return normalized({
+        ((e * i - f * h) * source.x + (f * g - d * i) * source.y + (d * h - e * g) * source.z) *
+            inverse,
+        ((c * h - b * i) * source.x + (a * i - c * g) * source.y + (b * g - a * h) * source.z) *
+            inverse,
+        ((b * f - c * e) * source.x + (c * d - a * f) * source.y + (a * e - b * d) * source.z) *
+            inverse,
+    });
+}
+
+Color diffuse_lighting(Color source, Color ambient, const ModelLightingContext& lighting,
+                       Vec3 eyePosition, Vec3 normal) noexcept {
+    Color illumination = ambient;
+    for (std::uint8_t index = 0; index < lighting.pointLightCount; ++index) {
+        const PointLight& light = lighting.pointLights[index];
+        const Vec3 offset{light.position.x - eyePosition.x, light.position.y - eyePosition.y,
+                          light.position.z - eyePosition.z};
+        const float distance = std::sqrt(dot(offset, offset));
+        if (distance <= 0.0F)
+            continue;
+        const Vec3 direction{offset.x / distance, offset.y / distance, offset.z / distance};
+        const float diffuse = std::max(0.0F, dot(normal, direction));
+        const Vec3 attenuation = light.distanceAttenuation;
+        const float denominator =
+            attenuation.x + attenuation.y * distance + attenuation.z * distance * distance;
+        if (denominator <= 0.0F)
+            continue;
+        const float contribution = diffuse / denominator;
+        illumination.r += light.color.r * contribution;
+        illumination.g += light.color.g * contribution;
+        illumination.b += light.color.b * contribution;
+    }
+    // The game clamps accumulated illumination before multiplying the material source.
+    illumination.r = std::clamp(illumination.r, 0.0F, 1.0F);
+    illumination.g = std::clamp(illumination.g, 0.0F, 1.0F);
+    illumination.b = std::clamp(illumination.b, 0.0F, 1.0F);
+    return {source.r * illumination.r, source.g * illumination.g, source.b * illumination.b,
+            source.a};
+}
+
+Color directional_specular(const DirectionalSpecularLight& light, Vec3 normal) noexcept {
+    const Vec3 direction = normalized(light.directionToLight);
+    if (dot(normal, direction) < 0.0F)
+        return {0.0F, 0.0F, 0.0F, 1.0F};
+    const Vec3 halfDirection = normalized({direction.x, direction.y, direction.z + 1.0F});
+    const float cosine = std::max(0.0F, dot(normal, halfDirection));
+    const float cosineSquared = cosine * cosine;
+    const float halfShininess = light.shininess * 0.5F;
+    const float denominator = halfShininess + (1.0F - halfShininess) * cosineSquared;
+    const float contribution =
+        denominator > 0.0F ? std::clamp(cosineSquared / denominator, 0.0F, 1.0F) : 0.0F;
+    return {light.color.r * contribution, light.color.g * contribution,
+            light.color.b * contribution, 1.0F};
 }
 
 } // namespace
@@ -106,7 +197,8 @@ const PictureTexture* material_texture(const ModelMaterial& material) noexcept {
         [](const auto& value) -> const PictureTexture* {
             using Material = std::remove_cvref_t<decltype(value)>;
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
-                          std::is_same_v<Material, LitTexturedMaterial>) {
+                          std::is_same_v<Material, LitTexturedMaterial> ||
+                          std::is_same_v<Material, TintedSpecularTexturedMaterial>) {
                 return &value.texture;
             } else {
                 return nullptr;
@@ -124,12 +216,20 @@ bool valid(const ModelDraw& draw) noexcept {
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0;
-            } else {
+            } else if constexpr (std::is_same_v<Material, LitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
                        valid(material.ambientColor) && valid(material.lighting) &&
                        finite(material.litColorWeight) && material.litColorWeight >= 0.0F &&
                        material.litColorWeight <= 1.0F;
+            } else {
+                return material.texture.resource != 0 && material.texture.width != 0 &&
+                       material.texture.height != 0 && valid(material.baseColor) &&
+                       valid(material.ambientColor) && valid(material.tintColor) &&
+                       material.tintColor.r >= 0.0F && material.tintColor.r <= 1.0F &&
+                       material.tintColor.g >= 0.0F && material.tintColor.g <= 1.0F &&
+                       material.tintColor.b >= 0.0F && material.tintColor.b <= 1.0F &&
+                       valid(material.lighting);
             }
         },
         draw.material);
@@ -153,94 +253,58 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
         projection[8] * eyeX + projection[9] * eyeY + projection[10] * eyeZ + projection[11],
         projection[12] * eyeX + projection[13] * eyeY + projection[14] * eyeZ + projection[15],
     };
-    const Color color = std::visit(
+    const Vec3 eyePosition{eyeX, eyeY, eyeZ};
+    const Vec3 normal = transformed_normal(draw.modelView, vertex.normal);
+    const VertexColors colors = std::visit(
         [&](const auto& material) {
             using Material = std::remove_cvref_t<decltype(material)>;
             if constexpr (std::is_same_v<Material, UnlitColorMaterial>) {
-                return material.usesVertexColor ? multiply(material.baseColor, vertex.color)
-                                                : material.baseColor;
+                return VertexColors{
+                    .multiplicative = material.usesVertexColor
+                                          ? multiply(material.baseColor, vertex.color)
+                                          : material.baseColor,
+                };
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial>) {
-                return material.usesVertexColor ? vertex.color : Color{1.0F, 1.0F, 1.0F, 1.0F};
-            } else {
+                return VertexColors{.multiplicative = material.usesVertexColor
+                                                          ? vertex.color
+                                                          : Color{1.0F, 1.0F, 1.0F, 1.0F}};
+            } else if constexpr (std::is_same_v<Material, LitTexturedMaterial>) {
                 const Color rgbSource = material.usesVertexRgb ? vertex.color : material.baseColor;
                 const float alphaSource =
                     material.usesVertexAlpha ? vertex.color.a : material.baseColor.a;
-                const float a = modelView[0];
-                const float b = modelView[1];
-                const float c = modelView[2];
-                const float d = modelView[4];
-                const float e = modelView[5];
-                const float f = modelView[6];
-                const float g = modelView[8];
-                const float h = modelView[9];
-                const float i = modelView[10];
-                const float determinant =
-                    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-                Vec3 normal{};
-                if (std::fabs(determinant) > 1.0e-12F) {
-                    const float inverse = 1.0F / determinant;
-                    normal = {
-                        ((e * i - f * h) * vertex.normal.x + (f * g - d * i) * vertex.normal.y +
-                         (d * h - e * g) * vertex.normal.z) *
-                            inverse,
-                        ((c * h - b * i) * vertex.normal.x + (a * i - c * g) * vertex.normal.y +
-                         (b * g - a * h) * vertex.normal.z) *
-                            inverse,
-                        ((b * f - c * e) * vertex.normal.x + (c * d - a * f) * vertex.normal.y +
-                         (a * e - b * d) * vertex.normal.z) *
-                            inverse,
-                    };
-                }
-                const float normalLength =
-                    std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
-                if (normalLength > 0.0F) {
-                    normal.x /= normalLength;
-                    normal.y /= normalLength;
-                    normal.z /= normalLength;
-                }
-
-                Color illumination = material.ambientColor;
-                for (std::uint8_t index = 0; index < material.lighting.pointLightCount; ++index) {
-                    const PointLight& light = material.lighting.pointLights[index];
-                    Vec3 direction{light.position.x - eyeX, light.position.y - eyeY,
-                                   light.position.z - eyeZ};
-                    const float distance =
-                        std::sqrt(direction.x * direction.x + direction.y * direction.y +
-                                  direction.z * direction.z);
-                    if (distance <= 0.0F)
-                        continue;
-                    direction.x /= distance;
-                    direction.y /= distance;
-                    direction.z /= distance;
-                    const float diffuse =
-                        std::max(0.0F, normal.x * direction.x + normal.y * direction.y +
-                                           normal.z * direction.z);
-                    const Vec3 attenuation = light.distanceAttenuation;
-                    const float denominator = attenuation.x + attenuation.y * distance +
-                                              attenuation.z * distance * distance;
-                    if (denominator <= 0.0F)
-                        continue;
-                    const float contribution = diffuse / denominator;
-                    illumination.r += light.color.r * contribution;
-                    illumination.g += light.color.g * contribution;
-                    illumination.b += light.color.b * contribution;
-                }
-                // J3D/GX clamps the accumulated ambient-plus-light result before applying the
-                // material or vertex colour. Clamping only the final product over-brightens dark
-                // materials when several lights saturate the accumulator.
-                illumination.r = std::clamp(illumination.r, 0.0F, 1.0F);
-                illumination.g = std::clamp(illumination.g, 0.0F, 1.0F);
-                illumination.b = std::clamp(illumination.b, 0.0F, 1.0F);
+                const Color lit = diffuse_lighting(rgbSource, material.ambientColor,
+                                                   material.lighting, eyePosition, normal);
                 const float weight = material.litColorWeight;
-                return Color{
-                    std::lerp(1.0F, std::clamp(rgbSource.r * illumination.r, 0.0F, 1.0F), weight),
-                    std::lerp(1.0F, std::clamp(rgbSource.g * illumination.g, 0.0F, 1.0F), weight),
-                    std::lerp(1.0F, std::clamp(rgbSource.b * illumination.b, 0.0F, 1.0F), weight),
-                    alphaSource};
+                return VertexColors{.multiplicative = {
+                                        std::lerp(1.0F, lit.r, weight),
+                                        std::lerp(1.0F, lit.g, weight),
+                                        std::lerp(1.0F, lit.b, weight),
+                                        alphaSource,
+                                    }};
+            } else {
+                const Color diffuse = diffuse_lighting(material.baseColor, material.ambientColor,
+                                                       material.lighting, eyePosition, normal);
+                const Color specular = directional_specular(material.lighting.specular, normal);
+                return VertexColors{
+                    .multiplicative =
+                        {
+                            diffuse.r * (1.0F - material.tintColor.r),
+                            diffuse.g * (1.0F - material.tintColor.g),
+                            diffuse.b * (1.0F - material.tintColor.b),
+                            0.0F,
+                        },
+                    .additive =
+                        {
+                            2.0F * (material.tintColor.r + specular.r),
+                            2.0F * (material.tintColor.g + specular.g),
+                            2.0F * (material.tintColor.b + specular.b),
+                            1.0F,
+                        },
+                };
             }
         },
         draw.material);
-    return {position, vertex.uv, color};
+    return {position, vertex.uv, colors.multiplicative, colors.additive};
 }
 
 } // namespace sb::native_render

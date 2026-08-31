@@ -106,10 +106,20 @@ struct PointLight {
     bool operator==(const PointLight&) const = default;
 };
 
+// Ordinary directional Blinn-style specular light in view space. The game publishes its authored
+// direction and shininess from the stage-light owner before any console light object is built.
+struct DirectionalSpecularLight {
+    Vec3 directionToLight{0.0F, 0.0F, 1.0F};
+    Color color{1.0F, 1.0F, 1.0F, 1.0F};
+    float shininess = 1.0F;
+    bool operator==(const DirectionalSpecularLight&) const = default;
+};
+
 struct ModelLightingContext {
     std::array<PointLight, 2> pointLights{};
     std::uint8_t pointLightCount = 0;
     Color ambientColor{};
+    DirectionalSpecularLight specular{};
     bool operator==(const ModelLightingContext&) const = default;
 };
 
@@ -127,7 +137,19 @@ struct LitTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
-using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial, LitTexturedMaterial>;
+// One decoded texture with ordinary diffuse and directional-specular lighting. Its authored tint
+// is expressed as an affine texture operation: texture * per-vertex multiplier + additive colour.
+struct TintedSpecularTexturedMaterial {
+    PictureTexture texture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    Color tintColor{};
+    ModelLightingContext lighting{};
+    ModelRasterPolicy raster{};
+};
+
+using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial, LitTexturedMaterial,
+                                   TintedSpecularTexturedMaterial>;
 
 struct ModelDraw {
     std::uint64_t instance = 0;
@@ -141,6 +163,7 @@ struct ClipVertex {
     Vec4 position{};
     Vec2 uv{};
     Color color{};
+    Color additiveColor{};
 };
 
 [[nodiscard]] bool valid(const MeshVertex& vertex) noexcept;

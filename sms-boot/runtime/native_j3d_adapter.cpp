@@ -221,6 +221,8 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         record_raster(capturedMaterial.material);
         ++g_stats.submittedModels;
         if (std::holds_alternative<sb::native_render::LitTexturedMaterial>(
+                capturedMaterial.material) ||
+            std::holds_alternative<sb::native_render::TintedSpecularTexturedMaterial>(
                 capturedMaterial.material)) {
             ++g_stats.submittedLitModels;
         }

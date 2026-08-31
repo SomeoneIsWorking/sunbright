@@ -1,5 +1,7 @@
 #include <sunbright/native_render/j3d_stage_lighting.h>
 
+#include <cmath>
+
 namespace sb::native_render {
 namespace {
 
@@ -17,6 +19,13 @@ Vec3 transform_position(const Matrix3x4& matrix, Vec3 position) noexcept {
     };
 }
 
+Vec3 normalized(Vec3 value) noexcept {
+    const float length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+    if (length <= 0.0F)
+        return {0.0F, 0.0F, 1.0F};
+    return {value.x / length, value.y / length, value.z / length};
+}
+
 } // namespace
 
 ModelLightingContext build_j3d_stage_lighting(const J3dStageLightingInput& input) noexcept {
@@ -26,6 +35,11 @@ ModelLightingContext build_j3d_stage_lighting(const J3dStageLightingInput& input
         .position = transform_position(input.view, input.primaryWorldPosition),
         .color = input.primaryColor,
         .distanceAttenuation = {1.0F, 0.0F, 0.0F},
+    };
+    lighting.specular = {
+        .directionToLight = normalized(lighting.pointLights[0].position),
+        .color = input.primaryColor,
+        .shininess = input.shininess,
     };
     lighting.pointLightCount = 1;
     if (input.effectEnabled) {

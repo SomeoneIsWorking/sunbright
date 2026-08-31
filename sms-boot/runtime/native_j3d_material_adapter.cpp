@@ -73,16 +73,36 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
         if (alphaChannel == nullptr)
             return false;
         captured.alphaChannelControl = alphaChannel->mChanCtrl;
+        if (captured.colorChannelCount > 1) {
+            J3DColorChan* secondColorChannel = color->getColorChan(2);
+            J3DColorChan* secondAlphaChannel = color->getColorChan(3);
+            if (secondColorChannel == nullptr || secondAlphaChannel == nullptr)
+                return false;
+            captured.colorChannelControl1 = secondColorChannel->mChanCtrl;
+            captured.alphaChannelControl1 = secondAlphaChannel->mChanCtrl;
+        }
     }
     J3DGXColor* materialColor = color->getMatColor(0);
     if (materialColor == nullptr)
         return false;
     captured.materialColorRgba8 = pack_rgba8(*materialColor);
+    if (captured.colorChannelCount > 1) {
+        J3DGXColor* secondMaterialColor = color->getMatColor(1);
+        if (secondMaterialColor == nullptr)
+            return false;
+        captured.materialColor1Rgba8 = pack_rgba8(*secondMaterialColor);
+    }
     if (colorType == static_cast<std::uint32_t>('CLON')) {
         J3DGXColor* ambientColor = color->getAmbColor(0);
         if (ambientColor == nullptr)
             return false;
         captured.ambientColorRgba8 = pack_rgba8(*ambientColor);
+        if (captured.colorChannelCount > 1) {
+            J3DGXColor* secondAmbientColor = color->getAmbColor(1);
+            if (secondAmbientColor == nullptr)
+                return false;
+            captured.ambientColor1Rgba8 = pack_rgba8(*secondAmbientColor);
+        }
     }
     captured.textureCoordinateCount =
         textureGeneration->getType() == static_cast<std::uint32_t>('TGBC')
@@ -189,7 +209,12 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         lighting != nullptr && native_render::classify_j3d_lit_textured_material(
                                    state, placeholder, *lighting, litMaterial) ==
                                    native_render::J3dLitTexturedResult::Success;
-    if (!isUnlitTextured && !isLitTextured) {
+    native_render::TintedSpecularTexturedMaterial specularMaterial{};
+    const bool isSpecularTextured =
+        lighting != nullptr && native_render::classify_j3d_specular_textured_material(
+                                   state, placeholder, *lighting, specularMaterial) ==
+                                   native_render::J3dSpecularTexturedResult::Success;
+    if (!isUnlitTextured && !isLitTextured && !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
     if (textureTable == nullptr || state.textureNumber0 >= textureTable->getNum())
@@ -204,7 +229,14 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
                                        reinterpret_cast<std::uintptr_t>(image), result.texture);
     if (textureError != native_render::ResTimgDecodeError::None)
         return NativeJ3dMaterialResult::TextureDecodeFailure;
-    if (isLitTextured) {
+    if (isSpecularTextured) {
+        if (native_render::classify_j3d_specular_textured_material(state, result.texture.texture,
+                                                                   *lighting, specularMaterial) !=
+            native_render::J3dSpecularTexturedResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = specularMaterial;
+    } else if (isLitTextured) {
         if (native_render::classify_j3d_lit_textured_material(state, result.texture.texture,
                                                               *lighting, litMaterial) !=
             native_render::J3dLitTexturedResult::Success) {

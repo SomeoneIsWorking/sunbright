@@ -8,6 +8,7 @@ struct SemanticJ3dLightingStats {
     std::uint64_t attempts = 0;
     std::uint64_t published = 0;
     std::uint64_t viewFailures = 0;
+    std::uint64_t shininessFailures = 0;
     std::uint64_t primaryPositionFailures = 0;
     std::uint64_t managerFailures = 0;
     std::uint64_t effectFailures = 0;

@@ -38,6 +38,7 @@ int main() {
     assert(near(transformed.color.g, 0.25F));
     assert(near(transformed.color.b, 0.25F));
     assert(near(transformed.color.a, 0.25F));
+    assert(transformed.additiveColor == Color{});
 
     const Matrix4x4 j3dProjection{.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -2, 0, 0, -1, 0}};
     const Matrix4x4 depthConverted = zero_to_one_depth_projection(j3dProjection);
@@ -74,6 +75,7 @@ int main() {
     assert(near(litVertex.color.g, 0.225F));
     assert(near(litVertex.color.b, 0.15F));
     assert(near(litVertex.color.a, 0.8F));
+    assert(litVertex.additiveColor == Color{});
 
     // The lighting accumulator saturates before material multiplication. This distinguishes the
     // shipping equation from final-product clamping: 0.5 * clamp(0.8 + 0.8) is 0.5, not 0.8.

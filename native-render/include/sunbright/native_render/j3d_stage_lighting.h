@@ -11,6 +11,7 @@ struct J3dStageLightingInput {
     Matrix3x4 view{};
     Vec3 primaryWorldPosition{};
     Color primaryColor{1.0F, 1.0F, 1.0F, 1.0F};
+    float shininess = 1.0F;
     Color ambientColor{};
     bool effectEnabled = false;
     Vec3 effectWorldPosition{};

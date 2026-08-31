@@ -34,6 +34,7 @@ extern "C" void sb_native_j3d_publish_stage_lighting(const SbNativeJ3dStageLight
                                   lighting->primaryWorldPosition[1],
                                   lighting->primaryWorldPosition[2]};
     input.primaryColor = color_from_bytes(lighting->primaryRgba);
+    input.shininess = lighting->shininess;
     input.ambientColor = color_from_bytes(lighting->ambientRgba);
     input.effectEnabled = lighting->effectEnabled != 0;
     if (input.effectEnabled) {

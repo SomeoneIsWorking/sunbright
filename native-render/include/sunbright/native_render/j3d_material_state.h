@@ -16,8 +16,12 @@ struct J3dMaterialState {
     std::uint8_t colorChannelCount = 0;
     std::uint16_t colorChannelControl = 0;
     std::uint16_t alphaChannelControl = 0;
+    std::uint16_t colorChannelControl1 = 0;
+    std::uint16_t alphaChannelControl1 = 0;
     std::uint32_t materialColorRgba8 = 0;
     std::uint32_t ambientColorRgba8 = 0;
+    std::uint32_t materialColor1Rgba8 = 0;
+    std::uint32_t ambientColor1Rgba8 = 0;
     std::uint32_t textureCoordinateCount = 0;
     std::uint32_t tevBlockType = 0;
     bool supportedTevBlock = false;

@@ -8,7 +8,7 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit plus first diffuse-lit single-texture J3D material families to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit plus first diffuse- and specular-lit single-texture J3D material families to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
 | S005 | The native decomp feeds the same semantic 2D/UI and J3D material families to that renderer through native-layout adapters | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
@@ -25,8 +25,9 @@ value written by the game's camera and is scoped around high-level `TViewObj::te
 dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetProjection`,
 `GXGetProjectionv`, FIFO, or compatibility-renderer state. The same high-level J3D material objects
 now supply culling, depth test/write, alpha cutout, source-alpha blending, decoded normals,
-material/vertex colour choice, ambient colour, and stage point lights for the exact supported
-families. Broader J3D materials are next: the remaining lit channel and multi-stage programs,
+material/vertex colour choice, ambient colour, stage point lights, and authored directional
+specular lighting for the exact supported families. Broader J3D materials are next: the remaining
+lit and multi-stage programs,
 skinning, authored mip chains, particles, and effects still fall back to the retained renderer.
 
 ## Capability details
@@ -110,6 +111,22 @@ The same census ranks remaining lit programs by observations inside a perspectiv
 each material's progress through classification, texture decode, scene readiness, and submission,
 so setup-only states cannot masquerade as renderer progress. C095 owns the cross-runtime lighting
 evidence and falsifier. Other lit programs fall back to the retained renderer by named rejection.
+
+The first perspective-reached two-channel specular family is now native too: Mario's
+`_mat_hand3_L` material combines the decoded hand-mask texture, diffuse stage lighting, an authored
+fixed tint, and the primary light's directional specular highlight. `TLightCommon` publishes its
+authored shininess before either runtime builds a console light object, and both material adapters
+publish the second high-level colour channel and tint. The shared PC shader evaluates the ordinary
+affine form `texture * lit-colour + tint-and-highlight`; no GX light, fixed-function stage, or
+compatibility-renderer value crosses the renderer boundary. Exact positive and deliberately altered
+channel, tint-selector, stage, normal, and shininess controls passed. In the guarded 60-present
+The watched shipping-shader control also distinguished the texture-times-diffuse baseline from the
+red-tinted affine result while preserving green, including the exact sRGB sampling/output
+conversion, with no kernel GPU fault. In the guarded 60-present recomp run, the family progressed
+through all 60 perspective observations to 60 decoded-resource
+submissions, raising lit models from 100 to 160 and total models from 3,260 to 3,320. The guarded
+400-present native-decomp run raised lit models from 630 to 666 among 42,033 total models. Both runs
+exited cleanly under the live GPU watcher.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission
@@ -241,8 +258,8 @@ still completing the semantic submission. C091 records the combined window-owner
 its falsifier.
 
 Gap: this is a real model path, not full-frame visual correctness. Custom pixel policies and
-unsupported J3D programs are refused rather than approximated. The remaining diffuse/specular
-channel programs, skinning, multiple texture stages, authored mip chains, particles, and effects
+unsupported J3D programs are refused rather than approximated. The remaining lit and multi-texture
+programs, skinning, authored mip chains, particles, and effects
 remain absent, so the preview is not yet a complete product renderer.
 
 ### S005 — Decomp PC-native semantic renderer
@@ -267,12 +284,14 @@ failures. The first cold run exceeded the default 15-second in-process watchdog 
 creating a pipeline; rerunning with a 60-second diagnostic watchdog completed normally, so the
 aborted cold run is recorded as startup-cost evidence rather than silently discarded.
 
-Native `TLightCommon::setLight` now publishes the same high-level stage-light input through a small
+Native `TLightCommon::setLight` now publishes the same high-level stage-light input, including the
+primary light's authored directional-specular shininess, through a small
 value-only bridge after using those values for the retained GX body. The bridge is linked directly
 into `sms-boot`, while the decomp callback remains weak so decomp-only tests do not acquire a host
 renderer dependency. The native-layout audit independently exercises material, normal, ambient, and
 light extraction while sharing only the renderer-neutral lighting calculation with recomp; its
-reached-model evidence is recorded once in C095.
+reached-model evidence is recorded once in C095. The latest guarded 400-present run submitted 666
+lit models among 42,033 total after the shared specular hand material was admitted.
 
 The native decomp `J2DPicture::drawSelf` now publishes the same shared semantic command from native
 J2D/JUT fields before running its retained GX body. Its adapter is layout-local and shares only
@@ -337,8 +356,8 @@ exercise a resource-font glyph on their reached paths, so they prove runtime saf
 decomp glyph coverage; that remains explicit rather than inferred from the adapter test.
 
 Gap: decomp window behavior has close production-linked coverage but not an organically reached
-live window in the bounded title/stage-one routes. Custom J3D pixel policies, the remaining
-diffuse/specular channel programs, skinning, multiple texture stages, authored mip chains,
+live window in the bounded title/stage-one routes. Custom J3D pixel policies, the remaining lit and
+multi-texture programs, skinning, authored mip chains,
 particles, and effects remain missing from its visible native preview.
 
 ### S006 — Lerp coverage

@@ -20,6 +20,7 @@ struct GpuVertex {
     float position[4];
     float uv[2];
     float color[4];
+    float additiveColor[4];
 };
 
 struct DrawBatch {
@@ -200,6 +201,8 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
         SDL_GPUVertexAttribute{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv)},
         SDL_GPUVertexAttribute{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
                                offsetof(GpuVertex, color)},
+        SDL_GPUVertexAttribute{3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                               offsetof(GpuVertex, additiveColor)},
     };
     SDL_GPUColorTargetDescription colorTarget{};
     colorTarget.format = key.color;
@@ -362,7 +365,9 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
                                  transformed.position.z, transformed.position.w},
                                 {transformed.uv.x, transformed.uv.y},
                                 {transformed.color.r, transformed.color.g, transformed.color.b,
-                                 transformed.color.a}});
+                                 transformed.color.a},
+                                {transformed.additiveColor.r, transformed.additiveColor.g,
+                                 transformed.additiveColor.b, transformed.additiveColor.a}});
         }
         batches.push_back(batch);
     }

@@ -18,6 +18,7 @@ extern "C" void func_80229d78(CPUState&); // TLightCommon::getLightColor
 namespace {
 
 constexpr u32 kViewMatrix = 0xB4;
+constexpr u32 kShininess = 0x10;
 constexpr u32 kLightManagerSdaOffset = 24844;
 constexpr u32 kEffectColor = 0x18;
 constexpr u32 kEffectPosition = 0x1C;
@@ -30,6 +31,7 @@ sb::recomp::SemanticJ3dLightingStats g_stats{};
 enum class PublishResult : std::uint8_t {
     Success,
     ViewFailure,
+    ShininessFailure,
     PrimaryPositionFailure,
     ManagerFailure,
     EffectFailure,
@@ -84,6 +86,8 @@ PublishResult publish_lighting(const CPUState& cpu, u32 self, u32 graphics, u32 
     const u32 lightIndex = index * 2U;
     if (!read_view(reader, graphics, input.view))
         return PublishResult::ViewFailure;
+    if (!reader.f32(self + kShininess, input.shininess))
+        return PublishResult::ShininessFailure;
     if (!call_light_position(cpu, self, lightIndex, reader, input.primaryWorldPosition))
         return PublishResult::PrimaryPositionFailure;
     input.primaryColor = call_light_color(cpu, self, lightIndex);
@@ -132,6 +136,8 @@ void run_set_light(CPUState& cpu, void (*body)(CPUState&)) {
     }
     if (result == PublishResult::ViewFailure)
         ++g_stats.viewFailures;
+    else if (result == PublishResult::ShininessFailure)
+        ++g_stats.shininessFailures;
     else if (result == PublishResult::PrimaryPositionFailure)
         ++g_stats.primaryPositionFailures;
     else if (result == PublishResult::ManagerFailure)

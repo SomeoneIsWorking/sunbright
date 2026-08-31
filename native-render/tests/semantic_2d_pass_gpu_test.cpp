@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -47,6 +48,14 @@ Color pixel(const SemanticFramePixels& frame, std::uint32_t x, std::uint32_t y) 
 
 bool near(float actual, float expected, float tolerance = 2.0f / 255.0f) {
     return actual >= expected - tolerance && actual <= expected + tolerance;
+}
+
+float srgb_to_linear(float value) {
+    return value <= 0.04045F ? value / 12.92F : std::pow((value + 0.055F) / 1.055F, 2.4F);
+}
+
+float linear_to_srgb(float value) {
+    return value <= 0.0031308F ? value * 12.92F : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
 }
 
 void require_color(Color actual, Color expected) {
@@ -475,6 +484,42 @@ int main() {
             render(std::span<const ModelDraw>(&texturedCutout, 1),
                    std::span<const DecodedImageView>(&cutoutImage, 1));
         assert(pixel(textureAt, 8, 8).r > 0.9F);
+
+        // Affine texture control for the specular-material shader path. The baseline exercises
+        // texture * diffuse colour; changing only the semantic tint must add red while preserving
+        // green. This runs the shipping vertex upload and fragment shader, not a CPU copy.
+        const std::array<std::uint8_t, 4> affineTexel{128, 64, 32, 255};
+        const DecodedImageView affineImage{
+            .resource = 206, .revision = 1, .width = 1, .height = 1, .rgba8 = affineTexel};
+        ModelDraw affineModel = model;
+        affineModel.instance = 207;
+        affineModel.material = sb::native_render::TintedSpecularTexturedMaterial{
+            .texture = {.resource = 206, .revision = 1, .width = 1, .height = 1},
+            .baseColor = {0.5F, 0.5F, 0.5F, 1},
+            .ambientColor = {1, 1, 1, 1},
+            .lighting = {.specular = {.directionToLight = {0, 0, 1},
+                                      .color = {0, 0, 0, 1},
+                                      .shininess = 1}},
+        };
+        const SemanticFramePixels affineBaseline =
+            render(std::span<const ModelDraw>(&affineModel, 1),
+                   std::span<const DecodedImageView>(&affineImage, 1));
+        std::get<sb::native_render::TintedSpecularTexturedMaterial>(affineModel.material)
+            .tintColor = {0.25F, 0, 0, 1};
+        const SemanticFramePixels affineTinted =
+            render(std::span<const ModelDraw>(&affineModel, 1),
+                   std::span<const DecodedImageView>(&affineImage, 1));
+        const Color baselinePixel = pixel(affineBaseline, 8, 8);
+        const Color tintedPixel = pixel(affineTinted, 8, 8);
+        // Both the sampled image and target are sRGB. Check the shipping conversion around the
+        // linear affine operation instead of treating either byte value as linear light.
+        const float red = srgb_to_linear(128.0F / 255.0F);
+        const float green = srgb_to_linear(64.0F / 255.0F);
+        assert(near(baselinePixel.r, linear_to_srgb(red * 0.5F)));
+        assert(near(tintedPixel.r, linear_to_srgb(red * 0.375F + 0.5F)));
+        assert(near(tintedPixel.g, linear_to_srgb(green * 0.5F)));
+        assert(near(tintedPixel.g, baselinePixel.g));
+        assert(hash(affineBaseline) != hash(affineTinted));
 
         // Blend control: the same half-alpha red replaces black when opaque, but source-alpha
         // blending produces the distinct sRGB-encoded half-intensity result.

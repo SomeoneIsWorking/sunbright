@@ -131,6 +131,18 @@ int main() {
     assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
+    memory.bytes[color + 0x14] = 2;
+    write_u16(memory, color + 0x1A, 0x1234);
+    write_u16(memory, color + 0x1C, 0x5678);
+    write_u32(memory, color + 0x08, 0x11223344);
+    write_u32(memory, color + 0x10, 0x55667788);
+    assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
+    assert(state.colorChannelCount == 2);
+    assert(state.colorChannelControl1 == 0x1234);
+    assert(state.alphaChannelControl1 == 0x5678);
+    assert(state.materialColor1Rgba8 == 0x11223344);
+    assert(state.ambientColor1Rgba8 == 0x55667788);
+    memory.bytes[color + 0x14] = 1;
     memory.bytes[tev + 0x30] = 2;
     write_u32(memory, tev + 0x41, 0x10203040);
     write_u32(memory, tev + 0x45, 0x50607080);
