@@ -33,7 +33,8 @@ dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetP
 `GXGetProjectionv`, FIFO, or compatibility-renderer state. The same high-level J3D material objects
 now supply culling, depth test/write, alpha cutout, straight- and premultiplied-alpha blending,
 decoded normals,
-material/vertex colour choice, ambient colour, stage point lights, authored directional specular
+material/vertex colour choice, including the two-layer per-vertex-RGB variant, ambient colour,
+stage point lights, authored directional specular
 lighting, linear view-depth fog, solid-colour texture masks, independently sampled two-texture
 materials, and all four decoded texture-coordinate sets for broader material families. Broader J3D
 materials are next: the remaining lit and multi-stage programs, non-billboard particles, effects,

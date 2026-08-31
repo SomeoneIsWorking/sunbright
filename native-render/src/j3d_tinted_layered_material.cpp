@@ -8,6 +8,7 @@ namespace sb::native_render {
 namespace {
 
 constexpr std::uint16_t kTwoLightSignedDiffuse = 0x068E;
+constexpr std::uint16_t kTwoLightSignedDiffuseVertex = 0x068F;
 constexpr std::uint16_t kMaterialAlpha = 0x0700;
 constexpr std::uint16_t kDirectionalSpecular = 0x0212;
 constexpr std::uint16_t kUnlitSecondaryAlpha = 0x0400;
@@ -68,8 +69,9 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
     LitTintedLayeredSpecularMaterial& material) noexcept {
     if (!state.supportedColorBlock)
         return J3dTintedLayeredMaterialResult::UnsupportedColorBlock;
+    const bool usesVertexRgb = state.colorChannelControl == kTwoLightSignedDiffuseVertex;
     if (!state.lightingEnabled || state.colorChannelCount != 2 ||
-        state.colorChannelControl != kTwoLightSignedDiffuse ||
+        (state.colorChannelControl != kTwoLightSignedDiffuse && !usesVertexRgb) ||
         state.alphaChannelControl != kMaterialAlpha ||
         state.colorChannelControl1 != kDirectionalSpecular ||
         state.alphaChannelControl1 != kUnlitSecondaryAlpha) {
@@ -116,6 +118,7 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
     tint_directional_specular(material.lighting, color_from_rgba8(state.materialColor1Rgba8));
     material.detailWeight = 3.0F / 8.0F;
     material.layerWeight = 0.5F;
+    material.usesVertexRgb = usesVertexRgb;
     material.raster = raster;
     return J3dTintedLayeredMaterialResult::Success;
 }

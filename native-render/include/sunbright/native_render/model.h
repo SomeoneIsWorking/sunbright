@@ -271,6 +271,7 @@ struct LitTintedLayeredSpecularMaterial {
     ModelLightingContext lighting{};
     float detailWeight = 0.0F;
     float layerWeight = 0.0F;
+    bool usesVertexRgb = false;
     ModelRasterPolicy raster{};
 };
 

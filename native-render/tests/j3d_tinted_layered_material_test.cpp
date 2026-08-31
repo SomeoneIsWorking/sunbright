@@ -76,6 +76,7 @@ int main() {
     assert(near(material.effectColor.r, 194.0F / 255.0F));
     assert(near(material.detailWeight, 3.0F / 8.0F));
     assert(near(material.layerWeight, 0.5F));
+    assert(!material.usesVertexRgb);
     assert(material.lighting.pointLightCount == 2);
     assert(near(material.lighting.specular.color.g, 0.5F * (128.0F / 255.0F)));
     assert(material.raster.blend == ModelBlendMode::SourceAlpha);
@@ -110,6 +111,24 @@ int main() {
     assert(classify_j3d_tinted_layered_material(state, baseTexture, detailTexture, lighting,
                                                 material) ==
            J3dTintedLayeredMaterialResult::UnsupportedColorChannels);
+    state = material_state();
+    state.colorChannelControl = 0x068F;
+    assert(classify_j3d_tinted_layered_material(state, baseTexture, detailTexture, lighting,
+                                                material) ==
+           J3dTintedLayeredMaterialResult::Success);
+    assert(material.usesVertexRgb);
+    const MeshVertex vertexColor{.color = {0.25F, 0.5F, 0.75F, 1.0F}, .normal = {0, 0, 1}};
+    const ModelDraw vertexColorDraw{
+        .instance = 1,
+        .mesh = {.resource = 2, .revision = 1, .vertexCount = 3},
+        .pose = {.modelViews = {Matrix3x4{.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}}},
+                 .count = 1},
+        .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
+        .material = material,
+    };
+    const ClipVertex vertexColorResult = transform_vertex(vertexColorDraw, vertexColor);
+    assert(near(vertexColorResult.color.r, 194.0F / 255.0F + 5.0F / 8.0F * 0.25F - 0.5F));
+    assert(!near(vertexColorResult.color.r, transformed.color.r));
     state = material_state();
     ModelLightingContext oneLight = lighting;
     oneLight.pointLightCount = 1;

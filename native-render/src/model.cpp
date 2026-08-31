@@ -554,8 +554,10 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                     .detailTextureWeight = material.detailWeight,
                 };
             } else if constexpr (std::is_same_v<Material, LitTintedLayeredSpecularMaterial>) {
+                const Color diffuseSource =
+                    material.usesVertexRgb ? vertex.color : material.baseColor;
                 const Color diffuse =
-                    diffuse_lighting(material.baseColor, material.ambientColor, material.lighting,
+                    diffuse_lighting(diffuseSource, material.ambientColor, material.lighting,
                                      eyePosition, normal, ModelDiffuseMode::Signed);
                 const Color specular = directional_specular(material.lighting.specular, normal);
                 const float diffuseWeight = 1.0F - material.detailWeight;
