@@ -29,8 +29,9 @@ decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
 lighting, linear view-depth fog, solid-colour texture masks, independently sampled two-texture
 materials, and all four decoded texture-coordinate sets for broader material families. Broader J3D
-materials are next: the remaining lit and multi-stage programs,
-authored mip chains, particles, and effects still fall back to the retained renderer.
+materials are next: the remaining lit and multi-stage programs, particles, effects, and image
+producers that do not yet preserve authored lower-resolution levels still fall back to the retained
+renderer.
 
 Both runtime adapters now preserve the bounded J3D material inputs needed to classify broader
 families: up to eight texture bindings, sixteen colour stages, and all three programmable colour
@@ -77,7 +78,7 @@ One shared decoder owns J3D vertex-layout normalization, display-list primitive 
 image decoding, and the exact first material family: rigid, unlit, one texture, one texture
 coordinate, authored vertex colour, and the observed texture-times-raster-colour stage program.
 The recomp adapter reads retail big-endian objects and arrays; the SDL pass receives only triangle
-vertices, matrices, an ordinary RGBA image, and sampler policy. Its projection matrix is currently
+vertices, matrices, an ordinary RGBA image chain, and sampler policy. Its projection matrix is currently
 copied from `JDrama::TGraphics + 0x74` at the game's high-level draw-dispatch funnel. The scope
 classifies perspective and orthographic camera matrices and explicitly suppresses uninitialized
 pre-camera traversals, so nested/non-3D passes cannot inherit stale projection state. The adapter
@@ -212,11 +213,15 @@ precision; the decoded toon ramp is combined with signed diffuse lighting at 3/8
 authored static highlight and the directional highlight are each added at half strength. The shared
 contract carries four ordinary images, four UV sets, high-level lighting, colours, alpha, fog, and
 raster policy; it does not carry console stages or registers. Exact controls reject changed stage
-programs, UVs, texture bindings, absent lighting, and missing image resources. In a guarded
-120-present recomp audit, all 200 observed calls classified and decoded, and all 150 calls inside a
-perspective scene submitted through the PC-native shader; the other 50 had no perspective context.
-The native decomp adapter compiles through the same shared classifier; issue 30 still prevents
-equivalent live decomp scene evidence.
+programs, UVs, texture bindings, absent lighting, and missing image resources. The shared ResTIMG
+decoder now preserves every authored lower-resolution image level, includes each level in the immutable
+content revision, and the single SDL image cache uploads and samples those levels. Its guarded GPU
+control forces a red base level to minify to a blue lower level; a separate control preserves the prior
+base-level-only behavior for image producers with no lower-resolution data. In the guarded 120-present
+recomp audit, all 200 observed calls classified and decoded, and all 150 calls inside a perspective
+scene submitted through the PC-native shader; the other 50 had no perspective context. The native decomp
+adapter compiles through the same shared classifier; issue 30 still prevents equivalent live decomp
+scene evidence.
 
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
@@ -422,8 +427,8 @@ its falsifier.
 
 Gap: this is a real model path, not full-frame visual correctness. Custom pixel policies and
 unsupported J3D programs are refused rather than approximated. The remaining lit and multi-texture
-programs, skinning, authored mip chains, particles, and effects
-remain absent, so the preview is not yet a complete product renderer.
+programs, skinning, particles, effects, and image producers that do not yet preserve authored lower
+levels remain absent, so the preview is not yet a complete product renderer.
 
 ### S005 — Decomp PC-native semantic renderer
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sunbright/native_render/byte_address.h>
+#include <sunbright/native_render/image.h>
 #include <sunbright/native_render/picture.h>
 
 #include <cstdint>
@@ -19,6 +20,7 @@ struct AssetByteSource {
 struct DecodedTexture {
     PictureTexture texture{};
     std::vector<std::uint8_t> rgba8{};
+    std::vector<DecodedImageMipLevel> mipLevels{};
 };
 
 // Host-order description of one ResTIMG header. The encoded image and palette bytes remain in
@@ -35,6 +37,7 @@ struct ResTimgDescriptor {
     std::int32_t paletteOffset = 0;
     std::uint8_t minFilter = 0;
     std::uint8_t magFilter = 0;
+    std::uint8_t mipmapCount = 1;
     std::int32_t imageOffset = 0;
 };
 
@@ -55,9 +58,9 @@ enum class ResTimgDecodeError : std::uint8_t {
 
 [[nodiscard]] const char* res_timg_decode_error_name(ResTimgDecodeError error) noexcept;
 
-// Decodes the base image described by one big-endian ResTIMG resource. Image and palette offsets
-// are signed deltas from the header, matching both retail model archives and resources relocated
-// by the native decomp loader. No GX object or backend state is accepted here.
+// Decodes every authored image level described by one big-endian ResTIMG resource. Image and
+// palette offsets are signed deltas from the header, matching both retail model archives and
+// resources relocated by the native decomp loader. No GX object or backend state is accepted here.
 [[nodiscard]] ResTimgDecodeError decode_res_timg(const AssetByteSource& source,
                                                  ByteAddress headerAddress,
                                                  std::uint64_t resourceIdentity,

@@ -32,6 +32,7 @@ struct SamplerKey {
     FilterMode minFilter = FilterMode::Nearest;
     FilterMode magFilter = FilterMode::Nearest;
     MipFilter mipFilter = MipFilter::None;
+    std::uint8_t mipLevels = 1;
     bool operator==(const SamplerKey&) const = default;
 };
 
@@ -41,13 +42,15 @@ struct SamplerKeyHash {
                (static_cast<std::size_t>(key.addressV) << 2U) |
                (static_cast<std::size_t>(key.minFilter) << 4U) |
                (static_cast<std::size_t>(key.magFilter) << 5U) |
-               (static_cast<std::size_t>(key.mipFilter) << 6U);
+               (static_cast<std::size_t>(key.mipFilter) << 6U) |
+               (static_cast<std::size_t>(key.mipLevels) << 8U);
     }
 };
 
 struct CachedImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint8_t mipLevels = 1;
     SDL_GPUTexture* texture = nullptr;
     SDL_GPUTransferBuffer* upload = nullptr;
     std::uint64_t lastUsedFrame = 0;
@@ -58,6 +61,25 @@ bool image_bytes(std::uint32_t width, std::uint32_t height, std::size_t& bytes) 
     if (width == 0 || height == 0 || total > std::numeric_limits<Uint32>::max())
         return false;
     bytes = static_cast<std::size_t>(total);
+    return true;
+}
+
+bool image_storage_bytes(const DecodedImageView& image, std::size_t& bytes) noexcept {
+    bytes = 0;
+    if (!valid(image) || image.mipLevels.size() >= std::numeric_limits<std::uint8_t>::max())
+        return false;
+    std::uint32_t levelWidth = image.width;
+    std::uint32_t levelHeight = image.height;
+    for (std::size_t level = 0; level <= image.mipLevels.size(); ++level) {
+        std::size_t levelBytes = 0;
+        if (!image_bytes(levelWidth, levelHeight, levelBytes) ||
+            levelBytes > std::numeric_limits<Uint32>::max() - bytes) {
+            return false;
+        }
+        bytes += levelBytes;
+        levelWidth = std::max(levelWidth >> 1U, 1U);
+        levelHeight = std::max(levelHeight >> 1U, 1U);
+    }
     return true;
 }
 
@@ -141,14 +163,15 @@ bool SdlImageCache::begin(std::span<const DecodedImageView> images, std::string&
     for (const DecodedImageView& image : images) {
         std::size_t bytes = 0;
         const ImageKey key{image.resource, image.revision};
-        if (image.resource == 0 || !image_bytes(image.width, image.height, bytes) ||
-            image.rgba8.size() != bytes || !impl_->sources.emplace(key, &image).second) {
+        if (image.resource == 0 || !image_storage_bytes(image, bytes) ||
+            !impl_->sources.emplace(key, &image).second) {
             error = "semantic frame contains an invalid or duplicate decoded image";
             return false;
         }
         const auto cached = impl_->images.find(key);
         if (cached != impl_->images.end() &&
-            (cached->second.width != image.width || cached->second.height != image.height)) {
+            (cached->second.width != image.width || cached->second.height != image.height ||
+             cached->second.mipLevels != image.mipLevels.size() + 1U)) {
             error = "decoded image revision changed dimensions without changing its semantic key";
             return false;
         }
@@ -177,7 +200,12 @@ bool SdlImageCache::resolve(const PictureTexture& texture, SDL_GPUTextureSampler
             return false;
         }
         std::size_t bytes = 0;
-        (void)image_bytes(source->second->width, source->second->height, bytes);
+        if (!image_storage_bytes(*source->second, bytes)) {
+            error = "semantic command references an invalid decoded image";
+            return false;
+        }
+        const std::uint8_t mipLevels =
+            static_cast<std::uint8_t>(source->second->mipLevels.size() + 1U);
         SDL_GPUTextureCreateInfo textureInfo{};
         textureInfo.type = SDL_GPU_TEXTURETYPE_2D;
         textureInfo.format = kImageFormat;
@@ -185,13 +213,16 @@ bool SdlImageCache::resolve(const PictureTexture& texture, SDL_GPUTextureSampler
         textureInfo.width = source->second->width;
         textureInfo.height = source->second->height;
         textureInfo.layer_count_or_depth = 1;
-        textureInfo.num_levels = 1;
+        textureInfo.num_levels = mipLevels;
         textureInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
         const SDL_GPUTransferBufferCreateInfo uploadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
                                                          static_cast<Uint32>(bytes), 0};
-        CachedImage created{source->second->width, source->second->height,
+        CachedImage created{source->second->width,
+                            source->second->height,
+                            mipLevels,
                             SDL_CreateGPUTexture(impl_->device, &textureInfo),
-                            SDL_CreateGPUTransferBuffer(impl_->device, &uploadInfo), impl_->frame};
+                            SDL_CreateGPUTransferBuffer(impl_->device, &uploadInfo),
+                            impl_->frame};
         if (created.texture == nullptr || created.upload == nullptr) {
             release_image(impl_->device, created);
             error = std::string("decoded image resource allocation failed: ") + SDL_GetError();
@@ -203,7 +234,20 @@ bool SdlImageCache::resolve(const PictureTexture& texture, SDL_GPUTextureSampler
             error = std::string("decoded image upload map failed: ") + SDL_GetError();
             return false;
         }
-        std::memcpy(mapped, source->second->rgba8.data(), bytes);
+        auto* destination = static_cast<std::uint8_t*>(mapped);
+        std::size_t offset = 0;
+        std::memcpy(destination, source->second->rgba8.data(), source->second->rgba8.size());
+        offset += source->second->rgba8.size();
+        for (const DecodedImageMipLevel& level : source->second->mipLevels) {
+            std::memcpy(destination + offset, level.rgba8.data(), level.rgba8.size());
+            offset += level.rgba8.size();
+        }
+        if (offset != bytes) {
+            SDL_UnmapGPUTransferBuffer(impl_->device, created.upload);
+            release_image(impl_->device, created);
+            error = "decoded image mip storage size is internally inconsistent";
+            return false;
+        }
         SDL_UnmapGPUTransferBuffer(impl_->device, created.upload);
         image = &impl_->pending.emplace(imageKey, created).first->second;
     }
@@ -215,8 +259,8 @@ bool SdlImageCache::resolve(const PictureTexture& texture, SDL_GPUTextureSampler
     if (std::find(impl_->current.begin(), impl_->current.end(), imageKey) == impl_->current.end())
         impl_->current.push_back(imageKey);
 
-    const SamplerKey samplerKey{texture.addressU, texture.addressV, texture.minFilter,
-                                texture.magFilter, texture.mipFilter};
+    const SamplerKey samplerKey{texture.addressU,  texture.addressV,  texture.minFilter,
+                                texture.magFilter, texture.mipFilter, image->mipLevels};
     SDL_GPUSampler* sampler = nullptr;
     if (const auto found = impl_->samplers.find(samplerKey); found != impl_->samplers.end()) {
         sampler = found->second;
@@ -228,7 +272,8 @@ bool SdlImageCache::resolve(const PictureTexture& texture, SDL_GPUTextureSampler
         info.address_mode_u = address_mode(texture.addressU);
         info.address_mode_v = address_mode(texture.addressV);
         info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        info.max_lod = 0.0F;
+        info.max_lod =
+            texture.mipFilter == MipFilter::None ? 0.0F : static_cast<float>(image->mipLevels - 1U);
         sampler = SDL_CreateGPUSampler(impl_->device, &info);
         if (sampler == nullptr) {
             error = std::string("decoded image sampler creation failed: ") + SDL_GetError();
@@ -254,10 +299,27 @@ bool SdlImageCache::encode_uploads(SDL_GPUCommandBuffer* commandBuffer, std::str
         }
         for (const auto& [key, image] : impl_->pending) {
             (void)key;
-            const SDL_GPUTextureTransferInfo source{image.upload, 0, image.width, image.height};
-            const SDL_GPUTextureRegion destination{image.texture, 0, 0, 0, 0, 0, image.width,
-                                                   image.height,  1};
-            SDL_UploadToGPUTexture(copy, &source, &destination, false);
+            std::uint32_t levelWidth = image.width;
+            std::uint32_t levelHeight = image.height;
+            Uint32 offset = 0;
+            for (std::uint32_t level = 0; level < image.mipLevels; ++level) {
+                std::size_t levelBytes = 0;
+                const bool validLevel = image_bytes(levelWidth, levelHeight, levelBytes) &&
+                                        levelBytes <= std::numeric_limits<Uint32>::max() - offset;
+                if (!validLevel) {
+                    SDL_EndGPUCopyPass(copy);
+                    error = "decoded image mip upload dimensions are invalid";
+                    return false;
+                }
+                const SDL_GPUTextureTransferInfo source{image.upload, offset, levelWidth,
+                                                        levelHeight};
+                const SDL_GPUTextureRegion destination{image.texture, level,       0, 0, 0, 0,
+                                                       levelWidth,    levelHeight, 1};
+                SDL_UploadToGPUTexture(copy, &source, &destination, false);
+                offset += static_cast<Uint32>(levelBytes);
+                levelWidth = std::max(levelWidth >> 1U, 1U);
+                levelHeight = std::max(levelHeight >> 1U, 1U);
+            }
         }
         SDL_EndGPUCopyPass(copy);
     }

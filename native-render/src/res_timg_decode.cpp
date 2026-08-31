@@ -2,6 +2,7 @@
 
 #include <sunbright/native_render/image_decode.h>
 
+#include <algorithm>
 #include <array>
 #include <new>
 #include <utility>
@@ -23,6 +24,19 @@ bool read(const AssetByteSource& source, ByteAddress address,
           std::span<std::uint8_t> output) noexcept {
     return source.read != nullptr && address.valid() &&
            source.read(address, output, source.context);
+}
+
+constexpr std::uint64_t kRevisionOffsetBasis = 14695981039346656037ULL;
+constexpr std::uint64_t kRevisionPrime = 1099511628211ULL;
+
+void mix_revision_byte(std::uint64_t& revision, std::uint8_t byte) noexcept {
+    revision ^= byte;
+    revision *= kRevisionPrime;
+}
+
+void mix_revision_u64(std::uint64_t& revision, std::uint64_t value) noexcept {
+    for (std::uint32_t shift = 0; shift != 64; shift += 8)
+        mix_revision_byte(revision, static_cast<std::uint8_t>(value >> shift));
 }
 
 } // namespace
@@ -78,6 +92,7 @@ ResTimgDecodeError decode_res_timg(const AssetByteSource& source, ByteAddress he
         .paletteOffset = static_cast<std::int32_t>(be32(header.data() + 0x0C)),
         .minFilter = header[0x14],
         .magFilter = header[0x15],
+        .mipmapCount = header[0x18],
         .imageOffset = static_cast<std::int32_t>(be32(header.data() + 0x1C)),
     };
     return decode_res_timg(source, descriptor, headerAddress, resourceIdentity, decoded);
@@ -102,14 +117,14 @@ ResTimgDecodeError decode_res_timg(const AssetByteSource& source,
         !decode_address_mode(descriptor.wrapT, texture.addressV) ||
         !decode_min_filter(descriptor.minFilter, texture.minFilter, texture.mipFilter) ||
         !decode_mag_filter(descriptor.magFilter, texture.magFilter) ||
-        texture.mipFilter != MipFilter::None) {
+        descriptor.mipmapCount == 0 ||
+        (texture.mipFilter != MipFilter::None && descriptor.mipmapCount == 1)) {
         return ResTimgDecodeError::UnsupportedSampler;
     }
 
     std::size_t encodedBytes = 0;
-    std::size_t decodedBytes = 0;
-    if (!encoded_image_data_size(texture.width, texture.height, format, encodedBytes) ||
-        !decoded_image_data_size(texture.width, texture.height, decodedBytes)) {
+    if (!encoded_image_chain_size(texture.width, texture.height, format, descriptor.mipmapCount,
+                                  encodedBytes)) {
         return ResTimgDecodeError::UnsupportedFormat;
     }
     const ByteAddress imageAddress = headerAddress.advanced_signed(descriptor.imageOffset);
@@ -139,15 +154,50 @@ ResTimgDecodeError decode_res_timg(const AssetByteSource& source,
                 return ResTimgDecodeError::PaletteUnreadable;
         }
 
-        const EncodedImageView view{format,        texture.width,  texture.height, encoded,
-                                    paletteFormat, paletteEntries, palette};
         DecodedTexture result{};
         result.texture = texture;
-        result.rgba8.resize(decodedBytes);
-        if (decode_image_rgba8(view, result.rgba8) != ImageDecodeError::None ||
-            !image_content_revision(view, result.texture.revision)) {
-            return ResTimgDecodeError::DecodeFailure;
+        result.mipLevels.reserve(descriptor.mipmapCount - 1U);
+        std::size_t encodedOffset = 0;
+        std::uint32_t levelWidth = texture.width;
+        std::uint32_t levelHeight = texture.height;
+        std::uint64_t revision = kRevisionOffsetBasis;
+        mix_revision_u64(revision, descriptor.mipmapCount);
+        for (std::uint32_t level = 0; level < descriptor.mipmapCount; ++level) {
+            std::size_t levelEncodedBytes = 0;
+            std::size_t levelDecodedBytes = 0;
+            if (!encoded_image_data_size(levelWidth, levelHeight, format, levelEncodedBytes) ||
+                !decoded_image_data_size(levelWidth, levelHeight, levelDecodedBytes) ||
+                levelEncodedBytes > encoded.size() - encodedOffset) {
+                return ResTimgDecodeError::DecodeFailure;
+            }
+            const EncodedImageView view{
+                format,        levelWidth,
+                levelHeight,   std::span(encoded).subspan(encodedOffset, levelEncodedBytes),
+                paletteFormat, paletteEntries,
+                palette};
+            std::uint64_t levelRevision = 0;
+            if (!image_content_revision(view, levelRevision))
+                return ResTimgDecodeError::DecodeFailure;
+            mix_revision_u64(revision, levelWidth);
+            mix_revision_u64(revision, levelHeight);
+            mix_revision_u64(revision, levelRevision);
+            if (level == 0) {
+                result.rgba8.resize(levelDecodedBytes);
+                if (decode_image_rgba8(view, result.rgba8) != ImageDecodeError::None)
+                    return ResTimgDecodeError::DecodeFailure;
+            } else {
+                DecodedImageMipLevel& decodedLevel = result.mipLevels.emplace_back();
+                decodedLevel.width = levelWidth;
+                decodedLevel.height = levelHeight;
+                decodedLevel.rgba8.resize(levelDecodedBytes);
+                if (decode_image_rgba8(view, decodedLevel.rgba8) != ImageDecodeError::None)
+                    return ResTimgDecodeError::DecodeFailure;
+            }
+            encodedOffset += levelEncodedBytes;
+            levelWidth = std::max(levelWidth >> 1U, 1U);
+            levelHeight = std::max(levelHeight >> 1U, 1U);
         }
+        result.texture.revision = revision;
         decoded = std::move(result);
         return ResTimgDecodeError::None;
     } catch (const std::bad_alloc&) {

@@ -32,12 +32,17 @@ int main() {
     memory[header + 5] = 4;
     memory[header + 6] = 1;
     memory[header + 7] = 2;
-    memory[header + 0x14] = 1;
+    memory[header + 0x14] = 5;
     memory[header + 0x15] = 1;
+    memory[header + 0x18] = 2;
     memory[header + 0x1F] = 0x20;
     for (std::size_t index = 0; index < 32; index += 2) {
         memory[header + 0x20 + index] = 0xF8;
         memory[header + 0x20 + index + 1] = 0x00;
+    }
+    for (std::size_t index = 0; index < 32; index += 2) {
+        memory[header + 0x40 + index] = 0x00;
+        memory[header + 0x40 + index + 1] = 0x1F;
     }
 
     const AssetByteSource source{read_memory, &memory};
@@ -51,6 +56,10 @@ int main() {
     assert(decoded.rgba8.size() == 64);
     assert(decoded.rgba8[0] == 255 && decoded.rgba8[1] == 0 && decoded.rgba8[2] == 0 &&
            decoded.rgba8[3] == 255);
+    assert(decoded.mipLevels.size() == 1);
+    assert(decoded.mipLevels[0].width == 2 && decoded.mipLevels[0].height == 2);
+    assert(decoded.mipLevels[0].rgba8[0] == 0 && decoded.mipLevels[0].rgba8[1] == 0 &&
+           decoded.mipLevels[0].rgba8[2] == 255 && decoded.mipLevels[0].rgba8[3] == 255);
 
     // The native BMD loader has already byte-swapped the ResTIMG header. Its normalized
     // description must decode the same untouched big-endian texel payload.
@@ -59,16 +68,19 @@ int main() {
                                            .height = 4,
                                            .wrapS = 1,
                                            .wrapT = 2,
-                                           .minFilter = 1,
+                                           .minFilter = 5,
                                            .magFilter = 1,
+                                           .mipmapCount = 2,
                                            .imageOffset = 0x20};
     DecodedTexture nativeDecoded{};
     assert(decode_res_timg(source, hostDescriptor, ByteAddress::guest(header), 100,
                            nativeDecoded) == ResTimgDecodeError::None);
     assert(nativeDecoded.texture.resource == 100);
     assert(nativeDecoded.rgba8 == decoded.rgba8);
+    assert(nativeDecoded.mipLevels.size() == 1);
+    assert(nativeDecoded.mipLevels[0].rgba8 == decoded.mipLevels[0].rgba8);
 
-    memory[header + 0x14] = 5;
+    memory[header + 0x18] = 1;
     assert(decode_res_timg(source, ByteAddress::guest(header), 99, decoded) ==
            ResTimgDecodeError::UnsupportedSampler);
 }

@@ -49,6 +49,7 @@ native_render::ResTimgDescriptor describe(const ResTIMG& image) noexcept {
             .paletteOffset = static_cast<std::int32_t>(image.paletteOffset),
             .minFilter = image.minFilter,
             .magFilter = image.magFilter,
+            .mipmapCount = image.mipmapCount,
             .imageOffset = static_cast<std::int32_t>(image.imageDataOffset)};
 }
 

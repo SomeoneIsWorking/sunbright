@@ -21,6 +21,7 @@
 namespace {
 
 using sb::native_render::Color;
+using sb::native_render::DecodedImageMipLevel;
 using sb::native_render::DecodedImageView;
 using sb::native_render::GlyphCommand;
 using sb::native_render::GlyphDraw;
@@ -302,6 +303,81 @@ int main() {
         assert(alphaPixel.r > 0.70f && alphaPixel.g > 0.70f && alphaPixel.b > 0.70f);
         assert(near(alphaPixel.a, 128.0f / 255.0f));
 
+        // Known-positive mip control: this one-pixel draw minifies a 4x4 red base level. The
+        // only authored lower level is blue, so the sampled pixel proves that the production image
+        // cache uploaded the lower level and exposed it to the semantic sampler.
+        std::array<std::uint8_t, 64> redBase{};
+        for (std::size_t offset = 0; offset < redBase.size(); offset += 4) {
+            redBase[offset] = 255;
+            redBase[offset + 3] = 255;
+        }
+        DecodedImageMipLevel blueMip{
+            .width = 2,
+            .height = 2,
+            .rgba8 = {0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255}};
+        const DecodedImageView mipmappedImage{.resource = 10,
+                                              .revision = 1,
+                                              .width = 4,
+                                              .height = 4,
+                                              .rgba8 = redBase,
+                                              .mipLevels = std::span(&blueMip, 1)};
+        PictureCommand minified = command();
+        minified.instance = 10;
+        minified.positions = {Vec2{0, 0}, Vec2{1, 0}, Vec2{0, 1}, Vec2{1, 1}};
+        minified.clip = {};
+        minified.material.textures[0] = {.resource = 10,
+                                         .revision = 1,
+                                         .width = 4,
+                                         .height = 4,
+                                         .minFilter = sb::native_render::FilterMode::Nearest,
+                                         .magFilter = sb::native_render::FilterMode::Nearest,
+                                         .mipFilter = sb::native_render::MipFilter::Nearest};
+        const SemanticDraw minifiedDraw{PictureDraw{draw.canvas, minified}};
+        const SemanticFrame mipmappedFrame{
+            .targetWidth = 16,
+            .targetHeight = 16,
+            .draws = std::span<const SemanticDraw>(&minifiedDraw, 1),
+            .images = std::span<const DecodedImageView>(&mipmappedImage, 1)};
+        SemanticFramePixels mipmappedResult{};
+        assert(encode_and_readback(pass, mipmappedFrame, target, mipmappedResult, error) &&
+               error.empty());
+        require_color(pixel(mipmappedResult, 0, 0), {0, 0, 1, 1});
+
+        // The same full image chain must not change a material that selects no mip filtering.
+        // This distinguishes a correctly uploaded chain from a cache that silently enables it for
+        // every sampler sharing the image.
+        PictureCommand noMip = minified;
+        noMip.instance = 12;
+        noMip.material.textures[0].mipFilter = sb::native_render::MipFilter::None;
+        const SemanticDraw noMipDraw{PictureDraw{draw.canvas, noMip}};
+        const SemanticFrame noMipFrame{.targetWidth = 16,
+                                       .targetHeight = 16,
+                                       .draws = std::span<const SemanticDraw>(&noMipDraw, 1),
+                                       .images =
+                                           std::span<const DecodedImageView>(&mipmappedImage, 1)};
+        SemanticFramePixels noMipResult{};
+        assert(encode_and_readback(pass, noMipFrame, target, noMipResult, error) && error.empty());
+        require_color(pixel(noMipResult, 0, 0), {1, 0, 0, 1});
+
+        // Existing one-level images remain valid when their material requests mip filtering. The
+        // sampler clamps to their only authored level instead of making unrelated UI resources an
+        // error while the image adapter has no lower-resolution source data to provide.
+        const DecodedImageView baseOnlyImage{
+            .resource = 11, .revision = 1, .width = 4, .height = 4, .rgba8 = redBase};
+        PictureCommand baseOnly = minified;
+        baseOnly.instance = 11;
+        baseOnly.material.textures[0].resource = 11;
+        const SemanticDraw baseOnlyDraw{PictureDraw{draw.canvas, baseOnly}};
+        const SemanticFrame baseOnlyFrame{.targetWidth = 16,
+                                          .targetHeight = 16,
+                                          .draws = std::span<const SemanticDraw>(&baseOnlyDraw, 1),
+                                          .images =
+                                              std::span<const DecodedImageView>(&baseOnlyImage, 1)};
+        SemanticFramePixels baseOnlyResult{};
+        assert(encode_and_readback(pass, baseOnlyFrame, target, baseOnlyResult, error) &&
+               error.empty());
+        require_color(pixel(baseOnlyResult, 0, 0), {1, 0, 0, 1});
+
         SemanticFramePixels repeated{};
         assert(pass.render_and_readback(frame, repeated, error) && error.empty());
         assert(hash(repeated) == hash(first));
@@ -343,7 +419,7 @@ int main() {
         assert(pass.render_and_readback(frame, changed, error) && error.empty());
         // Immutable revisions remain resident so recurring game assets do not allocate and upload
         // again every frame. The original and changed revisions are intentionally distinct keys.
-        assert(pass.resident_image_count() == 2);
+        assert(pass.resident_image_count() == 4);
         assert(hash(changed) != hash(first));
         require_color(pixel(changed, 5, 5), {0, 0, 1, 1});
 

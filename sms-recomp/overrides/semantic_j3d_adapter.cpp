@@ -829,8 +829,12 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         }
         for (std::size_t index = 0; index < textureCount; ++index) {
             const auto& texture = g_textures[index];
-            semanticImages[index] = {texture.texture.resource, texture.texture.revision,
-                                     texture.texture.width, texture.texture.height, texture.rgba8};
+            semanticImages[index] = {texture.texture.resource,
+                                     texture.texture.revision,
+                                     texture.texture.width,
+                                     texture.texture.height,
+                                     texture.rgba8,
+                                     texture.mipLevels};
         }
         images = std::span(semanticImages).first(textureCount);
     }
