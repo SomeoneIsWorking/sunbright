@@ -111,7 +111,7 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
     material.baseColor = color_from_rgba8(state.materialColorRgba8);
     material.ambientColor = state.usesMaterialAmbient ? color_from_rgba8(state.ambientColorRgba8)
                                                       : lighting.ambientColor;
-    material.effectColor = color_from_s10(state.tevColor0S10);
+    material.effectColor = color_from_s10(state.tevColorsS10[0]);
     material.lighting = lighting;
     material.lighting.pointLightCount = 2;
     tint_directional_specular(material.lighting, color_from_rgba8(state.materialColor1Rgba8));

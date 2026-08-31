@@ -198,12 +198,14 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
     captured.hasVertexColor = hasVertexColor;
     captured.hasNormal = hasNormal;
     if (captured.supportedTevBlock) {
-        J3DGXColorS10* tevColor0 = tev->getTevColor(0);
-        if (tevColor0 != nullptr) {
-            captured.hasTevColor0 = true;
-            captured.tevColor0S10 = {tevColor0->color.r, tevColor0->color.g, tevColor0->color.b,
-                                     tevColor0->color.a};
+        for (std::size_t colorIndex = 0; colorIndex < captured.tevColorsS10.size(); ++colorIndex) {
+            J3DGXColorS10* tevColor = tev->getTevColor(colorIndex);
+            if (tevColor == nullptr)
+                return false;
+            captured.tevColorsS10[colorIndex] = {tevColor->color.r, tevColor->color.g,
+                                                 tevColor->color.b, tevColor->color.a};
         }
+        captured.hasTevColors = true;
         for (std::size_t bindingIndex = 0; bindingIndex < textureBindingCount; ++bindingIndex)
             captured.textureBindings[bindingIndex].textureNumber = tev->getTexNo(bindingIndex);
         for (std::size_t stageIndex = 0; stageIndex < captured.tevStageCount; ++stageIndex) {

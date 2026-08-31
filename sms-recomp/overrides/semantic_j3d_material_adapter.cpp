@@ -255,15 +255,20 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
     if (captured.supportedTevBlock) {
         const std::uint32_t colorOffset = tev_color_offset(tevVptr);
         if (colorOffset != 0) {
-            captured.hasTevColor0 = true;
-            for (std::size_t component = 0; component < captured.tevColor0S10.size(); ++component) {
-                std::uint16_t raw = 0;
-                if (!reader.u16(tevBlock + colorOffset + static_cast<std::uint32_t>(component * 2),
-                                raw)) {
-                    return false;
+            for (std::size_t colorIndex = 0; colorIndex < captured.tevColorsS10.size();
+                 ++colorIndex) {
+                for (std::size_t component = 0;
+                     component < captured.tevColorsS10[colorIndex].size(); ++component) {
+                    std::uint16_t raw = 0;
+                    const std::uint32_t offset =
+                        colorOffset +
+                        static_cast<std::uint32_t>((colorIndex * 4U + component) * 2U);
+                    if (!reader.u16(tevBlock + offset, raw))
+                        return false;
+                    captured.tevColorsS10[colorIndex][component] = static_cast<std::int16_t>(raw);
                 }
-                captured.tevColor0S10[component] = static_cast<std::int16_t>(raw);
             }
+            captured.hasTevColors = true;
         }
         for (std::size_t bindingIndex = 0; bindingIndex < textureBindingCount; ++bindingIndex) {
             if (!reader.u16(tevBlock + 0x04U + static_cast<std::uint32_t>(bindingIndex * 2U),

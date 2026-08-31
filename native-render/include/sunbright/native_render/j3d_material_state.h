@@ -10,6 +10,7 @@ namespace sb::native_render {
 
 constexpr std::size_t kMaxJ3dTextureMaps = 8;
 constexpr std::size_t kMaxJ3dTevStages = 16;
+constexpr std::size_t kJ3dTevColorRegisters = 3;
 
 // A texture-map slot is independent of the number of active colour stages. A stage refers to a
 // map by index; the runtime adapters resolve that map to this source texture-table slot.
@@ -72,8 +73,8 @@ struct J3dMaterialState {
     std::uint8_t tevStageCount = 0;
     std::array<J3dTextureBinding, kMaxJ3dTextureMaps> textureBindings{};
     std::array<J3dTevStageState, kMaxJ3dTevStages> tevStages{};
-    bool hasTevColor0 = false;
-    std::array<std::int16_t, 4> tevColor0S10{};
+    bool hasTevColors = false;
+    std::array<std::array<std::int16_t, 4>, kJ3dTevColorRegisters> tevColorsS10{};
     std::array<std::uint32_t, 4> konstColorRgba8{};
     std::uint32_t pixelEngineBlockType = 0;
     bool hasExplicitPixelPolicy = false;

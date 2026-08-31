@@ -83,7 +83,7 @@ J3dLitAlphaMaskResult classify_j3d_lit_alpha_mask_material(
         state.tevStages[1].program != kKeepRgbApplyScaledMaskAlpha) {
         return J3dLitAlphaMaskResult::UnsupportedColorProgram;
     }
-    if (!state.hasTevColor0 || state.tevColor0S10 != kBlackOpaqueRegister)
+    if (!state.hasTevColors || state.tevColorsS10[0] != kBlackOpaqueRegister)
         return J3dLitAlphaMaskResult::UnsupportedRegisterColor;
     if (!state.hasNormal)
         return J3dLitAlphaMaskResult::MissingNormal;

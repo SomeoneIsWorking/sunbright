@@ -24,8 +24,8 @@ sb::native_render::J3dMaterialState material_state() {
         .tevStageCount = 1,
         .textureBindings = {j3d_texture_binding(0)},
         .tevStages = {j3d_tev_stage(0, 0, 4, {0xC0, 0x08, 0xF2, 0xAF, 0xC1, 0x28, 0xF0, 0xF0})},
-        .hasTevColor0 = true,
-        .tevColor0S10 = {0, 0, 0, 255},
+        .hasTevColors = true,
+        .tevColorsS10 = {{{0, 0, 0, 255}}},
         .pixelEngineBlockType = 0x5045464CU,
         .hasExplicitPixelPolicy = true,
         .alphaCompare0 = 6,
@@ -70,11 +70,11 @@ int main() {
     assert(transformed.color == (Color{0.0F, 0.0F, 0.0F, 4.0F}));
     assert(transformed.additiveColor == Color{});
 
-    state.tevColor0S10[0] = 1;
+    state.tevColorsS10[0][0] = 1;
     assert(classify_j3d_alpha_masked_material(state, texture, material) ==
            J3dAlphaMaskedMaterialResult::UnsupportedRegisterColor);
     state = material_state();
-    state.hasTevColor0 = false;
+    state.hasTevColors = false;
     assert(classify_j3d_alpha_masked_material(state, texture, material) ==
            J3dAlphaMaskedMaterialResult::UnsupportedRegisterColor);
     state = material_state();

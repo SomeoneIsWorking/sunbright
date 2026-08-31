@@ -122,12 +122,13 @@ struct ProgramObservation {
     std::uint32_t firstMaterialColor1 = 0;
     std::uint32_t firstAmbientColor1 = 0;
     std::array<std::uint32_t, 4> firstKonstColors{};
-    std::array<std::int16_t, 4> firstTevColor0{};
+    std::array<std::array<std::int16_t, 4>, sb::native_render::kJ3dTevColorRegisters>
+        firstTevColors{};
     sb::native_render::J3dFogState firstFog{};
     bool primaryColorsVary = false;
     bool secondaryColorsVary = false;
     bool konstColorsVary = false;
-    bool tevColor0Varies = false;
+    bool tevColorsVary = false;
     bool fogValuesVary = false;
 };
 
@@ -414,7 +415,7 @@ std::string semantic_j3d_stats_text() {
             "%llu-models "
             "primaryColor=%08x/%08x varies=%u "
             "secondColor=%08x/%08x varies=%u "
-            "tevColor0=%d/%d/%d/%d varies=%u "
+            "tevColor0=%d/%d/%d/%d tevColor1=%d/%d/%d/%d tevColor2=%d/%d/%d/%d varies=%u "
             "konstSel=%02x/%02x/%02x/%02x/%02x alphaSel=%02x/%02x/%02x/%02x/%02x "
             "konst=%08x/%08x/%08x/%08x varies=%u",
             litIndex, static_cast<unsigned long long>(observation.count), key.materialIndex,
@@ -465,9 +466,13 @@ std::string semantic_j3d_stats_text() {
             observation.firstMaterialColor, observation.firstAmbientColor,
             observation.primaryColorsVary ? 1U : 0U, observation.firstMaterialColor1,
             observation.firstAmbientColor1, observation.secondaryColorsVary ? 1U : 0U,
-            observation.firstTevColor0[0], observation.firstTevColor0[1],
-            observation.firstTevColor0[2], observation.firstTevColor0[3],
-            observation.tevColor0Varies ? 1U : 0U, key.tevStages[0].konstColorSelection,
+            observation.firstTevColors[0][0], observation.firstTevColors[0][1],
+            observation.firstTevColors[0][2], observation.firstTevColors[0][3],
+            observation.firstTevColors[1][0], observation.firstTevColors[1][1],
+            observation.firstTevColors[1][2], observation.firstTevColors[1][3],
+            observation.firstTevColors[2][0], observation.firstTevColors[2][1],
+            observation.firstTevColors[2][2], observation.firstTevColors[2][3],
+            observation.tevColorsVary ? 1U : 0U, key.tevStages[0].konstColorSelection,
             key.tevStages[1].konstColorSelection, key.tevStages[2].konstColorSelection,
             key.tevStages[3].konstColorSelection, key.tevStages[4].konstColorSelection,
             key.tevStages[0].konstAlphaSelection, key.tevStages[1].konstAlphaSelection,
@@ -548,7 +553,7 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         observation.firstMaterialColor1 = materialState.materialColor1Rgba8;
         observation.firstAmbientColor1 = materialState.ambientColor1Rgba8;
         observation.firstKonstColors = materialState.konstColorRgba8;
-        observation.firstTevColor0 = materialState.tevColor0S10;
+        observation.firstTevColors = materialState.tevColorsS10;
         observation.firstFog = materialState.fog;
     } else {
         if (observation.firstMaterialColor != materialState.materialColorRgba8 ||
@@ -561,8 +566,8 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         }
         if (observation.firstKonstColors != materialState.konstColorRgba8)
             observation.konstColorsVary = true;
-        if (observation.firstTevColor0 != materialState.tevColor0S10)
-            observation.tevColor0Varies = true;
+        if (observation.firstTevColors != materialState.tevColorsS10)
+            observation.tevColorsVary = true;
         if (observation.firstFog != materialState.fog)
             observation.fogValuesVary = true;
     }

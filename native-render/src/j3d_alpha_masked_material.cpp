@@ -68,7 +68,7 @@ classify_j3d_alpha_masked_material(const J3dMaterialState& state, const PictureT
     }
     if (state.tevStages[0].program != kBlackRgbTextureAlphaStage)
         return J3dAlphaMaskedMaterialResult::UnsupportedColorProgram;
-    if (!state.hasTevColor0 || state.tevColor0S10 != kBlackOpaqueRegister)
+    if (!state.hasTevColors || state.tevColorsS10[0] != kBlackOpaqueRegister)
         return J3dAlphaMaskedMaterialResult::UnsupportedRegisterColor;
     if (!state.hasNormal)
         return J3dAlphaMaskedMaterialResult::MissingNormal;

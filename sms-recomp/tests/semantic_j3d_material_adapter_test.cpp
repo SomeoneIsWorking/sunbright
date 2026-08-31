@@ -164,14 +164,24 @@ int main() {
     write_u16(memory, tev + 0x12, 0xFF80);
     write_u16(memory, tev + 0x14, 0x0040);
     write_u16(memory, tev + 0x16, 0x0020);
+    write_u16(memory, tev + 0x18, 0x0101);
+    write_u16(memory, tev + 0x1A, 0xFF7F);
+    write_u16(memory, tev + 0x1C, 0x0080);
+    write_u16(memory, tev + 0x1E, 0x0041);
+    write_u16(memory, tev + 0x20, 0x0202);
+    write_u16(memory, tev + 0x22, 0xFEFE);
+    write_u16(memory, tev + 0x24, 0x0100);
+    write_u16(memory, tev + 0x26, 0x0022);
     memory.bytes[tev + 0x30] = 1;
     memory.bytes[tev + 0x08] = 0xFF;
     memory.bytes[tev + 0x09] = 0xFF;
     memory.bytes[tev + 0x0A] = 4;
     std::memcpy(memory.bytes.data() + tev + 0x31, stage.data(), stage.size());
     assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
-    assert(state.hasTevColor0);
-    assert(state.tevColor0S10 == (std::array<std::int16_t, 4>{0x0100, -0x0080, 0x0040, 0x0020}));
+    assert(state.hasTevColors);
+    assert(state.tevColorsS10[0] == (std::array<std::int16_t, 4>{0x0100, -0x0080, 0x0040, 0x0020}));
+    assert(state.tevColorsS10[1] == (std::array<std::int16_t, 4>{0x0101, -0x0081, 0x0080, 0x0041}));
+    assert(state.tevColorsS10[2] == (std::array<std::int16_t, 4>{0x0202, -0x0102, 0x0100, 0x0022}));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
 
