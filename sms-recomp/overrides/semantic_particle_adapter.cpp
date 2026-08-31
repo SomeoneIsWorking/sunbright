@@ -3,6 +3,7 @@
 #include "guest_byte_reader.h"
 #include "semantic_j3d_scene.h"
 
+#include <sunbright/native_render/image_decode.h>
 #include <sunbright/native_render/model_context.h>
 #include <sunbright/native_render/particle_billboard.h>
 #include <sunbright/native_render/res_timg_decode.h>
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <string>
 
 #include <lucent/log.h>
 
@@ -48,9 +50,23 @@ constexpr std::uint32_t kTextureCount = 0x24;
 constexpr std::uint32_t kTextureArray = 0x2C;
 constexpr std::uint32_t kTextureRawData = 0x04;
 constexpr std::uint32_t kTextureResTimg = 0x20;
+constexpr std::uint32_t kDefaultTextureData = 0x00;
+constexpr std::size_t kDefaultTextureBytes = 0x80;
 
 struct ReadContext {
     BigEndianGuestReader reader;
+};
+
+enum class TextureCaptureFailure : std::uint8_t {
+    ResourceRead,
+    EmptyArray,
+    IndexOutOfRange,
+    ArrayOverflow,
+    TexturePointer,
+    RawData,
+    Header,
+    Decoder,
+    Count,
 };
 
 struct Stats {
@@ -61,7 +77,16 @@ struct Stats {
     std::uint64_t unsupportedType = 0;
     std::uint64_t unsupportedProgram = 0;
     std::uint64_t invalidTexture = 0;
+    std::uint64_t defaultTextures = 0;
     std::uint64_t decodeFailures = 0;
+    std::array<std::uint64_t,
+               static_cast<std::size_t>(native_render::ResTimgDecodeError::AllocationFailure) + 1U>
+        decodeErrors{};
+    std::array<std::uint64_t, static_cast<std::size_t>(TextureCaptureFailure::Count)>
+        textureCaptureFailures{};
+    std::uint32_t firstOutOfRangeCount = 0;
+    std::uint16_t firstOutOfRangeIndex = 0;
+    bool hasOutOfRangeSample = false;
     std::uint64_t noScene = 0;
     std::uint64_t viewFailures = 0;
 };
@@ -191,26 +216,94 @@ bool build_raster_policy(const BigEndianGuestReader& reader, std::uint32_t shape
 }
 
 bool capture_texture(const BigEndianGuestReader& reader, std::uint32_t resource,
-                     std::uint16_t textureIndex, native_render::DecodedTexture& decoded) noexcept {
+                     std::uint16_t textureIndex, native_render::DecodedTexture& decoded,
+                     native_render::ResTimgDecodeError& error,
+                     TextureCaptureFailure& failure) noexcept {
+    error = native_render::ResTimgDecodeError::InvalidSource;
+    failure = TextureCaptureFailure::ResourceRead;
     std::uint32_t count = 0;
     std::uint32_t array = 0;
     if (!read_u32(reader, resource, kTextureCount, count) ||
-        !read_u32(reader, resource, kTextureArray, array) || array == 0 || textureIndex >= count ||
-        textureIndex > (std::numeric_limits<std::uint32_t>::max() - array) / 4U)
+        !read_u32(reader, resource, kTextureArray, array))
         return false;
+    if (array == 0) {
+        failure = TextureCaptureFailure::EmptyArray;
+        return false;
+    }
+    if (textureIndex >= count) {
+        if (!g_stats.hasOutOfRangeSample) {
+            g_stats.firstOutOfRangeCount = count;
+            g_stats.firstOutOfRangeIndex = textureIndex;
+            g_stats.hasOutOfRangeSample = true;
+        }
+        failure = TextureCaptureFailure::IndexOutOfRange;
+        return false;
+    }
+    if (textureIndex > (std::numeric_limits<std::uint32_t>::max() - array) / 4U) {
+        failure = TextureCaptureFailure::ArrayOverflow;
+        return false;
+    }
     std::uint32_t texture = 0;
-    if (!reader.u32(array + static_cast<std::uint32_t>(textureIndex) * 4U, texture) || texture == 0)
+    if (!reader.u32(array + static_cast<std::uint32_t>(textureIndex) * 4U, texture) ||
+        texture == 0) {
+        failure = TextureCaptureFailure::TexturePointer;
         return false;
+    }
     std::uint32_t rawData = 0;
     std::uint32_t header = 0;
-    if (!read_u32(reader, texture, kTextureRawData, rawData) || rawData == 0 ||
-        !add_address(rawData, kTextureResTimg, header))
+    if (!read_u32(reader, texture, kTextureRawData, rawData) || rawData == 0) {
+        failure = TextureCaptureFailure::RawData;
         return false;
+    }
+    if (!add_address(rawData, kTextureResTimg, header)) {
+        failure = TextureCaptureFailure::Header;
+        return false;
+    }
     ReadContext context{reader};
-    const auto error = native_render::decode_res_timg(
+    error = native_render::decode_res_timg(
         {read_asset, &context}, native_render::ByteAddress::guest(header),
         (static_cast<std::uint64_t>(resource) << 32U) | header, decoded);
+    if (error != native_render::ResTimgDecodeError::None)
+        failure = TextureCaptureFailure::Decoder;
     return error == native_render::ResTimgDecodeError::None;
+}
+
+bool capture_default_texture(const BigEndianGuestReader& reader, std::uint32_t resource,
+                             native_render::DecodedTexture& decoded) noexcept {
+    std::uint32_t data = 0;
+    if (!read_u32(reader, resource, kDefaultTextureData, data) || data == 0)
+        return false;
+    std::array<std::uint8_t, kDefaultTextureBytes> encoded{};
+    if (!reader.bytes(data, encoded.data(), encoded.size()))
+        return false;
+    decoded.texture = {
+        .resource = (static_cast<std::uint64_t>(resource) << 32U) | data,
+        .revision = 0,
+        .width = 8,
+        .height = 8,
+        .addressU = native_render::AddressMode::Repeat,
+        .addressV = native_render::AddressMode::Repeat,
+        .minFilter = native_render::FilterMode::Linear,
+        .magFilter = native_render::FilterMode::Linear,
+        .mipFilter = native_render::MipFilter::None,
+        .hasAlpha = true,
+    };
+    const native_render::EncodedImageView image{
+        .format = native_render::EncodedImageFormat::IntensityAlpha8,
+        .width = 8,
+        .height = 8,
+        .pixels = encoded,
+    };
+    std::size_t decodedBytes = 0;
+    if (!native_render::decoded_image_data_size(8, 8, decodedBytes))
+        return false;
+    decoded.rgba8.resize(decodedBytes);
+    if (native_render::decode_image_rgba8(image, decoded.rgba8) !=
+        native_render::ImageDecodeError::None)
+        return false;
+    if (!native_render::image_content_revision(image, decoded.texture.revision))
+        return false;
+    return true;
 }
 
 } // namespace
@@ -331,8 +424,26 @@ bool submit_guest_particle_billboard(std::uint32_t drawContext, std::uint32_t pa
         return false;
     }
     native_render::DecodedTexture decoded{};
-    if (!capture_texture(reader, resource, textureIndex, decoded)) {
+    native_render::ResTimgDecodeError decodeError = native_render::ResTimgDecodeError::None;
+    TextureCaptureFailure captureFailure = TextureCaptureFailure::ResourceRead;
+    bool textureCaptured = false;
+    if (textureIndex == std::numeric_limits<std::uint16_t>::max()) {
+        textureCaptured = capture_default_texture(reader, resource, decoded);
+        if (textureCaptured)
+            ++g_stats.defaultTextures;
+        if (!textureCaptured)
+            captureFailure = TextureCaptureFailure::RawData;
+    } else {
+        textureCaptured =
+            capture_texture(reader, resource, textureIndex, decoded, decodeError, captureFailure);
+    }
+    if (!textureCaptured) {
         ++g_stats.decodeFailures;
+        ++g_stats.textureCaptureFailures[static_cast<std::size_t>(captureFailure)];
+        const auto errorIndex = static_cast<std::size_t>(decodeError);
+        if (captureFailure == TextureCaptureFailure::Decoder &&
+            errorIndex < g_stats.decodeErrors.size())
+            ++g_stats.decodeErrors[errorIndex];
         return false;
     }
     native_render::ModelRasterPolicy raster{};
@@ -394,13 +505,33 @@ bool submit_guest_particle_billboard(std::uint32_t drawContext, std::uint32_t pa
 }
 
 void report_semantic_particle_stats() noexcept {
-    lucent::info("semantic",
-                 "native JPA billboards: submitted={} rejected={} invisible={} "
-                 "unsupported-shape={} (type={} program={}) invalid-texture={} "
-                 "decode-failures={} no-scene={} view-failures={}",
-                 g_stats.submitted, g_stats.rejected, g_stats.invisible, g_stats.unsupportedShape,
-                 g_stats.unsupportedType, g_stats.unsupportedProgram, g_stats.invalidTexture,
-                 g_stats.decodeFailures, g_stats.noScene, g_stats.viewFailures);
+    std::string decodeErrorSummary;
+    for (std::size_t index = 1; index < g_stats.decodeErrors.size(); ++index) {
+        if (g_stats.decodeErrors[index] == 0)
+            continue;
+        if (!decodeErrorSummary.empty())
+            decodeErrorSummary += ',';
+        decodeErrorSummary += native_render::res_timg_decode_error_name(
+            static_cast<native_render::ResTimgDecodeError>(index));
+        decodeErrorSummary += '=' + std::to_string(g_stats.decodeErrors[index]);
+    }
+    lucent::info(
+        "semantic",
+        "native JPA billboards: submitted={} rejected={} invisible={} "
+        "unsupported-shape={} (type={} program={}) invalid-texture={} "
+        "default-textures={} "
+        "texture-failures={} (resource-read={} empty-array={} index-range={} array-overflow={} "
+        "texture-pointer={} raw-data={} header={} decoder={} [{}]) no-scene={} "
+        "view-failures={} first-index-range={}/{}",
+        g_stats.submitted, g_stats.rejected, g_stats.invisible, g_stats.unsupportedShape,
+        g_stats.unsupportedType, g_stats.unsupportedProgram, g_stats.invalidTexture,
+        g_stats.defaultTextures, g_stats.decodeFailures, g_stats.textureCaptureFailures[0],
+        g_stats.textureCaptureFailures[1], g_stats.textureCaptureFailures[2],
+        g_stats.textureCaptureFailures[3], g_stats.textureCaptureFailures[4],
+        g_stats.textureCaptureFailures[5], g_stats.textureCaptureFailures[6],
+        g_stats.textureCaptureFailures[7], decodeErrorSummary, g_stats.noScene,
+        g_stats.viewFailures, g_stats.hasOutOfRangeSample ? g_stats.firstOutOfRangeIndex : 0,
+        g_stats.hasOutOfRangeSample ? g_stats.firstOutOfRangeCount : 0);
 }
 
 } // namespace sb::recomp

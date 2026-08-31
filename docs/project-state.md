@@ -42,9 +42,10 @@ retained renderer. The first particle slice is now wired at the standard JPA bil
 both runtimes: type-2 billboards publish an eye-space quad, decoded image, and ordinary
 depth/alpha/blend policy to the shared semantic pass while retaining the original GX body. The
 recomp path also reduces the reached colour-register program and destination-alpha blend policy to
-the renderer's ordinary modulation and `DestinationAlpha` values. Unsupported JPA programs and
-undecodable textures are counted and continue through the retained renderer; this is an adapter
-slice, not evidence that all particle effects are covered.
+the renderer's ordinary modulation and `DestinationAlpha` values, and resolves JPA's built-in
+`0xFFFF` default-texture sentinel as an 8x8 IA8 image. Unsupported JPA programs and missing scene
+contexts are counted and continue through the retained renderer; this is an adapter slice, not
+evidence that all particle effects are covered.
 
 Both runtime adapters now preserve the bounded J3D material inputs needed to classify broader
 families: up to eight texture bindings, sixteen colour stages, and all three programmable colour
