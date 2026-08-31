@@ -352,7 +352,11 @@ bool valid(const ModelDraw& draw) noexcept {
             } else if constexpr (std::is_same_v<Material, LitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
-                       valid(material.ambientColor) && valid(material.lighting) &&
+                       valid(material.ambientColor) && valid(material.shadowColor) &&
+                       material.shadowColor.r >= 0.0F && material.shadowColor.r <= 1.0F &&
+                       material.shadowColor.g >= 0.0F && material.shadowColor.g <= 1.0F &&
+                       material.shadowColor.b >= 0.0F && material.shadowColor.b <= 1.0F &&
+                       material.shadowColor.a == 0.0F && valid(material.lighting) &&
                        finite(material.litColorWeight) && material.litColorWeight >= 0.0F &&
                        material.litColorWeight <= 1.0F;
             } else if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>) {
@@ -531,11 +535,24 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                 const Color lit = diffuse_lighting(rgbSource, material.ambientColor,
                                                    material.lighting, eyePosition, normal);
                 const float weight = material.litColorWeight;
-                return VertexColors{.multiplicative = {
-                                        std::lerp(1.0F, lit.r, weight),
-                                        std::lerp(1.0F, lit.g, weight),
-                                        std::lerp(1.0F, lit.b, weight),
-                                        alphaSource,
+                const Color weightedLit{
+                    std::lerp(1.0F, lit.r, weight),
+                    std::lerp(1.0F, lit.g, weight),
+                    std::lerp(1.0F, lit.b, weight),
+                    alphaSource,
+                };
+                return VertexColors{.multiplicative =
+                                        {
+                                            weightedLit.r,
+                                            weightedLit.g,
+                                            weightedLit.b,
+                                            weightedLit.a,
+                                        },
+                                    .additive = {
+                                        material.shadowColor.r * (1.0F - weightedLit.r),
+                                        material.shadowColor.g * (1.0F - weightedLit.g),
+                                        material.shadowColor.b * (1.0F - weightedLit.b),
+                                        0.0F,
                                     }};
             } else if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>) {
                 const Color lit = diffuse_lighting(material.baseColor, material.ambientColor,

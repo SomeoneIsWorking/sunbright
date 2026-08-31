@@ -214,6 +214,9 @@ struct LitTexturedMaterial {
     PictureTexture texture{};
     Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
     Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    // Colour produced at zero diffuse light, interpolated toward the texture as lighting rises.
+    // Alpha remains sourced independently.
+    Color shadowColor{};
     ModelLightingContext lighting{};
     float litColorWeight = 1.0F;
     bool usesVertexRgb = false;

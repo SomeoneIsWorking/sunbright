@@ -16,6 +16,8 @@ constexpr std::uint16_t kUnlitMaterialAlpha = 0x0700;
 constexpr std::uint16_t kUnlitVertexAlpha = 0x0701;
 constexpr std::array<std::uint8_t, 8> kTextureTimesRaster{0xC0, 0x08, 0xF8, 0xAF,
                                                           0xC1, 0x08, 0xF2, 0xF0};
+constexpr std::array<std::uint8_t, 8> kTextureOverShadow{0xC0, 0x08, 0xE8, 0xAF,
+                                                         0xC1, 0x08, 0xF2, 0xF0};
 constexpr std::array<std::uint8_t, 8> kRasterPassThrough{0xC0, 0x08, 0xAF, 0xFF,
                                                          0xC1, 0x08, 0xBF, 0xF0};
 constexpr std::array<std::uint8_t, 8> kHalfDiffuseStage{0xC0, 0x08, 0xCA, 0xEF,
@@ -189,7 +191,11 @@ J3dLitTexturedResult classify_j3d_lit_textured_material(const J3dMaterialState& 
         texture.width == 0 || texture.height == 0) {
         return J3dLitTexturedResult::UnsupportedTextureBinding;
     }
-    const bool standardProgram = state.tevStages[0].program == kTextureTimesRaster;
+    const bool textureTimesRaster = state.tevStages[0].program == kTextureTimesRaster;
+    const bool textureOverShadow = state.tevStages[0].program == kTextureOverShadow &&
+                                   state.tevStages[0].konstColorSelection == 0x07 &&
+                                   channels.usesVertexRgb && channels.usesVertexAlpha;
+    const bool standardProgram = textureTimesRaster || textureOverShadow;
     const bool halfDiffuseProgram = state.tevStages[0].program == kHalfDiffuseStage &&
                                     state.tevStages[1].program == kHalfDiffuseTextureStage &&
                                     state.tevStages[0].konstColorSelection == 0x04;
@@ -209,6 +215,7 @@ J3dLitTexturedResult classify_j3d_lit_textured_material(const J3dMaterialState& 
     material.baseColor = color_from_rgba8(state.materialColorRgba8);
     material.ambientColor = state.usesMaterialAmbient ? color_from_rgba8(state.ambientColorRgba8)
                                                       : lighting.ambientColor;
+    material.shadowColor = textureOverShadow ? Color{0.125F, 0.125F, 0.125F, 0.0F} : Color{};
     material.lighting = lighting;
     if (channels.usesPrimaryLight)
         material.lighting.pointLightCount = 1;

@@ -211,6 +211,19 @@ scene readiness, and native submission, raising coverage from 1,656 models/1,407
 GPU fault or reset. The largest remaining perspective rejection is another 72-instance material
 whose distinct colour program remains fallback.
 
+That final 72-instance family from the same group is now an authored PC-native shadow-floor
+variant of the lit-texture material. Its high-level equation is
+`texture * light + 1/8-grey * (1 - light)`: diffuse-lit mesh vertex RGB selects between the neutral
+shadow colour and the decoded texture, while mesh vertex alpha remains independent. The shared
+material carries the ordinary shadow colour and generates multiplicative and additive vertex terms
+for the existing texture shader; the console constant selector stays only in the exact classifier.
+CPU controls distinguish the shadow and fully lit endpoints and reject a changed constant selector.
+A guarded stage-two audit advanced all 72 observations through resource decode, scene readiness,
+and native submission, raising coverage from 1,728 models/1,422,936 vertices to
+1,800 models/1,559,592 vertices, including 1,464 lit models. It exited normally with no kernel GPU
+fault or reset. The largest remaining perspective rejection is a separate 60-instance five-stage
+material family.
+
 The same textured diffuse/specular owner now preserves per-material light selection and coloured
 highlights. A reached orange character material uses only the primary point light for diffuse and
 multiplies the directional highlight by its authored orange secondary material colour; neither the

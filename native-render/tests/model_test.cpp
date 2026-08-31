@@ -146,6 +146,21 @@ int main() {
     assert(near(litVertex.color.a, 0.8F));
     assert(litVertex.additiveColor == Color{});
 
+    ModelDraw shadowLit = lit;
+    auto& shadowMaterial = std::get<LitTexturedMaterial>(shadowLit.material);
+    shadowMaterial.ambientColor = {0.5F, 0.5F, 0.5F, 1.0F};
+    shadowMaterial.lighting.pointLightCount = 0;
+    shadowMaterial.usesVertexRgb = true;
+    shadowMaterial.usesVertexAlpha = true;
+    shadowMaterial.shadowColor = {0.125F, 0.125F, 0.125F, 0.0F};
+    const ClipVertex shadowVertex = transform_vertex(shadowLit, vertex);
+    assert((shadowVertex.color == Color{0.25F, 0.125F, 0.5F, 0.5F}));
+    assert((shadowVertex.additiveColor == Color{0.09375F, 0.109375F, 0.0625F, 0.0F}));
+    assert(valid(shadowLit));
+    shadowMaterial.shadowColor.a = 1.0F;
+    assert(!valid(shadowLit));
+    shadowMaterial.shadowColor.a = 0.0F;
+
     ModelDraw masked = draw;
     masked.material = AlphaMaskedColorMaterial{
         .texture = {.resource = 19, .width = 1, .height = 1},

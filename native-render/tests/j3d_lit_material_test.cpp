@@ -122,6 +122,20 @@ int main() {
     assert(material.usesVertexRgb);
     assert(material.usesVertexAlpha);
 
+    // A second reached form blends from an authored neutral shadow colour toward the texture by
+    // the same diffuse-lit vertex RGB: texture * light + 1/8 * (1 - light). The source program and
+    // its consumed 1/8 selector are both exact admission gates.
+    state.tevStages[0].program = {0xC0, 0x08, 0xE8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0};
+    state.tevStages[0].konstColorSelection = 0x07;
+    assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
+           J3dLitTexturedResult::Success);
+    assert((material.shadowColor == Color{0.125F, 0.125F, 0.125F, 0.0F}));
+    state.tevStages[0].konstColorSelection = 0x06;
+    assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
+           J3dLitTexturedResult::UnsupportedColorProgram);
+    state.tevStages[0].konstColorSelection = 0;
+    state.tevStages[0].program = {0xC0, 0x08, 0xF8, 0xAF, 0xC1, 0x08, 0xF2, 0xF0};
+
     // A reached material keeps diffuse-lit vertex RGB but sources opacity from the authored
     // material. This is a distinct source combination, not a new lighting equation: the same
     // texture-times-diffuse material must ignore vertex alpha and preserve material alpha.
