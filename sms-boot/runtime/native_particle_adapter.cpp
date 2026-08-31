@@ -1,3 +1,4 @@
+#include <sunbright/native_render/image_decode.h>
 #include <sunbright/native_render/particle_billboard.h>
 #include <sunbright/native_render/semantic_sink.h>
 
@@ -16,11 +17,57 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <utility>
 
 namespace {
 
 std::uint64_t g_submitted = 0;
 std::uint64_t g_rejected = 0;
+std::uint64_t g_default_textures = 0;
+
+bool capture_default_texture(const JPATextureResource& resource, sb::CapturedNativeTexture& capture,
+                             const char*& error) {
+    constexpr std::uint16_t kExtent = 8;
+    constexpr std::size_t kEncodedBytes = 0x80;
+    if (resource.defaultTex.unk0 == nullptr) {
+        error = "missing JPA default texture";
+        return false;
+    }
+
+    sb::CapturedNativeTexture result{};
+    result.texture = {
+        .resource = reinterpret_cast<std::uintptr_t>(resource.defaultTex.unk0),
+        .revision = 0,
+        .width = kExtent,
+        .height = kExtent,
+        .addressU = sb::native_render::AddressMode::Repeat,
+        .addressV = sb::native_render::AddressMode::Repeat,
+        .minFilter = sb::native_render::FilterMode::Linear,
+        .magFilter = sb::native_render::FilterMode::Linear,
+        .mipFilter = sb::native_render::MipFilter::None,
+        .hasAlpha = true,
+    };
+    const sb::native_render::EncodedImageView image{
+        .format = sb::native_render::EncodedImageFormat::IntensityAlpha8,
+        .width = kExtent,
+        .height = kExtent,
+        .pixels = {resource.defaultTex.unk0, kEncodedBytes},
+    };
+    std::size_t decodedBytes = 0;
+    if (!sb::native_render::decoded_image_data_size(kExtent, kExtent, decodedBytes)) {
+        error = "invalid JPA default texture extent";
+        return false;
+    }
+    result.rgba8.resize(decodedBytes);
+    const auto decodeError = sb::native_render::decode_image_rgba8(image, result.rgba8);
+    if (decodeError != sb::native_render::ImageDecodeError::None ||
+        !sb::native_render::image_content_revision(image, result.texture.revision)) {
+        error = sb::native_render::image_decode_error_name(decodeError);
+        return false;
+    }
+    capture = std::move(result);
+    return true;
+}
 
 bool direct_texture_program(JPABaseShape& shape) noexcept {
     return shape.unk48.unk0 == GX_CC_ZERO && shape.unk48.unk4 == GX_CC_TEXC &&
@@ -102,21 +149,25 @@ extern "C" bool sb_native_particle_submit_billboard(const JPADrawContext* contex
     if (particle->isInvisibleParticle())
         return false;
 
-    const std::uint16_t textureIndex = particle->getDrawParamPPtr()->unk3A;
-    if (context->mTexResource->pTexResArray == nullptr ||
-        textureIndex >= context->mTexResource->registNum ||
-        context->mTexResource->pTexResArray[textureIndex] == nullptr) {
-        ++g_rejected;
-        return false;
-    }
     const sb::HostAllocationScope hostAllocations;
     sb::CapturedNativeTexture captured{};
     const char* textureError = "unknown texture error";
-    if (!sb::capture_native_jut_texture(context->mTexResource->pTexResArray[textureIndex]->unk8,
-                                        captured, textureError)) {
+    const std::uint16_t textureIndex = particle->getDrawParamPPtr()->unk3A;
+    const bool textureCaptured =
+        textureIndex == 0xFFFFU
+            ? capture_default_texture(*context->mTexResource, captured, textureError)
+            : context->mTexResource->pTexResArray != nullptr &&
+                  textureIndex < context->mTexResource->registNum &&
+                  context->mTexResource->pTexResArray[textureIndex] != nullptr &&
+                  sb::capture_native_jut_texture(
+                      context->mTexResource->pTexResArray[textureIndex]->unk8, captured,
+                      textureError);
+    if (!textureCaptured) {
         ++g_rejected;
         return false;
     }
+    if (textureIndex == 0xFFFFU)
+        ++g_default_textures;
 
     sb::native_render::ModelRasterPolicy raster{};
     if (!build_raster_policy(*context->mBaseShape, raster)) {
@@ -167,7 +218,8 @@ extern "C" bool sb_native_particle_submit_billboard(const JPADrawContext* contex
 }
 
 extern "C" void sb_native_particle_report_stats(void) {
-    sb_logf("semantic", "native JPA billboards: submitted=%llu rejected=%llu",
+    sb_logf("semantic", "native JPA billboards: submitted=%llu rejected=%llu default-textures=%llu",
             static_cast<unsigned long long>(g_submitted),
-            static_cast<unsigned long long>(g_rejected));
+            static_cast<unsigned long long>(g_rejected),
+            static_cast<unsigned long long>(g_default_textures));
 }

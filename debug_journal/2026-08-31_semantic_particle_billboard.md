@@ -7,7 +7,8 @@ texture, and raster policy into the shared renderer. `native-render/src/particle
 owns the six-vertex quad construction, so the two adapters use one geometry contract and no guest
 object or vtable crosses the renderer boundary.
 
-The decomp adapter accepts the reached direct-texture colour program (`ZERO, TEXC, ONE, ZERO`).
+The decomp adapter accepts the reached direct-texture colour program (`ZERO, TEXC, ONE, ZERO`)
+and now resolves the same built-in default texture directly from `JPATextureResource::defaultTex`.
 The recompiled adapter also accepts the reached modulated program (`ZERO, C0, TEXC, ZERO`),
 applies JPA's integer `U8_THRE` colour multiplication, and maps the observed destination-alpha
 blend (`DST_ALPHA`, `ONE_MINUS_DST_ALPHA`) to the shared `DestinationAlpha` raster policy. The
@@ -41,3 +42,8 @@ is therefore not a particle coverage claim.
 The validation layer also reported one `VkShaderModule` still alive at `vkDestroyDevice` during
 normal teardown. That is an object-lifetime cleanup warning, distinct from a GPU reset or device
 loss; the process still exited 0 and the GPU watcher found no kernel fault.
+
+The decomp diagnostic launcher build passed after adding its default-texture path, but the bounded
+stage-one decomp route did not reach a semantic model or particle draw: it aborted on the existing
+controlled-clear invariant (`semantic output never observed pixels distinct from the controlled
+clear`, exit 134). That run is not particle coverage evidence.
