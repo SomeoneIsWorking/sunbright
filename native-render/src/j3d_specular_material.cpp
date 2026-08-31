@@ -9,6 +9,7 @@ namespace sb::native_render {
 namespace {
 
 constexpr std::uint16_t kDiffuseColorChannel = 0x070E;
+constexpr std::uint16_t kPrimaryLightDiffuseColorChannel = 0x0706;
 constexpr std::uint16_t kDiffuseVertexColorChannel = 0x070F;
 constexpr std::uint16_t kMaterialAlphaChannel = 0x0700;
 constexpr std::uint16_t kVertexAlphaChannel = 0x0701;
@@ -41,6 +42,13 @@ bool valid_lighting(const ModelLightingContext& lighting) noexcept {
            std::isfinite(specular.directionToLight.y) &&
            std::isfinite(specular.directionToLight.z) && std::isfinite(specular.shininess) &&
            specular.shininess > 0.0F;
+}
+
+void apply_specular_material_color(ModelLightingContext& lighting, std::uint32_t rgba8) noexcept {
+    const Color color = color_from_rgba8(rgba8);
+    lighting.specular.color.r *= color.r;
+    lighting.specular.color.g *= color.g;
+    lighting.specular.color.b *= color.b;
 }
 
 } // namespace
@@ -164,7 +172,10 @@ J3dSpecularTexturedResult classify_j3d_specular_textured_material(
     const ModelLightingContext& lighting, LitSpecularTexturedMaterial& material) noexcept {
     if (!state.supportedColorBlock)
         return J3dSpecularTexturedResult::UnsupportedColorBlock;
-    const bool tintedProgram = state.colorChannelControl == kDiffuseColorChannel;
+    const bool primaryLightTintedProgram =
+        state.colorChannelControl == kPrimaryLightDiffuseColorChannel;
+    const bool tintedProgram =
+        state.colorChannelControl == kDiffuseColorChannel || primaryLightTintedProgram;
     const bool tripleSpecularProgram = state.colorChannelControl == kDiffuseVertexColorChannel;
     if (!state.lightingEnabled || state.colorChannelCount != 2 ||
         (!tintedProgram && !tripleSpecularProgram) ||
@@ -173,7 +184,7 @@ J3dSpecularTexturedResult classify_j3d_specular_textured_material(
         state.alphaChannelControl1 != kUnlitSecondaryAlphaChannel) {
         return J3dSpecularTexturedResult::UnsupportedColorChannels;
     }
-    if (state.materialColor1Rgba8 != 0xFFFFFFFFU || state.ambientColor1Rgba8 != 0)
+    if (state.ambientColor1Rgba8 != 0)
         return J3dSpecularTexturedResult::UnsupportedSecondaryColors;
     if (!state.supportedTevBlock)
         return J3dSpecularTexturedResult::UnsupportedTevBlock;
@@ -222,6 +233,9 @@ J3dSpecularTexturedResult classify_j3d_specular_textured_material(
         tintedProgram ? Color{2.0F * tint.r, 2.0F * tint.g, 2.0F * tint.b, 0.0F} : Color{};
     material.specularScale = tintedProgram ? 2.0F : 3.0F;
     material.lighting = lighting;
+    if (primaryLightTintedProgram)
+        material.lighting.pointLightCount = 1;
+    apply_specular_material_color(material.lighting, state.materialColor1Rgba8);
     material.usesVertexRgb = tripleSpecularProgram;
     material.raster = raster;
     return J3dSpecularTexturedResult::Success;

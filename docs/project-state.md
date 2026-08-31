@@ -155,6 +155,16 @@ The census now keys the alpha selectors and includes every material tied at its 
 distinct same-frequency programs cannot be silently merged or omitted. The native-layout adapter
 compiles through the same classifier; issue 30 still prevents equivalent live decomp evidence.
 
+The same textured diffuse/specular owner now preserves per-material light selection and coloured
+highlights. A reached orange character material uses only the primary point light for diffuse and
+multiplies the directional highlight by its authored orange secondary material colour; neither the
+unused effect light nor a hard-coded white highlight crosses into the result. Exact CPU controls
+distinguish the one-light material from the published two-light scene and verify every highlight
+colour component. A guarded 120-present recomp audit advanced all 50 instances from zero acceptance
+through image decode, perspective readiness, and PC-native submission, raising total native models
+from 8,904 to 8,954 and exiting cleanly under the live GPU watcher. The native-layout adapter uses
+the same shared classifier; equivalent live decomp evidence remains blocked by issue 30.
+
 A reached two-texture Mario cutout family now bypasses GX as one weighted layered PC material. The
 shared classifier reduces its two console stages to `base texture * (3/8 detail texture + 5/8
 signed diffuse lighting)`, with base-texture alpha multiplied by authored material alpha. The

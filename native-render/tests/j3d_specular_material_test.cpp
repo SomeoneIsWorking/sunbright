@@ -154,6 +154,36 @@ int main() {
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::UnsupportedColorProgram);
 
+    // A reached orange character material uses the same two-stage texture/tint/highlight program,
+    // but its diffuse channel deliberately sees only the primary point light and its secondary
+    // material colour tints the directional highlight. The semantic material must preserve both
+    // choices instead of treating this as the white-highlight, all-point-lights variant above.
+    state = material_state();
+    state.colorChannelControl = 0x0706;
+    state.materialColorRgba8 = 0xFF4300FF;
+    state.materialColor1Rgba8 = 0xFF4300FF;
+    state.konstColorRgba8[0] = 0x240A0AFF;
+    ModelLightingContext orangeLighting = lighting;
+    orangeLighting.pointLights[1] = {
+        .position = {0, 0, 1},
+        .color = {1, 0, 0, 1},
+    };
+    orangeLighting.pointLightCount = 2;
+    assert(classify_j3d_specular_textured_material(state, texture, orangeLighting, material) ==
+           J3dSpecularTexturedResult::Success);
+    assert(material.lighting.pointLightCount == 1);
+    assert(near(material.lighting.specular.color.r, orangeLighting.specular.color.r));
+    assert(near(material.lighting.specular.color.g,
+                orangeLighting.specular.color.g * (0x43 / 255.0F)));
+    assert(near(material.lighting.specular.color.b, 0.0F));
+
+    draw.material = material;
+    const ClipVertex transformedOrange = transform_vertex(draw, vertex);
+    assert(near(transformedOrange.additiveColor.r, 2.0F * (0x24 / 255.0F + 0.25F)));
+    assert(
+        near(transformedOrange.additiveColor.g, 2.0F * (0x0A / 255.0F + 0.25F * (0x43 / 255.0F))));
+    assert(near(transformedOrange.additiveColor.b, 2.0F * (0x0A / 255.0F)));
+
     // A reached texture-free highlight uses the same high-level diffuse and directional-specular
     // inputs. Its two console stages reduce to vertex-lit colour tinted by konst colour 0, plus
     // twice the directional highlight. The secondary channel's opaque alpha makes the final
