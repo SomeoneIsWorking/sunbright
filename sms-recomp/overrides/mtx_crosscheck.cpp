@@ -148,6 +148,13 @@ void sbr_mtx_begin_shape(u32 shape) {
     g_controlMatrices.clear();
 }
 void sbr_mtx_end_shape() {
+    // The matrix-index control is opt-in. CPU skinning pipelines legitimately capture high-level
+    // matrix objects while loading positions with GXLoadPosMtxImm, so there is no indexed GX load
+    // population to compare unless the explicit diagnostic is enabled.
+    if (!sbr_mtx_check_enabled()) {
+        g_currentShape = 0;
+        return;
+    }
     if (!g_trueIdx.empty() || !g_controlMatrices.empty()) {
         SB_ASSERT(g_trueIdx.size() == g_controlMatrices.size(),
                   "J3D matrix-object bindings disagree with GX load control: high-level=%zu gx=%zu",

@@ -185,6 +185,14 @@ The census now keys the alpha selectors and includes every material tied at its 
 distinct same-frequency programs cannot be silently merged or omitted. The native-layout adapter
 compiles through the same classifier; issue 30 still prevents equivalent live decomp evidence.
 
+The stage-two semantic audit now reaches the CPU-skinned path after correcting an opt-in matrix
+diagnostic that had asserted unconditionally: this pipeline uses immediate matrix loads, so its
+high-level matrix bindings do not have indexed GX-load records to compare. A guarded 20-present
+rerun completed 20 semantic frames and submitted 1,464 models containing 1,211,328 vertices with
+no GPU fault. It grounded the next classifier target as 300 untextured two-stage lit models
+(`0x0686/0x0700` plus `0x0212/0x0400`); 192 reached perspective scenes and remain named fallback
+until their exact diffuse/specular equation is decoded.
+
 The same textured diffuse/specular owner now preserves per-material light selection and coloured
 highlights. A reached orange character material uses only the primary point light for diffuse and
 multiplies the directional highlight by its authored orange secondary material colour; neither the
