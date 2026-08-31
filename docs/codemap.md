@@ -135,11 +135,13 @@ Shared by both runtimes: the recomp hands it a GX stream, the decomp calls its G
 ## Reference decomp (`decomp/sms` — submodule, SomeoneIsWorking/sms fork)
 
 The real game source, native-platform-guarded (`SMS_NATIVE_PLATFORM`). Current fork tip
-`9e7a2105` is rebased onto the 2026-08-30 upstream tip and audited with
-`tools/re/rebase_upstream.py`; its Clang build and guarded decomp runtime smoke test are green. Its
+`03bad05d` is based on the 2026-08-30 upstream tip; that sync was audited with
+`tools/re/rebase_upstream.py`, and its Clang build plus guarded decomp runtime smoke test are green. Its
 standing loop is **rebase → rename known `unk*` semantics → expand remaining gaps**. The restored upstream
 `MtxUtil` implementation keeps the native-safe 4×4-to-3×4 light-projection adaptation, and the typed
-`MActorAnmData` accessors replace five known `getUnk*` names. Matching-MWCC proof remains externally
+`MActorAnmData` accessors replace five known `getUnk*` names. Retail damage-fog behavior and its
+pure numeric contract live in `decomp/sms/src/MarioUtil/DrawUtil.cpp` and
+`decomp/sms/include/MarioUtil/DamageFog.hpp`. Matching-MWCC proof remains externally
 blocked on the absent Japanese Rev-0 disc. Rendering-affecting code is always native. Screen effects
 (heat haze, water refraction, dash blur, TScreenTexture) are FULLY implemented — see
 `docs/60fps/screen_effects.md`.

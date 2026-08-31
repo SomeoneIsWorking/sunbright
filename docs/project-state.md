@@ -501,5 +501,13 @@ upstream commits, reconciled the overlapping MActor/SDLModel/MarioCap API rename
 header/source ownership units, passed the native Clang audit, and reached bounded title and gameplay
 frames under the guarded launcher.
 
+The reached damage-fog calls are no longer empty. Binary-derived `SMS_ResetDamageFogEffect` now
+makes each model's fog visually inert by moving its range to the camera far plane, while
+`SMS_AddDamageFogEffect` transforms the actor into view space and applies the retail 1,200-unit,
+sinusoidally pulsed fog band to every material. One production-owned pure formula is exercised by a
+numeric control covering reset, positive/negative pulse, and 16-bit angle wrap; the native Clang
+build and a 120-present guarded decomp run both exited cleanly. Matching-MWCC comparison remains
+unavailable without the configured Japanese/European original disc.
+
 Gap: upstream convergence debt, known `unk*` names, and reachable unimplemented bodies remain. Each
 expansion pass must still follow rebase → rename established unknowns → extend from binary evidence.
