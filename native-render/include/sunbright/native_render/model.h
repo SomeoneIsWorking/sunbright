@@ -214,6 +214,18 @@ struct LitTexturedAlphaMaskMaterial {
     ModelRasterPolicy raster{};
 };
 
+// One decoded texture contributes opacity while diffuse-lit colour is multiplied by an authored
+// RGB tint. The texture RGB is deliberately ignored; the alpha comes from the same image and is
+// multiplied by the material alpha carried in the vertex colour.
+struct LitAlphaTintMaterial {
+    PictureTexture texture{};
+    Color tint{1.0F, 1.0F, 1.0F, 1.0F};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    ModelLightingContext lighting{};
+    ModelRasterPolicy raster{};
+};
+
 // Two decoded textures combined with one ordinary diffuse-lit colour. The base texture multiplies
 // a weighted blend of the detail texture and lit colour; both texture-coordinate sets remain
 // explicit, while the original console stage ordering does not cross this boundary.
@@ -291,7 +303,7 @@ struct LitSpecularTexturedMaterial {
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, TexturedEffectMaterial,
                  AlphaMaskedColorMaterial, LitColorMaterial, LitTexturedMaterial,
-                 LitTexturedAlphaMaskMaterial, LitLayeredTexturedMaterial,
+                 LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial, LitLayeredTexturedMaterial,
                  LitTintedLayeredSpecularMaterial, LitMaskedToonMaterial, LitSpecularColorMaterial,
                  LitSpecularTexturedMaterial>;
 

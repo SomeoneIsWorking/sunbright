@@ -13,6 +13,7 @@
 #include <sunbright/native_render/j3d_effect_material.h>
 #include <sunbright/native_render/j3d_layered_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
+#include <sunbright/native_render/j3d_lit_alpha_tint_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_masked_toon_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
@@ -61,6 +62,7 @@ struct Stats {
     std::array<std::uint64_t, 12> textureDecodeFailures{};
     std::array<std::uint64_t, 11> texturedMaterialRejections{};
     std::array<std::uint64_t, 12> litTexturedMaterialRejections{};
+    std::array<std::uint64_t, 12> litAlphaTintMaterialRejections{};
     std::array<std::uint64_t, 11> effectMaterialRejections{};
     std::array<std::uint64_t, 11> effectCandidateRejections{};
     std::array<std::uint64_t, 12> tintedLayeredMaterialRejections{};
@@ -343,6 +345,23 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[10]),
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[11]));
     report += litRejectionLine;
+    char litAlphaTintRejectionLine[420];
+    std::snprintf(litAlphaTintRejectionLine, sizeof(litAlphaTintRejectionLine),
+                  "; lit-alpha-tint rejections: colour-block=%llu channels=%llu tev-block=%llu "
+                  "stages=%llu texcoord=%llu binding=%llu program=%llu tev-colour=%llu normal=%llu "
+                  "lighting-context=%llu raster=%llu",
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[1]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[2]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[3]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[4]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[5]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[6]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[7]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[8]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[9]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[10]),
+                  static_cast<unsigned long long>(g_stats.litAlphaTintMaterialRejections[11]));
+    report += litAlphaTintRejectionLine;
     char tintedLayeredRejectionLine[360];
     std::snprintf(
         tintedLayeredRejectionLine, sizeof(tintedLayeredRejectionLine),
@@ -779,6 +798,13 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 : sb::native_render::J3dLitAlphaMaskResult::MissingLightingContext;
         const bool isLitAlphaMask =
             litAlphaMaskFamily == sb::native_render::J3dLitAlphaMaskResult::Success;
+        sb::native_render::LitAlphaTintMaterial litAlphaTintMaterial{};
+        const sb::native_render::J3dLitAlphaTintResult litAlphaTintFamily =
+            lighting != nullptr ? sb::native_render::classify_j3d_lit_alpha_tint_material(
+                                      materialState, placeholder, *lighting, litAlphaTintMaterial)
+                                : sb::native_render::J3dLitAlphaTintResult::MissingLightingContext;
+        const bool isLitAlphaTint =
+            litAlphaTintFamily == sb::native_render::J3dLitAlphaTintResult::Success;
         sb::native_render::LitLayeredTexturedMaterial layeredMaterial{};
         const sb::native_render::J3dLayeredMaterialResult layeredFamily =
             lighting != nullptr
@@ -813,10 +839,12 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         const bool isSpecularTextured =
             specularFamily == sb::native_render::J3dSpecularTexturedResult::Success;
         if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isEffect && !isLitAlphaMask &&
-            !isLayered && !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
+            !isLitAlphaTint && !isLayered && !isTintedLayered && !isMaskedToon &&
+            !isSpecularTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
+            ++g_stats.litAlphaTintMaterialRejections[static_cast<std::size_t>(litAlphaTintFamily)];
             ++g_stats.effectMaterialRejections[static_cast<std::size_t>(effectFamily)];
             ++g_stats
                   .tintedLayeredMaterialRejections[static_cast<std::size_t>(tintedLayeredFamily)];
@@ -886,6 +914,16 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                       "result=%s",
                       sb::native_render::j3d_lit_alpha_mask_result_name(classified));
             semanticMaterial = litAlphaMaskMaterial;
+            submittedLitMaterial = true;
+        } else if (isLitAlphaTint) {
+            const sb::native_render::J3dLitAlphaTintResult classified =
+                sb::native_render::classify_j3d_lit_alpha_tint_material(
+                    materialState, g_textures[0].texture, *lighting, litAlphaTintMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dLitAlphaTintResult::Success,
+                      "decoded J3D texture invalidated a preclassified lit alpha-tint material: "
+                      "result=%s",
+                      sb::native_render::j3d_lit_alpha_tint_result_name(classified));
+            semanticMaterial = litAlphaTintMaterial;
             submittedLitMaterial = true;
         } else if (isLayered) {
             const sb::native_render::J3dLayeredMaterialResult classified =

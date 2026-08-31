@@ -82,6 +82,12 @@ SHADERS = (
         "native-render/shaders/model_lit_alpha_mask_frag_spv.h",
     ),
     Shader(
+        "native-render/shaders/model_lit_alpha_tint.frag.glsl",
+        "frag",
+        "kModelLitAlphaTintFragSpv",
+        "native-render/shaders/model_lit_alpha_tint_frag_spv.h",
+    ),
+    Shader(
         "native-render/shaders/model_layered_lit.frag.glsl",
         "frag",
         "kModelLayeredLitFragSpv",

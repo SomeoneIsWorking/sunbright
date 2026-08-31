@@ -1,6 +1,7 @@
 #include "native_j3d_material_adapter.h"
 
 #include <sunbright/native_render/j3d_alpha_masked_material.h>
+#include <sunbright/native_render/j3d_lit_alpha_tint_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
 #include <sunbright/native_render/j3d_tinted_layered_material.h>
 
@@ -300,6 +301,11 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         native_render::classify_j3d_lit_alpha_mask_material(state, placeholder, placeholder,
                                                             *lighting, litAlphaMaskMaterial) ==
             native_render::J3dLitAlphaMaskResult::Success;
+    native_render::LitAlphaTintMaterial litAlphaTintMaterial{};
+    const bool isLitAlphaTint =
+        lighting != nullptr && native_render::classify_j3d_lit_alpha_tint_material(
+                                   state, placeholder, *lighting, litAlphaTintMaterial) ==
+                                   native_render::J3dLitAlphaTintResult::Success;
     native_render::LitLayeredTexturedMaterial layeredMaterial{};
     const bool isLayered =
         lighting != nullptr && native_render::classify_j3d_layered_material(
@@ -322,8 +328,8 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         lighting != nullptr && native_render::classify_j3d_specular_textured_material(
                                    state, placeholder, *lighting, specularMaterial) ==
                                    native_render::J3dSpecularTexturedResult::Success;
-    if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask && !isLayered &&
-        !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
+    if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask &&
+        !isLitAlphaTint && !isLayered && !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
     if (textureTable == nullptr)
@@ -368,6 +374,13 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = litAlphaMaskMaterial;
+    } else if (isLitAlphaTint) {
+        if (native_render::classify_j3d_lit_alpha_tint_material(state, result.textures[0].texture,
+                                                                *lighting, litAlphaTintMaterial) !=
+            native_render::J3dLitAlphaTintResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = litAlphaTintMaterial;
     } else if (isLayered) {
         if (native_render::classify_j3d_layered_material(
                 state, result.textures[0].texture, result.textures[1].texture, *lighting,

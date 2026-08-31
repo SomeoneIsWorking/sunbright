@@ -256,6 +256,7 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
                           std::is_same_v<Material, TexturedEffectMaterial> ||
                           std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                           std::is_same_v<Material, LitTexturedMaterial> ||
+                          std::is_same_v<Material, LitAlphaTintMaterial> ||
                           std::is_same_v<Material, LitSpecularTexturedMaterial>) {
                 return 1;
             }
@@ -287,6 +288,7 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
                                  std::is_same_v<Material, TexturedEffectMaterial> ||
                                  std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                                  std::is_same_v<Material, LitTexturedMaterial> ||
+                                 std::is_same_v<Material, LitAlphaTintMaterial> ||
                                  std::is_same_v<Material, LitSpecularTexturedMaterial>) {
                 return index == 0 ? &value.texture : nullptr;
             } else {
@@ -348,6 +350,11 @@ bool valid(const ModelDraw& draw) noexcept {
                        material.alphaMaskTexture.height != 0 && valid(material.baseColor) &&
                        valid(material.ambientColor) && valid(material.lighting) &&
                        finite(material.alphaScale) && material.alphaScale >= 0.0F;
+            } else if constexpr (std::is_same_v<Material, LitAlphaTintMaterial>) {
+                return material.texture.resource != 0 && material.texture.width != 0 &&
+                       material.texture.height != 0 && valid(material.tint) &&
+                       valid(material.baseColor) && valid(material.ambientColor) &&
+                       valid(material.lighting);
             } else if constexpr (std::is_same_v<Material, LitLayeredTexturedMaterial>) {
                 return material.baseTexture.resource != 0 && material.baseTexture.width != 0 &&
                        material.baseTexture.height != 0 && material.detailTexture.resource != 0 &&
@@ -508,6 +515,12 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                 const Color lit = diffuse_lighting(material.baseColor, material.ambientColor,
                                                    material.lighting, eyePosition, normal);
                 return VertexColors{.multiplicative = {lit.r, lit.g, lit.b, material.alphaScale}};
+            } else if constexpr (std::is_same_v<Material, LitAlphaTintMaterial>) {
+                const Color lit = diffuse_lighting(material.baseColor, material.ambientColor,
+                                                   material.lighting, eyePosition, normal);
+                return VertexColors{
+                    .multiplicative = {lit.r * material.tint.r, lit.g * material.tint.g,
+                                       lit.b * material.tint.b, material.baseColor.a}};
             } else if constexpr (std::is_same_v<Material, LitLayeredTexturedMaterial>) {
                 const Color lit =
                     diffuse_lighting(material.baseColor, material.ambientColor, material.lighting,

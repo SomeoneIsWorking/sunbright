@@ -262,6 +262,17 @@ guarded 120-present title audit advanced all 52 instances through classification
 perspective readiness, and native submission, raising coverage from 1,352 to 1,404 models and lit
 models from 1,248 to 1,300; it exited 0 with no GPU fault or reset.
 
+The following 52 perspective-reached hand surfaces now use a dedicated lit alpha-tint material.
+The exact one-stage program multiplies the primary diffuse raster by the authored TEV register-0
+RGB, ignores texture RGB, and multiplies texture alpha by material alpha. The PC-native model
+therefore carries the decoded image, ordinary diffuse lighting, resolved RGB tint, and explicit
+raster policy without retaining GX combiner state. Exact controls reject altered stage bytes,
+missing normal or light context, and non-pass-all alpha policy. A guarded 120-present title audit
+advanced all 52 instances through classification, image decode, scene readiness, and native
+submission, raising coverage from 1,404 to 1,456 models and lit models from 1,300 to 1,352; it
+exited 0 with no GPU fault or reset. The decomp adapter consumes the same shared classifier and
+material, although this run is recomp evidence.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

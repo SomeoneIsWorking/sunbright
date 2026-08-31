@@ -182,6 +182,24 @@ int main() {
     assert(near(litMaskVertex.color.b, 0.15F));
     assert(near(litMaskVertex.color.a, 4.0F));
 
+    ModelDraw litTint = draw;
+    litTint.material = LitAlphaTintMaterial{
+        .texture = {.resource = 22, .width = 1, .height = 1},
+        .tint = {0.5F, 0.25F, 0.75F, 1.0F},
+        .baseColor = {0.5F, 0.5F, 0.5F, 0.8F},
+        .ambientColor = {0.1F, 0.2F, 0.3F, 1.0F},
+        .lighting = {.pointLights = {{{.position = {5.0F, 7.0F, 19.0F},
+                                       .color = {0.5F, 0.25F, 0.0F, 1.0F}}}},
+                     .pointLightCount = 1},
+    };
+    assert(material_texture_count(litTint.material) == 1);
+    const ClipVertex litTintVertex = transform_vertex(litTint, vertex);
+    assert(near(litTintVertex.color.r, 0.15F));
+    assert(near(litTintVertex.color.g, 0.05625F));
+    assert(near(litTintVertex.color.b, 0.1125F));
+    assert(near(litTintVertex.color.a, 0.8F));
+    assert(litTintVertex.additiveColor == Color{});
+
     // The lighting accumulator saturates before material multiplication. This distinguishes the
     // shipping equation from final-product clamping: 0.5 * clamp(0.8 + 0.8) is 0.5, not 0.8.
     auto& saturatedMaterial = std::get<LitTexturedMaterial>(lit.material);
@@ -225,5 +243,9 @@ int main() {
     assert(!valid(invalid));
     invalid = litMask;
     std::get<LitTexturedAlphaMaskMaterial>(invalid.material).alphaMaskTexture.resource = 0;
+    assert(!valid(invalid));
+    invalid = litTint;
+    std::get<LitAlphaTintMaterial>(invalid.material).tint.r =
+        std::numeric_limits<float>::infinity();
     assert(!valid(invalid));
 }
