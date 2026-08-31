@@ -3,6 +3,7 @@
 #include <sunbright/native_render/j3d_layered_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
+#include <sunbright/native_render/j3d_masked_toon_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
 #include <sunbright/native_render/j3d_unlit_material.h>
 #include <sunbright/native_render/res_timg_decode.h>
@@ -26,7 +27,7 @@ enum class NativeJ3dMaterialResult {
 struct CapturedNativeJ3dMaterial {
     native_render::ModelMaterial material{};
     native_render::ModelFog fog{};
-    std::array<native_render::DecodedTexture, 2> textures{};
+    std::array<native_render::DecodedTexture, 4> textures{};
     std::uint8_t textureCount = 0;
 };
 

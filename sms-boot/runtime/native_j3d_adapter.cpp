@@ -167,7 +167,7 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         return;
     }
 
-    std::array<sb::native_render::DecodedImageView, 2> image{};
+    std::array<sb::native_render::DecodedImageView, 4> image{};
     std::span<const sb::native_render::DecodedImageView> images;
     for (std::size_t index = 0; index < capturedMaterial.textureCount; ++index) {
         const auto& texture = capturedMaterial.textures[index];

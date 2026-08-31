@@ -789,6 +789,58 @@ int main() {
         assert(tintedAnswer);
         assert(hash(tintedRed) != hash(tintedBlue));
 
+        // Masked-toon control: the authored hand-mask alpha selects the primary or alternate
+        // image at 8-bit precision. Changing only that alpha from 255 to 128 must move the
+        // shipping four-image shader from red to blue while its black ramp and zero highlights
+        // stay inert.
+        const std::array<std::uint8_t, 4> maskedPrimaryTexel{255, 0, 0, 255};
+        std::array<std::uint8_t, 4> maskedMaskTexel{0, 0, 0, 255};
+        const std::array<std::uint8_t, 4> maskedAlternateTexel{0, 0, 255, 255};
+        const std::array<std::uint8_t, 4> maskedRampTexel{0, 0, 0, 255};
+        std::array<DecodedImageView, 4> maskedImages{
+            DecodedImageView{.resource = 227,
+                             .revision = 1,
+                             .width = 1,
+                             .height = 1,
+                             .rgba8 = maskedPrimaryTexel},
+            DecodedImageView{
+                .resource = 228, .revision = 1, .width = 1, .height = 1, .rgba8 = maskedMaskTexel},
+            DecodedImageView{.resource = 229,
+                             .revision = 1,
+                             .width = 1,
+                             .height = 1,
+                             .rgba8 = maskedAlternateTexel},
+            DecodedImageView{
+                .resource = 230, .revision = 1, .width = 1, .height = 1, .rgba8 = maskedRampTexel},
+        };
+        ModelDraw maskedModel = model;
+        maskedModel.instance = 231;
+        maskedModel.material = sb::native_render::LitMaskedToonMaterial{
+            .primaryTexture = {.resource = 227, .revision = 1, .width = 1, .height = 1},
+            .maskTexture = {.resource = 228, .revision = 1, .width = 1, .height = 1},
+            .alternateTexture = {.resource = 229, .revision = 1, .width = 1, .height = 1},
+            .lightRampTexture = {.resource = 230, .revision = 1, .width = 1, .height = 1},
+            .baseColor = {0, 0, 0, 1},
+            .lighting = {.pointLights = {{{.position = {0, 0, 1}}}},
+                         .pointLightCount = 1,
+                         .specular = {.directionToLight = {0, 0, 1}, .color = {0, 0, 0, 1}}},
+            .lightRampWeight = 3.0F / 8.0F,
+            .raster = {.cull = sb::native_render::ModelCullMode::None},
+        };
+        const SemanticFramePixels maskedPrimary =
+            render(std::span<const ModelDraw>(&maskedModel, 1), maskedImages);
+        const Color maskedPrimaryPixel = pixel(maskedPrimary, 8, 8);
+        assert(maskedPrimaryPixel.r > 0.9F && maskedPrimaryPixel.b < 0.01F);
+        maskedMaskTexel[3] = 128;
+        maskedImages[1].revision = 2;
+        std::get<sb::native_render::LitMaskedToonMaterial>(maskedModel.material)
+            .maskTexture.revision = 2;
+        const SemanticFramePixels maskedAlternate =
+            render(std::span<const ModelDraw>(&maskedModel, 1), maskedImages);
+        const Color maskedAlternatePixel = pixel(maskedAlternate, 8, 8);
+        assert(maskedAlternatePixel.r < 0.01F && maskedAlternatePixel.b > 0.9F);
+        assert(hash(maskedPrimary) != hash(maskedAlternate));
+
         // Affine texture control for the specular-material shader path. The baseline exercises
         // texture * diffuse colour; changing only the semantic tint must add red while preserving
         // green. This runs the shipping vertex upload and fragment shader, not a CPU copy.

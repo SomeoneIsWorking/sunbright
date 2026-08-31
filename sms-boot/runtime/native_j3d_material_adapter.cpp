@@ -310,13 +310,19 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         native_render::classify_j3d_tinted_layered_material(state, placeholder, placeholder,
                                                             *lighting, tintedLayeredMaterial) ==
             native_render::J3dTintedLayeredMaterialResult::Success;
+    native_render::LitMaskedToonMaterial maskedToonMaterial{};
+    const bool isMaskedToon =
+        lighting != nullptr &&
+        native_render::classify_j3d_masked_toon_material(
+            state, placeholder, placeholder, placeholder, placeholder, *lighting,
+            maskedToonMaterial) == native_render::J3dMaskedToonMaterialResult::Success;
     native_render::LitSpecularTexturedMaterial specularMaterial{};
     const bool isSpecularTextured =
         lighting != nullptr && native_render::classify_j3d_specular_textured_material(
                                    state, placeholder, *lighting, specularMaterial) ==
                                    native_render::J3dSpecularTexturedResult::Success;
     if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask && !isLayered &&
-        !isTintedLayered && !isSpecularTextured) {
+        !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
     if (textureTable == nullptr)
@@ -330,14 +336,16 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     if (firstTexture != NativeJ3dMaterialResult::Success)
         return firstTexture;
     result.textureCount = 1;
-    if (isLitAlphaMask || isLayered || isTintedLayered) {
-        const NativeJ3dMaterialResult secondTexture =
-            decode_texture(*textureTable, state.textureBindings[1].textureNumber,
-                           result.textures[1], textureError);
-        if (secondTexture != NativeJ3dMaterialResult::Success)
-            return secondTexture;
-        result.textureCount = 2;
+    const std::size_t textureCount =
+        isMaskedToon ? 4 : (isLitAlphaMask || isLayered || isTintedLayered ? 2 : 1);
+    for (std::size_t index = 1; index < textureCount; ++index) {
+        const NativeJ3dMaterialResult texture =
+            decode_texture(*textureTable, state.textureBindings[index].textureNumber,
+                           result.textures[index], textureError);
+        if (texture != NativeJ3dMaterialResult::Success)
+            return texture;
     }
+    result.textureCount = static_cast<std::uint8_t>(textureCount);
     if (isAlphaMasked) {
         if (native_render::classify_j3d_alpha_masked_material(state, result.textures[0].texture,
                                                               alphaMaskedMaterial) !=
@@ -373,6 +381,14 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = tintedLayeredMaterial;
+    } else if (isMaskedToon) {
+        if (native_render::classify_j3d_masked_toon_material(
+                state, result.textures[0].texture, result.textures[1].texture,
+                result.textures[2].texture, result.textures[3].texture, *lighting,
+                maskedToonMaterial) != native_render::J3dMaskedToonMaterialResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = maskedToonMaterial;
     } else if (isLitTextured) {
         if (native_render::classify_j3d_lit_textured_material(state, result.textures[0].texture,
                                                               *lighting, litMaterial) !=

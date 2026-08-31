@@ -226,6 +226,25 @@ struct LitTintedLayeredSpecularMaterial {
     ModelRasterPolicy raster{};
 };
 
+// Four decoded images form a masked character surface: the mask selects the primary or alternate
+// base image, then a light-ramp layer and an authored highlight are added. Console texture slots
+// and colour stages have already been resolved by the J3D classifier.
+struct LitMaskedToonMaterial {
+    PictureTexture primaryTexture{};
+    PictureTexture maskTexture{};
+    PictureTexture alternateTexture{};
+    PictureTexture lightRampTexture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    Color staticHighlight{};
+    ModelLightingContext lighting{};
+    float lightRampWeight = 0.0F;
+    float staticHighlightWeight = 0.0F;
+    float directionalHighlightWeight = 0.0F;
+    float outputAlpha = 1.0F;
+    ModelRasterPolicy raster{};
+};
+
 // Texture-free diffuse plus directional-specular lighting. The renderer receives an ordinary
 // diffuse tint and highlight scale; the original console stages do not cross this boundary.
 struct LitSpecularColorMaterial {
@@ -256,7 +275,7 @@ using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, AlphaMaskedColorMaterial,
                  LitColorMaterial, LitTexturedMaterial, LitTexturedAlphaMaskMaterial,
                  LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
-                 LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
+                 LitMaskedToonMaterial, LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 

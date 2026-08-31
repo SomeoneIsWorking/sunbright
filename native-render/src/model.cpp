@@ -250,6 +250,8 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
                           std::is_same_v<Material, LitLayeredTexturedMaterial> ||
                           std::is_same_v<Material, LitTintedLayeredSpecularMaterial>)
                 return 2;
+            if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>)
+                return 4;
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                           std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                           std::is_same_v<Material, LitTexturedMaterial> ||
@@ -274,6 +276,12 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
                 if (index == 0)
                     return &value.baseTexture;
                 return index == 1 ? &value.detailTexture : nullptr;
+            } else if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>) {
+                constexpr std::array<const PictureTexture LitMaskedToonMaterial::*, 4> textures{
+                    &LitMaskedToonMaterial::primaryTexture, &LitMaskedToonMaterial::maskTexture,
+                    &LitMaskedToonMaterial::alternateTexture,
+                    &LitMaskedToonMaterial::lightRampTexture};
+                return index < textures.size() ? &(value.*textures[index]) : nullptr;
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                                  std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                                  std::is_same_v<Material, LitTexturedMaterial> ||
@@ -352,6 +360,25 @@ bool valid(const ModelDraw& draw) noexcept {
                        material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
                        finite(material.layerWeight) && material.layerWeight >= 0.0F &&
                        material.layerWeight <= 1.0F;
+            } else if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>) {
+                const auto validTexture = [](const PictureTexture& texture) {
+                    return texture.resource != 0 && texture.width != 0 && texture.height != 0;
+                };
+                return validTexture(material.primaryTexture) &&
+                       validTexture(material.maskTexture) &&
+                       validTexture(material.alternateTexture) &&
+                       validTexture(material.lightRampTexture) && valid(material.baseColor) &&
+                       valid(material.ambientColor) && valid(material.staticHighlight) &&
+                       valid(material.lighting) && material.lighting.pointLightCount != 0 &&
+                       finite(material.lightRampWeight) && material.lightRampWeight >= 0.0F &&
+                       material.lightRampWeight <= 1.0F && finite(material.staticHighlightWeight) &&
+                       material.staticHighlightWeight >= 0.0F &&
+                       material.staticHighlightWeight <= 1.0F &&
+                       finite(material.directionalHighlightWeight) &&
+                       material.directionalHighlightWeight >= 0.0F &&
+                       material.directionalHighlightWeight <= 1.0F &&
+                       finite(material.outputAlpha) && material.outputAlpha >= 0.0F &&
+                       material.outputAlpha <= 1.0F;
             } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {
                 return valid(material.baseColor) && valid(material.ambientColor) &&
                        valid(material.diffuseScale) && material.diffuseScale.r >= 0.0F &&
@@ -505,6 +532,25 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                             material.layerWeight,
                         },
                     .detailTextureWeight = material.detailWeight,
+                };
+            } else if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>) {
+                const Color diffuse =
+                    diffuse_lighting(material.baseColor, material.ambientColor, material.lighting,
+                                     eyePosition, normal, ModelDiffuseMode::Signed);
+                const Color directional = directional_specular(material.lighting.specular, normal);
+                return VertexColors{
+                    .multiplicative = {diffuse.r, diffuse.g, diffuse.b, material.outputAlpha},
+                    .additive =
+                        {
+                            material.staticHighlightWeight * material.staticHighlight.r +
+                                material.directionalHighlightWeight * directional.r,
+                            material.staticHighlightWeight * material.staticHighlight.g +
+                                material.directionalHighlightWeight * directional.g,
+                            material.staticHighlightWeight * material.staticHighlight.b +
+                                material.directionalHighlightWeight * directional.b,
+                            material.outputAlpha,
+                        },
+                    .detailTextureWeight = material.lightRampWeight,
                 };
             } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {
                 const Color diffuseSource =

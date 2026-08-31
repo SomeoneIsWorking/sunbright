@@ -38,8 +38,10 @@ registers, rather than silently retaining only the first two bindings/stages and
 register. The production recomp capture has a five-stage control whose fifth stage uses a distinct
 texture map, stage program, and second programmable colour register; a guarded 120-present Delfino
 run observed the same family using four separate image slots (Mario main, hand mask, rack, and
-toon-ramp variants). Those draws remain explicitly rejected by the semantic renderer: the next work
-is to derive their ordinary material meaning above GX, not to replay their console stages.
+toon ramp). It now reaches the PC-native renderer as a four-image masked material: the hand mask
+chooses main or rack, then the toon-ramp/diffuse layer and authored static/directional highlights
+are added. All 200 observed calls classified and decoded; 150 had a perspective scene and submitted
+as native models, while the remaining 50 were correctly withheld before a perspective context.
 
 ## Capability details
 
@@ -203,6 +205,18 @@ blue and observes the corresponding output-channel change with no kernel GPU fau
 decode, perspective readiness, and PC-native submission: 200 models total, contributing to 1,054
 lit models among 9,154 native models. The native-layout adapter compiles through the same shared
 classifier; issue 30 still prevents equivalent live decomp scene evidence.
+
+Mario's reached four-image fogged character material now bypasses GX through a dedicated masked
+toon PC material. Its decoded hand-mask alpha selects the main or alternate image at 8-bit threshold
+precision; the decoded toon ramp is combined with signed diffuse lighting at 3/8 and 5/8, then an
+authored static highlight and the directional highlight are each added at half strength. The shared
+contract carries four ordinary images, four UV sets, high-level lighting, colours, alpha, fog, and
+raster policy; it does not carry console stages or registers. Exact controls reject changed stage
+programs, UVs, texture bindings, absent lighting, and missing image resources. In a guarded
+120-present recomp audit, all 200 observed calls classified and decoded, and all 150 calls inside a
+perspective scene submitted through the PC-native shader; the other 50 had no perspective context.
+The native decomp adapter compiles through the same shared classifier; issue 30 still prevents
+equivalent live decomp scene evidence.
 
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the

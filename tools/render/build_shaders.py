@@ -93,6 +93,12 @@ SHADERS = (
         "kModelTintedLayeredFragSpv",
         "native-render/shaders/model_tinted_layered_frag_spv.h",
     ),
+    Shader(
+        "native-render/shaders/model_masked_toon.frag.glsl",
+        "frag",
+        "kModelMaskedToonFragSpv",
+        "native-render/shaders/model_masked_toon_frag_spv.h",
+    ),
 )
 
 
