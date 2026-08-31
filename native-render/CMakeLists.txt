@@ -1,6 +1,7 @@
 add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/image.cpp src/image_decode.cpp
                                                  src/j3d_alpha_masked_material.cpp
                                                  src/j3d_lit_alpha_mask_material.cpp
+                                                 src/j3d_layered_material.cpp
                                                  src/j3d_lit_material.cpp
                                                  src/j3d_mesh_decode.cpp
                                                  src/j3d_specular_material.cpp
@@ -66,6 +67,10 @@ add_test(NAME native_render_j3d_alpha_masked_material COMMAND native_render_j3d_
 add_executable(native_render_j3d_lit_alpha_mask_material_test tests/j3d_lit_alpha_mask_material_test.cpp)
 target_link_libraries(native_render_j3d_lit_alpha_mask_material_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_lit_alpha_mask_material COMMAND native_render_j3d_lit_alpha_mask_material_test)
+
+add_executable(native_render_j3d_layered_material_test tests/j3d_layered_material_test.cpp)
+target_link_libraries(native_render_j3d_layered_material_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_layered_material COMMAND native_render_j3d_layered_material_test)
 
 add_executable(native_render_j3d_lit_material_test tests/j3d_lit_material_test.cpp)
 target_link_libraries(native_render_j3d_lit_material_test PRIVATE sunbright-native-render-core)

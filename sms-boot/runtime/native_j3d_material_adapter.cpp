@@ -253,12 +253,17 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         native_render::classify_j3d_lit_alpha_mask_material(state, placeholder, placeholder,
                                                             *lighting, litAlphaMaskMaterial) ==
             native_render::J3dLitAlphaMaskResult::Success;
+    native_render::LitLayeredTexturedMaterial layeredMaterial{};
+    const bool isLayered =
+        lighting != nullptr && native_render::classify_j3d_layered_material(
+                                   state, placeholder, placeholder, *lighting, layeredMaterial) ==
+                                   native_render::J3dLayeredMaterialResult::Success;
     native_render::LitSpecularTexturedMaterial specularMaterial{};
     const bool isSpecularTextured =
         lighting != nullptr && native_render::classify_j3d_specular_textured_material(
                                    state, placeholder, *lighting, specularMaterial) ==
                                    native_render::J3dSpecularTexturedResult::Success;
-    if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask &&
+    if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask && !isLayered &&
         !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
@@ -272,7 +277,7 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     if (firstTexture != NativeJ3dMaterialResult::Success)
         return firstTexture;
     result.textureCount = 1;
-    if (isLitAlphaMask) {
+    if (isLitAlphaMask || isLayered) {
         const NativeJ3dMaterialResult secondTexture =
             decode_texture(*textureTable, state.textureNumber1, result.textures[1], textureError);
         if (secondTexture != NativeJ3dMaterialResult::Success)
@@ -300,6 +305,13 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
             return NativeJ3dMaterialResult::UnsupportedProgram;
         }
         result.material = litAlphaMaskMaterial;
+    } else if (isLayered) {
+        if (native_render::classify_j3d_layered_material(
+                state, result.textures[0].texture, result.textures[1].texture, *lighting,
+                layeredMaterial) != native_render::J3dLayeredMaterialResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = layeredMaterial;
     } else if (isLitTextured) {
         if (native_render::classify_j3d_lit_textured_material(state, result.textures[0].texture,
                                                               *lighting, litMaterial) !=

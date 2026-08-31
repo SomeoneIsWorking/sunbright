@@ -141,6 +141,18 @@ image decode, perspective readiness, and native submission, raising total native
 to 8,804. The run exited cleanly under the live GPU watcher. The native-layout adapter compiles
 through the same shared classifier; issue 30 still prevents equivalent live decomp evidence.
 
+A reached two-texture Mario cutout family now bypasses GX as one weighted layered PC material. The
+shared classifier reduces its two console stages to `base texture * (3/8 detail texture + 5/8
+signed diffuse lighting)`, with base-texture alpha multiplied by authored material alpha. The
+renderer-neutral contract carries those two decoded images, independent UV sets, one detail weight,
+the primary high-level light, signed-diffuse choice, and ordinary cutout/depth/cull policy; no stage
+encoding crosses into the shader. Exact CPU controls reject altered stage bytes and missing UVs and
+distinguish signed from clamped back-facing light. The watched shipping shader independently moved
+only the 3/8 contribution when its detail image changed from red to blue. In a guarded 120-present
+recomp audit, all 50 reached instances completed classification, both image decodes, perspective
+readiness, and native submission, raising native models from 8,800 to 8,850. Both runtime adapters
+compile through the shared classifier; issue 30 still prevents equivalent live decomp scene evidence.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

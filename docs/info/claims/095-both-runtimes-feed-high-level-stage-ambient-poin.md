@@ -4,14 +4,14 @@ kind: claim
 status: holds
 created: 2026-08-31
 tags: renderer,j3d,lighting,recomp,decomp
-depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
+depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/j3d_layered_material.cpp#classify_j3d_layered_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
 reconfirmed: 2026-08-31
-verified_at: 2026-08-31 10:42:13+00:00
+verified_at: 2026-08-31 11:10:05+00:00
 ---
 
 ## Claim
 
-Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact single-texture diffuse/specular, solid-colour mask, or diffuse-plus-independent-alpha-mask material values into the shared PC-native J3D renderer without consuming GX light state.
+Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact single-texture diffuse/specular, solid-colour mask, diffuse-plus-independent-alpha-mask, or weighted two-texture layered material values into the shared PC-native J3D renderer without consuming GX light state.
 
 ## Evidence
 
@@ -59,3 +59,7 @@ dynamic material, so it is not claimed as decomp reached-scene evidence.
 ## Re-confirmed 2026-08-31 — vertex-diffuse plus triple specular
 
 Exact CPU controls decode the second two-channel program as texture times vertex-colour diffuse plus three times directional specular and reject a changed stage or missing vertex colour. The watched shipping affine GPU control remained clean. A guarded 120-present recomp audit advanced both reached texture variants through 100/100 classification, decode, perspective readiness, and native submission, raising total models from 8,704 to 8,804 and exiting 0 under the live GPU watcher.
+
+## Re-confirmed 2026-08-31 — weighted layered material
+
+Exact CPU controls rejected changed stages and missing coordinates and distinguished signed from clamped diffuse; the watched shipping two-texture GPU control moved only the 3/8 detail contribution from red to blue with no kernel fault; a guarded 120-present recomp audit advanced the reached weighted layered family through 50/50 classification, two-image decode, perspective readiness, and native submission, raising total models from 8,800 to 8,850 and exiting 0.

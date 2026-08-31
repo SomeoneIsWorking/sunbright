@@ -46,6 +46,7 @@ Color multiply(Color first, Color second) noexcept {
 struct VertexColors {
     Color multiplicative{};
     Color additive{};
+    float detailTextureWeight = 0.0F;
 };
 
 float dot(Vec3 first, Vec3 second) noexcept {
@@ -85,7 +86,8 @@ Vec3 transformed_normal(const Matrix3x4& matrix, Vec3 source) noexcept {
 }
 
 Color diffuse_lighting(Color source, Color ambient, const ModelLightingContext& lighting,
-                       Vec3 eyePosition, Vec3 normal) noexcept {
+                       Vec3 eyePosition, Vec3 normal,
+                       ModelDiffuseMode mode = ModelDiffuseMode::Clamped) noexcept {
     Color illumination = ambient;
     for (std::uint8_t index = 0; index < lighting.pointLightCount; ++index) {
         const PointLight& light = lighting.pointLights[index];
@@ -95,7 +97,9 @@ Color diffuse_lighting(Color source, Color ambient, const ModelLightingContext& 
         if (distance <= 0.0F)
             continue;
         const Vec3 direction{offset.x / distance, offset.y / distance, offset.z / distance};
-        const float diffuse = std::max(0.0F, dot(normal, direction));
+        const float dotProduct = dot(normal, direction);
+        const float diffuse =
+            mode == ModelDiffuseMode::Signed ? dotProduct : std::max(0.0F, dotProduct);
         const Vec3 attenuation = light.distanceAttenuation;
         const float denominator =
             attenuation.x + attenuation.y * distance + attenuation.z * distance * distance;
@@ -204,7 +208,8 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
     return std::visit(
         [](const auto& value) -> std::uint8_t {
             using Material = std::remove_cvref_t<decltype(value)>;
-            if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial>)
+            if constexpr (std::is_same_v<Material, LitTexturedAlphaMaskMaterial> ||
+                          std::is_same_v<Material, LitLayeredTexturedMaterial>)
                 return 2;
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                           std::is_same_v<Material, AlphaMaskedColorMaterial> ||
@@ -225,6 +230,10 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
                 if (index == 0)
                     return &value.colorTexture;
                 return index == 1 ? &value.alphaMaskTexture : nullptr;
+            } else if constexpr (std::is_same_v<Material, LitLayeredTexturedMaterial>) {
+                if (index == 0)
+                    return &value.baseTexture;
+                return index == 1 ? &value.detailTexture : nullptr;
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
                                  std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                                  std::is_same_v<Material, LitTexturedMaterial> ||
@@ -285,6 +294,14 @@ bool valid(const ModelDraw& draw) noexcept {
                        material.alphaMaskTexture.height != 0 && valid(material.baseColor) &&
                        valid(material.ambientColor) && valid(material.lighting) &&
                        finite(material.alphaScale) && material.alphaScale >= 0.0F;
+            } else if constexpr (std::is_same_v<Material, LitLayeredTexturedMaterial>) {
+                return material.baseTexture.resource != 0 && material.baseTexture.width != 0 &&
+                       material.baseTexture.height != 0 && material.detailTexture.resource != 0 &&
+                       material.detailTexture.width != 0 && material.detailTexture.height != 0 &&
+                       valid(material.baseColor) && valid(material.ambientColor) &&
+                       valid(material.lighting) && finite(material.detailWeight) &&
+                       material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
+                       material.diffuseMode <= ModelDiffuseMode::Signed;
             } else {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
@@ -400,6 +417,16 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                 const Color lit = diffuse_lighting(material.baseColor, material.ambientColor,
                                                    material.lighting, eyePosition, normal);
                 return VertexColors{.multiplicative = {lit.r, lit.g, lit.b, material.alphaScale}};
+            } else if constexpr (std::is_same_v<Material, LitLayeredTexturedMaterial>) {
+                const Color lit =
+                    diffuse_lighting(material.baseColor, material.ambientColor, material.lighting,
+                                     eyePosition, normal, material.diffuseMode);
+                const float litWeight = 1.0F - material.detailWeight;
+                return VertexColors{
+                    .multiplicative = {lit.r * litWeight, lit.g * litWeight, lit.b * litWeight,
+                                       material.baseColor.a},
+                    .detailTextureWeight = material.detailWeight,
+                };
             } else {
                 const Color diffuseSource =
                     material.usesVertexRgb ? vertex.color : material.baseColor;
@@ -431,7 +458,9 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
         unlitTexture->textureCoordinates == ModelTextureCoordinates::Secondary) {
         primaryUv = vertex.uv1;
     }
-    return {position, primaryUv, vertex.uv1, colors.multiplicative, colors.additive};
+    return {position,        primaryUv,
+            vertex.uv1,      colors.multiplicative,
+            colors.additive, colors.detailTextureWeight};
 }
 
 } // namespace sb::native_render

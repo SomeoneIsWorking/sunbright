@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sunbright/native_render/j3d_layered_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>

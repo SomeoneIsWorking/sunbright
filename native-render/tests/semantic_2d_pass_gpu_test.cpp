@@ -629,6 +629,46 @@ int main() {
         assert(pixel(litMaskAt, 8, 8).g > 0.9F);
         assert(pixel(litMaskAt, 8, 8).r < 0.01F && pixel(litMaskAt, 8, 8).b < 0.01F);
 
+        // Layered-material control: a white base texture multiplies a 3/8 red detail plus 5/8
+        // green lit colour. Changing only the independently sampled detail to blue must move that
+        // weighted contribution without disturbing green. This exercises the shipping two-image
+        // shader and both UV-bearing vertex inputs.
+        const std::array<std::uint8_t, 4> layeredBaseTexel{255, 255, 255, 255};
+        std::array<std::uint8_t, 4> layeredDetailTexel{255, 0, 0, 255};
+        std::array<DecodedImageView, 2> layeredImages{
+            DecodedImageView{
+                .resource = 221, .revision = 1, .width = 1, .height = 1, .rgba8 = layeredBaseTexel},
+            DecodedImageView{.resource = 222,
+                             .revision = 1,
+                             .width = 1,
+                             .height = 1,
+                             .rgba8 = layeredDetailTexel},
+        };
+        ModelDraw layeredModel = model;
+        layeredModel.instance = 223;
+        layeredModel.material = sb::native_render::LitLayeredTexturedMaterial{
+            .baseTexture = {.resource = 221, .revision = 1, .width = 1, .height = 1},
+            .detailTexture = {.resource = 222, .revision = 1, .width = 1, .height = 1},
+            .baseColor = {0, 1, 0, 1},
+            .ambientColor = {1, 1, 1, 1},
+            .detailWeight = 3.0F / 8.0F,
+            .raster = {.cull = sb::native_render::ModelCullMode::None},
+        };
+        const SemanticFramePixels redDetail =
+            render(std::span<const ModelDraw>(&layeredModel, 1), layeredImages);
+        const Color redDetailPixel = pixel(redDetail, 8, 8);
+        assert(redDetailPixel.r > 0.60F && redDetailPixel.g > 0.75F && redDetailPixel.b < 0.01F);
+        layeredDetailTexel = {0, 0, 255, 255};
+        layeredImages[1].revision = 2;
+        std::get<sb::native_render::LitLayeredTexturedMaterial>(layeredModel.material)
+            .detailTexture.revision = 2;
+        const SemanticFramePixels blueDetail =
+            render(std::span<const ModelDraw>(&layeredModel, 1), layeredImages);
+        const Color blueDetailPixel = pixel(blueDetail, 8, 8);
+        assert(blueDetailPixel.r < 0.01F && near(blueDetailPixel.g, redDetailPixel.g));
+        assert(blueDetailPixel.b > 0.60F);
+        assert(hash(redDetail) != hash(blueDetail));
+
         // Affine texture control for the specular-material shader path. The baseline exercises
         // texture * diffuse colour; changing only the semantic tint must add red while preserving
         // green. This runs the shipping vertex upload and fragment shader, not a CPU copy.

@@ -137,6 +137,8 @@ struct ModelLightingContext {
     bool operator==(const ModelLightingContext&) const = default;
 };
 
+enum class ModelDiffuseMode : std::uint8_t { Clamped, Signed };
+
 // Ordinary diffuse-lit colour with no texture. Runtime adapters publish the authored material or
 // vertex colour choice and resolved lights; the renderer computes one lit raster colour directly.
 struct LitColorMaterial {
@@ -174,6 +176,20 @@ struct LitTexturedAlphaMaskMaterial {
     ModelRasterPolicy raster{};
 };
 
+// Two decoded textures combined with one ordinary diffuse-lit colour. The base texture multiplies
+// a weighted blend of the detail texture and lit colour; both texture-coordinate sets remain
+// explicit, while the original console stage ordering does not cross this boundary.
+struct LitLayeredTexturedMaterial {
+    PictureTexture baseTexture{};
+    PictureTexture detailTexture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    ModelLightingContext lighting{};
+    float detailWeight = 0.0F;
+    ModelDiffuseMode diffuseMode = ModelDiffuseMode::Clamped;
+    ModelRasterPolicy raster{};
+};
+
 // One decoded texture with ordinary diffuse and directional-specular lighting. The authored J3D
 // program is reduced to one affine PC operation: texture * diffuse * scale + additive + specular.
 struct LitSpecularTexturedMaterial {
@@ -188,9 +204,10 @@ struct LitSpecularTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
-using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial,
-                                   AlphaMaskedColorMaterial, LitColorMaterial, LitTexturedMaterial,
-                                   LitTexturedAlphaMaskMaterial, LitSpecularTexturedMaterial>;
+using ModelMaterial =
+    std::variant<UnlitColorMaterial, UnlitTexturedMaterial, AlphaMaskedColorMaterial,
+                 LitColorMaterial, LitTexturedMaterial, LitTexturedAlphaMaskMaterial,
+                 LitLayeredTexturedMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 
@@ -229,6 +246,7 @@ struct ClipVertex {
     Vec2 uv1{};
     Color color{};
     Color additiveColor{};
+    float detailTextureWeight = 0.0F;
 };
 
 [[nodiscard]] bool valid(const MeshVertex& vertex) noexcept;

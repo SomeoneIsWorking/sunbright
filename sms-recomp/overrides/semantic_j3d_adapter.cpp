@@ -10,6 +10,7 @@
 #include "../runtime/sb_assert.h"
 
 #include <sunbright/native_render/j3d_alpha_masked_material.h>
+#include <sunbright/native_render/j3d_layered_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
@@ -594,6 +595,14 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 : sb::native_render::J3dLitAlphaMaskResult::MissingLightingContext;
         const bool isLitAlphaMask =
             litAlphaMaskFamily == sb::native_render::J3dLitAlphaMaskResult::Success;
+        sb::native_render::LitLayeredTexturedMaterial layeredMaterial{};
+        const sb::native_render::J3dLayeredMaterialResult layeredFamily =
+            lighting != nullptr
+                ? sb::native_render::classify_j3d_layered_material(
+                      materialState, placeholder, placeholder, *lighting, layeredMaterial)
+                : sb::native_render::J3dLayeredMaterialResult::MissingLightingContext;
+        const bool isLayered =
+            layeredFamily == sb::native_render::J3dLayeredMaterialResult::Success;
         sb::native_render::LitSpecularTexturedMaterial specularMaterial{};
         const sb::native_render::J3dSpecularTexturedResult specularFamily =
             lighting != nullptr
@@ -602,7 +611,7 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 : sb::native_render::J3dSpecularTexturedResult::MissingLightingContext;
         const bool isSpecularTextured =
             specularFamily == sb::native_render::J3dSpecularTexturedResult::Success;
-        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask &&
+        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask && !isLayered &&
             !isSpecularTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
@@ -630,7 +639,7 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             return;
         }
         std::size_t textureCount = 1;
-        if (isLitAlphaMask) {
+        if (isLitAlphaMask || isLayered) {
             if (!sb::recomp::capture_guest_j3d_texture(sb::recomp::live_guest_byte_reader(),
                                                        textureTable, materialState.textureNumber1,
                                                        g_textures[1], textureError)) {
@@ -671,6 +680,17 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                       "result=%s",
                       sb::native_render::j3d_lit_alpha_mask_result_name(classified));
             semanticMaterial = litAlphaMaskMaterial;
+            submittedLitMaterial = true;
+        } else if (isLayered) {
+            const sb::native_render::J3dLayeredMaterialResult classified =
+                sb::native_render::classify_j3d_layered_material(
+                    materialState, g_textures[0].texture, g_textures[1].texture, *lighting,
+                    layeredMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dLayeredMaterialResult::Success,
+                      "decoded J3D textures invalidated a preclassified layered material: "
+                      "result=%s",
+                      sb::native_render::j3d_layered_material_result_name(classified));
+            semanticMaterial = layeredMaterial;
             submittedLitMaterial = true;
         } else if (isLitTextured) {
             const sb::native_render::J3dLitTexturedResult classified =
