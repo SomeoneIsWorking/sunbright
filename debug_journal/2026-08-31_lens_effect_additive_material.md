@@ -65,3 +65,18 @@ fragment shader, so sampled texture alpha is not accidentally multiplied into th
 The classifier test rejects a changed second stage. A guarded 60-present title audit advanced all
 22 instances through classification, image decode, scene readiness, and native submission; the
 watcher exited 0 and reported no kernel GPU fault or reset.
+
+## Follow-up: interpolated register-colour glow variant
+
+The next 22 perspective-reached glow draws were `_mat_lens_fx_8` with `P_glow2`. Their exact
+one-stage program is `c008e28fc108e670`: the colour fields decode to
+`K0 * (1 - TEXC) + C0 * TEXC`, and the alpha fields decode to `TEXA * A0`. This is a distinct
+program, not another constant-ramp or passthrough case. The semantic effect material now maps it
+to `modulation = C0 - K0` plus `additive = K0`, which is the shared textured equation
+`TEXC * modulation + additive`; alpha remains multiplied by the register-0 alpha. No TEV or
+register identity crosses the renderer boundary.
+
+The CPU classifier control checks the decoded RGB difference, additive K0 term, and register alpha,
+while changed program bytes remain rejected. A guarded 60-present title audit advanced all 22
+instances through classification, image decode, scene readiness, and native submission, raising
+coverage from 1,478 to 1,500 models. It exited 0; the GPU watcher reported no kernel fault or reset.

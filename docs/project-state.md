@@ -1,5 +1,12 @@
 # Project state
 
+## Comparison baseline
+
+The baseline is the unmodified NTSC-U GameCube release of *Super Mario Sunshine* running on original
+hardware or through Dolphin, with the original GX renderer, 4:3 framing, 30 Hz presentation, and
+console execution. Sunbright's intended differences are native host execution, native semantic
+rendering, and smooth presentation between the original simulation ticks without changing gameplay.
+
 Factual capability coverage for Sunbright. Durable intent lives in `docs/project-goals.md`, atomic
 work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 
@@ -282,6 +289,16 @@ preserves the authored additive source-alpha/destination-one blend with disabled
 guarded 60-present audit advanced all 22 instances through classification, image decode, scene
 readiness, and native submission, raising coverage from 1,456 to 1,478 models; it exited 0 with no
 GPU fault or reset.
+
+The next 22 perspective-reached lens surfaces (`_mat_lens_fx_8`, texture `P_glow2`) now use the
+same semantic effect owner for a texture-driven colour interpolation. Their exact one-stage
+program computes authored K0 RGB times `(1 - texture RGB)` plus register-0 RGB times texture RGB;
+texture alpha is multiplied by register-0 alpha. The renderer expresses this as one multiplicative
+colour term plus an additive K0 term, with the authored additive blend and disabled depth test
+preserved. The classifier control covers the decoded interpolation values and rejects changed
+program bytes. A guarded 60-present audit advanced all 22 instances through classification, image
+decode, scene readiness, and native submission, raising coverage from 1,478 to 1,500 models; it
+exited 0 with no kernel GPU fault or reset.
 
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the

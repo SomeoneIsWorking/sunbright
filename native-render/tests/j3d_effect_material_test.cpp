@@ -74,6 +74,19 @@ int main() {
            J3dEffectMaterialResult::UnsupportedStageCount);
 
     state = material_state();
+    state.tevStages[0].program = {0xC0, 0x08, 0xE2, 0x8F, 0xC1, 0x08, 0xE6, 0x70};
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(material.alphaMode == ModelTextureAlphaMode::MultiplyTexture);
+    assert(near(material.modulation.r, 12.0F / 255.0F - 128.0F / 255.0F));
+    assert(near(material.modulation.g, 24.0F / 255.0F - 64.0F / 255.0F));
+    assert(near(material.modulation.b, 36.0F / 255.0F - 32.0F / 255.0F));
+    assert(near(material.modulation.a, 96.0F / 255.0F));
+    assert(near(material.additive.r, 128.0F / 255.0F));
+    assert(near(material.additive.g, 64.0F / 255.0F));
+    assert(near(material.additive.b, 32.0F / 255.0F));
+
+    state = material_state();
     state.tevStages[0].program = {0xC0, 0x08, 0xF2, 0x8F, 0xC1, 0x38, 0xE6, 0x70};
     assert(classify_j3d_effect_material(state, texture, material) ==
            J3dEffectMaterialResult::Success);

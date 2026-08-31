@@ -19,6 +19,8 @@ constexpr std::array<std::uint8_t, 8> kRegisterTimesTextureHalfAlpha{0xC0, 0x08,
                                                                      0xC1, 0x38, 0xE6, 0x70};
 constexpr std::array<std::uint8_t, 8> kConstantAlphaStage{0xC2, 0x28, 0xF0, 0xF0,
                                                           0xC3, 0x08, 0xF8, 0x70};
+constexpr std::array<std::uint8_t, 8> kRegisterInterpolatedTexture{0xC0, 0x08, 0xE2, 0x8F,
+                                                                   0xC1, 0x08, 0xE6, 0x70};
 
 bool is_constant_times_texture(const J3dTevStageState& stage) noexcept {
     if (stage.program != kConstantTimesTexture)
@@ -42,7 +44,8 @@ Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept {
 bool is_j3d_effect_material_program(const J3dTevStageState& stage) noexcept {
     const bool constantTimesTexture = is_constant_times_texture(stage);
     return constantTimesTexture || stage.program == kTexturePassthrough ||
-           stage.program == kRegisterTimesTextureHalfAlpha;
+           stage.program == kRegisterTimesTextureHalfAlpha ||
+           stage.program == kRegisterInterpolatedTexture;
 }
 
 const char* j3d_effect_material_result_name(J3dEffectMaterialResult result) noexcept {
@@ -104,7 +107,9 @@ J3dEffectMaterialResult classify_j3d_effect_material(const J3dMaterialState& sta
     const bool constantTimesTexture = is_constant_times_texture(stage);
     const bool texturePassthrough = stage.program == kTexturePassthrough;
     const bool registerTimesTexture = stage.program == kRegisterTimesTextureHalfAlpha;
-    if (!constantTimesTexture && !texturePassthrough && !registerTimesTexture)
+    const bool registerInterpolatedTexture = stage.program == kRegisterInterpolatedTexture;
+    if (!constantTimesTexture && !texturePassthrough && !registerTimesTexture &&
+        !registerInterpolatedTexture)
         return J3dEffectMaterialResult::UnsupportedColorProgram;
     if (!state.hasTevColors)
         return J3dEffectMaterialResult::MissingTevColor;
@@ -131,6 +136,11 @@ J3dEffectMaterialResult classify_j3d_effect_material(const J3dMaterialState& sta
                     constantAlpha ? constant_ramp_scale(state.tevStages[1].konstAlphaSelection)
                                   : registerColor.a}
             : Color{constant.r, constant.g, constant.b, registerColor.a};
+    material.additive =
+        registerInterpolatedTexture ? Color{constant.r, constant.g, constant.b, 0.0F} : Color{};
+    if (registerInterpolatedTexture)
+        material.modulation = {registerColor.r - constant.r, registerColor.g - constant.g,
+                               registerColor.b - constant.b, registerColor.a};
     material.raster = raster;
     return J3dEffectMaterialResult::Success;
 }

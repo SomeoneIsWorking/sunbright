@@ -134,6 +134,7 @@ struct TexturedEffectMaterial {
     ModelTextureCoordinates textureCoordinates = ModelTextureCoordinates::Primary;
     ModelTextureAlphaMode alphaMode = ModelTextureAlphaMode::MultiplyTexture;
     Color modulation{1.0F, 1.0F, 1.0F, 1.0F};
+    Color additive{};
     ModelRasterPolicy raster{};
 };
 

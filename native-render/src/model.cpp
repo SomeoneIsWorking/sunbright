@@ -328,6 +328,7 @@ bool valid(const ModelDraw& draw) noexcept {
             } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.modulation) &&
+                       valid(material.additive) &&
                        material.textureCoordinates <= ModelTextureCoordinates::Secondary &&
                        material.alphaMode <= ModelTextureAlphaMode::ReplaceTexture;
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
@@ -486,7 +487,8 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                                                           ? vertex.color
                                                           : Color{1.0F, 1.0F, 1.0F, 1.0F}};
             } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
-                return VertexColors{.multiplicative = material.modulation};
+                return VertexColors{.multiplicative = material.modulation,
+                                    .additive = material.additive};
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
                 return VertexColors{
                     .multiplicative = {0.0F, 0.0F, 0.0F, material.alphaScale},
