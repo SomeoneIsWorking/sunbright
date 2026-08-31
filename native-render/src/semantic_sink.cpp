@@ -71,9 +71,7 @@ bool submit_solid_rectangle(const SolidRectangleDraw& draw) noexcept {
 
 bool submit_model(const ModelDraw& draw, const MeshResourceView& mesh,
                   std::span<const DecodedImageView> images) noexcept {
-    if (g_sink.submitModel == nullptr || !valid(draw) || !valid(mesh) ||
-        draw.mesh.resource != mesh.resource || draw.mesh.revision != mesh.revision ||
-        draw.mesh.vertexCount != mesh.vertices.size()) {
+    if (g_sink.submitModel == nullptr || !model_mesh_matches(draw, mesh)) {
         return false;
     }
     if (!material_images_match(draw.material, images))

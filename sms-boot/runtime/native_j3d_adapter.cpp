@@ -160,9 +160,9 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         ++g_stats.noPerspectiveContexts;
         return;
     }
-    if (shape.mElementCount == 0 || shape.mMatrices == nullptr || shape.mDrawMatrices == nullptr ||
-        shape.mCurrentViewNo == nullptr || *shape.mCurrentViewNo > 16 ||
-        shape.mDrawMatrices[*shape.mCurrentViewNo] == nullptr) {
+    if (shape.mElementCount == 0 || shape.mMatrices == nullptr || shape.mDrawMtxData == nullptr ||
+        shape.mDrawMatrices == nullptr || shape.mCurrentViewNo == nullptr ||
+        *shape.mCurrentViewNo > 16 || shape.mDrawMatrices[*shape.mCurrentViewNo] == nullptr) {
         ++g_stats.nonRigidElements;
         return;
     }
@@ -177,8 +177,39 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
     images = std::span(image).first(capturedMaterial.textureCount);
     for (std::uint32_t element = 0; element < shape.mElementCount; ++element) {
         J3DShapeMtx* matrixObject = shape.getShapeMtx(element);
-        if (matrixObject == nullptr || matrixObject->getType() != static_cast<int>('SMTX') ||
-            matrixObject->getUseMtxNum() != 1) {
+        if (matrixObject == nullptr) {
+            ++g_stats.nonRigidElements;
+            continue;
+        }
+        std::array<sb::native_render::ModelMatrixBinding, sb::native_render::kMaxModelMatrices>
+            poseBindings{};
+        std::size_t poseBindingCount = 0;
+        bool invalidPoseBinding = false;
+        const std::uint32_t sourceMatrixCount = matrixObject->getUseMtxNum();
+        for (std::uint32_t sourceSlot = 0; sourceSlot < sourceMatrixCount; ++sourceSlot) {
+            const std::uint16_t matrixIndex = matrixObject->getUseMtxIndex(sourceSlot);
+            if (matrixIndex == 0xFFFFU)
+                continue;
+            if (poseBindingCount == poseBindings.size()) {
+                poseBindingCount = poseBindings.size() + 1;
+                break;
+            }
+            if (matrixIndex >= shape.mDrawMtxData->mEntryNum) {
+                invalidPoseBinding = true;
+                break;
+            }
+            const Mtx& modelView = shape.mDrawMatrices[*shape.mCurrentViewNo][matrixIndex];
+            auto& binding = poseBindings[poseBindingCount++];
+            binding.sourceIndex = sourceSlot;
+            std::copy_n(&modelView[0][0], binding.modelView.value.size(),
+                        binding.modelView.value.begin());
+        }
+        std::array<std::uint8_t, 64> sourceToCompact{};
+        sb::native_render::ModelPose pose{};
+        if (invalidPoseBinding || poseBindingCount > poseBindings.size() ||
+            sb::native_render::build_model_pose(std::span(poseBindings).first(poseBindingCount),
+                                                pose, sourceToCompact) !=
+                sb::native_render::ModelPoseBuildResult::Success) {
             ++g_stats.nonRigidElements;
             continue;
         }
@@ -186,8 +217,10 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
             ++g_stats.decodeFailures;
             continue;
         }
-        if (std::ranges::any_of(
-                g_decoded, [](const auto& vertex) { return vertex.positionMatrixSlot != 0; })) {
+        if (std::ranges::any_of(g_decoded, [&](const auto& vertex) {
+                return vertex.positionMatrixSlot >= sourceToCompact.size() ||
+                       sourceToCompact[vertex.positionMatrixSlot] == 0xFFU;
+            })) {
             ++g_stats.nonRigidElements;
             continue;
         }
@@ -199,18 +232,18 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
                                   .uv = {vertex.uv[0][0], vertex.uv[0][1]},
                                   .uv1 = {vertex.uv[1][0], vertex.uv[1][1]},
                                   .color = sb::native_render::color_from_rgba8(vertex.rgba),
-                                  .normal = {vertex.nx, vertex.ny, vertex.nz}});
+                                  .normal = {vertex.nx, vertex.ny, vertex.nz},
+                                  .matrixIndex = sourceToCompact[vertex.positionMatrixSlot]});
         }
         J3DShapeDraw* shapeDraw = shape.getShapeDraw(element);
         const std::uint64_t resource = reinterpret_cast<std::uintptr_t>(shapeDraw);
         const std::uint64_t revision = sb::native_render::mesh_revision(g_vertices);
-        const std::uint16_t matrixIndex = matrixObject->getUseMtxIndex(0);
-        const Mtx& modelView = shape.mDrawMatrices[*shape.mCurrentViewNo][matrixIndex];
         sb::native_render::ModelDraw draw{};
         draw.instance =
-            reinterpret_cast<std::uintptr_t>(&shape) ^ reinterpret_cast<std::uintptr_t>(&modelView);
+            reinterpret_cast<std::uintptr_t>(&shape) ^
+            reinterpret_cast<std::uintptr_t>(shape.mDrawMatrices[*shape.mCurrentViewNo]);
         draw.mesh = {resource, revision, static_cast<std::uint32_t>(g_vertices.size())};
-        std::copy_n(&modelView[0][0], draw.modelView.value.size(), draw.modelView.value.begin());
+        draw.pose = pose;
         draw.projection = scene->projection;
         draw.material = capturedMaterial.material;
         const sb::native_render::MeshResourceView mesh{resource, revision, g_vertices};
@@ -221,7 +254,9 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         }
         record_raster(capturedMaterial.material);
         ++g_stats.submittedModels;
-        if (std::holds_alternative<sb::native_render::LitTexturedMaterial>(
+        if (std::holds_alternative<sb::native_render::LitColorMaterial>(
+                capturedMaterial.material) ||
+            std::holds_alternative<sb::native_render::LitTexturedMaterial>(
                 capturedMaterial.material) ||
             std::holds_alternative<sb::native_render::LitTexturedAlphaMaskMaterial>(
                 capturedMaterial.material) ||

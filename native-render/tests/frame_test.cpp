@@ -147,7 +147,9 @@ int main() {
     const ModelDraw litMaskModel{
         .instance = 31,
         .mesh = {.resource = 30, .revision = 1, .vertexCount = 3},
-        .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+        .pose = {.modelViews = {sb::native_render::Matrix3x4{
+                     .value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}}},
+                 .count = 1},
         .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
         .material =
             LitTexturedAlphaMaskMaterial{

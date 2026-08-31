@@ -356,8 +356,7 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
     for (const ModelDraw& draw : frame.models) {
         const MeshKey key{draw.mesh.resource, draw.mesh.revision};
         const auto mesh = meshes.find(key);
-        if (!valid(draw) || mesh == meshes.end() ||
-            mesh->second->vertices.size() != draw.mesh.vertexCount) {
+        if (mesh == meshes.end() || !model_mesh_matches(draw, *mesh->second)) {
             error = "semantic model references an absent or mismatched mesh";
             return false;
         }

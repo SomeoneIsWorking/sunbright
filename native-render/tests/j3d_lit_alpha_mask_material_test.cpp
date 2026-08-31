@@ -79,7 +79,9 @@ int main() {
 
     ModelDraw draw{.instance = 1,
                    .mesh = {.resource = 1, .revision = 1, .vertexCount = 3},
-                   .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+                   .pose = {.modelViews = {sb::native_render::Matrix3x4{
+                                .value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}}},
+                            .count = 1},
                    .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
                    .material = material};
     const MeshVertex vertex{.uv = {0.25F, 0.5F}, .uv1 = {0.75F, 0.125F}, .normal = {0, 0, 1}};

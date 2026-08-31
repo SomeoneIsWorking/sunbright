@@ -8,7 +8,7 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit, solid-colour mask, diffuse/specular single-texture, and diffuse-plus-independent-alpha-mask two-texture J3D material families to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S004 | The recomp feeds ordered 2D/UI draws and rigid or multi-matrix solid-colour, textured, masked, diffuse, and specular J3D material families to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
 | S005 | The native decomp feeds the same semantic 2D/UI and J3D material families to that renderer through native-layout adapters | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
@@ -17,8 +17,8 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 
 S004 is the current focus. The path previously counted toward it is classified separately as
 compatibility tooling: a native GPU backend reproducing GX is not a PC-native renderer. The shared
-semantic frame now combines the ported 2D/UI stream with rigid J3D triangle meshes using ordinary
-model/view/projection matrices, decoded RGBA textures, vertex colour, and a PC-native depth-tested
+semantic frame now combines the ported 2D/UI stream with J3D triangle meshes using ordinary
+model/view/projection matrices, compact multi-matrix poses, decoded RGBA textures, vertex colour, and a PC-native depth-tested
 SDL3 pass. Both runtimes publish the same values through separate layout adapters and always retain
 their original draw bodies for A/B. Camera projection now comes directly from the `TGraphics`
 value written by the game's camera and is scoped around high-level `TViewObj::testPerform` draw
@@ -29,7 +29,7 @@ decoded normals,
 material/vertex colour choice, ambient colour, stage point lights, authored directional specular
 lighting, solid-colour texture masks, and an independent second-UV alpha mask for the exact
 supported families. Broader J3D materials are next: the remaining lit and multi-stage programs,
-skinning, authored mip chains, particles, and effects still fall back to the retained renderer.
+authored mip chains, particles, and effects still fall back to the retained renderer.
 
 ## Capability details
 
@@ -186,6 +186,21 @@ Mario material using slot 1 plus secondary UVs advanced from 50 observed/0 accep
 50 observed/50 classified/50 images decoded/50 perspective-ready/50 PC-native models. The decomp
 adapter compiles with the same independent-slot capture; live decomp coverage remains unclaimed
 because issue 30 still prevents the corresponding bounded audit from completing.
+
+The renderer-neutral mesh boundary now supports J3D geometry whose vertices select different
+matrices from one current pose. Each immutable mesh vertex carries a compact palette index and each
+draw carries up to ten ordinary view-space matrices; runtime-specific matrix slots and J3D object
+layouts remain inside the two adapters. The recomp captures ordinary, display-list, and multi-matrix
+objects at their high-level `J3DShapeMtx::load` boundaries while retaining every original body. Its
+ordinary and multi-matrix mappings are checked against the independent `GXLoadPosMtxIndx` stream,
+which is used only as a falsifier and never as renderer input. CPU controls prove that moving the
+second pose matrix changes only the vertex that selects it, that palette indices affect immutable
+mesh identity, and that empty, duplicate, out-of-range, and non-finite palettes are refused. The
+watched 120-present recomp audit advanced the previously blocked untextured diffuse-lit family from
+77 perspective-ready/0 submitted to 77/77, reduced adapter non-rigid rejections from 77 to zero,
+and exited cleanly without a kernel GPU fault. The native-layout adapter compiles through the same
+shared pose contract and obtains its bindings through `J3DShapeMtx` virtual methods; live decomp
+coverage is not claimed while issue 30 prevents the corresponding bounded audit.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission

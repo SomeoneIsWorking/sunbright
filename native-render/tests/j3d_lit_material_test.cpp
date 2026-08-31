@@ -69,6 +69,25 @@ int main() {
     assert(current_j3d_stage_lighting() != nullptr);
     assert(*current_j3d_stage_lighting() == lighting);
 
+    J3dMaterialState colorState = material_state();
+    colorState.colorChannelControl = 0x070F;
+    colorState.alphaChannelControl = 0x0701;
+    colorState.textureCoordinateCount = 0;
+    colorState.textureNumber0 = 0xFFFF;
+    colorState.textureCoordinate0 = 0xFF;
+    colorState.textureMap0 = 0xFF;
+    colorState.tevStage0 = {0xC0, 0x08, 0xAF, 0xFF, 0xC1, 0x08, 0xBF, 0xF0};
+    colorState.hasVertexColor = true;
+    LitColorMaterial colorMaterial{};
+    assert(classify_j3d_lit_color_material(colorState, lighting, colorMaterial) ==
+           J3dLitColorResult::Success);
+    assert(colorMaterial.usesVertexRgb);
+    assert(colorMaterial.usesVertexAlpha);
+    assert(colorMaterial.lighting == lighting);
+    colorState.textureNumber0 = 0;
+    assert(classify_j3d_lit_color_material(colorState, lighting, colorMaterial) ==
+           J3dLitColorResult::TextureBinding);
+
     const PictureTexture texture{.resource = 5, .width = 32, .height = 32};
     J3dMaterialState state = material_state();
     LitTexturedMaterial material{};

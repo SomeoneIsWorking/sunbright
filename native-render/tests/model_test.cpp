@@ -22,7 +22,8 @@ int main() {
     const ModelDraw draw{
         .instance = 7,
         .mesh = {.resource = 11, .revision = 2, .vertexCount = 3},
-        .modelView = {.value = {1, 0, 0, 4, 0, 1, 0, 5, 0, 0, 1, 6}},
+        .pose = {.modelViews = {Matrix3x4{.value = {1, 0, 0, 4, 0, 1, 0, 5, 0, 0, 1, 6}}},
+                 .count = 1},
         .projection = {.value = {2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1}},
         .material =
             UnlitColorMaterial{.baseColor = {0.5F, 1.0F, 0.25F, 0.5F}, .usesVertexColor = true},
@@ -58,6 +59,33 @@ int main() {
     changed[1] = vertex;
     changed[1].normal.x += 1.0F;
     assert(mesh_revision(revisions) != mesh_revision(changed));
+    changed[1] = vertex;
+    changed[1].matrixIndex = 1;
+    assert(mesh_revision(revisions) != mesh_revision(changed));
+
+    ModelDraw posed = draw;
+    posed.pose.modelViews[1] = {.value = {1, 0, 0, 40, 0, 1, 0, 50, 0, 0, 1, 60}};
+    posed.pose.count = 2;
+    MeshVertex secondMatrixVertex = vertex;
+    secondMatrixVertex.matrixIndex = 1;
+    const ClipVertex secondMatrix = transform_vertex(posed, secondMatrixVertex);
+    assert(near(secondMatrix.position.x, 82.0F));
+    assert(near(secondMatrix.position.y, 156.0F));
+
+    const std::array bindings{
+        ModelMatrixBinding{.sourceIndex = 0, .modelView = draw.pose.modelViews[0]},
+        ModelMatrixBinding{.sourceIndex = 3, .modelView = posed.pose.modelViews[1]},
+    };
+    std::array<std::uint8_t, 8> sourceToCompact{};
+    ModelPose compactPose{};
+    assert(build_model_pose(bindings, compactPose, sourceToCompact) ==
+           ModelPoseBuildResult::Success);
+    assert(compactPose.count == 2 && sourceToCompact[0] == 0 && sourceToCompact[3] == 1 &&
+           sourceToCompact[1] == 0xFF);
+    auto duplicateBindings = bindings;
+    duplicateBindings[1].sourceIndex = 0;
+    assert(build_model_pose(duplicateBindings, compactPose, sourceToCompact) ==
+           ModelPoseBuildResult::DuplicateSourceIndex);
 
     ModelDraw constantColor = draw;
     auto& constantMaterial = std::get<UnlitColorMaterial>(constantColor.material);
@@ -72,6 +100,18 @@ int main() {
     };
     assert(valid(secondaryUv));
     assert(transform_vertex(secondaryUv, vertex).uv == vertex.uv1);
+
+    ModelDraw litColor = draw;
+    litColor.material = LitColorMaterial{
+        .baseColor = {1.0F, 1.0F, 1.0F, 1.0F},
+        .ambientColor = {0.5F, 0.25F, 1.0F, 1.0F},
+        .usesVertexRgb = true,
+        .usesVertexAlpha = true,
+    };
+    assert(valid(litColor));
+    assert(material_texture_count(litColor.material) == 0);
+    const ClipVertex litColorVertex = transform_vertex(litColor, vertex);
+    assert(litColorVertex.color == Color(0.25F, 0.0625F, 1.0F, 0.5F));
 
     ModelDraw lit = draw;
     lit.material = LitTexturedMaterial{

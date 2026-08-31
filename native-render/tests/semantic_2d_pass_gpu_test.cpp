@@ -412,7 +412,10 @@ int main() {
         Semantic3dPass pass(device);
         std::string error;
         const std::array<MeshVertex, 3> vertices{
-            MeshVertex{.position = {-0.75F, -0.75F, 0.5F}, .uv = {0.25F, 0}, .uv1 = {0.75F, 0}},
+            MeshVertex{.position = {-0.75F, -0.75F, 0.5F},
+                       .uv = {0.25F, 0},
+                       .uv1 = {0.75F, 0},
+                       .matrixIndex = 1},
             MeshVertex{.position = {0.0F, 0.75F, 0.5F}, .uv = {0.25F, 0}, .uv1 = {0.75F, 0}},
             MeshVertex{.position = {0.75F, -0.75F, 0.5F}, .uv = {0.25F, 0}, .uv1 = {0.75F, 0}},
         };
@@ -420,7 +423,11 @@ int main() {
         ModelDraw model{
             .instance = 202,
             .mesh = {.resource = 201, .revision = 1, .vertexCount = 3},
-            .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+            .pose = {.modelViews = {sb::native_render::Matrix3x4{
+                                        .value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+                                    sb::native_render::Matrix3x4{
+                                        .value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}}},
+                     .count = 2},
             .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
             .material = sb::native_render::UnlitColorMaterial{.baseColor = {1, 0, 0, 1}},
         };
@@ -452,6 +459,31 @@ int main() {
         material.raster.cull = sb::native_render::ModelCullMode::All;
         const SemanticFramePixels allCull = render(std::span<const ModelDraw>(&model, 1));
         assert(hash(allCull) == hash(frontCull));
+
+        // The first vertex selects the second pose matrix. Moving only that matrix must deform the
+        // triangle through the shipping vertex upload; an ignored matrix index would hash exactly
+        // like the rigid control.
+        ModelDraw deformed = model;
+        deformed.pose.modelViews[1].value[3] = 0.5F;
+        std::get<sb::native_render::UnlitColorMaterial>(deformed.material).raster.cull =
+            sb::native_render::ModelCullMode::Back;
+        const SemanticFramePixels deformedFrame = render(std::span<const ModelDraw>(&deformed, 1));
+        assert(hash(deformedFrame) != hash(backCull));
+
+        // A texture-free diffuse material must use the colour shader with its computed lit vertex
+        // colour. Green ambient light is a known-positive answer distinct from the red unlit
+        // control above and from the black clear, so a missing material route cannot pass silently.
+        ModelDraw litColor = model;
+        litColor.instance = 220;
+        litColor.material = sb::native_render::LitColorMaterial{
+            .ambientColor = {0, 1, 0, 1},
+            .usesVertexRgb = true,
+            .usesVertexAlpha = true,
+            .raster = {.cull = sb::native_render::ModelCullMode::None},
+        };
+        const SemanticFramePixels litColorFrame = render(std::span<const ModelDraw>(&litColor, 1));
+        require_color(pixel(litColorFrame, 8, 8), {0, 1, 0, 1});
+        assert(hash(litColorFrame) != hash(backCull));
 
         // Cutout threshold controls: 127/255 is rejected and the adjacent authored value 128/255
         // is accepted. This catches a disabled test and an off-by-one threshold independently.
@@ -681,7 +713,7 @@ int main() {
         nearMaterial.raster.depthWrite = true;
         ModelDraw far = near;
         far.instance = 203;
-        far.modelView.value[11] = 0.5F;
+        far.pose.modelViews[0].value[11] = 0.5F;
         std::get<sb::native_render::UnlitColorMaterial>(far.material).baseColor = {0, 1, 0, 1};
         std::array<ModelDraw, 2> layered{near, far};
         const SemanticFramePixels depthWritten = render(layered);
@@ -738,7 +770,9 @@ int main() {
     const ModelDraw modelDraw{
         .instance = 72,
         .mesh = {.resource = 71, .revision = 1, .vertexCount = 3},
-        .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+        .pose = {.modelViews = {sb::native_render::Matrix3x4{
+                     .value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}}},
+                 .count = 1},
         .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
         .material = sb::native_render::UnlitColorMaterial{.baseColor = {1, 0, 0, 1}},
     };

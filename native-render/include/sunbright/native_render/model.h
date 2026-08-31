@@ -30,15 +30,16 @@ struct Matrix4x4 {
     bool operator==(const Matrix4x4&) const = default;
 };
 
-// Triangle-list vertex values decoded from a game model resource. Matrix selection and skinning
-// are resolved by the runtime adapter before publication; no GX vertex descriptor or display-list
-// state crosses this renderer-neutral boundary.
+// Triangle-list vertex values decoded from a game model resource. Matrix selection is expressed as
+// a compact index into the draw's semantic pose; no GX matrix slot, vertex descriptor, or
+// display-list state crosses this renderer-neutral boundary.
 struct MeshVertex {
     Vec3 position{};
     Vec2 uv{};
     Vec2 uv1{};
     Color color{1.0F, 1.0F, 1.0F, 1.0F};
     Vec3 normal{0.0F, 0.0F, 1.0F};
+    std::uint8_t matrixIndex = 0;
     bool operator==(const MeshVertex&) const = default;
 };
 
@@ -136,6 +137,17 @@ struct ModelLightingContext {
     bool operator==(const ModelLightingContext&) const = default;
 };
 
+// Ordinary diffuse-lit colour with no texture. Runtime adapters publish the authored material or
+// vertex colour choice and resolved lights; the renderer computes one lit raster colour directly.
+struct LitColorMaterial {
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    ModelLightingContext lighting{};
+    bool usesVertexRgb = false;
+    bool usesVertexAlpha = false;
+    ModelRasterPolicy raster{};
+};
+
 // One decoded texture modulated by J3D's authored per-vertex diffuse lighting. This is a semantic
 // PC material: ambient and point-light values are already resolved, and its channel policy is
 // expressed as the choice between material and vertex colour rather than packed console bits.
@@ -173,14 +185,37 @@ struct TintedSpecularTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
-using ModelMaterial =
-    std::variant<UnlitColorMaterial, UnlitTexturedMaterial, AlphaMaskedColorMaterial,
-                 LitTexturedMaterial, LitTexturedAlphaMaskMaterial, TintedSpecularTexturedMaterial>;
+using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial,
+                                   AlphaMaskedColorMaterial, LitColorMaterial, LitTexturedMaterial,
+                                   LitTexturedAlphaMaskMaterial, TintedSpecularTexturedMaterial>;
+
+constexpr std::size_t kMaxModelMatrices = 10;
+
+// One current skeletal pose in view space. Rigid draws have one matrix; deformed J3D meshes carry
+// a compact matrix index per vertex. The palette contains semantic transforms, not GX matrix slots.
+struct ModelPose {
+    std::array<Matrix3x4, kMaxModelMatrices> modelViews{};
+    std::uint8_t count = 0;
+};
+
+struct ModelMatrixBinding {
+    std::uint32_t sourceIndex = 0;
+    Matrix3x4 modelView{};
+};
+
+enum class ModelPoseBuildResult : std::uint8_t {
+    Success,
+    Empty,
+    TooManyMatrices,
+    SourceIndexOutOfRange,
+    DuplicateSourceIndex,
+    InvalidMatrix,
+};
 
 struct ModelDraw {
     std::uint64_t instance = 0;
     MeshResource mesh{};
-    Matrix3x4 modelView{};
+    ModelPose pose{};
     Matrix4x4 projection{};
     ModelMaterial material{UnlitColorMaterial{}};
 };
@@ -198,6 +233,12 @@ struct ClipVertex {
 [[nodiscard]] bool valid(const Matrix4x4& matrix) noexcept;
 [[nodiscard]] bool valid(const ModelRasterPolicy& raster) noexcept;
 [[nodiscard]] bool valid(const ModelDraw& draw) noexcept;
+[[nodiscard]] bool model_mesh_matches(const ModelDraw& draw, const MeshResourceView& mesh) noexcept;
+// Compacts runtime-specific source slots into a renderer palette and writes the source-to-compact
+// lookup. The caller supplies the source index domain, so invalid or duplicate bindings refuse.
+[[nodiscard]] ModelPoseBuildResult
+build_model_pose(std::span<const ModelMatrixBinding> bindings, ModelPose& pose,
+                 std::span<std::uint8_t> sourceToCompact) noexcept;
 [[nodiscard]] const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept;
 [[nodiscard]] std::uint8_t material_texture_count(const ModelMaterial& material) noexcept;
 [[nodiscard]] const PictureTexture* material_texture(const ModelMaterial& material,

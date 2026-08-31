@@ -222,6 +222,17 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         return NativeJ3dMaterialResult::Success;
     }
 
+    const native_render::ModelLightingContext* lighting =
+        native_render::current_j3d_stage_lighting();
+    native_render::LitColorMaterial litColorMaterial{};
+    if (lighting != nullptr &&
+        native_render::classify_j3d_lit_color_material(state, *lighting, litColorMaterial) ==
+            native_render::J3dLitColorResult::Success) {
+        result.material = litColorMaterial;
+        captured = std::move(result);
+        return NativeJ3dMaterialResult::Success;
+    }
+
     const native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
     native_render::UnlitTexturedMaterial texturedMaterial{};
     const bool isUnlitTextured =
@@ -231,8 +242,6 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     const bool isAlphaMasked = native_render::classify_j3d_alpha_masked_material(
                                    state, placeholder, alphaMaskedMaterial) ==
                                native_render::J3dAlphaMaskedMaterialResult::Success;
-    const native_render::ModelLightingContext* lighting =
-        native_render::current_j3d_stage_lighting();
     native_render::LitTexturedMaterial litMaterial{};
     const bool isLitTextured =
         lighting != nullptr && native_render::classify_j3d_lit_textured_material(

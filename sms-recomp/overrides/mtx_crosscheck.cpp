@@ -30,6 +30,9 @@
 //   SBR_MTX_CHECK=1   verify every element's matrix index against the game's own load
 
 #include "overrides.h"
+#include "semantic_j3d_adapter.h"
+
+#include "../runtime/sb_assert.h"
 
 #include <intrinsics.h>
 #include <lucent/log.h>
@@ -41,6 +44,9 @@
 #include <vector>
 
 extern "C" void func_80362e48(CPUState&); // GXLoadPosMtxIndx(u16 mtx_indx, u32 id)
+extern "C" void func_802dfc04(CPUState&); // J3DShapeMtx::load() const
+extern "C" void func_802dfd14(CPUState&); // J3DShapeMtxDL::load() const
+extern "C" void func_802dfd3c(CPUState&); // J3DShapeMtxMulti::load() const
 
 namespace {
 
@@ -61,6 +67,13 @@ u32 g_currentShape = 0;
 // one element, J3DShapeMtxMulti loads id = 0,1,2,... one per bone, and a vertex's PNMTXIDX/3
 // selects among them. So this sequence is the complete slot -> matrix mapping the game used.
 std::vector<std::pair<u16, u16>> g_trueIdx;
+// Renderer input captured at the high-level J3D matrix objects. This deliberately does not read
+// the GX load stream; g_trueIdx is an independent control that can falsify this mapping.
+std::vector<GuestJ3dMatrixBinding> g_semanticMatrices;
+// Only ordinary and multi matrix objects issue observable GXLoadPosMtxIndx calls. DL matrix
+// objects embed that command in an opaque display list, so they remain semantic renderer input but
+// are excluded from this independently observable comparison population.
+std::vector<GuestJ3dMatrixBinding> g_controlMatrices;
 
 struct IdxStats {
     unsigned long compared = 0, agree = 0, noTruth = 0;
@@ -82,6 +95,39 @@ void ov_gx_load_pos_mtx_indx(CPUState& cpu) {
     func_80362e48(cpu);
 }
 
+void ov_j3d_shape_mtx_load(CPUState& cpu) {
+    if (g_currentShape != 0 && sb_ram_fast(cpu.gpr[3]) != nullptr) {
+        const GuestJ3dMatrixBinding binding{cpu.gpr[3], 0, sb_r16(cpu.gpr[3] + 4)};
+        g_semanticMatrices.push_back(binding);
+        g_controlMatrices.push_back(binding);
+    }
+    func_802dfc04(cpu);
+}
+
+void ov_j3d_shape_mtx_dl_load(CPUState& cpu) {
+    if (g_currentShape != 0 && sb_ram_fast(cpu.gpr[3]) != nullptr)
+        g_semanticMatrices.push_back({cpu.gpr[3], 0, sb_r16(cpu.gpr[3] + 4)});
+    func_802dfd14(cpu);
+}
+
+void ov_j3d_shape_mtx_multi_load(CPUState& cpu) {
+    const u32 self = cpu.gpr[3];
+    // PPC layout from J3DShape.hpp: base matrix index at +4, derived count at +8, table at +C.
+    const u32 table = sb_ram_fast(self) != nullptr ? sb_r32(self + 0xC) : 0;
+    const u16 count = sb_ram_fast(self) != nullptr ? sb_r16(self + 8) : 0;
+    if (g_currentShape != 0 && count <= 64 && sb_ram_fast(table) != nullptr) {
+        for (u16 slot = 0; slot < count; ++slot) {
+            const u16 matrixIndex = sb_r16(table + slot * 2U);
+            if (matrixIndex != 0xFFFFU) {
+                const GuestJ3dMatrixBinding binding{self, slot, matrixIndex};
+                g_semanticMatrices.push_back(binding);
+                g_controlMatrices.push_back(binding);
+            }
+        }
+    }
+    func_802dfd3c(cpu);
+}
+
 } // namespace
 
 bool sbr_mtx_check_enabled() {
@@ -98,8 +144,24 @@ bool sbr_mtx_check_enabled() {
 void sbr_mtx_begin_shape(u32 shape) {
     g_currentShape = shape;
     g_trueIdx.clear();
+    g_semanticMatrices.clear();
+    g_controlMatrices.clear();
 }
 void sbr_mtx_end_shape() {
+    if (!g_trueIdx.empty() || !g_controlMatrices.empty()) {
+        SB_ASSERT(g_trueIdx.size() == g_controlMatrices.size(),
+                  "J3D matrix-object bindings disagree with GX load control: high-level=%zu gx=%zu",
+                  g_controlMatrices.size(), g_trueIdx.size());
+        for (std::size_t index = 0; index < g_trueIdx.size(); ++index) {
+            SB_ASSERT(g_controlMatrices[index].sourceSlot == g_trueIdx[index].first &&
+                          g_controlMatrices[index].matrixIndex == g_trueIdx[index].second,
+                      "J3D matrix-object binding disagrees with GX load control at %zu: "
+                      "high-level=(%u,%u) gx=(%u,%u)",
+                      index, g_controlMatrices[index].sourceSlot,
+                      g_controlMatrices[index].matrixIndex, g_trueIdx[index].first,
+                      g_trueIdx[index].second);
+        }
+    }
     g_currentShape = 0;
 }
 
@@ -107,6 +169,10 @@ void sbr_mtx_end_shape() {
 // baked into a display list), which is the documented case for falling back to the stored index.
 const std::vector<std::pair<u16, u16>>& sbr_mtx_loads() {
     return g_trueIdx;
+}
+
+std::span<const GuestJ3dMatrixBinding> sbr_j3d_matrix_bindings() {
+    return g_semanticMatrices;
 }
 
 // Compare the index this port derived for one element against the index the game actually loaded.
@@ -150,3 +216,9 @@ void sbr_mtx_report_index() {
 
 SB_OVERRIDE(0x80362e48u, ov_gx_load_pos_mtx_indx, "GXLoadPosMtxIndx",
             "native render: record the ground-truth matrix INDEX per shape (real body runs)")
+SB_OVERRIDE(0x802dfc04u, ov_j3d_shape_mtx_load, "J3DShapeMtx::load",
+            "semantic renderer: capture one high-level rigid matrix binding (real body runs)")
+SB_OVERRIDE(0x802dfd14u, ov_j3d_shape_mtx_dl_load, "J3DShapeMtxDL::load",
+            "semantic renderer: capture one display-list matrix binding (real body runs)")
+SB_OVERRIDE(0x802dfd3cu, ov_j3d_shape_mtx_multi_load, "J3DShapeMtxMulti::load",
+            "semantic renderer: capture high-level skeletal matrix bindings (real body runs)")

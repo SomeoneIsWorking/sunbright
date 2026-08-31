@@ -39,10 +39,9 @@ constexpr u32 kMaterialPacketMaterial = 0x38;
 constexpr u32 kMaterialPacketTexture = 0x40;
 constexpr u32 kShapeElementCount = 0x06;
 constexpr u32 kShapeMatrices = 0x34;
+constexpr u32 kShapeDrawMatrixData = 0x48;
 constexpr u32 kShapeDrawMatrices = 0x50;
 constexpr u32 kShapeCurrentView = 0x58;
-// Retail US J3DShapeMtx constructor 0x802dfcc8 writes this exact CodeWarrior vtable address.
-constexpr u32 kBaseShapeMatrixVptr = 0x803E125C;
 constexpr std::uint32_t kColor0 = 11;
 constexpr std::uint32_t kNormal = 10;
 
@@ -435,7 +434,7 @@ std::string semantic_j3d_stats_text() {
     return report;
 }
 
-void submit_semantic_j3d_shape(u32 shape) {
+void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding> matrices) {
     if (!sb::native_render::has_semantic_sink())
         return;
     ++g_stats.shapeDraws;
@@ -553,8 +552,19 @@ void submit_semantic_j3d_shape(u32 shape) {
     sb::native_render::UnlitColorMaterial colorMaterial{};
     const sb::native_render::J3dUnlitMaterialResult colorResult =
         sb::native_render::classify_j3d_unlit_material(materialState, colorMaterial);
+    const sb::native_render::ModelLightingContext* lighting =
+        sb::native_render::current_j3d_stage_lighting();
+    sb::native_render::LitColorMaterial litColorMaterial{};
+    const sb::native_render::J3dLitColorResult litColorResult =
+        lighting != nullptr ? sb::native_render::classify_j3d_lit_color_material(
+                                  materialState, *lighting, litColorMaterial)
+                            : sb::native_render::J3dLitColorResult::MissingLightingContext;
     if (colorResult == sb::native_render::J3dUnlitMaterialResult::Success) {
         semanticMaterial = colorMaterial;
+        ++observation.materialAccepted;
+    } else if (litColorResult == sb::native_render::J3dLitColorResult::Success) {
+        semanticMaterial = litColorMaterial;
+        submittedLitMaterial = true;
         ++observation.materialAccepted;
     } else {
         const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
@@ -562,8 +572,6 @@ void submit_semantic_j3d_shape(u32 shape) {
         const sb::native_render::J3dUnlitTexturedResult unlitFamily =
             sb::native_render::classify_j3d_unlit_textured_material(materialState, placeholder,
                                                                     texturedMaterial);
-        const sb::native_render::ModelLightingContext* lighting =
-            sb::native_render::current_j3d_stage_lighting();
         sb::native_render::LitTexturedMaterial litMaterial{};
         const sb::native_render::J3dLitTexturedResult litFamily =
             lighting != nullptr ? sb::native_render::classify_j3d_lit_textured_material(
@@ -698,27 +706,58 @@ void submit_semantic_j3d_shape(u32 shape) {
     }
     ++observation.perspectiveReady;
     const u32 matrixObjects = sb_r32(shape + kShapeMatrices);
+    const u32 drawMatrixData = sb_r32(shape + kShapeDrawMatrixData);
     const u32 drawMatrices = sb_r32(shape + kShapeDrawMatrices);
     const u32 currentViewPointer = sb_r32(shape + kShapeCurrentView);
     const u32 currentView = readable(currentViewPointer) ? sb_r32(currentViewPointer) : 0;
     const u32 drawMatrixArray =
         readable(drawMatrices) && currentView <= 16 ? sb_r32(drawMatrices + currentView * 4) : 0;
     const u32 elementCount = sb_r16(shape + kShapeElementCount);
-    if (!readable(matrixObjects) || !readable(drawMatrixArray) || elementCount == 0 ||
-        elementCount >= 4096) {
+    if (!readable(matrixObjects) || !readable(drawMatrixData) || !readable(drawMatrixArray) ||
+        elementCount == 0 || elementCount >= 4096) {
         ++g_stats.nonRigidElements;
         return;
     }
+    const u32 drawMatrixCount = sb_r16(drawMatrixData);
 
     for (u32 element = 0; element < elementCount; ++element) {
         const u32 matrixObject = sb_r32(matrixObjects + element * 4);
-        if (!readable(matrixObject) || sb_r32(matrixObject) != kBaseShapeMatrixVptr) {
+        if (!readable(matrixObject)) {
             ++g_stats.nonRigidElements;
             continue;
         }
-        const u32 matrixIndex = sb_r16(matrixObject + 4);
-        const u32 matrixAddress = drawMatrixArray + matrixIndex * 48;
-        if (!readable(matrixAddress) || !readable(matrixAddress + 47)) {
+
+        std::array<sb::native_render::ModelMatrixBinding, sb::native_render::kMaxModelMatrices>
+            poseBindings{};
+        std::size_t poseBindingCount = 0;
+        bool invalidPoseBinding = false;
+        for (const GuestJ3dMatrixBinding& binding : matrices) {
+            if (binding.matrixObject != matrixObject)
+                continue;
+            if (poseBindingCount == poseBindings.size()) {
+                poseBindingCount = poseBindings.size() + 1;
+                break;
+            }
+            if (binding.matrixIndex >= drawMatrixCount) {
+                invalidPoseBinding = true;
+                break;
+            }
+            const u32 matrixAddress = drawMatrixArray + binding.matrixIndex * 48U;
+            if (!readable(matrixAddress) || !readable(matrixAddress + 47)) {
+                invalidPoseBinding = true;
+                break;
+            }
+            sb::native_render::ModelMatrixBinding poseBinding{.sourceIndex = binding.sourceSlot};
+            for (std::size_t index = 0; index < poseBinding.modelView.value.size(); ++index)
+                poseBinding.modelView.value[index] = guest_f32(matrixAddress + index * 4U);
+            poseBindings[poseBindingCount++] = poseBinding;
+        }
+        std::array<std::uint8_t, 64> sourceToCompact{};
+        sb::native_render::ModelPose pose{};
+        if (invalidPoseBinding || poseBindingCount > poseBindings.size() ||
+            sb::native_render::build_model_pose(std::span(poseBindings).first(poseBindingCount),
+                                                pose, sourceToCompact) !=
+                sb::native_render::ModelPoseBuildResult::Success) {
             ++g_stats.nonRigidElements;
             continue;
         }
@@ -728,8 +767,10 @@ void submit_semantic_j3d_shape(u32 shape) {
             ++g_stats.decodeFailures;
             continue;
         }
-        if (std::ranges::any_of(
-                g_decoded, [](const J3DVert& vertex) { return vertex.positionMatrixSlot != 0; })) {
+        if (std::ranges::any_of(g_decoded, [&](const J3DVert& vertex) {
+                return vertex.positionMatrixSlot >= sourceToCompact.size() ||
+                       sourceToCompact[vertex.positionMatrixSlot] == 0xFFU;
+            })) {
             ++g_stats.nonRigidElements;
             continue;
         }
@@ -741,20 +782,20 @@ void submit_semantic_j3d_shape(u32 shape) {
                                   .uv = {vertex.uv[0][0], vertex.uv[0][1]},
                                   .uv1 = {vertex.uv[1][0], vertex.uv[1][1]},
                                   .color = sb::native_render::color_from_rgba8(vertex.rgba),
-                                  .normal = {vertex.nx, vertex.ny, vertex.nz}});
+                                  .normal = {vertex.nx, vertex.ny, vertex.nz},
+                                  .matrixIndex = sourceToCompact[vertex.positionMatrixSlot]});
         }
         const std::uint64_t resource = (static_cast<std::uint64_t>(shape) << 16U) | element;
         const std::uint64_t revision = sb::native_render::mesh_revision(g_vertices);
         sb::native_render::ModelDraw draw{};
         draw.instance = (static_cast<std::uint64_t>(shape) << 32U) | drawMatrixArray;
         draw.mesh = {resource, revision, static_cast<std::uint32_t>(g_vertices.size())};
-        for (std::size_t index = 0; index < draw.modelView.value.size(); ++index)
-            draw.modelView.value[index] = guest_f32(matrixAddress + index * 4);
+        draw.pose = pose;
         draw.projection = scene->projection;
         draw.material = semanticMaterial;
         const sb::native_render::MeshResourceView mesh{resource, revision, g_vertices};
         SB_ASSERT(sb::native_render::submit_model(draw, mesh, images),
-                  "semantic J3D sink rejected validated rigid model: shape=%08x element=%u "
+                  "semantic J3D sink rejected validated model: shape=%08x element=%u "
                   "vertices=%zu",
                   shape, element, g_vertices.size());
         record_raster(semanticMaterial);

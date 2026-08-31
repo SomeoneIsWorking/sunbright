@@ -32,6 +32,7 @@ void sbr_mtx_begin_shape(u32 shape);
 void sbr_mtx_end_shape();
 void sbr_mtx_check_index(u32 shape, int element, uint32_t mine, uint32_t truthIdx, bool haveTruth);
 const std::vector<std::pair<unsigned short, unsigned short>>& sbr_mtx_loads();
+std::span<const GuestJ3dMatrixBinding> sbr_j3d_matrix_bindings();
 void gxfifo_drain_pending();
 void sbr_mtx_report_index();
 
@@ -144,10 +145,6 @@ const bool g_probe = [] {
 void ov_shape_draw(CPUState& cpu) {
     const u32 shape = cpu.gpr[3];
 
-    // Publish the narrow PC-native model family exclusively from J3D objects and decoded BMD
-    // assets. This runs before the retained body and does not read the GX FIFO/state capture below.
-    submit_semantic_j3d_shape(shape);
-
     // The REAL DRAW RUNS FIRST, deliberately. J3DShapeMtx::load issues the matrix loads from inside
     // it, so running it first makes the exact slot -> matrix-index mapping the game used available
     // to the capture below. Reconstructing that mapping from the scene graph instead required
@@ -184,6 +181,10 @@ void ov_shape_draw(CPUState& cpu) {
     sbr_mtx_begin_shape(shape);
     func_802e0390(cpu);
     sbr_mtx_end_shape();
+
+    // Publish from decoded BMD assets and the high-level J3DShapeMtx objects captured by their
+    // retained load bodies. This does not consume the independent GX/FIFO capture below.
+    submit_semantic_j3d_shape(shape, sbr_j3d_matrix_bindings());
 
     // Close the tag. Anything the game draws outside a J3DShape (2D, particles, immediate geometry)
     // must NOT inherit this shape's identity: it would pair with the wrong object's matrices, which
@@ -417,4 +418,4 @@ void ov_shape_draw(CPUState& cpu) {
 } // namespace
 
 SB_OVERRIDE(0x802e0390u, ov_shape_draw, "J3DShape::draw",
-            "publish rigid unlit J3D models and retain the guest draw for A/B reference")
+            "publish semantic J3D models and retain the guest draw for A/B reference")

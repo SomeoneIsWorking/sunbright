@@ -209,8 +209,7 @@ bool SemanticFrameCollector::append_model(const ModelDraw& draw, const MeshResou
                                           std::span<const DecodedImageView> images) {
     if (state_ != State::Collecting)
         return fail(SemanticFrameError::NotCollecting);
-    if (!valid(draw) || !valid(mesh) || draw.mesh.resource != mesh.resource ||
-        draw.mesh.revision != mesh.revision || draw.mesh.vertexCount != mesh.vertices.size()) {
+    if (!model_mesh_matches(draw, mesh)) {
         return fail(SemanticFrameError::InvalidSubmission);
     }
     if (draws_.size() + models_.size() >= limits_.commands)

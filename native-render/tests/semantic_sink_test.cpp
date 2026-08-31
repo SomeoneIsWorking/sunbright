@@ -101,10 +101,17 @@ int main() {
     const sb::native_render::ModelDraw model{
         .instance = 10,
         .mesh = {.resource = 2, .revision = 1, .vertexCount = 3},
-        .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+        .pose = {.modelViews = {sb::native_render::Matrix3x4{
+                     .value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}}},
+                 .count = 1},
         .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
     };
     assert(sb::native_render::submit_model(model, mesh));
+    assert(received == 10);
+    auto invalidMatrixVertices = vertices;
+    invalidMatrixVertices[0].matrixIndex = 1;
+    const sb::native_render::MeshResourceView invalidMatrixMesh{2, 1, invalidMatrixVertices};
+    assert(!sb::native_render::submit_model(model, invalidMatrixMesh));
     assert(received == 10);
     auto litModel = model;
     litModel.instance = 11;

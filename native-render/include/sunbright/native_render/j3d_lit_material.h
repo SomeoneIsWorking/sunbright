@@ -7,6 +7,20 @@
 
 namespace sb::native_render {
 
+enum class J3dLitColorResult : std::uint8_t {
+    Success,
+    UnsupportedColorBlock,
+    UnsupportedColorChannels,
+    UnsupportedTevBlock,
+    UnsupportedStageCount,
+    TextureBinding,
+    UnsupportedColorProgram,
+    MissingNormal,
+    MissingVertexColor,
+    MissingLightingContext,
+    UnsupportedRasterPolicy,
+};
+
 enum class J3dLitTexturedResult : std::uint8_t {
     Success,
     UnsupportedColorBlock,
@@ -22,6 +36,10 @@ enum class J3dLitTexturedResult : std::uint8_t {
     UnsupportedRasterPolicy,
 };
 
+[[nodiscard]] const char* j3d_lit_color_result_name(J3dLitColorResult result) noexcept;
+[[nodiscard]] J3dLitColorResult
+classify_j3d_lit_color_material(const J3dMaterialState& state, const ModelLightingContext& lighting,
+                                LitColorMaterial& material) noexcept;
 [[nodiscard]] const char* j3d_lit_textured_result_name(J3dLitTexturedResult result) noexcept;
 [[nodiscard]] J3dLitTexturedResult
 classify_j3d_lit_textured_material(const J3dMaterialState& state, const PictureTexture& texture,

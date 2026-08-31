@@ -15,12 +15,102 @@ constexpr std::uint16_t kUnlitMaterialAlpha = 0x0700;
 constexpr std::uint16_t kUnlitVertexAlpha = 0x0701;
 constexpr std::array<std::uint8_t, 8> kTextureTimesRaster{0xC0, 0x08, 0xF8, 0xAF,
                                                           0xC1, 0x08, 0xF2, 0xF0};
+constexpr std::array<std::uint8_t, 8> kRasterPassThrough{0xC0, 0x08, 0xAF, 0xFF,
+                                                         0xC1, 0x08, 0xBF, 0xF0};
 constexpr std::array<std::uint8_t, 8> kHalfDiffuseStage{0xC0, 0x08, 0xCA, 0xEF,
                                                         0xC1, 0x08, 0xFF, 0xD0};
 constexpr std::array<std::uint8_t, 8> kHalfDiffuseTextureStage{0xC2, 0x08, 0xF0, 0x8F,
                                                                0xC3, 0x08, 0xF0, 0x70};
 
+struct StandardDiffuseChannels {
+    bool supported = false;
+    bool usesVertexRgb = false;
+    bool usesVertexAlpha = false;
+};
+
+StandardDiffuseChannels standard_diffuse_channels(const J3dMaterialState& state) noexcept {
+    if (state.colorChannelControl == kDiffuseMaterialColor &&
+        state.alphaChannelControl == kUnlitMaterialAlpha) {
+        return {.supported = true};
+    }
+    if (state.colorChannelControl == kDiffuseVertexColor &&
+        state.alphaChannelControl == kUnlitVertexAlpha) {
+        return {.supported = true, .usesVertexRgb = true, .usesVertexAlpha = true};
+    }
+    return {};
+}
+
+bool valid_lighting(const ModelLightingContext& lighting) noexcept {
+    return lighting.pointLightCount != 0 && lighting.pointLightCount <= lighting.pointLights.size();
+}
+
 } // namespace
+
+const char* j3d_lit_color_result_name(J3dLitColorResult result) noexcept {
+    switch (result) {
+    case J3dLitColorResult::Success:
+        return "success";
+    case J3dLitColorResult::UnsupportedColorBlock:
+        return "unsupported colour block";
+    case J3dLitColorResult::UnsupportedColorChannels:
+        return "unsupported colour channels";
+    case J3dLitColorResult::UnsupportedTevBlock:
+        return "unsupported colour-stage block";
+    case J3dLitColorResult::UnsupportedStageCount:
+        return "unsupported colour-stage count";
+    case J3dLitColorResult::TextureBinding:
+        return "texture binding";
+    case J3dLitColorResult::UnsupportedColorProgram:
+        return "unsupported colour program";
+    case J3dLitColorResult::MissingNormal:
+        return "missing normal";
+    case J3dLitColorResult::MissingVertexColor:
+        return "missing vertex colour";
+    case J3dLitColorResult::MissingLightingContext:
+        return "missing lighting context";
+    case J3dLitColorResult::UnsupportedRasterPolicy:
+        return "unsupported raster policy";
+    }
+    return "unknown";
+}
+
+J3dLitColorResult classify_j3d_lit_color_material(const J3dMaterialState& state,
+                                                  const ModelLightingContext& lighting,
+                                                  LitColorMaterial& material) noexcept {
+    if (!state.supportedColorBlock)
+        return J3dLitColorResult::UnsupportedColorBlock;
+    const StandardDiffuseChannels channels = standard_diffuse_channels(state);
+    if (!state.lightingEnabled || state.colorChannelCount == 0 || !channels.supported)
+        return J3dLitColorResult::UnsupportedColorChannels;
+    if (!state.supportedTevBlock)
+        return J3dLitColorResult::UnsupportedTevBlock;
+    if (state.tevStageCount != 1)
+        return J3dLitColorResult::UnsupportedStageCount;
+    if (state.textureNumber0 != 0xFFFFU || state.textureCoordinate0 != 0xFFU ||
+        state.textureMap0 != 0xFFU || state.colorChannel0 != kColor0Alpha0) {
+        return J3dLitColorResult::TextureBinding;
+    }
+    if (state.tevStage0 != kRasterPassThrough)
+        return J3dLitColorResult::UnsupportedColorProgram;
+    if (!state.hasNormal)
+        return J3dLitColorResult::MissingNormal;
+    if ((channels.usesVertexRgb || channels.usesVertexAlpha) && !state.hasVertexColor)
+        return J3dLitColorResult::MissingVertexColor;
+    if (!valid_lighting(lighting))
+        return J3dLitColorResult::MissingLightingContext;
+    ModelRasterPolicy raster{};
+    if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
+        return J3dLitColorResult::UnsupportedRasterPolicy;
+
+    material.baseColor = color_from_rgba8(state.materialColorRgba8);
+    material.ambientColor = state.usesMaterialAmbient ? color_from_rgba8(state.ambientColorRgba8)
+                                                      : lighting.ambientColor;
+    material.lighting = lighting;
+    material.usesVertexRgb = channels.usesVertexRgb;
+    material.usesVertexAlpha = channels.usesVertexAlpha;
+    material.raster = raster;
+    return J3dLitColorResult::Success;
+}
 
 const char* j3d_lit_textured_result_name(J3dLitTexturedResult result) noexcept {
     switch (result) {
@@ -58,14 +148,11 @@ J3dLitTexturedResult classify_j3d_lit_textured_material(const J3dMaterialState& 
                                                         LitTexturedMaterial& material) noexcept {
     if (!state.supportedColorBlock)
         return J3dLitTexturedResult::UnsupportedColorBlock;
-    const bool materialColor = state.colorChannelControl == kDiffuseMaterialColor &&
-                               state.alphaChannelControl == kUnlitMaterialAlpha;
-    const bool vertexColor = state.colorChannelControl == kDiffuseVertexColor &&
-                             state.alphaChannelControl == kUnlitVertexAlpha;
+    const StandardDiffuseChannels channels = standard_diffuse_channels(state);
     const bool halfDiffuse = state.colorChannelControl == kHalfDiffuseVertexColor &&
                              state.alphaChannelControl == kUnlitMaterialAlpha;
     if (!state.lightingEnabled || state.colorChannelCount == 0 ||
-        (!materialColor && !vertexColor && !halfDiffuse)) {
+        (!channels.supported && !halfDiffuse)) {
         return J3dLitTexturedResult::UnsupportedColorChannels;
     }
     if (!state.supportedTevBlock)
@@ -93,9 +180,9 @@ J3dLitTexturedResult classify_j3d_lit_textured_material(const J3dMaterialState& 
         return J3dLitTexturedResult::UnsupportedColorProgram;
     if (!state.hasNormal)
         return J3dLitTexturedResult::MissingNormal;
-    if ((vertexColor || halfDiffuse) && !state.hasVertexColor)
+    if ((channels.usesVertexRgb || halfDiffuse) && !state.hasVertexColor)
         return J3dLitTexturedResult::MissingVertexColor;
-    if (lighting.pointLightCount == 0 || lighting.pointLightCount > lighting.pointLights.size())
+    if (!valid_lighting(lighting))
         return J3dLitTexturedResult::MissingLightingContext;
     ModelRasterPolicy raster{};
     if (classify_j3d_raster_policy(state, raster) != J3dRasterPolicyResult::Success)
@@ -107,8 +194,8 @@ J3dLitTexturedResult classify_j3d_lit_textured_material(const J3dMaterialState& 
                                                       : lighting.ambientColor;
     material.lighting = lighting;
     material.litColorWeight = halfDiffuse ? 0.5F : 1.0F;
-    material.usesVertexRgb = vertexColor || halfDiffuse;
-    material.usesVertexAlpha = vertexColor;
+    material.usesVertexRgb = channels.usesVertexRgb || halfDiffuse;
+    material.usesVertexAlpha = channels.usesVertexAlpha;
     material.raster = raster;
     return J3dLitTexturedResult::Success;
 }

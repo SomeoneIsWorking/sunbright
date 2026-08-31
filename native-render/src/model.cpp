@@ -146,6 +146,10 @@ std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept {
             hash *= kPrime;
         }
     };
+    const auto appendByte = [&](std::uint8_t value) {
+        hash ^= value;
+        hash *= kPrime;
+    };
     for (const MeshVertex& vertex : vertices) {
         append(vertex.position.x);
         append(vertex.position.y);
@@ -161,6 +165,7 @@ std::uint64_t mesh_revision(std::span<const MeshVertex> vertices) noexcept {
         append(vertex.normal.x);
         append(vertex.normal.y);
         append(vertex.normal.z);
+        appendByte(vertex.matrixIndex);
     }
     return hash;
 }
@@ -174,7 +179,8 @@ Matrix4x4 zero_to_one_depth_projection(Matrix4x4 projection) noexcept {
 bool valid(const MeshVertex& vertex) noexcept {
     return finite(vertex.position.x) && finite(vertex.position.y) && finite(vertex.position.z) &&
            finite(vertex.uv.x) && finite(vertex.uv.y) && finite(vertex.uv1.x) &&
-           finite(vertex.uv1.y) && valid(vertex.color) && valid(vertex.normal);
+           finite(vertex.uv1.y) && valid(vertex.color) && valid(vertex.normal) &&
+           vertex.matrixIndex < kMaxModelMatrices;
 }
 
 bool valid(const MeshResourceView& mesh) noexcept {
@@ -262,6 +268,9 @@ bool valid(const ModelDraw& draw) noexcept {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.color) &&
                        finite(material.alphaScale) && material.alphaScale >= 0.0F;
+            } else if constexpr (std::is_same_v<Material, LitColorMaterial>) {
+                return valid(material.baseColor) && valid(material.ambientColor) &&
+                       valid(material.lighting);
             } else if constexpr (std::is_same_v<Material, LitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
@@ -287,13 +296,51 @@ bool valid(const ModelDraw& draw) noexcept {
             }
         },
         draw.material);
+    const bool validPose =
+        draw.pose.count != 0 && draw.pose.count <= draw.pose.modelViews.size() &&
+        std::ranges::all_of(
+            draw.pose.modelViews.begin(), draw.pose.modelViews.begin() + draw.pose.count,
+            [](const Matrix3x4& matrix) { return std::ranges::all_of(matrix.value, finite); });
     return draw.instance != 0 && draw.mesh.resource != 0 && draw.mesh.vertexCount != 0 &&
-           draw.mesh.vertexCount % 3U == 0U && valid(draw.modelView) && valid(draw.projection) &&
+           draw.mesh.vertexCount % 3U == 0U && validPose && valid(draw.projection) &&
            validMaterial && valid(raster_policy(draw.material));
 }
 
+bool model_mesh_matches(const ModelDraw& draw, const MeshResourceView& mesh) noexcept {
+    return valid(draw) && valid(mesh) && draw.mesh.resource == mesh.resource &&
+           draw.mesh.revision == mesh.revision && draw.mesh.vertexCount == mesh.vertices.size() &&
+           std::ranges::all_of(mesh.vertices, [&](const MeshVertex& vertex) {
+               return vertex.matrixIndex < draw.pose.count;
+           });
+}
+
+ModelPoseBuildResult build_model_pose(std::span<const ModelMatrixBinding> bindings, ModelPose& pose,
+                                      std::span<std::uint8_t> sourceToCompact) noexcept {
+    if (bindings.empty())
+        return ModelPoseBuildResult::Empty;
+    if (bindings.size() > kMaxModelMatrices)
+        return ModelPoseBuildResult::TooManyMatrices;
+    std::ranges::fill(sourceToCompact, 0xFFU);
+    ModelPose result{};
+    for (std::size_t index = 0; index < bindings.size(); ++index) {
+        const ModelMatrixBinding& binding = bindings[index];
+        if (binding.sourceIndex >= sourceToCompact.size())
+            return ModelPoseBuildResult::SourceIndexOutOfRange;
+        if (sourceToCompact[binding.sourceIndex] != 0xFFU)
+            return ModelPoseBuildResult::DuplicateSourceIndex;
+        if (!std::ranges::all_of(binding.modelView.value, finite))
+            return ModelPoseBuildResult::InvalidMatrix;
+        sourceToCompact[binding.sourceIndex] = static_cast<std::uint8_t>(index);
+        result.modelViews[index] = binding.modelView;
+    }
+    result.count = static_cast<std::uint8_t>(bindings.size());
+    pose = result;
+    return ModelPoseBuildResult::Success;
+}
+
 ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noexcept {
-    const auto& modelView = draw.modelView.value;
+    const Matrix3x4& modelViewMatrix = draw.pose.modelViews[vertex.matrixIndex];
+    const auto& modelView = modelViewMatrix.value;
     const float eyeX = modelView[0] * vertex.position.x + modelView[1] * vertex.position.y +
                        modelView[2] * vertex.position.z + modelView[3];
     const float eyeY = modelView[4] * vertex.position.x + modelView[5] * vertex.position.y +
@@ -308,7 +355,7 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
         projection[12] * eyeX + projection[13] * eyeY + projection[14] * eyeZ + projection[15],
     };
     const Vec3 eyePosition{eyeX, eyeY, eyeZ};
-    const Vec3 normal = transformed_normal(draw.modelView, vertex.normal);
+    const Vec3 normal = transformed_normal(modelViewMatrix, vertex.normal);
     const VertexColors colors = std::visit(
         [&](const auto& material) {
             using Material = std::remove_cvref_t<decltype(material)>;
@@ -327,6 +374,13 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                     .multiplicative = {0.0F, 0.0F, 0.0F, material.alphaScale},
                     .additive = {material.color.r, material.color.g, material.color.b, 0.0F},
                 };
+            } else if constexpr (std::is_same_v<Material, LitColorMaterial>) {
+                const Color rgbSource = material.usesVertexRgb ? vertex.color : material.baseColor;
+                const float alphaSource =
+                    material.usesVertexAlpha ? vertex.color.a : material.baseColor.a;
+                const Color lit = diffuse_lighting(rgbSource, material.ambientColor,
+                                                   material.lighting, eyePosition, normal);
+                return VertexColors{.multiplicative = {lit.r, lit.g, lit.b, alphaSource}};
             } else if constexpr (std::is_same_v<Material, LitTexturedMaterial>) {
                 const Color rgbSource = material.usesVertexRgb ? vertex.color : material.baseColor;
                 const float alphaSource =

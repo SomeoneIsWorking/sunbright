@@ -64,7 +64,9 @@ int main() {
 
     ModelDraw draw{.instance = 1,
                    .mesh = {.resource = 1, .revision = 1, .vertexCount = 3},
-                   .modelView = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+                   .pose = {.modelViews = {sb::native_render::Matrix3x4{
+                                .value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}}},
+                            .count = 1},
                    .projection = {.value = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
                    .material = material};
     const ClipVertex transformed = transform_vertex(draw, MeshVertex{});
