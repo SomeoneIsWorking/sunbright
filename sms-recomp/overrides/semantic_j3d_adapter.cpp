@@ -9,6 +9,7 @@
 #include "../runtime/render/j3d_decode.h"
 #include "../runtime/sb_assert.h"
 
+#include <sunbright/native_render/j3d_alpha_masked_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
@@ -59,6 +60,7 @@ struct Stats {
     std::array<std::uint64_t, 13> specularTexturedMaterialRejections{};
     std::uint64_t submittedModels = 0;
     std::uint64_t submittedLitModels = 0;
+    std::uint64_t submittedAlphaMaskedModels = 0;
     std::uint64_t submittedVertices = 0;
     std::uint64_t unlitTexturedCandidates = 0;
     std::uint64_t litUntexturedCandidates = 0;
@@ -124,8 +126,10 @@ struct ProgramObservation {
     std::uint32_t firstMaterialColor1 = 0;
     std::uint32_t firstAmbientColor1 = 0;
     std::array<std::uint32_t, 4> firstKonstColors{};
+    std::array<std::int16_t, 4> firstTevColor0{};
     bool secondaryColorsVary = false;
     bool konstColorsVary = false;
+    bool tevColor0Varies = false;
 };
 
 Stats g_stats{};
@@ -241,7 +245,7 @@ std::string semantic_j3d_stats_text() {
     std::snprintf(
         output, sizeof(output),
         "J3D native-model coverage: considered=%llu submitted=%llu models/%llu vertices "
-        "(%llu lit models); "
+        "(%llu lit models, %llu solid-colour alpha-mask models); "
         "unreadable=%llu layout=%llu no-perspective-context=%llu non-rigid=%llu decode=%llu "
         "texture-table=%llu texture-decode=%llu; material "
         "rejections: colour-block=%llu lighting=%llu missing-channel=%llu texture=%llu "
@@ -255,6 +259,7 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.submittedModels),
         static_cast<unsigned long long>(g_stats.submittedVertices),
         static_cast<unsigned long long>(g_stats.submittedLitModels),
+        static_cast<unsigned long long>(g_stats.submittedAlphaMaskedModels),
         static_cast<unsigned long long>(g_stats.materialMemoryFailures),
         static_cast<unsigned long long>(g_stats.layoutFailures),
         static_cast<unsigned long long>(g_stats.noPerspectiveContexts),
@@ -392,6 +397,7 @@ std::string semantic_j3d_stats_text() {
             "path=%llu-observed/%llu-perspective/%llu-accepted/%llu-resources/%llu-ready/"
             "%llu-models "
             "secondColor=%08x/%08x varies=%u "
+            "tevColor0=%d/%d/%d/%d varies=%u "
             "konstSel=%02x/%02x konst=%08x/%08x/%08x/%08x varies=%u",
             litIndex, static_cast<unsigned long long>(observation.count), key.materialIndex,
             observation.materialName.c_str(), key.hasNormal ? 1U : 0U, key.colorChannelCount,
@@ -414,8 +420,10 @@ std::string semantic_j3d_stats_text() {
             static_cast<unsigned long long>(observation.perspectiveReady),
             static_cast<unsigned long long>(observation.submittedModels),
             observation.firstMaterialColor1, observation.firstAmbientColor1,
-            observation.secondaryColorsVary ? 1U : 0U, key.konstColorSelection0,
-            key.konstColorSelection1, observation.firstKonstColors[0],
+            observation.secondaryColorsVary ? 1U : 0U, observation.firstTevColor0[0],
+            observation.firstTevColor0[1], observation.firstTevColor0[2],
+            observation.firstTevColor0[3], observation.tevColor0Varies ? 1U : 0U,
+            key.konstColorSelection0, key.konstColorSelection1, observation.firstKonstColors[0],
             observation.firstKonstColors[1], observation.firstKonstColors[2],
             observation.firstKonstColors[3], observation.konstColorsVary ? 1U : 0U);
         report += line;
@@ -498,6 +506,7 @@ void submit_semantic_j3d_shape(u32 shape) {
         observation.firstMaterialColor1 = materialState.materialColor1Rgba8;
         observation.firstAmbientColor1 = materialState.ambientColor1Rgba8;
         observation.firstKonstColors = materialState.konstColorRgba8;
+        observation.firstTevColor0 = materialState.tevColor0S10;
     } else {
         if (observation.firstMaterialColor1 != materialState.materialColor1Rgba8 ||
             observation.firstAmbientColor1 != materialState.ambientColor1Rgba8) {
@@ -505,6 +514,8 @@ void submit_semantic_j3d_shape(u32 shape) {
         }
         if (observation.firstKonstColors != materialState.konstColorRgba8)
             observation.konstColorsVary = true;
+        if (observation.firstTevColor0 != materialState.tevColor0S10)
+            observation.tevColor0Varies = true;
     }
     ++observation.count;
     const sb::native_render::ModelSceneContext* scene = sb::recomp::current_semantic_j3d_scene();
@@ -526,6 +537,7 @@ void submit_semantic_j3d_shape(u32 shape) {
         ++g_stats.litTexturedCandidates;
     sb::native_render::ModelMaterial semanticMaterial{};
     bool submittedLitMaterial = false;
+    bool submittedAlphaMaskedMaterial = false;
     std::array<sb::native_render::DecodedImageView, 1> semanticImages{};
     std::span<const sb::native_render::DecodedImageView> images;
     sb::native_render::UnlitColorMaterial colorMaterial{};
@@ -549,6 +561,12 @@ void submit_semantic_j3d_shape(u32 shape) {
                                 : sb::native_render::J3dLitTexturedResult::MissingLightingContext;
         const bool isUnlitTextured =
             unlitFamily == sb::native_render::J3dUnlitTexturedResult::Success;
+        sb::native_render::AlphaMaskedColorMaterial alphaMaskedMaterial{};
+        const sb::native_render::J3dAlphaMaskedMaterialResult alphaMaskedFamily =
+            sb::native_render::classify_j3d_alpha_masked_material(materialState, placeholder,
+                                                                  alphaMaskedMaterial);
+        const bool isAlphaMasked =
+            alphaMaskedFamily == sb::native_render::J3dAlphaMaskedMaterialResult::Success;
         const bool isLitTextured = litFamily == sb::native_render::J3dLitTexturedResult::Success;
         sb::native_render::TintedSpecularTexturedMaterial specularMaterial{};
         const sb::native_render::J3dSpecularTexturedResult specularFamily =
@@ -558,7 +576,7 @@ void submit_semantic_j3d_shape(u32 shape) {
                 : sb::native_render::J3dSpecularTexturedResult::MissingLightingContext;
         const bool isSpecularTextured =
             specularFamily == sb::native_render::J3dSpecularTexturedResult::Success;
-        if (!isUnlitTextured && !isLitTextured && !isSpecularTextured) {
+        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isSpecularTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
@@ -580,7 +598,17 @@ void submit_semantic_j3d_shape(u32 shape) {
                 ++g_stats.textureDecodeFailures[errorIndex];
             return;
         }
-        if (isSpecularTextured) {
+        if (isAlphaMasked) {
+            const sb::native_render::J3dAlphaMaskedMaterialResult classified =
+                sb::native_render::classify_j3d_alpha_masked_material(
+                    materialState, g_texture.texture, alphaMaskedMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dAlphaMaskedMaterialResult::Success,
+                      "decoded J3D texture invalidated a preclassified alpha-mask material: "
+                      "result=%s",
+                      sb::native_render::j3d_alpha_masked_material_result_name(classified));
+            semanticMaterial = alphaMaskedMaterial;
+            submittedAlphaMaskedMaterial = true;
+        } else if (isSpecularTextured) {
             const sb::native_render::J3dSpecularTexturedResult classified =
                 sb::native_render::classify_j3d_specular_textured_material(
                     materialState, g_texture.texture, *lighting, specularMaterial);
@@ -684,6 +712,8 @@ void submit_semantic_j3d_shape(u32 shape) {
         ++g_stats.submittedModels;
         if (submittedLitMaterial)
             ++g_stats.submittedLitModels;
+        if (submittedAlphaMaskedMaterial)
+            ++g_stats.submittedAlphaMaskedModels;
         g_stats.submittedVertices += g_vertices.size();
     }
 }

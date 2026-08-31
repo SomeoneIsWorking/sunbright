@@ -77,6 +77,18 @@ int main() {
     assert(near(litVertex.color.a, 0.8F));
     assert(litVertex.additiveColor == Color{});
 
+    ModelDraw masked = draw;
+    masked.material = AlphaMaskedColorMaterial{
+        .texture = {.resource = 19, .width = 1, .height = 1},
+        .color = {0.25F, 0.5F, 0.75F, 1.0F},
+        .alphaScale = 4.0F,
+    };
+    assert(material_texture(masked.material) ==
+           &std::get<AlphaMaskedColorMaterial>(masked.material).texture);
+    const ClipVertex maskedVertex = transform_vertex(masked, vertex);
+    assert(maskedVertex.color == (Color{0.0F, 0.0F, 0.0F, 4.0F}));
+    assert(maskedVertex.additiveColor == (Color{0.25F, 0.5F, 0.75F, 0.0F}));
+
     // The lighting accumulator saturates before material multiplication. This distinguishes the
     // shipping equation from final-product clamping: 0.5 * clamp(0.8 + 0.8) is 0.5, not 0.8.
     auto& saturatedMaterial = std::get<LitTexturedMaterial>(lit.material);

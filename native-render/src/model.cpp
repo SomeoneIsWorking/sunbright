@@ -197,6 +197,7 @@ const PictureTexture* material_texture(const ModelMaterial& material) noexcept {
         [](const auto& value) -> const PictureTexture* {
             using Material = std::remove_cvref_t<decltype(value)>;
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
+                          std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                           std::is_same_v<Material, LitTexturedMaterial> ||
                           std::is_same_v<Material, TintedSpecularTexturedMaterial>) {
                 return &value.texture;
@@ -216,6 +217,10 @@ bool valid(const ModelDraw& draw) noexcept {
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0;
+            } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
+                return material.texture.resource != 0 && material.texture.width != 0 &&
+                       material.texture.height != 0 && valid(material.color) &&
+                       finite(material.alphaScale) && material.alphaScale >= 0.0F;
             } else if constexpr (std::is_same_v<Material, LitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
@@ -268,6 +273,11 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                 return VertexColors{.multiplicative = material.usesVertexColor
                                                           ? vertex.color
                                                           : Color{1.0F, 1.0F, 1.0F, 1.0F}};
+            } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
+                return VertexColors{
+                    .multiplicative = {0.0F, 0.0F, 0.0F, material.alphaScale},
+                    .additive = {material.color.r, material.color.g, material.color.b, 0.0F},
+                };
             } else if constexpr (std::is_same_v<Material, LitTexturedMaterial>) {
                 const Color rgbSource = material.usesVertexRgb ? vertex.color : material.baseColor;
                 const float alphaSource =

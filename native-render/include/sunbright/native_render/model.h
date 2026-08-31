@@ -96,6 +96,15 @@ struct UnlitTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
+// A decoded texture used only as an opacity mask for one ordinary solid colour. Texture RGB is
+// deliberately ignored; alphaScale expresses authored mask amplification before the raster test.
+struct AlphaMaskedColorMaterial {
+    PictureTexture texture{};
+    Color color{};
+    float alphaScale = 1.0F;
+    ModelRasterPolicy raster{};
+};
+
 // Ordinary view-space point light. Runtime adapters resolve the game's light owner and transform
 // its world-space position before publication; no GX light object or register encoding crosses
 // this boundary.
@@ -148,8 +157,9 @@ struct TintedSpecularTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
-using ModelMaterial = std::variant<UnlitColorMaterial, UnlitTexturedMaterial, LitTexturedMaterial,
-                                   TintedSpecularTexturedMaterial>;
+using ModelMaterial =
+    std::variant<UnlitColorMaterial, UnlitTexturedMaterial, AlphaMaskedColorMaterial,
+                 LitTexturedMaterial, TintedSpecularTexturedMaterial>;
 
 struct ModelDraw {
     std::uint64_t instance = 0;

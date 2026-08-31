@@ -82,6 +82,19 @@ bool tev_konst_offsets(std::uint32_t vptr, std::uint32_t& colorOffset,
     }
 }
 
+std::uint32_t tev_color_offset(std::uint32_t vptr) noexcept {
+    switch (vptr) {
+    case kTevBlock2Vptr:
+        return 0x10;
+    case kTevBlock4Vptr:
+        return 0x3E;
+    case kTevBlock16Vptr:
+        return 0xD6;
+    default:
+        return 0;
+    }
+}
+
 } // namespace
 
 bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::uint32_t material,
@@ -214,6 +227,18 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
     captured.hasVertexColor = hasVertexColor;
     captured.hasNormal = hasNormal;
     if (captured.supportedTevBlock) {
+        const std::uint32_t colorOffset = tev_color_offset(tevVptr);
+        if (colorOffset != 0) {
+            captured.hasTevColor0 = true;
+            for (std::size_t component = 0; component < captured.tevColor0S10.size(); ++component) {
+                std::uint16_t raw = 0;
+                if (!reader.u16(tevBlock + colorOffset + static_cast<std::uint32_t>(component * 2),
+                                raw)) {
+                    return false;
+                }
+                captured.tevColor0S10[component] = static_cast<std::int16_t>(raw);
+            }
+        }
         if (!reader.u16(tevBlock + 0x04, captured.textureNumber0) ||
             !reader.u8(tevBlock + orderOffset, captured.textureCoordinate0) ||
             !reader.u8(tevBlock + orderOffset + 1, captured.textureMap0) ||

@@ -4,14 +4,14 @@ kind: claim
 status: holds
 created: 2026-08-31
 tags: renderer,j3d,lighting,recomp,decomp
-depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
+depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
 reconfirmed: 2026-08-31
-verified_at: 2026-08-31 07:45:14+00:00
+verified_at: 2026-08-31 08:14:31+00:00
 ---
 
 ## Claim
 
-Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact single-texture diffuse/specular material values into the shared PC-native J3D renderer without consuming GX light state.
+Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact single-texture diffuse/specular or solid-colour mask material values into the shared PC-native J3D renderer without consuming GX light state.
 
 ## Evidence
 
@@ -28,3 +28,15 @@ Focused CPU material/model controls passed; a guarded 60-present recomp Delfino 
 ## Re-confirmed 2026-08-31 — directional specular
 
 Exact channel, tint-selector, stage, normal, and shininess controls passed. The watched shipping-shader control distinguished texture-times-diffuse from the affine red-tint result while preserving green through the exact sRGB sample/output conversion, with no kernel GPU fault. A guarded 60-present recomp Delfino audit published 400/400 high-level light updates with zero shininess failures and submitted all 60 perspective-reached `_mat_hand3_L` specular models, raising the lit count to 160 among 3,320 total. A guarded 400-present native-decomp audit raised the lit count to 666 among 42,033 total. Both exited 0 under the live GPU watcher.
+
+## Re-confirmed 2026-08-31 — solid-colour texture mask
+
+The next reached J3D program was decoded before implementation: its RGB equation is the diffuse
+channel multiplied by colour register 0, which was a stable `(0,0,0,255)`, while texture alpha is
+amplified fourfold before a half-opacity cutout. Exact CPU controls reject an altered register,
+stage, normal, or raster policy. A watched shipping-GPU control rejects source alpha 31 and accepts
+32 after the 4x scale, with no kernel fault. The guarded 60-present recomp run submitted all 40/40
+perspective-reached instances as solid-colour masks, raising native model coverage from 3,320 to
+3,360. The guarded 400-present native-decomp run remained healthy at 42,033 models but encountered
+zero instances of this exact family; it is therefore not evidence that the decomp scene reached the
+new classifier.

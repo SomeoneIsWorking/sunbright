@@ -485,6 +485,34 @@ int main() {
                    std::span<const DecodedImageView>(&cutoutImage, 1));
         assert(pixel(textureAt, 8, 8).r > 0.9F);
 
+        // The solid-colour mask material ignores texture RGB and amplifies only texture alpha.
+        // Adjacent 31/32 texels prove its authored 4x alpha scale reaches the shipping fragment
+        // shader: 31*4 stays below the 128 cutout, while 32*4 is accepted as solid green.
+        std::array<std::uint8_t, 4> maskTexel{255, 0, 255, 31};
+        DecodedImageView maskImage{
+            .resource = 208, .revision = 1, .width = 1, .height = 1, .rgba8 = maskTexel};
+        ModelDraw alphaMask = model;
+        alphaMask.instance = 209;
+        alphaMask.material = sb::native_render::AlphaMaskedColorMaterial{
+            .texture = {.resource = 208, .revision = 1, .width = 1, .height = 1, .hasAlpha = true},
+            .color = {0, 1, 0, 1},
+            .alphaScale = 4,
+            .raster = {.cull = sb::native_render::ModelCullMode::None,
+                       .alphaTest = sb::native_render::ModelAlphaTest::GreaterOrEqualHalf},
+        };
+        const SemanticFramePixels maskBelow =
+            render(std::span<const ModelDraw>(&alphaMask, 1),
+                   std::span<const DecodedImageView>(&maskImage, 1));
+        require_color(pixel(maskBelow, 8, 8), {});
+        maskTexel[3] = 32;
+        maskImage.revision = 2;
+        std::get<sb::native_render::AlphaMaskedColorMaterial>(alphaMask.material).texture.revision =
+            2;
+        const SemanticFramePixels maskAt = render(std::span<const ModelDraw>(&alphaMask, 1),
+                                                  std::span<const DecodedImageView>(&maskImage, 1));
+        assert(pixel(maskAt, 8, 8).g > 0.9F);
+        assert(pixel(maskAt, 8, 8).r < 0.01F);
+
         // Affine texture control for the specular-material shader path. The baseline exercises
         // texture * diffuse colour; changing only the semantic tint must add red while preserving
         // green. This runs the shipping vertex upload and fragment shader, not a CPU copy.

@@ -1,5 +1,6 @@
 #include "native_j3d_material_adapter.h"
 
+#include <sunbright/native_render/j3d_alpha_masked_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
 
 #include <JSystem/J3D/J3DGraphBase/J3DMaterial.hpp>
@@ -143,6 +144,12 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
     captured.hasVertexColor = hasVertexColor;
     captured.hasNormal = hasNormal;
     if (captured.supportedTevBlock) {
+        J3DGXColorS10* tevColor0 = tev->getTevColor(0);
+        if (tevColor0 != nullptr) {
+            captured.hasTevColor0 = true;
+            captured.tevColor0S10 = {tevColor0->color.r, tevColor0->color.g, tevColor0->color.b,
+                                     tevColor0->color.a};
+        }
         captured.textureNumber0 = tev->getTexNo(0);
         J3DTevOrder* order = tev->getTevOrder(0);
         J3DTevStage* stage = tev->getTevStage(0);
@@ -202,6 +209,10 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     const bool isUnlitTextured =
         native_render::classify_j3d_unlit_textured_material(state, placeholder, texturedMaterial) ==
         native_render::J3dUnlitTexturedResult::Success;
+    native_render::AlphaMaskedColorMaterial alphaMaskedMaterial{};
+    const bool isAlphaMasked = native_render::classify_j3d_alpha_masked_material(
+                                   state, placeholder, alphaMaskedMaterial) ==
+                               native_render::J3dAlphaMaskedMaterialResult::Success;
     const native_render::ModelLightingContext* lighting =
         native_render::current_j3d_stage_lighting();
     native_render::LitTexturedMaterial litMaterial{};
@@ -214,7 +225,7 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         lighting != nullptr && native_render::classify_j3d_specular_textured_material(
                                    state, placeholder, *lighting, specularMaterial) ==
                                    native_render::J3dSpecularTexturedResult::Success;
-    if (!isUnlitTextured && !isLitTextured && !isSpecularTextured) {
+    if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isSpecularTextured) {
         return NativeJ3dMaterialResult::UnsupportedProgram;
     }
     if (textureTable == nullptr || state.textureNumber0 >= textureTable->getNum())
@@ -229,7 +240,14 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
                                        reinterpret_cast<std::uintptr_t>(image), result.texture);
     if (textureError != native_render::ResTimgDecodeError::None)
         return NativeJ3dMaterialResult::TextureDecodeFailure;
-    if (isSpecularTextured) {
+    if (isAlphaMasked) {
+        if (native_render::classify_j3d_alpha_masked_material(state, result.texture.texture,
+                                                              alphaMaskedMaterial) !=
+            native_render::J3dAlphaMaskedMaterialResult::Success) {
+            return NativeJ3dMaterialResult::UnsupportedProgram;
+        }
+        result.material = alphaMaskedMaterial;
+    } else if (isSpecularTextured) {
         if (native_render::classify_j3d_specular_textured_material(state, result.texture.texture,
                                                                    *lighting, specularMaterial) !=
             native_render::J3dSpecularTexturedResult::Success) {

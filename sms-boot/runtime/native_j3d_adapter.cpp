@@ -30,6 +30,7 @@ struct Stats {
     std::uint64_t considered = 0;
     std::uint64_t submittedModels = 0;
     std::uint64_t submittedLitModels = 0;
+    std::uint64_t submittedAlphaMaskedModels = 0;
     std::uint64_t submittedVertices = 0;
     std::uint64_t layoutFailures = 0;
     std::uint64_t materialFailures = 0;
@@ -226,6 +227,10 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
                 capturedMaterial.material)) {
             ++g_stats.submittedLitModels;
         }
+        if (std::holds_alternative<sb::native_render::AlphaMaskedColorMaterial>(
+                capturedMaterial.material)) {
+            ++g_stats.submittedAlphaMaskedModels;
+        }
         g_stats.submittedVertices += g_vertices.size();
     }
 }
@@ -234,7 +239,7 @@ extern "C" void sb_native_j3d_report_stats(void) {
     const sb::NativeJ3dSceneStats sceneStats = sb::native_j3d_scene_stats();
     sb_logf("semantic",
             "native J3D models: considered=%llu submitted=%llu models/%llu vertices "
-            "(%llu lit models) "
+            "(%llu lit models, %llu solid-colour alpha-mask models) "
             "rejected(layout=%llu material=%llu no-perspective-context=%llu non-rigid=%llu "
             "decode=%llu); high-level camera dispatches: perspective=%llu orthographic=%llu "
             "unavailable-before-camera=%llu; published raster families: opaque=%llu cutout=%llu "
@@ -243,6 +248,7 @@ extern "C" void sb_native_j3d_report_stats(void) {
             static_cast<unsigned long long>(g_stats.submittedModels),
             static_cast<unsigned long long>(g_stats.submittedVertices),
             static_cast<unsigned long long>(g_stats.submittedLitModels),
+            static_cast<unsigned long long>(g_stats.submittedAlphaMaskedModels),
             static_cast<unsigned long long>(g_stats.layoutFailures),
             static_cast<unsigned long long>(g_stats.materialFailures),
             static_cast<unsigned long long>(g_stats.noPerspectiveContexts),

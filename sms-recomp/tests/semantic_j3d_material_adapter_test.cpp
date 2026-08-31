@@ -123,12 +123,18 @@ int main() {
     write_u32(memory, pixelEngine, 0x803E0E64);
 
     write_u32(memory, tev, 0x803E0B4C);
+    write_u16(memory, tev + 0x10, 0x0100);
+    write_u16(memory, tev + 0x12, 0xFF80);
+    write_u16(memory, tev + 0x14, 0x0040);
+    write_u16(memory, tev + 0x16, 0x0020);
     memory.bytes[tev + 0x30] = 1;
     memory.bytes[tev + 0x08] = 0xFF;
     memory.bytes[tev + 0x09] = 0xFF;
     memory.bytes[tev + 0x0A] = 4;
     std::memcpy(memory.bytes.data() + tev + 0x31, stage.data(), stage.size());
     assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
+    assert(state.hasTevColor0);
+    assert(state.tevColor0S10 == (std::array<std::int16_t, 4>{0x0100, -0x0080, 0x0040, 0x0020}));
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     memory.bytes[color + 0x14] = 2;
