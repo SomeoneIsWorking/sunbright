@@ -485,6 +485,53 @@ int main() {
         require_color(pixel(litColorFrame, 8, 8), {0, 1, 0, 1});
         assert(hash(litColorFrame) != hash(backCull));
 
+        // Texture-free specular control: green vertex diffuse is halved while a red directional
+        // highlight contributes another half. Disabling only the highlight must remove red without
+        // disturbing green, through the shipping vertex transform and colour fragment shader.
+        std::array<MeshVertex, 3> colorSpecularVertices = vertices;
+        for (MeshVertex& colorSpecularVertex : colorSpecularVertices) {
+            colorSpecularVertex.color = {0, 1, 0, 1};
+            colorSpecularVertex.normal = {0, 0, 1};
+        }
+        const MeshResourceView colorSpecularMesh{224, 1, colorSpecularVertices};
+        ModelDraw colorSpecular = model;
+        colorSpecular.instance = 225;
+        colorSpecular.mesh = {.resource = 224, .revision = 1, .vertexCount = 3};
+        colorSpecular.material = sb::native_render::LitSpecularColorMaterial{
+            .baseColor = {1, 1, 1, 1},
+            .ambientColor = {1, 1, 1, 1},
+            .diffuseScale = {0.5F, 0.5F, 0.5F, 1},
+            .specularScale = 2,
+            .lighting = {.specular = {.directionToLight = {0, 0, 1},
+                                      .color = {0.25F, 0, 0, 1},
+                                      .shininess = 50}},
+            .usesVertexRgb = true,
+            .raster = {.cull = sb::native_render::ModelCullMode::None},
+        };
+        const auto renderColorSpecular = [&] {
+            const SemanticFrame modelFrame{
+                .targetWidth = 16,
+                .targetHeight = 16,
+                .models = std::span<const ModelDraw>(&colorSpecular, 1),
+                .meshes = std::span<const MeshResourceView>(&colorSpecularMesh, 1),
+            };
+            SemanticFramePixels result{};
+            assert(encode_3d_and_readback(pass, modelFrame, modelTarget, result, error) &&
+                   error.empty());
+            return result;
+        };
+        const SemanticFramePixels colorSpecularHighlight = renderColorSpecular();
+        const Color colorSpecularPixel = pixel(colorSpecularHighlight, 8, 8);
+        assert(colorSpecularPixel.r > 0.70F && colorSpecularPixel.g > 0.70F &&
+               colorSpecularPixel.b < 0.01F);
+        std::get<sb::native_render::LitSpecularColorMaterial>(colorSpecular.material)
+            .specularScale = 0;
+        const SemanticFramePixels colorSpecularNoHighlight = renderColorSpecular();
+        const Color colorSpecularNoHighlightPixel = pixel(colorSpecularNoHighlight, 8, 8);
+        assert(colorSpecularNoHighlightPixel.r < 0.01F &&
+               near(colorSpecularNoHighlightPixel.g, colorSpecularPixel.g));
+        assert(hash(colorSpecularHighlight) != hash(colorSpecularNoHighlight));
+
         // Cutout threshold controls: 127/255 is rejected and the adjacent authored value 128/255
         // is accepted. This catches a disabled test and an off-by-one threshold independently.
         material.raster.cull = sb::native_render::ModelCullMode::None;

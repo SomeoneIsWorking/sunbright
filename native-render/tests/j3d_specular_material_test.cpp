@@ -154,6 +154,63 @@ int main() {
     assert(classify_j3d_specular_textured_material(state, texture, lighting, material) ==
            J3dSpecularTexturedResult::UnsupportedColorProgram);
 
+    // A reached texture-free highlight uses the same high-level diffuse and directional-specular
+    // inputs. Its two console stages reduce to vertex-lit colour tinted by konst colour 0, plus
+    // twice the directional highlight. The secondary channel's opaque alpha makes the final
+    // source opaque even though the authored full pixel block retains premultiplied blending.
+    state = material_state();
+    state.colorChannelControl = 0x070F;
+    state.alphaChannelControl = 0x0701;
+    state.textureCoordinateCount = 0;
+    state.textureNumber0 = 0xFFFF;
+    state.textureCoordinate0 = 0xFF;
+    state.textureMap0 = 0xFF;
+    state.colorChannel0 = 4;
+    state.tevStage0 = {0xC0, 0x0C, 0xFA, 0xEA, 0xC1, 0x08, 0xBF, 0xF0};
+    state.textureNumber1 = 0xFFFF;
+    state.textureCoordinate1 = 0xFF;
+    state.textureMap1 = 0xFF;
+    state.colorChannel1 = 5;
+    state.tevStage1 = {0xC2, 0x18, 0xF0, 0xEA, 0xC3, 0x00, 0xE3, 0x50};
+    state.konstColorRgba8[0] = 0x898A90FF;
+    state.konstColorSelection0 = 0x04;
+    state.konstColorSelection1 = 0x0C;
+    state.konstAlphaSelection0 = 0x1C;
+    state.konstAlphaSelection1 = 0x1C;
+    state.blendMode = 1;
+    state.blendSourceFactor = 1;
+    state.blendDestinationFactor = 5;
+    state.blendLogicOperation = 15;
+    state.depthWrite = false;
+    state.hasVertexColor = true;
+    LitSpecularColorMaterial colorSpecular{};
+    assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
+           J3dSpecularColorResult::Success);
+    assert((colorSpecular.diffuseScale == color_from_rgba8(0x898A90FF)));
+    assert(near(colorSpecular.specularScale, 2.0F));
+    assert(colorSpecular.usesVertexRgb);
+    assert(colorSpecular.raster.blend == ModelBlendMode::PremultipliedAlpha);
+    assert(!colorSpecular.raster.depthWrite);
+
+    draw.material = colorSpecular;
+    const ClipVertex transformedColorSpecular = transform_vertex(draw, vertexLit);
+    assert(near(transformedColorSpecular.color.r, vertexLit.color.r * (0x89 / 255.0F)));
+    assert(near(transformedColorSpecular.color.g, vertexLit.color.g * (0x8A / 255.0F)));
+    assert(near(transformedColorSpecular.additiveColor.r, 0.5F));
+    assert(near(transformedColorSpecular.color.a, 0.0F));
+    assert(near(transformedColorSpecular.additiveColor.a, 1.0F));
+    state.tevStage1[2] ^= 1U;
+    assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
+           J3dSpecularColorResult::UnsupportedColorProgram);
+    state.tevStage1[2] ^= 1U;
+    state.konstAlphaSelection1 = 0;
+    assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
+           J3dSpecularColorResult::UnsupportedColorProgram);
+    state.konstAlphaSelection1 = 0x1C;
+    state.hasVertexColor = false;
+    assert(classify_j3d_specular_color_material(state, lighting, colorSpecular) ==
+           J3dSpecularColorResult::MissingVertexColor);
+
     ModelLightingContext invalidLighting = lighting;
     invalidLighting.specular.shininess = 0;
     state = material_state();

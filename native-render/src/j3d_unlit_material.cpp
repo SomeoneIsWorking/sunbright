@@ -22,7 +22,6 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
     constexpr std::uint8_t kAlphaOr = 1;
     constexpr std::uint8_t kAlphaXnor = 3;
     constexpr std::uint8_t kAlways = 7;
-    constexpr std::uint8_t kLogicCopy = 3;
     constexpr std::uint8_t kDepthLessOrEqual = 3;
     const bool twoAlwaysComparisons = alphaCompare0 == kAlways && alphaCompare1 == kAlways;
     const bool alphaPolicyMatches =
@@ -32,10 +31,12 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
                    state.alphaOperation == kAlphaXnor
              : state.alphaReference0 == alphaReference0 && state.alphaOperation == kAlphaAnd &&
                    state.alphaReference1 == alphaReference1);
+    // The logic-operation field is consumed only when logic blending is selected. It has no
+    // observable effect for the replacement and alpha-blend modes admitted here, so do not reject
+    // authored stale values.
     return state.hasExplicitPixelPolicy && alphaPolicyMatches && state.blendMode == blendMode &&
            state.blendSourceFactor == blendSource &&
-           state.blendDestinationFactor == blendDestination &&
-           state.blendLogicOperation == kLogicCopy && state.depthTest &&
+           state.blendDestinationFactor == blendDestination && state.depthTest &&
            state.depthCompare == kDepthLessOrEqual && state.depthWrite == depthWrite &&
            !state.fogEnabled;
 }

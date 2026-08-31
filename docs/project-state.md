@@ -141,6 +141,20 @@ image decode, perspective readiness, and native submission, raising total native
 to 8,804. The run exited cleanly under the live GPU watcher. The native-layout adapter compiles
 through the same shared classifier; issue 30 still prevents equivalent live decomp evidence.
 
+A reached texture-free highlight family now uses that PC-native diffuse/specular owner
+without inventing a dummy image. Its exact high-level equation is vertex-colour diffuse lighting
+multiplied by the authored grey tint, plus twice the directional highlight, with opaque material
+alpha. The shared model carries only those ordinary terms, high-level lights, and premultiplied
+blend/depth policy. The full pixel-block classifier now correctly ignores the stored logic-operation
+field when the selected blend mode does not consume it. Exact CPU controls reject changed stages,
+alpha selectors, or missing vertex colour. A watched shipping-GPU control removed only the red
+directional highlight while preserving the tinted green diffuse term. The guarded 120-present
+recomp audit advanced all 50 reached instances from zero acceptance to 50 classification,
+perspective readiness, and native submissions, raising total native models from 8,854 to 8,904.
+The census now keys the alpha selectors and includes every material tied at its visible cutoff, so
+distinct same-frequency programs cannot be silently merged or omitted. The native-layout adapter
+compiles through the same classifier; issue 30 still prevents equivalent live decomp evidence.
+
 A reached two-texture Mario cutout family now bypasses GX as one weighted layered PC material. The
 shared classifier reduces its two console stages to `base texture * (3/8 detail texture + 5/8
 signed diffuse lighting)`, with base-texture alpha multiplied by authored material alpha. The

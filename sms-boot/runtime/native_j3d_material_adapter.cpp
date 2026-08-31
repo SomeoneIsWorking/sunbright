@@ -233,6 +233,15 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
         return NativeJ3dMaterialResult::Success;
     }
 
+    native_render::LitSpecularColorMaterial specularColorMaterial{};
+    if (lighting != nullptr && native_render::classify_j3d_specular_color_material(
+                                   state, *lighting, specularColorMaterial) ==
+                                   native_render::J3dSpecularColorResult::Success) {
+        result.material = specularColorMaterial;
+        captured = std::move(result);
+        return NativeJ3dMaterialResult::Success;
+    }
+
     const native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
     native_render::UnlitTexturedMaterial texturedMaterial{};
     const bool isUnlitTextured =

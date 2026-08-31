@@ -190,6 +190,18 @@ struct LitLayeredTexturedMaterial {
     ModelRasterPolicy raster{};
 };
 
+// Texture-free diffuse plus directional-specular lighting. The renderer receives an ordinary
+// diffuse tint and highlight scale; the original console stages do not cross this boundary.
+struct LitSpecularColorMaterial {
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    Color diffuseScale{1.0F, 1.0F, 1.0F, 1.0F};
+    float specularScale = 1.0F;
+    ModelLightingContext lighting{};
+    bool usesVertexRgb = false;
+    ModelRasterPolicy raster{};
+};
+
 // One decoded texture with ordinary diffuse and directional-specular lighting. The authored J3D
 // program is reduced to one affine PC operation: texture * diffuse * scale + additive + specular.
 struct LitSpecularTexturedMaterial {
@@ -207,7 +219,7 @@ struct LitSpecularTexturedMaterial {
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, AlphaMaskedColorMaterial,
                  LitColorMaterial, LitTexturedMaterial, LitTexturedAlphaMaskMaterial,
-                 LitLayeredTexturedMaterial, LitSpecularTexturedMaterial>;
+                 LitLayeredTexturedMaterial, LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 

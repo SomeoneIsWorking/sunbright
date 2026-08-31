@@ -133,6 +133,30 @@ Color directional_specular(const DirectionalSpecularLight& light, Vec3 normal) n
             light.color.b * contribution, 1.0F};
 }
 
+VertexColors specular_lighting(Color diffuseSource, Color ambient, Color diffuseScale,
+                               Color additiveColor, float specularScale, float alpha,
+                               const ModelLightingContext& lighting, Vec3 eyePosition,
+                               Vec3 normal) noexcept {
+    const Color diffuse = diffuse_lighting(diffuseSource, ambient, lighting, eyePosition, normal);
+    const Color specular = directional_specular(lighting.specular, normal);
+    return {
+        .multiplicative =
+            {
+                diffuse.r * diffuseScale.r,
+                diffuse.g * diffuseScale.g,
+                diffuse.b * diffuseScale.b,
+                0.0F,
+            },
+        .additive =
+            {
+                additiveColor.r + specularScale * specular.r,
+                additiveColor.g + specularScale * specular.g,
+                additiveColor.b + specularScale * specular.b,
+                alpha,
+            },
+    };
+}
+
 } // namespace
 
 bool valid(const Matrix4x4& matrix) noexcept {
@@ -302,6 +326,12 @@ bool valid(const ModelDraw& draw) noexcept {
                        valid(material.lighting) && finite(material.detailWeight) &&
                        material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
                        material.diffuseMode <= ModelDiffuseMode::Signed;
+            } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {
+                return valid(material.baseColor) && valid(material.ambientColor) &&
+                       valid(material.diffuseScale) && material.diffuseScale.r >= 0.0F &&
+                       material.diffuseScale.g >= 0.0F && material.diffuseScale.b >= 0.0F &&
+                       finite(material.specularScale) && material.specularScale >= 0.0F &&
+                       valid(material.lighting);
             } else {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
@@ -427,28 +457,20 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                                        material.baseColor.a},
                     .detailTextureWeight = material.detailWeight,
                 };
+            } else if constexpr (std::is_same_v<Material, LitSpecularColorMaterial>) {
+                const Color diffuseSource =
+                    material.usesVertexRgb ? vertex.color : material.baseColor;
+                return specular_lighting(diffuseSource, material.ambientColor,
+                                         material.diffuseScale, {}, material.specularScale,
+                                         material.baseColor.a, material.lighting, eyePosition,
+                                         normal);
             } else {
                 const Color diffuseSource =
                     material.usesVertexRgb ? vertex.color : material.baseColor;
-                const Color diffuse = diffuse_lighting(diffuseSource, material.ambientColor,
-                                                       material.lighting, eyePosition, normal);
-                const Color specular = directional_specular(material.lighting.specular, normal);
-                return VertexColors{
-                    .multiplicative =
-                        {
-                            diffuse.r * material.textureDiffuseScale.r,
-                            diffuse.g * material.textureDiffuseScale.g,
-                            diffuse.b * material.textureDiffuseScale.b,
-                            0.0F,
-                        },
-                    .additive =
-                        {
-                            material.additiveColor.r + material.specularScale * specular.r,
-                            material.additiveColor.g + material.specularScale * specular.g,
-                            material.additiveColor.b + material.specularScale * specular.b,
-                            material.baseColor.a,
-                        },
-                };
+                return specular_lighting(diffuseSource, material.ambientColor,
+                                         material.textureDiffuseScale, material.additiveColor,
+                                         material.specularScale, material.baseColor.a,
+                                         material.lighting, eyePosition, normal);
             }
         },
         draw.material);

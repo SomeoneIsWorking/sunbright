@@ -111,6 +111,8 @@ struct ProgramKey {
     std::array<std::uint8_t, 8> stage1{};
     std::uint8_t konstColorSelection0 = 0;
     std::uint8_t konstColorSelection1 = 0;
+    std::uint8_t konstAlphaSelection0 = 0;
+    std::uint8_t konstAlphaSelection1 = 0;
     auto operator<=>(const ProgramKey&) const = default;
 };
 
@@ -382,7 +384,15 @@ std::string semantic_j3d_stats_text() {
             return first.second.perspectiveObserved > second.second.perspectiveObserved;
         return first.second.count > second.second.count;
     });
-    const std::size_t litCount = std::min<std::size_t>(litPrograms.size(), 16);
+    std::size_t litCount = std::min<std::size_t>(litPrograms.size(), 16);
+    if (litCount != 0 && litCount < litPrograms.size()) {
+        const std::uint64_t cutoffPerspectiveCount =
+            litPrograms[litCount - 1].second.perspectiveObserved;
+        while (cutoffPerspectiveCount != 0 && litCount < litPrograms.size() &&
+               litPrograms[litCount].second.perspectiveObserved == cutoffPerspectiveCount) {
+            ++litCount;
+        }
+    }
     for (std::size_t litIndex = 0; litIndex < litCount; ++litIndex) {
         const auto& [key, observation] = litPrograms[litIndex];
         char line[1280];
@@ -400,7 +410,8 @@ std::string semantic_j3d_stats_text() {
             "primaryColor=%08x/%08x varies=%u "
             "secondColor=%08x/%08x varies=%u "
             "tevColor0=%d/%d/%d/%d varies=%u "
-            "konstSel=%02x/%02x konst=%08x/%08x/%08x/%08x varies=%u",
+            "konstSel=%02x/%02x alphaSel=%02x/%02x "
+            "konst=%08x/%08x/%08x/%08x varies=%u",
             litIndex, static_cast<unsigned long long>(observation.count), key.materialIndex,
             observation.materialName.c_str(), key.hasNormal ? 1U : 0U, key.colorChannelCount,
             key.channelControl, key.alphaChannelControl, key.channelControl1,
@@ -427,9 +438,10 @@ std::string semantic_j3d_stats_text() {
             observation.firstTevColor0[0], observation.firstTevColor0[1],
             observation.firstTevColor0[2], observation.firstTevColor0[3],
             observation.tevColor0Varies ? 1U : 0U, key.konstColorSelection0,
-            key.konstColorSelection1, observation.firstKonstColors[0],
-            observation.firstKonstColors[1], observation.firstKonstColors[2],
-            observation.firstKonstColors[3], observation.konstColorsVary ? 1U : 0U);
+            key.konstColorSelection1, key.konstAlphaSelection0, key.konstAlphaSelection1,
+            observation.firstKonstColors[0], observation.firstKonstColors[1],
+            observation.firstKonstColors[2], observation.firstKonstColors[3],
+            observation.konstColorsVary ? 1U : 0U);
         report += line;
     }
     return report;
@@ -500,7 +512,9 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                        .colorChannel1 = materialState.colorChannel1,
                        .stage1 = materialState.tevStage1,
                        .konstColorSelection0 = materialState.konstColorSelection0,
-                       .konstColorSelection1 = materialState.konstColorSelection1};
+                       .konstColorSelection1 = materialState.konstColorSelection1,
+                       .konstAlphaSelection0 = materialState.konstAlphaSelection0,
+                       .konstAlphaSelection1 = materialState.konstAlphaSelection1};
     capture_program_owner(material, program);
     auto [programEntry, inserted] = g_programs.try_emplace(program);
     const ProgramKey& capturedProgram = programEntry->first;
@@ -560,11 +574,20 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         lighting != nullptr ? sb::native_render::classify_j3d_lit_color_material(
                                   materialState, *lighting, litColorMaterial)
                             : sb::native_render::J3dLitColorResult::MissingLightingContext;
+    sb::native_render::LitSpecularColorMaterial specularColorMaterial{};
+    const sb::native_render::J3dSpecularColorResult specularColorResult =
+        lighting != nullptr ? sb::native_render::classify_j3d_specular_color_material(
+                                  materialState, *lighting, specularColorMaterial)
+                            : sb::native_render::J3dSpecularColorResult::MissingLightingContext;
     if (colorResult == sb::native_render::J3dUnlitMaterialResult::Success) {
         semanticMaterial = colorMaterial;
         ++observation.materialAccepted;
     } else if (litColorResult == sb::native_render::J3dLitColorResult::Success) {
         semanticMaterial = litColorMaterial;
+        submittedLitMaterial = true;
+        ++observation.materialAccepted;
+    } else if (specularColorResult == sb::native_render::J3dSpecularColorResult::Success) {
+        semanticMaterial = specularColorMaterial;
         submittedLitMaterial = true;
         ++observation.materialAccepted;
     } else {

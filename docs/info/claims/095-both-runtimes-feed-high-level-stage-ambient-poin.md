@@ -4,14 +4,14 @@ kind: claim
 status: holds
 created: 2026-08-31
 tags: renderer,j3d,lighting,recomp,decomp
-depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/j3d_layered_material.cpp#classify_j3d_layered_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
+depends: native-render/src/j3d_lit_material.cpp#classify_j3d_lit_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_textured_material, native-render/src/j3d_specular_material.cpp#classify_j3d_specular_color_material, native-render/src/j3d_alpha_masked_material.cpp#classify_j3d_alpha_masked_material, native-render/src/j3d_lit_alpha_mask_material.cpp#classify_j3d_lit_alpha_mask_material, native-render/src/j3d_layered_material.cpp#classify_j3d_layered_material, native-render/src/model.cpp#transform_vertex, sms-recomp/overrides/semantic_j3d_lighting.cpp#publish_lighting, sms-boot/runtime/native_j3d_lighting.cpp#sb_native_j3d_publish_stage_lighting, decomp/sms/src/MarioUtil/LightUtil.cpp#TLightCommon::setLight
 reconfirmed: 2026-08-31
-verified_at: 2026-08-31 11:10:05+00:00
+verified_at: 2026-08-31 11:34:50+00:00
 ---
 
 ## Claim
 
-Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact single-texture diffuse/specular, solid-colour mask, diffuse-plus-independent-alpha-mask, or weighted two-texture layered material values into the shared PC-native J3D renderer without consuming GX light state.
+Both runtimes feed high-level stage ambient, point lights, directional-specular direction and shininess, decoded normals, and exact texture-free or single-texture diffuse/specular, solid-colour mask, diffuse-plus-independent-alpha-mask, or weighted two-texture layered material values into the shared PC-native J3D renderer without consuming GX light state.
 
 ## Evidence
 
@@ -63,3 +63,7 @@ Exact CPU controls decode the second two-channel program as texture times vertex
 ## Re-confirmed 2026-08-31 — weighted layered material
 
 Exact CPU controls rejected changed stages and missing coordinates and distinguished signed from clamped diffuse; the watched shipping two-texture GPU control moved only the 3/8 detail contribution from red to blue with no kernel fault; a guarded 120-present recomp audit advanced the reached weighted layered family through 50/50 classification, two-image decode, perspective readiness, and native submission, raising total models from 8,800 to 8,850 and exiting 0.
+
+## Re-confirmed 2026-08-31 — texture-free tinted highlight
+
+Exact CPU controls reduced the two-stage program to vertex-colour diffuse times its authored grey tint plus twice the directional highlight, and rejected changed stages, alpha selectors, or missing vertex colour. The watched shipping colour-shader control removed only the red highlight while preserving tinted green diffuse, with no kernel fault. A guarded 120-present recomp audit advanced all 50 reached instances from zero acceptance to 50/50 classification, perspective readiness, and native submission, raising total native models from 8,854 to 8,904 and exiting 0. The census now includes alpha selectors in material identity and reports every program tied at its visible cutoff.
