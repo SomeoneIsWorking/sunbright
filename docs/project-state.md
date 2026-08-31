@@ -321,6 +321,14 @@ decode, scene readiness, and native submission, raising coverage from 1,632 to 1
 lit models from 748 to 770; it exited 0 with no kernel GPU fault or reset. The prior three-stage
 rejection is gone; other unrelated lit programs remain explicit fallbacks.
 
+The next-gap audit now reports both texture slots, the first three stage signatures, and both
+colour-channel pairs so setup-only programs cannot be mistaken for a visible material family. In
+the title audit, the largest unresolved two-texture hand program used the signed-diffuse and
+directional-specular channels but had zero perspective observations or native submissions. A
+stage-one audit found the same boundary for its 300-observation variant; the already-covered
+perspective layered families remained accepted. Both watched runs exited cleanly with no kernel
+GPU fault or reset, so this is an orthographic/setup coverage gap rather than a GPU failure.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies
