@@ -995,6 +995,17 @@ int main() {
         assert(near(premultipliedPixel.b, straightPixel.b));
         assert(hash(premultipliedBlend) != hash(straightBlend));
 
+        // Additive control: source-alpha plus destination-one keeps the existing blue glow
+        // contribution, unlike ordinary alpha compositing's one-minus-source-alpha destination.
+        std::get<sb::native_render::UnlitColorMaterial>(blendLayers[1].material).raster.blend =
+            sb::native_render::ModelBlendMode::Additive;
+        const SemanticFramePixels additiveBlend = render(blendLayers);
+        const Color additivePixel = pixel(additiveBlend, 8, 8);
+        assert(additivePixel.b > straightPixel.b + 0.25F);
+        assert(additivePixel.r > straightPixel.r - 0.05F &&
+               additivePixel.r < straightPixel.r + 0.05F);
+        assert(hash(additiveBlend) != hash(straightBlend));
+
         // Depth-write control: a near red draw prevents a later far green draw only when the near
         // material writes depth. Both cases retain LEQUAL testing, isolating the write bit.
         ModelDraw near = model;

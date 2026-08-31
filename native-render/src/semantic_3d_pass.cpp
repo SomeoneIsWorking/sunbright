@@ -287,13 +287,17 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
         colorTarget.blend_state.enable_blend = true;
         colorTarget.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
         colorTarget.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-        const SDL_GPUBlendFactor source = key.raster.blend == ModelBlendMode::SourceAlpha
-                                              ? SDL_GPU_BLENDFACTOR_SRC_ALPHA
-                                              : SDL_GPU_BLENDFACTOR_ONE;
+        const bool sourceAlpha = key.raster.blend == ModelBlendMode::SourceAlpha ||
+                                 key.raster.blend == ModelBlendMode::Additive;
+        const SDL_GPUBlendFactor source =
+            sourceAlpha ? SDL_GPU_BLENDFACTOR_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
+        const SDL_GPUBlendFactor destination = key.raster.blend == ModelBlendMode::Additive
+                                                   ? SDL_GPU_BLENDFACTOR_ONE
+                                                   : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         colorTarget.blend_state.src_color_blendfactor = source;
-        colorTarget.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        colorTarget.blend_state.dst_color_blendfactor = destination;
         colorTarget.blend_state.src_alpha_blendfactor = source;
-        colorTarget.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        colorTarget.blend_state.dst_alpha_blendfactor = destination;
     }
     SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(impl.device, &info);
     if (pipeline == nullptr) {

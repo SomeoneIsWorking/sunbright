@@ -227,11 +227,13 @@ The title's lens-glow models now use the same PC-native textured diffuse owner w
 channel selects the authored primary light (`0x0706`). This is a one-light clamped diffuse choice,
 not the general two-light context; the classifier narrows the published lighting context to that
 primary point light while retaining the original body and the existing texture-times-diffuse
-material equation. A guarded 120-present title audit advanced all 52 reached glow models through
-classification, image decode, perspective readiness, and native submission, raising total models
-from 728 to 988 and lit models from 624 to 884. The run exited cleanly with no GPU fault. Other
-lens-glow combiner variants remain rejected by their distinct stage programs and are still explicit
-fallbacks.
+material equation. The exact single-stage glow family now also preserves its authored additive
+blend (source alpha plus destination one) and disabled depth test as a dedicated effect material;
+it is not approximated as ordinary alpha. A guarded 120-present title audit advanced all 52 reached
+glow models through classification, image decode, perspective readiness, and native submission,
+raising total models from 988 to 1,092 and lit models from 884 to 988. The run exited cleanly with
+no GPU fault. Other lens-glow combiner variants remain rejected by their distinct stage programs
+and are still explicit fallbacks.
 
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the

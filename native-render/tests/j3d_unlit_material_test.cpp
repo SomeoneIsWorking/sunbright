@@ -160,6 +160,15 @@ int main() {
            J3dUnlitTexturedResult::Success);
     assert(texturedMaterial.raster.blend == ModelBlendMode::PremultipliedAlpha);
     assert(!texturedMaterial.raster.depthWrite);
+    state.depthTest = false;
+    state.blendSourceFactor = 4;
+    state.blendDestinationFactor = 1;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.blend == ModelBlendMode::Additive);
+    assert(!texturedMaterial.raster.depthTest);
+    assert(!texturedMaterial.raster.depthWrite);
+    state.blendDestinationFactor = 5;
     state.blendSourceFactor = 4;
     state.pixelEngineBlockType = 0x50454F50U;
 

@@ -227,7 +227,7 @@ bool valid(const MeshResourceView& mesh) noexcept {
 bool valid(const ModelRasterPolicy& raster) noexcept {
     return raster.cull <= ModelCullMode::All && raster.depthCompare <= ModelDepthCompare::Always &&
            raster.alphaTest <= ModelAlphaTest::GreaterOrEqualHalf &&
-           raster.blend <= ModelBlendMode::PremultipliedAlpha;
+           raster.blend <= ModelBlendMode::Additive;
 }
 
 bool valid(const ModelFog& fog) noexcept {
@@ -253,6 +253,7 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
             if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>)
                 return 4;
             if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
+                          std::is_same_v<Material, TexturedEffectMaterial> ||
                           std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                           std::is_same_v<Material, LitTexturedMaterial> ||
                           std::is_same_v<Material, LitSpecularTexturedMaterial>) {
@@ -283,6 +284,7 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
                     &LitMaskedToonMaterial::lightRampTexture};
                 return index < textures.size() ? &(value.*textures[index]) : nullptr;
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial> ||
+                                 std::is_same_v<Material, TexturedEffectMaterial> ||
                                  std::is_same_v<Material, AlphaMaskedColorMaterial> ||
                                  std::is_same_v<Material, LitTexturedMaterial> ||
                                  std::is_same_v<Material, LitSpecularTexturedMaterial>) {
@@ -320,6 +322,10 @@ bool valid(const ModelDraw& draw) noexcept {
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 &&
+                       material.textureCoordinates <= ModelTextureCoordinates::Secondary;
+            } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
+                return material.texture.resource != 0 && material.texture.width != 0 &&
+                       material.texture.height != 0 && valid(material.modulation) &&
                        material.textureCoordinates <= ModelTextureCoordinates::Secondary;
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
@@ -471,6 +477,8 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                 return VertexColors{.multiplicative = material.usesVertexColor
                                                           ? vertex.color
                                                           : Color{1.0F, 1.0F, 1.0F, 1.0F}};
+            } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
+                return VertexColors{.multiplicative = material.modulation};
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
                 return VertexColors{
                     .multiplicative = {0.0F, 0.0F, 0.0F, material.alphaScale},
@@ -570,11 +578,15 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
         },
         draw.material);
     Vec2 primaryUv = vertex.uv;
+    const auto secondaryUv = [](ModelTextureCoordinates coordinates) {
+        return coordinates == ModelTextureCoordinates::Secondary;
+    };
     if (const auto* unlitTexture = std::get_if<UnlitTexturedMaterial>(&draw.material);
-        unlitTexture != nullptr &&
-        unlitTexture->textureCoordinates == ModelTextureCoordinates::Secondary) {
+        unlitTexture != nullptr && secondaryUv(unlitTexture->textureCoordinates))
         primaryUv = vertex.uv1;
-    }
+    if (const auto* effectTexture = std::get_if<TexturedEffectMaterial>(&draw.material);
+        effectTexture != nullptr && secondaryUv(effectTexture->textureCoordinates))
+        primaryUv = vertex.uv1;
     return {position,
             primaryUv,
             vertex.uv1,

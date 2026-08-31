@@ -10,6 +10,7 @@
 #include "../runtime/sb_assert.h"
 
 #include <sunbright/native_render/j3d_alpha_masked_material.h>
+#include <sunbright/native_render/j3d_effect_material.h>
 #include <sunbright/native_render/j3d_layered_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
@@ -60,6 +61,8 @@ struct Stats {
     std::array<std::uint64_t, 12> textureDecodeFailures{};
     std::array<std::uint64_t, 11> texturedMaterialRejections{};
     std::array<std::uint64_t, 12> litTexturedMaterialRejections{};
+    std::array<std::uint64_t, 11> effectMaterialRejections{};
+    std::array<std::uint64_t, 11> effectCandidateRejections{};
     std::array<std::uint64_t, 15> maskedToonMaterialRejections{};
     std::array<std::uint64_t, 13> specularTexturedMaterialRejections{};
     std::uint64_t submittedModels = 0;
@@ -71,7 +74,7 @@ struct Stats {
     std::uint64_t litTexturedCandidates = 0;
     std::uint64_t programNameAttempts = 0;
     std::uint64_t programNameFailures = 0;
-    std::array<std::uint64_t, 3> rasterFamilies{};
+    std::array<std::uint64_t, 4> rasterFamilies{};
     std::array<std::uint64_t, 4> cullModes{};
 };
 
@@ -222,6 +225,8 @@ void record_raster(const sb::native_render::ModelMaterial& material) {
         family = 1;
     else if (raster.blend == sb::native_render::ModelBlendMode::SourceAlpha)
         family = 2;
+    else if (raster.blend == sb::native_render::ModelBlendMode::Additive)
+        family = 3;
     ++g_stats.rasterFamilies[family];
     ++g_stats.cullModes[static_cast<std::size_t>(raster.cull)];
 }
@@ -255,7 +260,7 @@ std::string semantic_j3d_stats_text() {
         "rejections: colour-block=%llu lighting=%llu missing-channel=%llu texture=%llu "
         "tev-family=%llu multi-stage=%llu colour-program=%llu missing-vertex-colour=%llu "
         "raster-policy=%llu textured-raster-policy=%llu; published raster families: opaque=%llu "
-        "cutout=%llu translucent=%llu "
+        "cutout=%llu translucent=%llu additive=%llu "
         "cull(none=%llu front=%llu back=%llu all=%llu); "
         "exact next-family candidates: unlit+textured=%llu lit+untextured=%llu "
         "lit+textured=%llu",
@@ -284,6 +289,7 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.rasterFamilies[0]),
         static_cast<unsigned long long>(g_stats.rasterFamilies[1]),
         static_cast<unsigned long long>(g_stats.rasterFamilies[2]),
+        static_cast<unsigned long long>(g_stats.rasterFamilies[3]),
         static_cast<unsigned long long>(g_stats.cullModes[0]),
         static_cast<unsigned long long>(g_stats.cullModes[1]),
         static_cast<unsigned long long>(g_stats.cullModes[2]),
@@ -336,6 +342,39 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[10]),
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[11]));
     report += litRejectionLine;
+    char effectRejectionLine[420];
+    std::snprintf(effectRejectionLine, sizeof(effectRejectionLine),
+                  "; effect-material rejections: colour-block=%llu channels=%llu tev-block=%llu "
+                  "stages=%llu texcoord=%llu binding=%llu program=%llu tev-colour=%llu normal=%llu "
+                  "raster=%llu",
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[1]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[2]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[3]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[4]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[5]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[6]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[7]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[8]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[9]),
+                  static_cast<unsigned long long>(g_stats.effectMaterialRejections[10]));
+    report += effectRejectionLine;
+    char effectCandidateLine[420];
+    std::snprintf(
+        effectCandidateLine, sizeof(effectCandidateLine),
+        "; effect-shape candidate rejections: colour-block=%llu channels=%llu tev-block=%llu "
+        "stages=%llu texcoord=%llu binding=%llu program=%llu tev-colour=%llu normal=%llu "
+        "raster=%llu",
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[1]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[2]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[3]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[4]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[5]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[6]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[7]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[8]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[9]),
+        static_cast<unsigned long long>(g_stats.effectCandidateRejections[10]));
+    report += effectCandidateLine;
     char maskedToonRejectionLine[512];
     std::snprintf(
         maskedToonRejectionLine, sizeof(maskedToonRejectionLine),
@@ -690,6 +729,12 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
             lighting != nullptr ? sb::native_render::classify_j3d_lit_textured_material(
                                       materialState, placeholder, *lighting, litMaterial)
                                 : sb::native_render::J3dLitTexturedResult::MissingLightingContext;
+        sb::native_render::TexturedEffectMaterial effectMaterial{};
+        const sb::native_render::J3dEffectMaterialResult effectFamily =
+            lighting != nullptr
+                ? sb::native_render::classify_j3d_effect_material(materialState, placeholder,
+                                                                  effectMaterial)
+                : sb::native_render::J3dEffectMaterialResult::UnsupportedColorChannels;
         const bool isUnlitTextured =
             unlitFamily == sb::native_render::J3dUnlitTexturedResult::Success;
         sb::native_render::AlphaMaskedColorMaterial alphaMaskedMaterial{};
@@ -699,6 +744,15 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
         const bool isAlphaMasked =
             alphaMaskedFamily == sb::native_render::J3dAlphaMaskedMaterialResult::Success;
         const bool isLitTextured = litFamily == sb::native_render::J3dLitTexturedResult::Success;
+        const bool isEffect = effectFamily == sb::native_render::J3dEffectMaterialResult::Success;
+        const bool effectShapeCandidate =
+            materialState.lightingEnabled && materialState.colorChannelCount == 1 &&
+            materialState.colorChannelControl == 0x0706 &&
+            materialState.alphaChannelControl == 0x0700 && materialState.tevStageCount == 1 &&
+            materialState.tevStages[0].program ==
+                std::array<std::uint8_t, 8>{0xC0, 0x08, 0xFE, 0x8F, 0xC1, 0x08, 0xE6, 0x70};
+        if (effectShapeCandidate && !isEffect)
+            ++g_stats.effectCandidateRejections[static_cast<std::size_t>(effectFamily)];
         sb::native_render::LitTexturedAlphaMaskMaterial litAlphaMaskMaterial{};
         const sb::native_render::J3dLitAlphaMaskResult litAlphaMaskFamily =
             lighting != nullptr
@@ -740,11 +794,12 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                 : sb::native_render::J3dSpecularTexturedResult::MissingLightingContext;
         const bool isSpecularTextured =
             specularFamily == sb::native_render::J3dSpecularTexturedResult::Success;
-        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isLitAlphaMask && !isLayered &&
-            !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
+        if (!isUnlitTextured && !isAlphaMasked && !isLitTextured && !isEffect && !isLitAlphaMask &&
+            !isLayered && !isTintedLayered && !isMaskedToon && !isSpecularTextured) {
             ++g_stats.materialRejections[static_cast<std::size_t>(colorResult)];
             ++g_stats.texturedMaterialRejections[static_cast<std::size_t>(unlitFamily)];
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
+            ++g_stats.effectMaterialRejections[static_cast<std::size_t>(effectFamily)];
             ++g_stats.maskedToonMaterialRejections[static_cast<std::size_t>(maskedToonFamily)];
             ++g_stats.specularTexturedMaterialRejections[static_cast<std::size_t>(specularFamily)];
             return;
@@ -853,6 +908,15 @@ void submit_semantic_j3d_shape(u32 shape, std::span<const GuestJ3dMatrixBinding>
                       "decoded J3D texture invalidated a preclassified lit material: result=%s",
                       sb::native_render::j3d_lit_textured_result_name(classified));
             semanticMaterial = litMaterial;
+            submittedLitMaterial = true;
+        } else if (isEffect) {
+            const sb::native_render::J3dEffectMaterialResult classified =
+                sb::native_render::classify_j3d_effect_material(
+                    materialState, g_textures[0].texture, effectMaterial);
+            SB_ASSERT(classified == sb::native_render::J3dEffectMaterialResult::Success,
+                      "decoded J3D texture invalidated a preclassified effect material: result=%s",
+                      sb::native_render::j3d_effect_material_result_name(classified));
+            semanticMaterial = effectMaterial;
             submittedLitMaterial = true;
         } else {
             const sb::native_render::J3dUnlitTexturedResult classified =

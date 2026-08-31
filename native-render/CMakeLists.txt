@@ -1,4 +1,5 @@
 add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/image.cpp src/image_decode.cpp
+                                                 src/j3d_effect_material.cpp
                                                  src/j3d_alpha_masked_material.cpp
                                                  src/j3d_lit_alpha_mask_material.cpp
                                                  src/j3d_layered_material.cpp
@@ -66,6 +67,10 @@ add_test(NAME native_render_j3d_fog COMMAND native_render_j3d_fog_test)
 add_executable(native_render_j3d_unlit_material_test tests/j3d_unlit_material_test.cpp)
 target_link_libraries(native_render_j3d_unlit_material_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_unlit_material COMMAND native_render_j3d_unlit_material_test)
+
+add_executable(native_render_j3d_effect_material_test tests/j3d_effect_material_test.cpp)
+target_link_libraries(native_render_j3d_effect_material_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_effect_material COMMAND native_render_j3d_effect_material_test)
 
 add_executable(native_render_j3d_alpha_masked_material_test tests/j3d_alpha_masked_material_test.cpp)
 target_link_libraries(native_render_j3d_alpha_masked_material_test PRIVATE sunbright-native-render-core)

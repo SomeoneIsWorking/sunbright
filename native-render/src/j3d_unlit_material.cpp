@@ -16,8 +16,8 @@ constexpr std::uint32_t kPixelEngineFull = 0x5045464CU;        // 'PEFL'
 bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompare0,
                          std::uint8_t alphaReference0, std::uint8_t alphaCompare1,
                          std::uint8_t alphaReference1, std::uint8_t blendMode,
-                         std::uint8_t blendSource, std::uint8_t blendDestination,
-                         bool depthWrite) noexcept {
+                         std::uint8_t blendSource, std::uint8_t blendDestination, bool depthWrite,
+                         bool depthTest = true) noexcept {
     constexpr std::uint8_t kAlphaAnd = 0;
     constexpr std::uint8_t kAlphaOr = 1;
     constexpr std::uint8_t kAlphaXnor = 3;
@@ -38,7 +38,7 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
     const bool fogHasSemanticOwner = fog == J3dFogResult::Disabled || fog == J3dFogResult::Linear;
     return state.hasExplicitPixelPolicy && alphaPolicyMatches && state.blendMode == blendMode &&
            state.blendSourceFactor == blendSource &&
-           state.blendDestinationFactor == blendDestination && state.depthTest &&
+           state.blendDestinationFactor == blendDestination && state.depthTest == depthTest &&
            state.depthCompare == kDepthLessOrEqual && state.depthWrite == depthWrite &&
            fogHasSemanticOwner;
 }
@@ -146,6 +146,14 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
                                        kInverseSourceAlpha, false)) {
             result.depthWrite = false;
             result.blend = ModelBlendMode::PremultipliedAlpha;
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kSourceAlpha, kOne,
+                                       false, false)) {
+            // Authored source-alpha plus destination-one compositing is additive glow, not
+            // ordinary alpha compositing. Preserve the distinct destination factor in the
+            // semantic policy so the PC pass does not darken the effect.
+            result.depthTest = false;
+            result.depthWrite = false;
+            result.blend = ModelBlendMode::Additive;
         } else {
             return J3dRasterPolicyResult::UnsupportedPixelEngineBlock;
         }
