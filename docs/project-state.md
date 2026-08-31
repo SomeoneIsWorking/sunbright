@@ -223,6 +223,16 @@ scene submitted through the PC-native shader; the other 50 had no perspective co
 adapter compiles through the same shared classifier; issue 30 still prevents equivalent live decomp
 scene evidence.
 
+The title's lens-glow models now use the same PC-native textured diffuse owner when their J3D
+channel selects the authored primary light (`0x0706`). This is a one-light clamped diffuse choice,
+not the general two-light context; the classifier narrows the published lighting context to that
+primary point light while retaining the original body and the existing texture-times-diffuse
+material equation. A guarded 120-present title audit advanced all 52 reached glow models through
+classification, image decode, perspective readiness, and native submission, raising total models
+from 728 to 988 and lit models from 624 to 884. The run exited cleanly with no GPU fault. Other
+lens-glow combiner variants remain rejected by their distinct stage programs and are still explicit
+fallbacks.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

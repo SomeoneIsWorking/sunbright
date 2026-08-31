@@ -384,12 +384,12 @@ std::string semantic_j3d_stats_text() {
     for (std::size_t index = 0; index < shown; ++index) {
         const ProgramKey& key = programs[index].first;
         const ProgramObservation& observation = programs[index].second;
-        char line[640];
+        char line[768];
         std::snprintf(
             line, sizeof(line),
             "; top-program[%zu]=%llu mat=%u:\"%s\" lit=%u normal=%u chan=%04x/%04x "
             "stages=%u tex=%04x:\"%s\" order=%02x/%02x/%02x "
-            "stage=%02x%02x%02x%02x%02x%02x%02x%02x",
+            "stage=%02x%02x%02x%02x%02x%02x%02x%02x path=%llu/%llu/%llu/%llu",
             index, static_cast<unsigned long long>(observation.count), key.materialIndex,
             observation.materialName.c_str(), key.lighting ? 1U : 0U, key.hasNormal ? 1U : 0U,
             key.channelControl, key.alphaChannelControl, key.stageCount,
@@ -397,7 +397,11 @@ std::string semantic_j3d_stats_text() {
             key.tevStages[0].textureCoordinate, key.tevStages[0].textureMap,
             key.tevStages[0].colorChannel, key.tevStages[0].program[0], key.tevStages[0].program[1],
             key.tevStages[0].program[2], key.tevStages[0].program[3], key.tevStages[0].program[4],
-            key.tevStages[0].program[5], key.tevStages[0].program[6], key.tevStages[0].program[7]);
+            key.tevStages[0].program[5], key.tevStages[0].program[6], key.tevStages[0].program[7],
+            static_cast<unsigned long long>(observation.perspectiveObserved),
+            static_cast<unsigned long long>(observation.materialAccepted),
+            static_cast<unsigned long long>(observation.resourcesReady),
+            static_cast<unsigned long long>(observation.submittedModels));
         report += line;
     }
     std::vector<std::pair<ProgramKey, ProgramObservation>> litPrograms;
@@ -503,6 +507,38 @@ std::string semantic_j3d_stats_text() {
             key.tevStages[4].konstAlphaSelection, observation.firstKonstColors[0],
             observation.firstKonstColors[1], observation.firstKonstColors[2],
             observation.firstKonstColors[3], observation.konstColorsVary ? 1U : 0U);
+        report += line;
+    }
+    std::vector<std::pair<ProgramKey, ProgramObservation>> rejectedLitPrograms;
+    std::ranges::copy_if(
+        programs, std::back_inserter(rejectedLitPrograms), [](const auto& program) {
+            const ProgramObservation& observation = program.second;
+            return program.first.lighting && observation.count > observation.materialAccepted &&
+                   observation.perspectiveObserved != 0;
+        });
+    std::ranges::sort(rejectedLitPrograms, [](const auto& first, const auto& second) {
+        if (first.second.perspectiveObserved != second.second.perspectiveObserved)
+            return first.second.perspectiveObserved > second.second.perspectiveObserved;
+        return first.second.count > second.second.count;
+    });
+    const std::size_t rejectedLitCount = std::min<std::size_t>(rejectedLitPrograms.size(), 8);
+    for (std::size_t rejectedIndex = 0; rejectedIndex < rejectedLitCount; ++rejectedIndex) {
+        const auto& [key, observation] = rejectedLitPrograms[rejectedIndex];
+        char line[512];
+        std::snprintf(
+            line, sizeof(line),
+            "; top-rejected-lit[%zu]=%llu rejected=%llu perspective=%llu mat=%u:%s "
+            "channels=%u:%04x/%04x,%04x/%04x stages=%u tex0=%04x "
+            "stage0=%02x%02x%02x%02x%02x%02x%02x%02x",
+            rejectedIndex, static_cast<unsigned long long>(observation.count),
+            static_cast<unsigned long long>(observation.count - observation.materialAccepted),
+            static_cast<unsigned long long>(observation.perspectiveObserved), key.materialIndex,
+            observation.materialName.c_str(), key.colorChannelCount, key.channelControl,
+            key.alphaChannelControl, key.channelControl1, key.alphaChannelControl1, key.stageCount,
+            key.textureBindings[0].textureNumber, key.tevStages[0].program[0],
+            key.tevStages[0].program[1], key.tevStages[0].program[2], key.tevStages[0].program[3],
+            key.tevStages[0].program[4], key.tevStages[0].program[5], key.tevStages[0].program[6],
+            key.tevStages[0].program[7]);
         report += line;
     }
     return report;

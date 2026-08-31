@@ -9,6 +9,7 @@ namespace {
 
 constexpr std::uint8_t kColor0Alpha0 = 4;
 constexpr std::uint16_t kDiffuseMaterialColor = 0x070E;
+constexpr std::uint16_t kPrimaryLightDiffuseColor = 0x0706;
 constexpr std::uint16_t kDiffuseVertexColor = 0x070F;
 constexpr std::uint16_t kHalfDiffuseVertexColor = 0x0707;
 constexpr std::uint16_t kUnlitMaterialAlpha = 0x0700;
@@ -24,11 +25,16 @@ constexpr std::array<std::uint8_t, 8> kHalfDiffuseTextureStage{0xC2, 0x08, 0xF0,
 
 struct StandardDiffuseChannels {
     bool supported = false;
+    bool usesPrimaryLight = false;
     bool usesVertexRgb = false;
     bool usesVertexAlpha = false;
 };
 
 StandardDiffuseChannels standard_diffuse_channels(const J3dMaterialState& state) noexcept {
+    if (state.colorChannelControl == kPrimaryLightDiffuseColor &&
+        state.alphaChannelControl == kUnlitMaterialAlpha) {
+        return {.supported = true, .usesPrimaryLight = true};
+    }
     if (state.colorChannelControl == kDiffuseMaterialColor &&
         state.alphaChannelControl == kUnlitMaterialAlpha) {
         return {.supported = true};
@@ -107,6 +113,8 @@ J3dLitColorResult classify_j3d_lit_color_material(const J3dMaterialState& state,
     material.ambientColor = state.usesMaterialAmbient ? color_from_rgba8(state.ambientColorRgba8)
                                                       : lighting.ambientColor;
     material.lighting = lighting;
+    if (channels.usesPrimaryLight)
+        material.lighting.pointLightCount = 1;
     material.usesVertexRgb = channels.usesVertexRgb;
     material.usesVertexAlpha = channels.usesVertexAlpha;
     material.raster = raster;
@@ -198,6 +206,8 @@ J3dLitTexturedResult classify_j3d_lit_textured_material(const J3dMaterialState& 
     material.ambientColor = state.usesMaterialAmbient ? color_from_rgba8(state.ambientColorRgba8)
                                                       : lighting.ambientColor;
     material.lighting = lighting;
+    if (channels.usesPrimaryLight)
+        material.lighting.pointLightCount = 1;
     material.litColorWeight = halfDiffuse ? 0.5F : 1.0F;
     material.usesVertexRgb = channels.usesVertexRgb || halfDiffuse;
     material.usesVertexAlpha = channels.usesVertexAlpha;

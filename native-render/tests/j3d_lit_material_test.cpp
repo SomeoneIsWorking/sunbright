@@ -97,6 +97,15 @@ int main() {
     assert(material.ambientColor == color_from_rgba8(0x102030FF));
     assert(material.lighting == lighting);
 
+    // J3D's 0x0706 channel is the authored primary-light diffuse path.  It keeps the same
+    // texture-times-diffuse equation but must not accidentally include the effect light.
+    state.colorChannelControl = 0x0706;
+    assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
+           J3dLitTexturedResult::Success);
+    assert(material.lighting.pointLightCount == 1);
+    assert(material.lighting.pointLights[0] == lighting.pointLights[0]);
+    state.colorChannelControl = 0x070E;
+
     state.usesMaterialAmbient = false;
     assert(classify_j3d_lit_textured_material(state, texture, lighting, material) ==
            J3dLitTexturedResult::Success);
