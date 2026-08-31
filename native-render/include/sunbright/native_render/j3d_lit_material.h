@@ -12,7 +12,7 @@ enum class J3dLitTexturedResult : std::uint8_t {
     UnsupportedColorBlock,
     UnsupportedColorChannels,
     UnsupportedTevBlock,
-    MultipleTevStages,
+    UnsupportedStageCount,
     MissingTextureCoordinate,
     UnsupportedTextureBinding,
     UnsupportedColorProgram,

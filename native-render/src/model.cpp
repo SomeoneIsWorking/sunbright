@@ -127,7 +127,9 @@ bool valid(const ModelDraw& draw) noexcept {
             } else {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.baseColor) &&
-                       valid(material.ambientColor) && valid(material.lighting);
+                       valid(material.ambientColor) && valid(material.lighting) &&
+                       finite(material.litColorWeight) && material.litColorWeight >= 0.0F &&
+                       material.litColorWeight <= 1.0F;
             }
         },
         draw.material);
@@ -160,7 +162,9 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial>) {
                 return material.usesVertexColor ? vertex.color : Color{1.0F, 1.0F, 1.0F, 1.0F};
             } else {
-                const Color source = material.usesVertexColor ? vertex.color : material.baseColor;
+                const Color rgbSource = material.usesVertexRgb ? vertex.color : material.baseColor;
+                const float alphaSource =
+                    material.usesVertexAlpha ? vertex.color.a : material.baseColor.a;
                 const float a = modelView[0];
                 const float b = modelView[1];
                 const float c = modelView[2];
@@ -227,9 +231,12 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                 illumination.r = std::clamp(illumination.r, 0.0F, 1.0F);
                 illumination.g = std::clamp(illumination.g, 0.0F, 1.0F);
                 illumination.b = std::clamp(illumination.b, 0.0F, 1.0F);
-                return Color{std::clamp(source.r * illumination.r, 0.0F, 1.0F),
-                             std::clamp(source.g * illumination.g, 0.0F, 1.0F),
-                             std::clamp(source.b * illumination.b, 0.0F, 1.0F), source.a};
+                const float weight = material.litColorWeight;
+                return Color{
+                    std::lerp(1.0F, std::clamp(rgbSource.r * illumination.r, 0.0F, 1.0F), weight),
+                    std::lerp(1.0F, std::clamp(rgbSource.g * illumination.g, 0.0F, 1.0F), weight),
+                    std::lerp(1.0F, std::clamp(rgbSource.b * illumination.b, 0.0F, 1.0F), weight),
+                    alphaSource};
             }
         },
         draw.material);

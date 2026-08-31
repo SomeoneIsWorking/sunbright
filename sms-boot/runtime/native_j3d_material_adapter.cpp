@@ -143,6 +143,17 @@ bool capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColo
             captured.textureMap1 = secondOrder->mTexMap;
             captured.colorChannel1 = secondOrder->mColorChan;
             std::memcpy(captured.tevStage1.data(), secondStage, captured.tevStage1.size());
+            for (std::size_t colorIndex = 0; colorIndex < captured.konstColorRgba8.size();
+                 ++colorIndex) {
+                J3DGXColor* konstColor = tev->getTevKColor(colorIndex);
+                if (konstColor == nullptr)
+                    return false;
+                captured.konstColorRgba8[colorIndex] = pack_rgba8(*konstColor);
+            }
+            captured.konstColorSelection0 = tev->getTevKColorSel(0);
+            captured.konstColorSelection1 = tev->getTevKColorSel(1);
+            captured.konstAlphaSelection0 = tev->getTevKAlphaSel(0);
+            captured.konstAlphaSelection1 = tev->getTevKAlphaSel(1);
         }
     }
     state = captured;

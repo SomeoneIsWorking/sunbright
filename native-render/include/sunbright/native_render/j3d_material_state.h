@@ -32,6 +32,11 @@ struct J3dMaterialState {
     std::uint8_t textureMap1 = 0;
     std::uint8_t colorChannel1 = 0;
     std::array<std::uint8_t, 8> tevStage1{};
+    std::array<std::uint32_t, 4> konstColorRgba8{};
+    std::uint8_t konstColorSelection0 = 0;
+    std::uint8_t konstColorSelection1 = 0;
+    std::uint8_t konstAlphaSelection0 = 0;
+    std::uint8_t konstAlphaSelection1 = 0;
     std::uint32_t pixelEngineBlockType = 0;
     bool hasExplicitPixelPolicy = false;
     std::uint8_t alphaCompare0 = 0;

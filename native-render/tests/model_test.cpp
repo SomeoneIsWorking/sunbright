@@ -85,6 +85,15 @@ int main() {
     assert(near(saturated.color.g, 0.5F));
     assert(near(saturated.color.b, 0.5F));
 
+    saturatedMaterial.litColorWeight = 0.5F;
+    saturatedMaterial.usesVertexRgb = true;
+    saturatedMaterial.usesVertexAlpha = false;
+    const ClipVertex halfLit = transform_vertex(lit, vertex);
+    assert(near(halfLit.color.r, 0.75F));
+    assert(near(halfLit.color.g, 0.625F));
+    assert(near(halfLit.color.b, 1.0F));
+    assert(near(halfLit.color.a, 0.8F));
+
     MeshResourceView mesh{11, 2, std::span(&vertex, 1)};
     assert(!valid(mesh));
     MeshVertex triangle[3]{vertex, vertex, vertex};
@@ -99,5 +108,8 @@ int main() {
     assert(!valid(invalid));
     invalid = draw;
     std::get<UnlitColorMaterial>(invalid.material).raster.cull = static_cast<ModelCullMode>(0xFF);
+    assert(!valid(invalid));
+    invalid = lit;
+    std::get<LitTexturedMaterial>(invalid.material).litColorWeight = 1.1F;
     assert(!valid(invalid));
 }

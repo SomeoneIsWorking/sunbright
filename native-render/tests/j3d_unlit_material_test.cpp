@@ -95,6 +95,15 @@ int main() {
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::Success);
     assert(texturedMaterial.raster == ModelRasterPolicy{.cull = ModelCullMode::Back});
+    // Combining two always-true comparisons with AND, OR, or XNOR has the same pass-all meaning.
+    // Normalize that meaning instead of requiring one incidental console encoding.
+    state.alphaOperation = 1;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    state.alphaOperation = 2;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::UnsupportedRasterPolicy);
+    state.alphaOperation = 0;
     state.fogEnabled = true;
     assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
            J3dUnlitTexturedResult::UnsupportedRasterPolicy);

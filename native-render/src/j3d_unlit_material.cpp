@@ -19,12 +19,21 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
                          std::uint8_t blendSource, std::uint8_t blendDestination,
                          bool depthWrite) noexcept {
     constexpr std::uint8_t kAlphaAnd = 0;
+    constexpr std::uint8_t kAlphaOr = 1;
+    constexpr std::uint8_t kAlphaXnor = 3;
+    constexpr std::uint8_t kAlways = 7;
     constexpr std::uint8_t kLogicCopy = 3;
     constexpr std::uint8_t kDepthLessOrEqual = 3;
-    return state.hasExplicitPixelPolicy && state.alphaCompare0 == alphaCompare0 &&
-           state.alphaReference0 == alphaReference0 && state.alphaOperation == kAlphaAnd &&
-           state.alphaCompare1 == alphaCompare1 && state.alphaReference1 == alphaReference1 &&
-           state.blendMode == blendMode && state.blendSourceFactor == blendSource &&
+    const bool twoAlwaysComparisons = alphaCompare0 == kAlways && alphaCompare1 == kAlways;
+    const bool alphaPolicyMatches =
+        state.alphaCompare0 == alphaCompare0 && state.alphaCompare1 == alphaCompare1 &&
+        (twoAlwaysComparisons
+             ? state.alphaOperation == kAlphaAnd || state.alphaOperation == kAlphaOr ||
+                   state.alphaOperation == kAlphaXnor
+             : state.alphaReference0 == alphaReference0 && state.alphaOperation == kAlphaAnd &&
+                   state.alphaReference1 == alphaReference1);
+    return state.hasExplicitPixelPolicy && alphaPolicyMatches && state.blendMode == blendMode &&
+           state.blendSourceFactor == blendSource &&
            state.blendDestinationFactor == blendDestination &&
            state.blendLogicOperation == kLogicCopy && state.depthTest &&
            state.depthCompare == kDepthLessOrEqual && state.depthWrite == depthWrite &&

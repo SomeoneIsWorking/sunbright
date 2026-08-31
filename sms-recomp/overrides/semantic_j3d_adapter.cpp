@@ -18,6 +18,7 @@
 #include <array>
 #include <compare>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -25,7 +26,12 @@
 namespace {
 
 constexpr u32 kJ3dSys = 0x804045DC;
+constexpr u32 kJ3dSysModel = 0x38;
 constexpr u32 kJ3dSysMaterialPacket = 0x3C;
+constexpr u32 kModelModelData = 0x04;
+constexpr u32 kModelDataTextureNames = 0xA8;
+constexpr u32 kModelDataMaterialNames = 0xB4;
+constexpr u32 kMaterialIndex = 0x0C;
 constexpr u32 kMaterialPacketMaterial = 0x38;
 constexpr u32 kMaterialPacketTexture = 0x40;
 constexpr u32 kShapeElementCount = 0x06;
@@ -55,6 +61,8 @@ struct Stats {
     std::uint64_t unlitTexturedCandidates = 0;
     std::uint64_t litUntexturedCandidates = 0;
     std::uint64_t litTexturedCandidates = 0;
+    std::uint64_t programNameAttempts = 0;
+    std::uint64_t programNameFailures = 0;
     std::array<std::uint64_t, 3> rasterFamilies{};
     std::array<std::uint64_t, 4> cullModes{};
 };
@@ -64,6 +72,24 @@ struct ProgramKey {
     bool hasNormal = false;
     std::uint16_t channelControl = 0;
     std::uint16_t alphaChannelControl = 0;
+    std::uint8_t cullMode = 0xFF;
+    std::uint32_t pixelEngineBlockType = 0;
+    bool hasExplicitPixelPolicy = false;
+    std::uint8_t alphaCompare0 = 0;
+    std::uint8_t alphaReference0 = 0;
+    std::uint8_t alphaOperation = 0;
+    std::uint8_t alphaCompare1 = 0;
+    std::uint8_t alphaReference1 = 0;
+    std::uint8_t blendMode = 0;
+    std::uint8_t blendSourceFactor = 0;
+    std::uint8_t blendDestinationFactor = 0;
+    std::uint8_t blendLogicOperation = 0;
+    bool depthTest = false;
+    std::uint8_t depthCompare = 0;
+    bool depthWrite = false;
+    bool fogEnabled = false;
+    std::uint32_t modelData = 0;
+    std::uint16_t materialIndex = 0xFFFF;
     std::uint8_t stageCount = 0;
     std::uint16_t textureNumber = 0;
     std::uint8_t textureCoordinate = 0;
@@ -75,17 +101,102 @@ struct ProgramKey {
     std::uint8_t textureMap1 = 0;
     std::uint8_t colorChannel1 = 0;
     std::array<std::uint8_t, 8> stage1{};
+    std::uint8_t konstColorSelection0 = 0;
+    std::uint8_t konstColorSelection1 = 0;
     auto operator<=>(const ProgramKey&) const = default;
 };
 
+struct ProgramObservation {
+    std::uint64_t count = 0;
+    std::uint64_t perspectiveObserved = 0;
+    std::uint64_t materialAccepted = 0;
+    std::uint64_t resourcesReady = 0;
+    std::uint64_t perspectiveReady = 0;
+    std::uint64_t submittedModels = 0;
+    std::string materialName;
+    std::string textureName0;
+    std::string textureName1;
+    std::array<std::uint32_t, 4> firstKonstColors{};
+    bool konstColorsVary = false;
+};
+
 Stats g_stats{};
-std::map<ProgramKey, std::uint64_t> g_programs;
+std::map<ProgramKey, ProgramObservation> g_programs;
 std::vector<J3DVert> g_decoded;
 std::vector<sb::native_render::MeshVertex> g_vertices;
 sb::native_render::DecodedTexture g_texture;
 
 bool readable(u32 address) {
     return sb_ram_fast(address) != nullptr;
+}
+
+std::string read_j3d_name(const sb::recomp::BigEndianGuestReader& reader, u32 nameTab,
+                          std::uint16_t index) {
+    if (index == 0xFFFFU)
+        return "<none>";
+    ++g_stats.programNameAttempts;
+    if (nameTab == 0) {
+        ++g_stats.programNameFailures;
+        return "<unavailable>";
+    }
+    u32 resource = 0;
+    std::uint16_t count = 0;
+    if (!reader.u32(nameTab, resource) || resource == 0 || !reader.u16(resource, count) ||
+        index >= count) {
+        ++g_stats.programNameFailures;
+        return "<unavailable>";
+    }
+    std::uint16_t nameOffset = 0;
+    if (!reader.u16(resource + 4U + static_cast<u32>(index) * 4U + 2U, nameOffset)) {
+        ++g_stats.programNameFailures;
+        return "<unavailable>";
+    }
+    std::array<char, 64> name{};
+    for (std::size_t character = 0; character + 1 < name.size(); ++character) {
+        std::uint8_t byte = 0;
+        if (!reader.u8(resource + nameOffset + static_cast<u32>(character), byte)) {
+            ++g_stats.programNameFailures;
+            return "<unavailable>";
+        }
+        if (byte == 0)
+            return std::string(name.data(), character);
+        name[character] = static_cast<char>(byte);
+    }
+    ++g_stats.programNameFailures;
+    return "<name-exceeds-63-bytes>";
+}
+
+void capture_program_owner(u32 material, ProgramKey& key) {
+    const sb::recomp::BigEndianGuestReader reader(sb::recomp::live_guest_byte_reader());
+    u32 model = 0;
+    if (!reader.u16(material + kMaterialIndex, key.materialIndex) ||
+        !reader.u32(kJ3dSys + kJ3dSysModel, model) || model == 0 ||
+        !reader.u32(model + kModelModelData, key.modelData)) {
+        key.modelData = 0;
+    }
+}
+
+void capture_program_names(const ProgramKey& key, ProgramObservation& observation) {
+    const sb::recomp::BigEndianGuestReader reader(sb::recomp::live_guest_byte_reader());
+    u32 materialNames = 0;
+    u32 textureNames = 0;
+    if (key.modelData == 0 || !reader.u32(key.modelData + kModelDataMaterialNames, materialNames) ||
+        !reader.u32(key.modelData + kModelDataTextureNames, textureNames)) {
+        const std::uint64_t unavailableNames =
+            1U + (key.textureNumber != 0xFFFFU ? 1U : 0U) +
+            (key.stageCount >= 2 && key.textureNumber1 != 0xFFFFU ? 1U : 0U);
+        g_stats.programNameAttempts += unavailableNames;
+        g_stats.programNameFailures += unavailableNames;
+        observation.materialName = "<unavailable>";
+        observation.textureName0 = key.textureNumber == 0xFFFFU ? "<none>" : "<unavailable>";
+        observation.textureName1 =
+            key.stageCount < 2 || key.textureNumber1 == 0xFFFFU ? "<none>" : "<unavailable>";
+        return;
+    }
+    observation.materialName = read_j3d_name(reader, materialNames, key.materialIndex);
+    observation.textureName0 = read_j3d_name(reader, textureNames, key.textureNumber);
+    observation.textureName1 =
+        key.stageCount >= 2 ? read_j3d_name(reader, textureNames, key.textureNumber1) : "<none>";
 }
 
 void record_raster(const sb::native_render::ModelMaterial& material) {
@@ -175,16 +286,19 @@ std::string semantic_j3d_stats_text() {
                   static_cast<unsigned long long>(sceneStats.orthographicDispatches),
                   static_cast<unsigned long long>(sceneStats.unavailableDispatches));
     report += sceneLine;
-    char lightingLine[280];
-    std::snprintf(lightingLine, sizeof(lightingLine),
-                  "; high-level stage lights: published=%llu/%llu failures(view=%llu "
-                  "primary-position=%llu manager=%llu effect=%llu)",
-                  static_cast<unsigned long long>(lightingStats.published),
-                  static_cast<unsigned long long>(lightingStats.attempts),
-                  static_cast<unsigned long long>(lightingStats.viewFailures),
-                  static_cast<unsigned long long>(lightingStats.primaryPositionFailures),
-                  static_cast<unsigned long long>(lightingStats.managerFailures),
-                  static_cast<unsigned long long>(lightingStats.effectFailures));
+    char lightingLine[352];
+    std::snprintf(
+        lightingLine, sizeof(lightingLine),
+        "; high-level stage lights: published=%llu/%llu failures(view=%llu "
+        "primary-position=%llu manager=%llu effect=%llu); program-name failures=%llu/%llu",
+        static_cast<unsigned long long>(lightingStats.published),
+        static_cast<unsigned long long>(lightingStats.attempts),
+        static_cast<unsigned long long>(lightingStats.viewFailures),
+        static_cast<unsigned long long>(lightingStats.primaryPositionFailures),
+        static_cast<unsigned long long>(lightingStats.managerFailures),
+        static_cast<unsigned long long>(lightingStats.effectFailures),
+        static_cast<unsigned long long>(g_stats.programNameFailures),
+        static_cast<unsigned long long>(g_stats.programNameAttempts));
     report += lightingLine;
     char litRejectionLine[420];
     std::snprintf(
@@ -204,47 +318,75 @@ std::string semantic_j3d_stats_text() {
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[10]),
         static_cast<unsigned long long>(g_stats.litTexturedMaterialRejections[11]));
     report += litRejectionLine;
-    std::vector<std::pair<ProgramKey, std::uint64_t>> programs(g_programs.begin(),
-                                                               g_programs.end());
+    std::vector<std::pair<ProgramKey, ProgramObservation>> programs(g_programs.begin(),
+                                                                    g_programs.end());
     std::ranges::sort(programs, [](const auto& first, const auto& second) {
-        return first.second > second.second;
+        return first.second.count > second.second.count;
     });
     const std::size_t shown = std::min<std::size_t>(programs.size(), 8);
     for (std::size_t index = 0; index < shown; ++index) {
         const ProgramKey& key = programs[index].first;
-        char line[320];
+        const ProgramObservation& observation = programs[index].second;
+        char line[640];
         std::snprintf(line, sizeof(line),
-                      "; top-program[%zu]=%llu lit=%u normal=%u chan=%04x/%04x stages=%u tex=%04x "
-                      "order=%02x/%02x/%02x "
+                      "; top-program[%zu]=%llu mat=%u:\"%s\" lit=%u normal=%u chan=%04x/%04x "
+                      "stages=%u tex=%04x:\"%s\" order=%02x/%02x/%02x "
                       "stage=%02x%02x%02x%02x%02x%02x%02x%02x",
-                      index, static_cast<unsigned long long>(programs[index].second),
-                      key.lighting ? 1U : 0U, key.hasNormal ? 1U : 0U, key.channelControl,
-                      key.alphaChannelControl, key.stageCount, key.textureNumber,
+                      index, static_cast<unsigned long long>(observation.count), key.materialIndex,
+                      observation.materialName.c_str(), key.lighting ? 1U : 0U,
+                      key.hasNormal ? 1U : 0U, key.channelControl, key.alphaChannelControl,
+                      key.stageCount, key.textureNumber, observation.textureName0.c_str(),
                       key.textureCoordinate, key.textureMap, key.colorChannel, key.stage[0],
                       key.stage[1], key.stage[2], key.stage[3], key.stage[4], key.stage[5],
                       key.stage[6], key.stage[7]);
         report += line;
     }
-    std::size_t litShown = 0;
-    for (const auto& [key, count] : programs) {
-        if (!key.lighting)
-            continue;
-        char line[440];
+    std::vector<std::pair<ProgramKey, ProgramObservation>> litPrograms;
+    std::ranges::copy_if(programs, std::back_inserter(litPrograms),
+                         [](const auto& program) { return program.first.lighting; });
+    std::ranges::sort(litPrograms, [](const auto& first, const auto& second) {
+        if (first.second.perspectiveObserved != second.second.perspectiveObserved)
+            return first.second.perspectiveObserved > second.second.perspectiveObserved;
+        return first.second.count > second.second.count;
+    });
+    const std::size_t litCount = std::min<std::size_t>(litPrograms.size(), 8);
+    for (std::size_t litIndex = 0; litIndex < litCount; ++litIndex) {
+        const auto& [key, observation] = litPrograms[litIndex];
+        char line[1152];
         std::snprintf(
             line, sizeof(line),
-            "; top-lit-program[%zu]=%llu normal=%u chan=%04x/%04x stages=%u tex=%04x/%04x "
+            "; top-lit-program[%zu]=%llu mat=%u:\"%s\" normal=%u chan=%04x/%04x stages=%u "
+            "pe=%08x cull=%u explicit=%u alpha=%u/%u/%u/%u/%u "
+            "blend=%u/%u/%u/%u depth=%u/%u/%u fog=%u "
+            "tex=%04x:\"%s\"/%04x:\"%s\" "
             "order0=%02x/%02x/%02x stage0=%02x%02x%02x%02x%02x%02x%02x%02x "
-            "order1=%02x/%02x/%02x stage1=%02x%02x%02x%02x%02x%02x%02x%02x",
-            litShown, static_cast<unsigned long long>(count), key.hasNormal ? 1U : 0U,
-            key.channelControl, key.alphaChannelControl, key.stageCount, key.textureNumber,
-            key.textureNumber1, key.textureCoordinate, key.textureMap, key.colorChannel,
-            key.stage[0], key.stage[1], key.stage[2], key.stage[3], key.stage[4], key.stage[5],
-            key.stage[6], key.stage[7], key.textureCoordinate1, key.textureMap1, key.colorChannel1,
-            key.stage1[0], key.stage1[1], key.stage1[2], key.stage1[3], key.stage1[4],
-            key.stage1[5], key.stage1[6], key.stage1[7]);
+            "order1=%02x/%02x/%02x stage1=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "path=%llu-observed/%llu-perspective/%llu-accepted/%llu-resources/%llu-ready/"
+            "%llu-models "
+            "konstSel=%02x/%02x konst=%08x/%08x/%08x/%08x varies=%u",
+            litIndex, static_cast<unsigned long long>(observation.count), key.materialIndex,
+            observation.materialName.c_str(), key.hasNormal ? 1U : 0U, key.channelControl,
+            key.alphaChannelControl, key.stageCount, key.pixelEngineBlockType, key.cullMode,
+            key.hasExplicitPixelPolicy ? 1U : 0U, key.alphaCompare0, key.alphaReference0,
+            key.alphaOperation, key.alphaCompare1, key.alphaReference1, key.blendMode,
+            key.blendSourceFactor, key.blendDestinationFactor, key.blendLogicOperation,
+            key.depthTest ? 1U : 0U, key.depthCompare, key.depthWrite ? 1U : 0U,
+            key.fogEnabled ? 1U : 0U, key.textureNumber, observation.textureName0.c_str(),
+            key.textureNumber1, observation.textureName1.c_str(), key.textureCoordinate,
+            key.textureMap, key.colorChannel, key.stage[0], key.stage[1], key.stage[2],
+            key.stage[3], key.stage[4], key.stage[5], key.stage[6], key.stage[7],
+            key.textureCoordinate1, key.textureMap1, key.colorChannel1, key.stage1[0],
+            key.stage1[1], key.stage1[2], key.stage1[3], key.stage1[4], key.stage1[5],
+            key.stage1[6], key.stage1[7], static_cast<unsigned long long>(observation.count),
+            static_cast<unsigned long long>(observation.perspectiveObserved),
+            static_cast<unsigned long long>(observation.materialAccepted),
+            static_cast<unsigned long long>(observation.resourcesReady),
+            static_cast<unsigned long long>(observation.perspectiveReady),
+            static_cast<unsigned long long>(observation.submittedModels), key.konstColorSelection0,
+            key.konstColorSelection1, observation.firstKonstColors[0],
+            observation.firstKonstColors[1], observation.firstKonstColors[2],
+            observation.firstKonstColors[3], observation.konstColorsVary ? 1U : 0U);
         report += line;
-        if (++litShown == 8)
-            break;
     }
     return report;
 }
@@ -277,22 +419,57 @@ void submit_semantic_j3d_shape(u32 shape) {
         ++g_stats.materialMemoryFailures;
         return;
     }
-    ++g_programs[{.lighting = materialState.lightingEnabled,
-                  .hasNormal = layout.type[kNormal] !=
-                               static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
-                  .channelControl = materialState.colorChannelControl,
-                  .alphaChannelControl = materialState.alphaChannelControl,
-                  .stageCount = materialState.tevStageCount,
-                  .textureNumber = materialState.textureNumber0,
-                  .textureCoordinate = materialState.textureCoordinate0,
-                  .textureMap = materialState.textureMap0,
-                  .colorChannel = materialState.colorChannel0,
-                  .stage = materialState.tevStage0,
-                  .textureNumber1 = materialState.textureNumber1,
-                  .textureCoordinate1 = materialState.textureCoordinate1,
-                  .textureMap1 = materialState.textureMap1,
-                  .colorChannel1 = materialState.colorChannel1,
-                  .stage1 = materialState.tevStage1}];
+    ProgramKey program{.lighting = materialState.lightingEnabled,
+                       .hasNormal =
+                           layout.type[kNormal] !=
+                           static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
+                       .channelControl = materialState.colorChannelControl,
+                       .alphaChannelControl = materialState.alphaChannelControl,
+                       .cullMode = materialState.cullMode,
+                       .pixelEngineBlockType = materialState.pixelEngineBlockType,
+                       .hasExplicitPixelPolicy = materialState.hasExplicitPixelPolicy,
+                       .alphaCompare0 = materialState.alphaCompare0,
+                       .alphaReference0 = materialState.alphaReference0,
+                       .alphaOperation = materialState.alphaOperation,
+                       .alphaCompare1 = materialState.alphaCompare1,
+                       .alphaReference1 = materialState.alphaReference1,
+                       .blendMode = materialState.blendMode,
+                       .blendSourceFactor = materialState.blendSourceFactor,
+                       .blendDestinationFactor = materialState.blendDestinationFactor,
+                       .blendLogicOperation = materialState.blendLogicOperation,
+                       .depthTest = materialState.depthTest,
+                       .depthCompare = materialState.depthCompare,
+                       .depthWrite = materialState.depthWrite,
+                       .fogEnabled = materialState.fogEnabled,
+                       .stageCount = materialState.tevStageCount,
+                       .textureNumber = materialState.textureNumber0,
+                       .textureCoordinate = materialState.textureCoordinate0,
+                       .textureMap = materialState.textureMap0,
+                       .colorChannel = materialState.colorChannel0,
+                       .stage = materialState.tevStage0,
+                       .textureNumber1 = materialState.textureNumber1,
+                       .textureCoordinate1 = materialState.textureCoordinate1,
+                       .textureMap1 = materialState.textureMap1,
+                       .colorChannel1 = materialState.colorChannel1,
+                       .stage1 = materialState.tevStage1,
+                       .konstColorSelection0 = materialState.konstColorSelection0,
+                       .konstColorSelection1 = materialState.konstColorSelection1};
+    capture_program_owner(material, program);
+    auto [programEntry, inserted] = g_programs.try_emplace(program);
+    const ProgramKey& capturedProgram = programEntry->first;
+    ProgramObservation& observation = programEntry->second;
+    if (inserted) {
+        capture_program_names(capturedProgram, observation);
+        observation.firstKonstColors = materialState.konstColorRgba8;
+    } else if (observation.firstKonstColors != materialState.konstColorRgba8) {
+        observation.konstColorsVary = true;
+    }
+    ++observation.count;
+    const sb::native_render::ModelSceneContext* scene = sb::recomp::current_semantic_j3d_scene();
+    if (scene != nullptr &&
+        scene->projectionKind == sb::native_render::ProjectionKind::Perspective) {
+        ++observation.perspectiveObserved;
+    }
     const sb::native_render::J3dUnlitMaterialFeatures features =
         sb::native_render::inspect_j3d_unlit_material(materialState);
     const bool otherwiseExact = features.supportedColorBlock && features.hasColorChannel &&
@@ -314,6 +491,7 @@ void submit_semantic_j3d_shape(u32 shape) {
         sb::native_render::classify_j3d_unlit_material(materialState, colorMaterial);
     if (colorResult == sb::native_render::J3dUnlitMaterialResult::Success) {
         semanticMaterial = colorMaterial;
+        ++observation.materialAccepted;
     } else {
         const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
         sb::native_render::UnlitTexturedMaterial texturedMaterial{};
@@ -336,6 +514,7 @@ void submit_semantic_j3d_shape(u32 shape) {
             ++g_stats.litTexturedMaterialRejections[static_cast<std::size_t>(litFamily)];
             return;
         }
+        ++observation.materialAccepted;
         const u32 textureTable = sb_r32(materialPacket + kMaterialPacketTexture);
         if (!readable(textureTable)) {
             ++g_stats.textureTableFailures;
@@ -372,13 +551,14 @@ void submit_semantic_j3d_shape(u32 shape) {
                              g_texture.texture.width, g_texture.texture.height, g_texture.rgba8};
         images = semanticImages;
     }
+    ++observation.resourcesReady;
 
-    const sb::native_render::ModelSceneContext* scene = sb::recomp::current_semantic_j3d_scene();
     if (scene == nullptr ||
         scene->projectionKind != sb::native_render::ProjectionKind::Perspective) {
         ++g_stats.noPerspectiveContexts;
         return;
     }
+    ++observation.perspectiveReady;
     const u32 matrixObjects = sb_r32(shape + kShapeMatrices);
     const u32 drawMatrices = sb_r32(shape + kShapeDrawMatrices);
     const u32 currentViewPointer = sb_r32(shape + kShapeCurrentView);
@@ -439,6 +619,7 @@ void submit_semantic_j3d_shape(u32 shape) {
                   "vertices=%zu",
                   shape, element, g_vertices.size());
         record_raster(semanticMaterial);
+        ++observation.submittedModels;
         ++g_stats.submittedModels;
         if (submittedLitMaterial)
             ++g_stats.submittedLitModels;

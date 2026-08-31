@@ -1,5 +1,6 @@
 #include "semantic_j3d_material_adapter.h"
 
+#include <cstddef>
 #include <limits>
 
 namespace sb::recomp {
@@ -54,6 +55,30 @@ std::uint32_t pixel_engine_type(std::uint32_t vptr) noexcept {
         return 0x5045464CU; // 'PEFL'
     default:
         return 0;
+    }
+}
+
+bool tev_konst_offsets(std::uint32_t vptr, std::uint32_t& colorOffset,
+                       std::uint32_t& colorSelectionOffset,
+                       std::uint32_t& alphaSelectionOffset) noexcept {
+    switch (vptr) {
+    case kTevBlock2Vptr:
+        colorOffset = 0x41;
+        colorSelectionOffset = 0x51;
+        alphaSelectionOffset = 0x53;
+        return true;
+    case kTevBlock4Vptr:
+        colorOffset = 0x5E;
+        colorSelectionOffset = 0x6E;
+        alphaSelectionOffset = 0x72;
+        return true;
+    case kTevBlock16Vptr:
+        colorOffset = 0xF6;
+        colorSelectionOffset = 0x106;
+        alphaSelectionOffset = 0x116;
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -195,6 +220,28 @@ bool capture_guest_j3d_material_state(const GuestByteReader& byteReader, std::ui
              !reader.bytes(tevBlock + stageOffset + 8, captured.tevStage1.data(),
                            captured.tevStage1.size()))) {
             return false;
+        }
+        if (captured.tevStageCount >= 2) {
+            std::uint32_t colorOffset = 0;
+            std::uint32_t colorSelectionOffset = 0;
+            std::uint32_t alphaSelectionOffset = 0;
+            if (!tev_konst_offsets(tevVptr, colorOffset, colorSelectionOffset,
+                                   alphaSelectionOffset)) {
+                return false;
+            }
+            for (std::size_t colorIndex = 0; colorIndex < captured.konstColorRgba8.size();
+                 ++colorIndex) {
+                if (!reader.u32(tevBlock + colorOffset + static_cast<std::uint32_t>(colorIndex * 4),
+                                captured.konstColorRgba8[colorIndex])) {
+                    return false;
+                }
+            }
+            if (!reader.u8(tevBlock + colorSelectionOffset, captured.konstColorSelection0) ||
+                !reader.u8(tevBlock + colorSelectionOffset + 1, captured.konstColorSelection1) ||
+                !reader.u8(tevBlock + alphaSelectionOffset, captured.konstAlphaSelection0) ||
+                !reader.u8(tevBlock + alphaSelectionOffset + 1, captured.konstAlphaSelection1)) {
+                return false;
+            }
         }
     }
     state = captured;

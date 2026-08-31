@@ -132,7 +132,21 @@ int main() {
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::Success);
     memory.bytes[tev + 0x30] = 2;
+    write_u32(memory, tev + 0x41, 0x10203040);
+    write_u32(memory, tev + 0x45, 0x50607080);
+    write_u32(memory, tev + 0x49, 0x90A0B0C0);
+    write_u32(memory, tev + 0x4D, 0xD0E0F000);
+    memory.bytes[tev + 0x51] = 0x0C;
+    memory.bytes[tev + 0x52] = 0x1D;
+    memory.bytes[tev + 0x53] = 0x1C;
+    memory.bytes[tev + 0x54] = 0x07;
     assert(sb::recomp::capture_guest_j3d_material_state(reader, material, false, false, state));
+    assert(state.konstColorRgba8 ==
+           (std::array<std::uint32_t, 4>{0x10203040, 0x50607080, 0x90A0B0C0, 0xD0E0F000}));
+    assert(state.konstColorSelection0 == 0x0C);
+    assert(state.konstColorSelection1 == 0x1D);
+    assert(state.konstAlphaSelection0 == 0x1C);
+    assert(state.konstAlphaSelection1 == 0x07);
     assert(sb::native_render::classify_j3d_unlit_material(state, output) ==
            sb::native_render::J3dUnlitMaterialResult::MultipleTevStages);
 

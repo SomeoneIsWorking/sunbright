@@ -8,7 +8,7 @@ work in `docs/issues/`, and subsystem placement in `docs/codemap.md`.
 | S001 | The recomp runtime boots and renders the game through Aurora GX | verified | — | — |
 | S002 | The native decomp runtime boots and renders representative game flow through Aurora GX | verified | — | G002 |
 | S003 | The recomp has a project-owned SDL3-GPU GX compatibility/reference renderer | partial | S001 | — |
-| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit plus first diffuse-lit single-texture J3D models to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
+| S004 | The recomp feeds ordered 2D/UI draws and rigid unlit plus first diffuse-lit single-texture J3D material families to the shared PC-native semantic renderer above GX | partial | S001 | G003 |
 | S005 | The native decomp feeds the same semantic 2D/UI and J3D material families to that renderer through native-layout adapters | partial | S002, S004 | G004 |
 | S006 | Interpolated presentation covers every rendered target that should move between ticks | partial | S001 | G001 |
 | S007 | The native decomp is upstream-converged, semantically named, and complete for reached game behavior | partial | S002 | G002 |
@@ -26,9 +26,8 @@ dispatches in both runtimes; the semantic J3D adapters no longer consult `GXSetP
 `GXGetProjectionv`, FIFO, or compatibility-renderer state. The same high-level J3D material objects
 now supply culling, depth test/write, alpha cutout, source-alpha blending, decoded normals,
 material/vertex colour choice, ambient colour, and stage point lights for the exact supported
-families. Broader J3D materials are next: the remaining lit channel programs, multiple texture
-stages, custom pixel policies, skinning, authored mip chains, particles, and effects still fall
-back to the retained renderer.
+families. Broader J3D materials are next: the remaining lit channel and multi-stage programs,
+skinning, authored mip chains, particles, and effects still fall back to the retained renderer.
 
 ## Capability details
 
@@ -94,10 +93,23 @@ point lights with authored distance falloff. The recomp override runs the real
 `TLightCommon::setLight` body, then reads the same high-level world positions, colours, ambient, and
 camera matrix through the game's getters; it does not read a GX light object, XF register, FIFO, or
 compatibility-renderer mirror. The classifier admits only the observed one-stage texture-times-
-raster program with the exact material-colour or vertex-colour channel policy. Guarded Delfino
-audits reached nonzero lit models without a GPU fault; C095 owns the exact denominators, cross-runtime
-evidence, and falsifier. Other lit programs and unsupported raster policies fell back to the retained
-renderer by named rejection.
+raster program with the exact material-colour or vertex-colour channel policy. Full pixel-policy
+blocks are normalized by their observable alpha predicate, so AND, OR, and XNOR over two
+always-true comparisons all become the same ordinary pass-all policy while XOR is refused. This
+correction raised guarded Delfino submissions from 60 to 100 lit models in the recomp runtime and
+from 36 to 630 in the native-decomp runtime; the runs submitted 3,260 and 41,997 total models,
+respectively, exited cleanly, and reported no GPU fault.
+
+The classifier also recognizes one observed two-stage Mario hand family as a high-level operation:
+mix white and diffuse-lit vertex RGB equally, then multiply one decoded texture while preserving
+material alpha and source-alpha blending. CPU controls cover that equation, its independent RGB/
+alpha sources, the exact half-weight selector, and the XOR raster rejection. The live census found
+the family 200 times, but all occurred outside an active perspective scene and therefore submitted
+zero visible models; it is classified and production-linked, not yet claimed as rendered coverage.
+The same census ranks remaining lit programs by observations inside a perspective scene and reports
+each material's progress through classification, texture decode, scene readiness, and submission,
+so setup-only states cannot masquerade as renderer progress. C095 owns the cross-runtime lighting
+evidence and falsifier. Other lit programs fall back to the retained renderer by named rejection.
 
 The shared `native-render/` core defines renderer-neutral picture and solid-rectangle commands, the
 semantic `J2DPicture::drawFullSet` layout resolver, material-layer contract, and guarded submission

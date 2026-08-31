@@ -121,7 +121,9 @@ struct LitTexturedMaterial {
     Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
     Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
     ModelLightingContext lighting{};
-    bool usesVertexColor = false;
+    float litColorWeight = 1.0F;
+    bool usesVertexRgb = false;
+    bool usesVertexAlpha = false;
     ModelRasterPolicy raster{};
 };
 
