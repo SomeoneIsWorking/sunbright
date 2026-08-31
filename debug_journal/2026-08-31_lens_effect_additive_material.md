@@ -52,3 +52,16 @@ lighting contribution; the authored combiner cancels that contribution. It now p
 texture modulation through the same effect material. A changed-byte CPU control remains negative,
 and the guarded title audit advanced all 52 instances to native submission with no GPU fault or
 reset.
+
+## Follow-up: two-stage constant-alpha glow variant
+
+The next 22 perspective-reached glow draws were `_mat_lens_fx_9` with `P_glow5`. Their first
+stage uses the same constant-times-texture colour program with `konstColorSelection=7`, which is
+the GX 1/8 constant ramp rather than K0. The second stage (`c228f0f0c308f870`) passes the previous
+colour and replaces alpha with the GX 2/8 constant ramp (`konstAlphaSelection=6`). The semantic
+effect material now carries an explicit alpha replacement mode and the 3D pass uses a matching
+fragment shader, so sampled texture alpha is not accidentally multiplied into this family.
+
+The classifier test rejects a changed second stage. A guarded 60-present title audit advanced all
+22 instances through classification, image decode, scene readiness, and native submission; the
+watcher exited 0 and reported no kernel GPU fault or reset.

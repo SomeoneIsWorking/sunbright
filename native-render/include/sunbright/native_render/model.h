@@ -82,6 +82,7 @@ enum class ModelBlendMode : std::uint8_t {
     Additive,
 };
 enum class ModelTextureCoordinates : std::uint8_t { Primary, Secondary };
+enum class ModelTextureAlphaMode : std::uint8_t { MultiplyTexture, ReplaceTexture };
 
 enum class ModelFogMode : std::uint8_t { Disabled, Linear };
 
@@ -131,6 +132,7 @@ struct UnlitTexturedMaterial {
 struct TexturedEffectMaterial {
     PictureTexture texture{};
     ModelTextureCoordinates textureCoordinates = ModelTextureCoordinates::Primary;
+    ModelTextureAlphaMode alphaMode = ModelTextureAlphaMode::MultiplyTexture;
     Color modulation{1.0F, 1.0F, 1.0F, 1.0F};
     ModelRasterPolicy raster{};
 };

@@ -5,6 +5,7 @@
 #include "../shaders/model_lit_alpha_mask_frag_spv.h"
 #include "../shaders/model_lit_alpha_tint_frag_spv.h"
 #include "../shaders/model_masked_toon_frag_spv.h"
+#include "../shaders/model_texture_constant_alpha_frag_spv.h"
 #include "../shaders/model_texture_frag_spv.h"
 #include "../shaders/model_tinted_layered_frag_spv.h"
 #include "../shaders/model_vert_spv.h"
@@ -36,6 +37,7 @@ struct GpuVertex {
 enum class ModelShaderKind : std::uint8_t {
     Color,
     Texture,
+    TextureConstantAlpha,
     LitAlphaMask,
     LitAlphaTint,
     LayeredLit,
@@ -183,6 +185,7 @@ struct Semantic3dPassImpl {
     SDL_GPUShader* vertexShader = nullptr;
     SDL_GPUShader* colorFragmentShader = nullptr;
     SDL_GPUShader* textureFragmentShader = nullptr;
+    SDL_GPUShader* textureConstantAlphaFragmentShader = nullptr;
     SDL_GPUShader* litAlphaMaskFragmentShader = nullptr;
     SDL_GPUShader* litAlphaTintFragmentShader = nullptr;
     SDL_GPUShader* layeredLitFragmentShader = nullptr;
@@ -266,6 +269,9 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
     case ModelShaderKind::Texture:
         info.fragment_shader = impl.textureFragmentShader;
         break;
+    case ModelShaderKind::TextureConstantAlpha:
+        info.fragment_shader = impl.textureConstantAlphaFragmentShader;
+        break;
     case ModelShaderKind::LitAlphaMask:
         info.fragment_shader = impl.litAlphaMaskFragmentShader;
         break;
@@ -341,6 +347,8 @@ Semantic3dPass::~Semantic3dPass() {
             release_storage(impl_->device, storage);
         if (impl_->textureFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->textureFragmentShader);
+        if (impl_->textureConstantAlphaFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->textureConstantAlphaFragmentShader);
         if (impl_->litAlphaMaskFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->litAlphaMaskFragmentShader);
         if (impl_->layeredLitFragmentShader != nullptr)
@@ -364,7 +372,9 @@ bool Semantic3dPass::initialize(std::string& error) {
         return false;
     }
     if (impl_->vertexShader != nullptr && impl_->colorFragmentShader != nullptr &&
-        impl_->textureFragmentShader != nullptr && impl_->litAlphaMaskFragmentShader != nullptr &&
+        impl_->textureFragmentShader != nullptr &&
+        impl_->textureConstantAlphaFragmentShader != nullptr &&
+        impl_->litAlphaMaskFragmentShader != nullptr &&
         impl_->litAlphaTintFragmentShader != nullptr &&
         impl_->layeredLitFragmentShader != nullptr &&
         impl_->tintedLayeredFragmentShader != nullptr && impl_->maskedToonFragmentShader != nullptr)
@@ -377,6 +387,9 @@ bool Semantic3dPass::initialize(std::string& error) {
     impl_->textureFragmentShader =
         make_shader(impl_->device, kModelTextureFragSpv, sizeof(kModelTextureFragSpv),
                     SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+    impl_->textureConstantAlphaFragmentShader =
+        make_shader(impl_->device, kModelTextureConstantAlphaFragSpv,
+                    sizeof(kModelTextureConstantAlphaFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     impl_->litAlphaMaskFragmentShader =
         make_shader(impl_->device, kModelLitAlphaMaskFragSpv, sizeof(kModelLitAlphaMaskFragSpv),
                     SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
@@ -393,7 +406,9 @@ bool Semantic3dPass::initialize(std::string& error) {
         make_shader(impl_->device, kModelMaskedToonFragSpv, sizeof(kModelMaskedToonFragSpv),
                     SDL_GPU_SHADERSTAGE_FRAGMENT, 4, 1);
     if (impl_->vertexShader == nullptr || impl_->colorFragmentShader == nullptr ||
-        impl_->textureFragmentShader == nullptr || impl_->litAlphaMaskFragmentShader == nullptr ||
+        impl_->textureFragmentShader == nullptr ||
+        impl_->textureConstantAlphaFragmentShader == nullptr ||
+        impl_->litAlphaMaskFragmentShader == nullptr ||
         impl_->litAlphaTintFragmentShader == nullptr ||
         impl_->layeredLitFragmentShader == nullptr ||
         impl_->tintedLayeredFragmentShader == nullptr ||
@@ -476,6 +491,9 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
             batch.shader = ModelShaderKind::TintedLayered;
         else if (std::holds_alternative<LitMaskedToonMaterial>(draw.material))
             batch.shader = ModelShaderKind::MaskedToon;
+        else if (const auto* effect = std::get_if<TexturedEffectMaterial>(&draw.material);
+                 effect != nullptr && effect->alphaMode == ModelTextureAlphaMode::ReplaceTexture)
+            batch.shader = ModelShaderKind::TextureConstantAlpha;
         else if (batch.textureCount == 1)
             batch.shader = ModelShaderKind::Texture;
         batch.pipeline = ensure_pipeline(

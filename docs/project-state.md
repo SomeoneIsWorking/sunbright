@@ -273,6 +273,16 @@ submission, raising coverage from 1,404 to 1,456 models and lit models from 1,30
 exited 0 with no GPU fault or reset. The decomp adapter consumes the same shared classifier and
 material, although this run is recomp evidence.
 
+The next 22 perspective-reached lens surfaces (`_mat_lens_fx_9`, texture `P_glow5`) now use the
+same semantic effect owner with an explicit alpha replacement mode. Their first stage multiplies
+texture RGB by the GX 1/8 constant ramp; the second stage preserves that colour and replaces alpha
+with the GX 2/8 constant ramp. The renderer therefore does not multiply the sampled texture alpha
+for this family. The exact two-stage classifier control rejects a changed second-stage program and
+preserves the authored additive source-alpha/destination-one blend with disabled depth testing. A
+guarded 60-present audit advanced all 22 instances through classification, image decode, scene
+readiness, and native submission, raising coverage from 1,456 to 1,478 models; it exited 0 with no
+GPU fault or reset.
+
 One further perspective-reached family is now expressed as an ordinary solid-colour texture mask.
 Its J3D source enables a diffuse-light channel, but the exact program multiplies that result by the
 observed black colour register, ignores texture RGB, amplifies texture alpha by four, and applies

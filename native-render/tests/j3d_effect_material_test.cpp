@@ -49,6 +49,31 @@ int main() {
     assert(near(material.modulation.a, 96.0F / 255.0F));
 
     state = material_state();
+    state.tevStages[0].konstColorSelection = 7;
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(near(material.modulation.r, 1.0F / 8.0F));
+    assert(near(material.modulation.g, 1.0F / 8.0F));
+    assert(near(material.modulation.b, 1.0F / 8.0F));
+    assert(near(material.modulation.a, 96.0F / 255.0F));
+
+    state = material_state();
+    state.tevStageCount = 2;
+    state.tevStages[0].konstColorSelection = 7;
+    state.tevStages[1] =
+        j3d_tev_stage(0xFF, 0xFF, 4, {0xC2, 0x28, 0xF0, 0xF0, 0xC3, 0x08, 0xF8, 0x70}, 0x0C, 6);
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::Success);
+    assert(material.alphaMode == ModelTextureAlphaMode::ReplaceTexture);
+    assert(near(material.modulation.r, 1.0F / 8.0F));
+    assert(near(material.modulation.g, 1.0F / 8.0F));
+    assert(near(material.modulation.b, 1.0F / 8.0F));
+    assert(near(material.modulation.a, 2.0F / 8.0F));
+    state.tevStages[1].program[0] ^= 1U;
+    assert(classify_j3d_effect_material(state, texture, material) ==
+           J3dEffectMaterialResult::UnsupportedStageCount);
+
+    state = material_state();
     state.tevStages[0].program = {0xC0, 0x08, 0xF2, 0x8F, 0xC1, 0x38, 0xE6, 0x70};
     assert(classify_j3d_effect_material(state, texture, material) ==
            J3dEffectMaterialResult::Success);

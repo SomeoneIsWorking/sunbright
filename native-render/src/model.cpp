@@ -328,7 +328,8 @@ bool valid(const ModelDraw& draw) noexcept {
             } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.modulation) &&
-                       material.textureCoordinates <= ModelTextureCoordinates::Secondary;
+                       material.textureCoordinates <= ModelTextureCoordinates::Secondary &&
+                       material.alphaMode <= ModelTextureAlphaMode::ReplaceTexture;
             } else if constexpr (std::is_same_v<Material, AlphaMaskedColorMaterial>) {
                 return material.texture.resource != 0 && material.texture.width != 0 &&
                        material.texture.height != 0 && valid(material.color) &&
