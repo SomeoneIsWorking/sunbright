@@ -11,6 +11,7 @@ jobs:
   native-renderer:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -35,14 +36,14 @@ jobs:
             clang_tidy: clang-tidy
     steps:
       - name: Check out source and retained evidence submodules
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install pinned uv
-        uses: astral-sh/setup-uv@b75a909f75acd358c2196fb9a5f1299a9a8868a4
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with:
           version: 0.10.12
           python-version: 3.13.7
