@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
+SELFTEST_REQUIREMENTS = ("linux",)
+
 RADV_DUMP_NAME = re.compile(r"^radv_dumps_(?P<pid>[1-9][0-9]*)_(?P<stamp>.+)$")
 TRACE_ID = re.compile(r"\bTrace ID:\s*(?:0x)?(?P<id>[0-9a-f]+)\b", re.IGNORECASE)
 TRACE_LAST_REACHED = re.compile(

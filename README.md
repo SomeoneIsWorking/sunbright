@@ -52,6 +52,12 @@ implementation evidence, but they have not yet been integrated into the new game
 `./run.sh` is the stable product command. Until `gcnport` exists it exits with an explicit missing-
 executor error; it does not expose an alternate runtime selector.
 
+The redistributable native-component gate is `uv run --frozen python tools/verify.py`. It runs the
+portable self-tests on every supported desktop CI host and the Linux kernel/RADV diagnostics only
+on Linux. Game-image-dependent RE instrument checks are deliberately separate:
+`uv run --frozen python tools/verify_re.py` requires the user-supplied GMSE01 DOL and refuses rather
+than reporting an empty result when it is absent.
+
 ## Game files and licensing
 
 No game image or reconstructable copyrighted game data belongs in this repository or a release.

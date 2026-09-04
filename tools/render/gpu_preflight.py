@@ -46,6 +46,8 @@ from pathlib import Path
 
 from gpu_events import atomic_durable_replace, current_boot_id, recent_kernel_faults
 
+SELFTEST_REQUIREMENTS = ("linux",)
+
 REPO = Path(__file__).resolve().parents[2]
 STAMP = REPO / "scratch" / "gpu_fault.stamp"
 

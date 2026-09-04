@@ -149,7 +149,10 @@ def selftest() -> int:
         ok = False
 
     real = REPO / "tools/info/registry_paths.py"
-    _, _, paths, missing = scan_entry(f"---\nid: I997\n---\n\n## What\n\nSee {real.relative_to(REPO)}.\n")
+    relative = real.relative_to(REPO).as_posix()
+    _, _, paths, missing = scan_entry(
+        f"---\nid: I997\n---\n\n## What\n\nSee {relative}.\n"
+    )
     if paths and not missing:
         print("  PASS  an existing path is not flagged")
     else:

@@ -50,6 +50,8 @@ from radv_hang_trace import (
     snapshot_radv_dumps,
 )
 
+SELFTEST_REQUIREMENTS = ("linux",)
+
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_INCIDENT_DIR = REPO / "scratch" / "gpu_crash"
 DEFAULT_STAMP = REPO / "scratch" / "gpu_fault.stamp"

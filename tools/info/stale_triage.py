@@ -37,19 +37,28 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 INFO_PY = Path.home() / ".claude/skills/project-info/info.py"
 
-STALE_RE = re.compile(r"^STALE\s+(C\d+)\s+(.*?)\n(.*?)(?=\n\s*-> re-verify)", re.S | re.M)
-COMMIT_RE = re.compile(r"^\s+([0-9a-f]{7,})\s+\d{4}-\d\d-\d\d", re.M)
+STALE_RE = re.compile(
+    r"^STALE\s+(C\d+)\s+(.*?)\n(.*?)(?=\n\s*-> re-verify)",
+    re.DOTALL | re.MULTILINE,
+)
+COMMIT_RE = re.compile(
+    r"^\s+([0-9a-f]{7,})\s+\d{4}-\d\d-\d\d", re.MULTILINE
+)
 # The dependency line is `  path/to/file.cpp  [file-scope]` or, when the claim narrowed it,
 # `  path/to/file.cpp#symbol  [symbol-scope]`. The first version of this regex required the path to
 # be followed directly by the bracket and so dropped every symbol-scoped dependency on the floor —
 # three claims sat in UNRESOLVED for no reason but that. The `#symbol` is captured and discarded:
 # this comparison works at FILE level, so a symbol-scoped claim is classified by whether the FILE
 # was edited, which can over-report an edit and never under-report one.
-DEPFILE_RE = re.compile(r"^\s+(\S+?\.(?:cpp|h|hpp|py|sh|glsl))(?:#\S+)?\s+\[", re.M)
+DEPFILE_RE = re.compile(
+    r"^\s+(\S+?\.(?:cpp|h|hpp|py|sh|glsl))(?:#\S+)?\s+\[", re.MULTILINE
+)
 
 
 def git(*args: str, cwd: Path | None = None) -> str:
-    return subprocess.run(["git", *args], cwd=cwd or REPO, capture_output=True, text=True).stdout
+    return subprocess.run(
+        ["git", *args], cwd=cwd or REPO, capture_output=True, text=True, check=True
+    ).stdout
 
 
 def submodules() -> list[str]:
@@ -132,8 +141,13 @@ def run() -> int:
         print(f"stale_triage: {INFO_PY} not found — this triage reads its output and cannot "
               f"substitute for it. Nothing was checked.", file=sys.stderr)
         return 2
-    txt = subprocess.run([sys.executable, str(INFO_PY), "claim", "check"],
-                         cwd=REPO, capture_output=True, text=True).stdout
+    txt = subprocess.run(
+        [sys.executable, str(INFO_PY), "claim", "check"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     blocks = STALE_RE.findall(txt)
     if not blocks:
         print("stale_triage: `claim check` reported NO stale claims. That is either a clean "
@@ -200,11 +214,16 @@ def selftest() -> int:
         ok = False
 
     # A commit that did NOT touch the file at all must not be called an edit.
-    other = git("log", "-1", "--format=%h", "--", "docs/graphics/graphics_db.tsv").strip()
+    other = ""
+    for candidate in git("log", "--format=%h", "--all").splitlines():
+        touched = set(git("show", "--format=", "--name-only", candidate).splitlines())
+        if "tools/info/registry_paths.py" not in touched:
+            other = candidate
+            break
     if other and classify(other, {"tools/info/registry_paths.py"}) == "absent":
         print("  PASS  an unrelated commit is classified 'absent', not 'edit'")
     else:
-        print("  FAIL  an unrelated commit was not classified 'absent'")
+        print("  FAIL  no independently inspected unrelated commit classified 'absent'")
         ok = False
 
     # Rename following must return more than the name we asked about wherever history has one.

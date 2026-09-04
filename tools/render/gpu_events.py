@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
+SELFTEST_REQUIREMENTS = ("linux",)
+
 # The first signal in the 2026-08-26 incident did not contain the usual ``amdgpu:`` prefix:
 # ``[drm:gfx_v10_0_priv_reg_irq [amdgpu]] *ERROR* Illegal register access ...``.  It must stop
 # the run immediately; waiting for the later ring timeout gives the bad command stream more time

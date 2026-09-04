@@ -45,6 +45,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_DOL = REPO / "scratch" / "bin" / "sms.dol"
 DEFAULT_FUNCS = REPO / "reference" / "sms_gmse01_funcs.txt"
+SELFTEST_REQUIREMENTS = ("game-image",)
 
 # A run shorter than this is more likely a coincidental pointer table than a vtable.
 MIN_SLOTS = 3

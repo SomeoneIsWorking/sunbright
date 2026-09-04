@@ -206,7 +206,16 @@ that same owner on Linux x86_64, Windows x86_64, and the macOS Apple Silicon run
 actions, Python, uv, and SDL inputs. This proves only redistributable native components and tooling;
 it does not claim boot or gameplay.
 
+Self-tests declare game-image and host instrumentation requirements. The asset-free gate reports
+the selected, skipped, and discovered denominators, runs Linux kernel/RADV instruments only on
+Linux, and omits only the explicitly declared GMSE01-image check. `tools/verify_re.py` owns that
+separate check and hard-refuses a missing DOL, so hosted automation cannot turn unavailable game
+evidence into a passing empty result.
+
 Android CI is blocked and deliberately has no placeholder job: Sunbright has no Android Gradle/NDK
 consumer, package identity, or `gcnport` arm64-v8a executor to build. Add the Android job only when
 those real owners exist, and route it through the shared Android build contract. JIT gameplay and
 performance remain missing on every host under S017 regardless of these component jobs.
+
+Gap: the corrected Linux, Windows, and macOS component jobs still require a successful hosted run;
+Android remains inapplicable until its real application and executor boundaries exist.
