@@ -33,7 +33,7 @@ application composition
 | Input/UI/saves | Device actions, settings UI, persistent player state | Future focused input, UI, and save owners | Typed application policy | `docs/app/settings.md` |
 | Configuration | Sole CLI/environment/file ingestion and immutable validation | `tools/launch/config.py`; future product configuration owner | `parse_launch_config` | `docs/app/settings.md` |
 | Logging | Sole product sink/filter/format boundary through Lucent | Future logging owner | Injected logger interface | `docs/architecture.md` |
-| Verification policy | Asset-free build/quality checks, explicit self-test requirements, and the separate game-image RE gate | `tools/verification.py`, `tools/selftest_all.py`, `tools/verify_re.py` | `tools/verify.py`, `tools/verify_re.py` | `AGENTS.md` |
+| Verification policy | Asset-free build/quality checks, checksum-pinned shader tools, explicit self-test requirements, and the separate game-image RE gate | `tools/verification.py`, `tools/render/shader_toolchain.py`, `tools/selftest_all.py`, `tools/verify_re.py` | `tools/verify.py`, `tools/verify_re.py` | `AGENTS.md` |
 | Structure policy | Source caps, dependency edges, config/log ownership, deleted-path checks | `tools/structure_check.py`, `tools/migration_boundary.py` | Python verifier entry points | `AGENTS.md` |
 | Audio analysis | Parse and compare native audio evidence | `tools/audio/` | Focused Python tools | `docs/audio/` |
 | Document validation | Reject dead live-document paths | `tools/docs/` | `tools/docs/doc_paths.py` | `docs/README.md` |
@@ -77,3 +77,5 @@ docs/                goals, state, ownership, issues, claims, and RE facts
 - Product diagnostics → Lucent logging owner; no direct product stderr/stdout.
 - Cross-platform self-test selection or game-image RE gate policy → `tools/selftest_all.py`,
   `tools/verify.py`, and `tools/verify_re.py`.
+- Shader compiler/validator source pins, safe provisioning, and installed-tool resolution →
+  `tools/render/shader_toolchain.py`.

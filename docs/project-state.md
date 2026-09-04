@@ -206,6 +206,13 @@ that same owner on Linux x86_64, Windows x86_64, and the macOS Apple Silicon run
 actions, Python, uv, and SDL inputs. This proves only redistributable native components and tooling;
 it does not claim boot or gameplay.
 
+Shader provenance uses one host-neutral Python provisioner for Linux, Windows, and macOS. It pins
+shaderc v2026.1 plus the exact compatible glslang, SPIRV-Tools, and SPIRV-Headers commits, verifies
+every downloaded source archive against its recorded SHA-256 before bounded traversal-safe
+extraction, builds with Ninja under the locked Python interpreter, and refuses any missing or stale
+installed tool instead of consulting `PATH`. All 13 embedded shader headers match this exact
+compiler/validator pair locally.
+
 Self-tests declare game-image and host instrumentation requirements. The asset-free gate reports
 the selected, skipped, and discovered denominators, runs Linux kernel/RADV instruments only on
 Linux, and omits only the explicitly declared GMSE01-image check. `tools/verify_re.py` owns that

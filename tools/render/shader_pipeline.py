@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import shutil
 import struct
 import subprocess
 from pathlib import Path
 
 from shader_manifest import Shader
+from shader_toolchain import require_tool
 
 REGEN_COMMAND = "uv run --frozen python tools/render/build_shaders.py"
-
-
-def require_tool(name: str) -> str:
-    path = shutil.which(name)
-    if path is None:
-        raise RuntimeError(f"required shader tool is missing: {name}")
-    return path
 
 
 def render_header(shader: Shader, binary: bytes) -> str:
