@@ -9,7 +9,7 @@ guest path. Rendering is moving to a PC-native, game-semantic renderer above GX.
 
 The gameplay product is not runnable yet. The retired executor and its selectors have been removed.
 `./run.sh` deliberately refuses by naming the
-missing shared `gcnport` Dolphin-JIT executor instead of launching an evidence host or stale binary.
+incomplete shared `gcnport` Dolphin-JIT adapter instead of launching an evidence host or stale binary.
 
 The first implementation checkpoint is:
 

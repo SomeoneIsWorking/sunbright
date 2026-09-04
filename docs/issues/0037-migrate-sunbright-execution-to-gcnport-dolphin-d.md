@@ -2,7 +2,7 @@
 id: 37
 title: Migrate Sunbright execution to gcnport Dolphin dynarec
 status: open
-symptom: The intended native/dynarec product does not exist: exact GMSE01 still lacks a gcnport/Dolphin-JIT boot path and a robust runtime J3DShape::draw hook at 0x802e0390.
+symptom: The intended native/dynarec product is not runnable: exact GMSE01 still lacks a complete gcnport/Dolphin-JIT boot path and a robust runtime J3DShape::draw hook at 0x802e0390.
 state_items: S001,S002,S003
 tags: migration,gcnport,dolphin,jit,override
 created: 2026-09-04

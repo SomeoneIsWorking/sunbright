@@ -62,8 +62,9 @@ bypass the decision. Never special-case a compiled block shape or patch one obse
   images, CPU/thread state transitions, guest-address hooks, original calls, bounded executor exits,
   invalidation, and JIT diagnostics. Missing shared behavior is implemented there, not copied here.
 - **Dolphin** owns its PowerPC decoder, JIT backends, code cache, memory system, and emulated devices
-  until a verified native Sunbright owner replaces a specific boundary. `gcnport` does not exist yet;
-  the product must refuse by name until it embeds this owner. Do not wrap or duplicate its
+  until a verified native Sunbright owner replaces a specific boundary. `gcnport` now exists, but
+  its pinned Dolphin adapter is incomplete; the product must refuse by name until it embeds this
+  owner. Do not wrap or duplicate its
   code cache in `jit-common`.
 - **Sunbright** owns `GMSE01` identity, native override registration and implementations, semantic
   extraction, title policy, native host services, UI, configuration, and composition.
@@ -162,7 +163,7 @@ fallback denominators. One AArch64 operating system does not prove the other.
 
 ## Launcher and player data
 
-The zero-argument `./run.sh` currently refuses by naming the missing shared `gcnport` Dolphin-JIT
+The zero-argument `./run.sh` currently refuses by naming the incomplete shared `gcnport` Dolphin-JIT
 executor. It must never run tests, select an evidence host, or launch a stale binary. Once S013 is
 implemented it provisions and launches only the native/dynarec product from the user-supplied image.
 

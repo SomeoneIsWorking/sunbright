@@ -13,8 +13,8 @@ import sys
 from config import HELP_TEXT, parse_launch_config
 
 MISSING_EXECUTOR = (
-    "Sunbright gameplay is unavailable: shared gcnport does not yet embed "
-    "Dolphin's runtime PowerPC JIT"
+    "Sunbright gameplay is unavailable: shared gcnport does not yet expose its complete "
+    "Dolphin runtime PowerPC JIT adapter"
 )
 
 

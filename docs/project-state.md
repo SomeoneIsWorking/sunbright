@@ -157,7 +157,8 @@ product logging and the final typed persisted configuration owner must be implem
 
 ### S013 — default launcher
 
-Blocker: S002, the shared `gcnport` Dolphin-JIT executor, does not exist yet.
+Blocker: S002, the shared `gcnport` Dolphin-JIT executor exists but its complete embedding adapter is
+not implemented yet.
 
 Blocked by S002: `./run.sh` is a slim locked-Python shim and currently refuses by naming the missing
 shared gcnport Dolphin-JIT executor. Once the executor exists it must validate exact `GMSE01`, keep
