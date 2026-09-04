@@ -116,18 +116,16 @@ TARGET = "sms-boot"
 def build_dir():
     """The build directory that actually HAS the decomp target — checked, not assumed.
 
-    This is the instrument's control, and it exists because the instrument lied. The tool assumed
-    a `build/` directory; the repo has `build-sms-recomp/` (the RECOMP runtime), which does not
-    define `sms-boot` at all. `cmake --build build-sms-recomp --target sms-boot` prints NOTHING and
-    exits 0 — so `audit` reported "build GREEN — no post-rebase reconciliation needed" from a build
-    that never compiled one file of the tree it was certifying. A green that cannot go red is not
-    evidence, and this one certified a 396-commit rebase.
+    This is the instrument's control, and it exists because the instrument once accepted a build
+    tree that did not define `sms-boot`. The no-op printed nothing and exited successfully, so
+    `audit` reported a green result without compiling the tree it claimed to certify. A green that
+    cannot go red is not evidence.
 
     So: a candidate directory must be configured AND list the target. If none does, REFUSE — an
     unbuildable rebase must read as "not verified", never as "verified fine".
     """
     tried = []
-    for d in ("build", "build-sms-recomp"):
+    for d in ("build",):
         p = os.path.join(REPO, d)
         if not os.path.isdir(os.path.join(p, "CMakeFiles")):
             tried.append(f"{d}: not configured")

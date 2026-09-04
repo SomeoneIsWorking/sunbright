@@ -107,7 +107,7 @@ are the instruments.
 
 ## ⭐ UPDATE 3 (2026-06-16): GROUND TRUTH overturns the lighting hypothesis — it's the TEXTURE
 Added a Dolphin pixel-shader debug (`SUNBRIGHT_DBG_RASCOLOR`, PixelShaderGen.cpp: forces
-`prev = colors_0`, the rasterized lit channel-0 colour) so a recomp-GX run renders GX's true
+`prev = colors_0`, the rasterized lit channel-0 colour) so the captured GX path renders GX's true
 col0/illum. ⚠ Dolphin's on-DISK shader cache (`<home>/.cache/dolphin-emu/Shaders`, GFX_SHADER_CACHE=
 true) serves cached binaries by UID and bypasses generator edits — MOVE IT ASIDE to test
 (verified: red-output test only worked after clearing). GX col0 ground truth (scratch/screenshots/

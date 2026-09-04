@@ -1,9 +1,7 @@
 include_guard(GLOBAL)
 
-# Debug is the project's normal development configuration, including when playing the game.
-# Assertions and symbols must not require running the 2.8-million-line generated guest at -O0.
-# Keep the policy at directory scope so Aurora, the native runtimes, and the generated guest all
-# receive the same optimization contract without every target growing its own copy.
+# Debug is the normal development configuration. Keep assertions and symbols while compiling
+# first-party native components with practical optimization.
 function(sunbright_enable_fast_debug_builds)
     if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
         set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)

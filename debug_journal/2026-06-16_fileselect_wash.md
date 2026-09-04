@@ -262,7 +262,7 @@ fast path — neither of which the immediate hook sees. (funcs: `loadMtxIndx_*` 
    matrix GX packs; ngx_j3d_shape.cpp `ngx_set_projection` stores both, sets `g_proj_type`).
    This fix is CORRECT and kept, but did not fix the shear.
 2. **`g_main_cp_state.array_bases[CPArray::XF_A]`** (the indexed pos-matrix array base): LAGS —
-   it's updated on Dolphin's async GPU thread AFTER the recomp runs. At the recomp
+   it's updated on Dolphin's async GPU thread after the host path runs. At that
    GXLoadPosMtxIndx hook it held a STALE base (a 2D/J2D matrix array, 0.02-scale) → wrong matrix.
 3. **`[J3DSYS+0x104]` (mCurrentDrawMtx) + index*48** as the array base (it IS the XF_A base set
    by J3DShape::draw's inlined `GXSetArray(GX_POS_MTX_ARRAY=21, base, stride=48)` @0x8035e4c4):

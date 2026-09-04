@@ -4,6 +4,7 @@
 // C++ port of the read side of tools/oracle/parse_fifo_dff.py.
 
 #include "fifo_player.h"
+#include "config.h"
 #include <sb_log.h>
 
 #include <algorithm>
@@ -40,7 +41,7 @@ constexpr std::uint8_t CP_REG_ARRAYBASE_LO = 0xA0;
 constexpr std::uint8_t CP_REG_ARRAYBASE_HI = 0xAF;
 
 void fail(const char* why) {
-    std::fprintf(stderr, "[fifo_player] FATAL: %s\n", why);
+    sb_errorf("fifo-player", "FATAL: %s", why);
     std::abort(); // fail-fast per project policy
 }
 } // namespace
@@ -131,9 +132,8 @@ FifoCapture load_dff(const std::string& path) {
 
 void print_summary(const FifoCapture& cap) {
     const auto* h = cap.header;
-    std::printf("[fifo_player] frames=%u bpMem=%u cpMem=%u xfMem=%u xfRegs=%u texMem=%u\n",
-                h->frameCount, h->bpMemSize, h->cpMemSize, h->xfMemSize, h->xfRegsSize,
-                h->texMemSize);
+    sb_infof("fifo-player", "frames=%u bpMem=%u cpMem=%u xfMem=%u xfRegs=%u texMem=%u",
+             h->frameCount, h->bpMemSize, h->cpMemSize, h->xfMemSize, h->xfRegsSize, h->texMemSize);
     for (std::uint32_t i = 0; i < cap.frames.size(); ++i) {
         const auto& fr = cap.frames[i];
         int nv = 0, nt = 0, nx = 0;
@@ -145,8 +145,8 @@ void print_summary(const FifoCapture& cap) {
             else if (mu.type == kMemUpdateXFData)
                 ++nx;
         }
-        std::printf("  frame %u: %u cmd bytes, %zu memupdates (vtx=%d tex=%d xf=%d)\n", i,
-                    (unsigned)fr.fifoData.size(), fr.memoryUpdates.size(), nv, nt, nx);
+        sb_infof("fifo-player", "frame %u: %u cmd bytes, %zu memupdates (vtx=%d tex=%d xf=%d)", i,
+                 (unsigned)fr.fifoData.size(), fr.memoryUpdates.size(), nv, nt, nx);
     }
 }
 
@@ -317,10 +317,10 @@ struct GcShadow {
             // is wrong (or the capture targets memory this shadow doesn't
             // model) -- dropping it silently would surface later as
             // inexplicably-stale vertex/texture data.
-            std::fprintf(stderr,
-                         "[fifo_player] FATAL: memory update outside MEM1 shadow: "
-                         "addr=0x%08X size=%zu (MEM1=%u bytes)\n",
-                         gcAddr, n, kMem1Size);
+            sb_errorf("fifo-player",
+                      "FATAL: memory update outside MEM1 shadow: "
+                      "addr=0x%08X size=%zu (MEM1=%u bytes)",
+                      gcAddr, n, kMem1Size);
             std::abort();
         }
         std::memcpy(buf.data() + gcAddr, d, n);
@@ -563,12 +563,11 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
             // bind would sample garbage palettes and masquerade as a render
             // defect. Crash at the missing feature instead. (Was a one-time
             // warn -- silent-ish fallbacks banned 2026-07-14.)
-            std::fprintf(
-                stderr,
-                "[fifo_player] FATAL: CI-format texture bound (fmt=%u texmap=%d gcAddr=0x%06X) "
-                "but LOAD_TLUT synthesis is not implemented -- implement TLUT tracking "
-                "(BP 0x64/0x65) before replaying this capture\n",
-                fmt, id, ts.baseAddr);
+            sb_errorf("fifo-player",
+                      "FATAL: CI-format texture bound (fmt=%u texmap=%d gcAddr=0x%06X) "
+                      "but LOAD_TLUT synthesis is not implemented -- implement TLUT tracking "
+                      "(BP 0x64/0x65) before replaying this capture",
+                      fmt, id, ts.baseAddr);
             std::abort();
         }
         std::uint64_t hostPtr =
@@ -647,11 +646,10 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                 // 0x08 — TMEM preloads) means the capture depends on state this
                 // translator doesn't model. Dropping it silently would surface
                 // as inexplicable texture garbage later.
-                std::fprintf(
-                    stderr,
-                    "[fifo_player] FATAL: unhandled memory-update type 0x%02X "
-                    "(addr=0x%08X size=%zu) -- implement it before replaying this capture\n",
-                    mu.type, mu.address, mu.data.size());
+                sb_errorf("fifo-player",
+                          "FATAL: unhandled memory-update type 0x%02X "
+                          "(addr=0x%08X size=%zu) -- implement it before replaying this capture",
+                          mu.type, mu.address, mu.data.size());
                 std::abort();
             }
             ++muIdx;
@@ -708,10 +706,10 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                     emitArrayBase(out, attrIdx, 0, 0, 0, le); // null/empty slot
                 } else {
                     if (val >= GcShadow::kMem1Size) {
-                        std::fprintf(stderr,
-                                     "[fifo_player] FATAL: array base outside MEM1 shadow: "
-                                     "attr=%d addr=0x%08X (MEM1=%u bytes)\n",
-                                     attrIdx, val, GcShadow::kMem1Size);
+                        sb_errorf("fifo-player",
+                                  "FATAL: array base outside MEM1 shadow: "
+                                  "attr=%d addr=0x%08X (MEM1=%u bytes)",
+                                  attrIdx, val, GcShadow::kMem1Size);
                         std::abort();
                     }
                     std::uint64_t hostPtr = reinterpret_cast<std::uint64_t>(shadow.host(val));
@@ -823,7 +821,7 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                     bpCopyStride = val;
                 else if (reg == 0x4E)
                     bpCopyYScale = val & 0x1FF;
-                else if (reg == 0x52 && std::getenv("SB_FIFO_NO_COPYSYN") == nullptr) {
+                else if (reg == 0x52 && sb::runtime_config().fifoCopySync) {
                     // SB_FIFO_NO_COPYSYN=1 (diagnostic): skip EFB-copy synthesis
                     // so copy-fed texture binds fall back to decoding the
                     // recorded RAM snapshot bytes (what Dolphin's memupdates
@@ -863,12 +861,11 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                         // scan-out format isn't a GXTexFmt; aurora presents
                         // through a plain RGBA8 render texture).
                         if (bpCopyStride == 0 || bpCopyYScale == 0) {
-                            std::fprintf(
-                                stderr,
-                                "[fifo_player] FATAL: display copy with degenerate stride=%u "
-                                "yscale=%u (trigger val=0x%06X) -- capture preload or reg "
-                                "tracking is wrong\n",
-                                bpCopyStride, bpCopyYScale, val);
+                            sb_errorf("fifo-player",
+                                      "FATAL: display copy with degenerate stride=%u "
+                                      "yscale=%u (trigger val=0x%06X) -- capture preload or reg "
+                                      "tracking is wrong",
+                                      bpCopyStride, bpCopyYScale, val);
                             std::abort();
                         }
                         std::uint32_t dstW = bpCopyStride * 32u / 2u;
@@ -895,12 +892,11 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
                             // FAIL FAST: Z/exotic copy formats are not handled by
                             // the synthesis; passing them through would misresolve
                             // and pollute downstream sampling. (Was a warn.)
-                            std::fprintf(
-                                stderr,
-                                "[fifo_player] FATAL: EFB copy with Z/exotic real-format %u "
-                                "(tpf=%u, trigger val=0x%06X) -- implement this format's "
-                                "synthesis before replaying this capture\n",
-                                fmt, tpf, val);
+                            sb_errorf("fifo-player",
+                                      "FATAL: EFB copy with Z/exotic real-format %u "
+                                      "(tpf=%u, trigger val=0x%06X) -- implement this format's "
+                                      "synthesis before replaying this capture",
+                                      fmt, tpf, val);
                             std::abort();
                         }
                         out.push_back(GX_AURORA);
@@ -938,10 +934,10 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
         // Unknown opcode: the walker has DESYNCED from the stream (0 unknown
         // opcodes in audited captures) -- every byte after this point would be
         // misinterpreted. Crash at the desync, never "emit 1 byte and hope".
-        std::fprintf(stderr,
-                     "[fifo_player] FATAL: unknown opcode 0x%02x @ %u (frame stream desync -- "
-                     "vertex-size walker or opcode table is wrong for this capture)\n",
-                     op, pos);
+        sb_errorf("fifo-player",
+                  "FATAL: unknown opcode 0x%02x @ %u (frame stream desync -- "
+                  "vertex-size walker or opcode table is wrong for this capture)",
+                  op, pos);
         std::abort();
     }
     // Flush any trailing memory updates (their data already landed in the shadow;
@@ -952,7 +948,6 @@ std::vector<std::uint8_t> translate_frame(const FifoCapture& cap, std::uint32_t 
 
 int replay(const FifoCapture& cap) {
     print_summary(cap);
-    std::fflush(stdout);
     int rendered = 0;
     // The GC-RAM shadow spans all of MEM1 (24 MiB) and is shared across frames:
     // frame-to-frame state (matrices, static vertex data) accumulates exactly as
@@ -963,27 +958,22 @@ int replay(const FifoCapture& cap) {
     for (const auto& frame : cap.frames) {
 
         std::vector<std::uint8_t> cmds = translate_frame(cap, rendered, shadow);
-        std::printf("[fifo_player] frame %d: translated %u -> %u bytes\n", rendered,
-                    (unsigned)frame.fifoData.size(), (unsigned)cmds.size());
-        std::fflush(stdout);
+        sb_infof("fifo-player", "frame %d: translated %u -> %u bytes", rendered,
+                 (unsigned)frame.fifoData.size(), (unsigned)cmds.size());
         if (!aurora_begin_frame()) {
             // FAIL FAST: a replay frame that can't begin means device loss or
             // an external quit -- a truncated replay must not look like a
             // successful shorter one.
-            std::fprintf(stderr,
-                         "[fifo_player] FATAL: aurora_begin_frame failed at frame %d of %zu\n",
-                         rendered, cap.frames.size());
+            sb_errorf("fifo-player", "FATAL: aurora_begin_frame failed at frame %d of %zu",
+                      rendered, cap.frames.size());
             std::abort();
         }
-        std::printf("[fifo_player] frame %d: aurora_fifo_replay %u bytes ...\n", rendered,
-                    (unsigned)cmds.size());
-        std::fflush(stdout);
+        sb_infof("fifo-player", "frame %d: aurora_fifo_replay %u bytes ...", rendered,
+                 (unsigned)cmds.size());
         aurora_fifo_replay(cmds.data(), (std::uint32_t)cmds.size(), 1);
-        std::printf("[fifo_player] frame %d: aurora_end_frame ...\n", rendered);
-        std::fflush(stdout);
+        sb_infof("fifo-player", "frame %d: aurora_end_frame ...", rendered);
         aurora_end_frame(); // drains, renders, and captures via SB_DUMP_FRAME
-        std::printf("[fifo_player] frame %d: done\n", rendered);
-        std::fflush(stdout);
+        sb_infof("fifo-player", "frame %d: done", rendered);
         ++rendered;
     }
     // Pump empty frames so async readbacks resolve before the device is

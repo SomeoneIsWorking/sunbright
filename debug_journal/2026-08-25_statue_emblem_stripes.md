@@ -6,11 +6,8 @@ The Delfino Plaza statue's pollution-graffiti glyph renders with regular VERTICA
 (~6px-period green/pink chroma bands, identical row-to-row) when the camera is CLOSE. Far away the
 same glyph is a smooth gradient. Reproduced deterministically:
 
-```
-SBR_FASTBOOT=1 SB_HEADLESS=1 SBR_QUIT_AFTER=4000 \
-SBR_PAD_SCRIPT="400:STICK=0/100,1100:STICK=0/0" ./run-recomp.sh
-```
-(walk forward ~10s from plaza spawn; the statue is dead ahead). Retail ground truth
+A controlled stage-1 run walked forward for roughly ten seconds from the plaza spawn; the statue
+is dead ahead. Retail ground truth
 (`scratch/screenshots/dolphin_fastboot_plaza.png`, Dolphin GX at the same spot) shows the glyph as
 a SMOOTH rainbow-ish gradient with no stripes at that distance.
 

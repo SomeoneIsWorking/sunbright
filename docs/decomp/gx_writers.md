@@ -2,7 +2,7 @@
 
 Native port: `runtime/overrides/native_gx.cpp`. Census source:
 `scratch/logs/call_census.tsv` (dispatched calls per run). Ground truth per
-function: GMSE01 disasm (`sunbright-recomp --disasm <addr>`), cross-checked
+function: GMSE01 disassembly at the named address, cross-checked
 instruction-for-instruction against `decomp/sms/src/dolphin/gx/GXTev.c` /
 `GXBump.c` (decomp matched exactly on every function below) and Dolphin's
 `externals/dolphin/Source/Core/VideoCommon/BPMemory.h` for register names.

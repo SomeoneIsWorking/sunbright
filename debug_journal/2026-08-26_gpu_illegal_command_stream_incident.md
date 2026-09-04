@@ -9,7 +9,7 @@ The 2026-08-26 interpolated capture did reset the GPU. The first relevant kernel
 [drm:gfx_v10_0_priv_reg_irq [amdgpu]] *ERROR* Illegal register access in command stream
 ```
 
-The following ring-timeout line named `sms-recomp` PID 1759510 on `gfx_0.0.0`; reset and VRAM loss
+The following ring-timeout line identified the Sunbright process, PID 1759510, on `gfx_0.0.0`; reset and VRAM loss
 followed. Later KWin/browser faults occurred after that reset and are collateral. This is an illegal
 privileged-register command-stream fault, not an initial GPUVM page fault. The host was Navi 22 / RX
 6700 on amdgpu, kernel 7.1.9-200.fc44, Mesa RADV 26.1.7, Vulkan loader 1.4.341.0.

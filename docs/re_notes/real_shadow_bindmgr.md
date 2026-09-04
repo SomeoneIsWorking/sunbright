@@ -242,5 +242,5 @@ blend as a follow-up if the held-position step is visible.
   before the fix** (proves the empty-queue cause). Add to `/interp60` probe output.
 - After the fix: drawCount on the in-between equals the captured real-field count; the
   cast shadow is present on both fields (no on/off).
-- A/B with `SUNBRIGHT_INTERP60` off vs on, and against the `SUNBRIGHT_DISABLE_RECOMP`
+- A/B with the 60 Hz experiment off vs on, and against the Dolphin
   oracle (30 fps) for shadow shape/position parity.

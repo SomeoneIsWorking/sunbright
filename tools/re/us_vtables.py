@@ -11,7 +11,7 @@ of TActor-derived vtables.
 
 That set is not in any reference file we have: `reference/sms_gmse01_funcs.txt` is US but
 carries FUNCTIONS ONLY (zero `__vt__` symbols), while the 1,508 vtable symbols live in the JP
-symbol data — and the recomp runs US.
+symbol data — and the analyzed binary is US.
 
 HOW
 ---

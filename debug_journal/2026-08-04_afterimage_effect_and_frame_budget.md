@@ -84,7 +84,7 @@ before treating any absolute figure here as a baseline.
 
 Leads, in the order their size suggests:
 
-1. **Guest logic ~19 ms/tick.** This is recompiler output quality, a separate arc from rendering.
+1. **Guest logic ~19 ms/tick.** This is guest-execution throughput, a separate arc from rendering.
    Nothing in the render path can fix it, and interpolated 60fps is valuable precisely BECAUSE it
    does not re-run it.
 2. **`storage=22.4 MB` uploaded per tick** (`AURORA_REPLAY_LOG_EVERY`) — the indexed vertex
@@ -346,7 +346,7 @@ cannot show it; two passes with comparable counts is what it would look like. No
 appears ONLY inside that comment — it is a phantom switch, exactly as CLAUDE.md warns, so it could
 never have been used to test this.
 
-Delfino Plaza, recomp runtime, steady state:
+Delfino Plaza, earlier runtime, steady state:
 
     per-pass command counts: 2 10 75 976 331      (passes=5, draws=1373)
 

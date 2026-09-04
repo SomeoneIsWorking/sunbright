@@ -1,4 +1,4 @@
-// Auto-generated from model_texture.frag.glsl by glslc — DO NOT EDIT. Regenerate: python3 tools/render/build_shaders.py
+// Auto-generated from model_texture.frag.glsl by glslc — DO NOT EDIT. Regenerate: uv run --frozen python tools/render/build_shaders.py
 #pragma once
 #include <cstdint>
 static const uint32_t kModelTextureFragSpv[] = {0x07230203,0x00010000,0x000d000b,0x0000008d,

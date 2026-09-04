@@ -64,8 +64,7 @@ all-target, so build `--target sms-boot` specifically and run ctest with `-E pla
    r0=unk2[thing]) is `tmp < unk2[thing]`. Reversed, every tmp==0 lookup returned null
    — incl. the JAI init sound 0x80000800 (startSoundDirectID(0x80000800, &unk38)), so
    unk38 stayed null and JAIBasic::processFrameWork null-dereffed on the first game-loop
-   frame. (Ground truth via `build-freshtest/sunbright-recomp <ROM> --disasm <addr>` —
-   the kept offline analysis tool.)
+   frame. Direct GMSE01 disassembly supplied the ground truth.)
 
 7. **JSUInputStream big-endian** (submodule JSUInputStream.hpp/.cpp + JSURandomInputStream).
    JSU streams read GC-serialized assets (big-endian) but read()/readData() copy raw
@@ -123,14 +122,13 @@ NEXT STEPS (for the next session):
   movie-path thread; compare to the decomp source signatures.
 - Note the fastboot-era CLAUDE.md gotchas about TMovieDirector: it stores TWO vptrs
   (final vtable 0x803DFA50 on GC); THP workers crash if torn down mid-open. Those are
-  recomp-era but the THP-worker fragility is relevant.
+  earlier runtime, but the THP-worker fragility is relevant.
 - Consider whether the opening movie even needs to PLAY to reach a scene — but don't
   skip it as a bandaid; fix the thread setup. (The user's "sync aside from rendering"
   directive may apply: the THP decode worker could be driven synchronously.)
 
 ## Notes / gotchas learned
-- The kept offline tool `build-freshtest/sunbright-recomp "$SUNBRIGHT_ROM" --disasm 0xADDR`
-  (ROM arg FIRST) is the ground-truth for "is the decomp faithful here?" — used it to
+- Direct GMSE01 disassembly is the ground truth for "is the decomp faithful here?" — it was used to
   confirm the getInfoPointer reversed comparison and the processFrameWork no-null-check.
   Function addresses: `reference/sms_gmse01_funcs.txt`.
 - The audio/JDrama/J2D decomp has MANY incomplete/non-matching functions AND a pervasive

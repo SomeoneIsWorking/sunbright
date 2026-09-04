@@ -42,8 +42,7 @@ completes, so the movie never starts.
 ## Tooling added (committed) — tools/re/ppcdis.py
 A capstone PPC (Gekko/BE32) disassembler over `scratch/bin/sms.dol` with full operands +
 branch-target resolution + symbol names from `reference/sms_gmse01_funcs.txt`
-(`ppcdis.py <addr> [count]`, `--data <addr> <nbytes>`). The bundled `sunbright-recomp
---disasm` prints mnemonics only; this gives the operand-level RE used below. REUSE for all
+(`ppcdis.py <addr> [count]`, `--data <addr> <nbytes>`). This gives the operand-level RE used below. REUSE for all
 future "is the decomp faithful / what does this prebuilt-library function do" RE.
 
 ## FRONTIER (OPEN) — the `Hx_` wipe library (fully RE'd here; NOT YET PORTED)

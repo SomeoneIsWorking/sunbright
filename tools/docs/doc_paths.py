@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-"""Check that source paths named in the LIVE docs actually exist.
+"""Check that source paths named in the live docs actually exist.
 
-WHY. On 2026-08-12 a sweep of `docs/60fps/` — the document a session reads to find the 60fps code —
-found nine paths that resolved to nothing. Some were under-qualified (written relative to a root
-that is not this repo's), some named files deleted months earlier, and one paragraph described a
-tool as DONE, with a switch and a filename, where neither the switch nor the file exists anywhere.
-A reader following any of them finds nothing and cannot tell which case they are in.
-
-The project already gates env-switch names in CLAUDE.md, `docs/` and run scripts
-(`tools/diag_registry.py`). Nothing gated PATHS, which is how `tools/oracle/capture.sh` came to
-look for its Dolphin binary in an uninitialised submodule and silently fall back to a stock build
-for months. This closes that.
+Live documentation must not claim an owner, tool, or source path that is absent. This checker keeps
+that contract separate from the migration vocabulary check.
 
 WHAT IT DELIBERATELY DOES NOT CHECK.
 
@@ -18,11 +10,9 @@ WHAT IT DELIBERATELY DOES NOT CHECK.
     past state; a dead path there is the note doing its job, exactly as a retired instrument should
     still name the file it lived in. They are SKIPPED, and the skip is REPORTED — a check that
     quietly narrows its own scope is how "clean" stops meaning anything.
-  * **Paths marked dead in place.** A live document may legitimately name a deleted file when the
-    point is the history — `docs/60fps/README.md` keeps the losing rows of a three-way design
-    comparison, because deleting them would delete the reasoning. Such a path is exempt when the
-    same line marks it: `(DELETED)`, `— DELETED`, `is GONE`, `no longer exists`, `since deleted`.
-    The marker is what makes it honest, so the marker is what grants the exemption.
+  * **Paths marked dead in place.** A living evidence record may name a removed file when that path
+    is needed to interpret a surviving binary fact. Such a path is exempt only when the same line
+    explicitly marks it dead.
   * **Whether a path that exists is the RIGHT one.** It cannot know that. It says so.
 
   doc_paths.py              # check; exit 1 if a live doc names a missing path

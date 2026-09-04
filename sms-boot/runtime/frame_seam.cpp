@@ -26,11 +26,12 @@
 
 #include <sunbright/native_render/semantic_frame_bridge.h>
 
+#include "config.h"
 #include "semantic_render.h"
 
-#include <charconv>
+#include <sb_log.h>
+
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <unistd.h>
@@ -69,32 +70,9 @@ namespace {
 
 // NTSC field period: 60000/1001 fields per second.
 constexpr int64_t kFieldNs = 1000000000LL * 1001 / 60000;
-constexpr std::uint64_t kMaxQuitAfter = 10'000;
-
 bool s_frameOpen = false;
 int64_t s_nextDeadlineNs = 0;
 std::uint64_t s_presentCount = 0;
-
-std::uint64_t quit_after() {
-    static const std::uint64_t value = [] {
-        const char* text = std::getenv("SB_QUIT_AFTER");
-        if (text == nullptr || text[0] == '\0')
-            return std::uint64_t{0};
-        const char* end = text;
-        while (*end != '\0')
-            ++end;
-        std::uint64_t parsed = 0;
-        const auto result = std::from_chars(text, end, parsed, 10);
-        if (result.ec != std::errc{} || result.ptr != end || parsed == 0 ||
-            parsed > kMaxQuitAfter) {
-            std::fprintf(stderr,
-                         "[sms-boot] SB_QUIT_AFTER requires an integer from 1 through 10000\n");
-            std::abort();
-        }
-        return parsed;
-    }();
-    return value;
-}
 
 int64_t now_ns() {
     timespec ts;
@@ -102,31 +80,12 @@ int64_t now_ns() {
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
-bool turbo() {
-    static int v = -1;
-    if (v < 0) {
-        const char* e = std::getenv("SB_TURBO");
-        v = (e && e[0] && e[0] != '0') ? 1 : 0;
-    }
-    return v == 1;
-}
-
-bool trace_seq_on() {
-    static int v = -1;
-    if (v < 0) {
-        const char* e = std::getenv("SB_TRACE_SEQ");
-        v = (e && e[0] && e[0] != '0') ? 1 : 0;
-    }
-    return v == 1;
-}
-
 } // namespace
 
 extern "C" {
 
 void sb_frame_seam_configure(void) {
-    // Force strict run-limit parsing before Aurora or either GPU device is initialized.
-    (void)quit_after();
+    // Runtime configuration is parsed before Aurora or either GPU device is initialized.
 }
 
 // Open the first Aurora frame. Called once from main() after aurora_initialize,
@@ -135,50 +94,41 @@ void sb_frame_seam_start(void) {
     s_frameOpen = aurora_begin_frame();
     auto& semanticFrame = sb::native_render::semantic_frame_bridge();
     if (!semanticFrame.begin()) {
-        std::fprintf(stderr, "[sms-boot] semantic frame begin failed: %s\n",
-                     semanticFrame.last_error());
+        sb_errorf("semantic", "frame begin failed: %s", semanticFrame.last_error());
         std::abort();
     }
     s_nextDeadlineNs = now_ns() + kFieldNs;
 }
 
 void sb_frame_present(unsigned retraces) {
-    if (trace_seq_on()) {
-        std::fprintf(stderr, "[trace] seq=%lu present-enter retrace=%u retraces_arg=%u\n",
-                     (unsigned long)sb_trace_seq(), VIGetRetraceCount(), retraces);
-    }
+    SB_LOGC("trace", "seq=%lu present-enter retrace=%u retraces_arg=%u",
+            (unsigned long)sb_trace_seq(), VIGetRetraceCount(), retraces);
     sb_host_alloc_push();
 
     auto& semanticFrame = sb::native_render::semantic_frame_bridge();
     if (!semanticFrame.seal()) {
-        std::fprintf(stderr, "[sms-boot] semantic frame seal failed: %s\n",
-                     semanticFrame.last_error());
+        sb_errorf("semantic", "frame seal failed: %s", semanticFrame.last_error());
         std::abort();
     }
     // The semantic target is independent of Aurora surface availability. Every sealed simulation
     // frame must be consumed exactly once even when preview presentation is temporarily
     // unavailable; otherwise a minimized run could report success after encoding nothing.
     if (!sb_semantic_render_consume()) {
-        std::fprintf(stderr, "[sms-boot] semantic frame output failed: %s\n",
-                     sb_semantic_render_last_error());
+        sb_errorf("semantic", "frame output failed: %s", sb_semantic_render_last_error());
         std::abort();
     }
 
     if (s_frameOpen) {
         aurora_end_frame();
         ++s_presentCount;
-        if (trace_seq_on()) {
-            std::fprintf(stderr, "[trace] seq=%lu aurora-end-frame retrace=%u\n",
-                         (unsigned long)sb_trace_seq(), VIGetRetraceCount());
-        }
+        SB_LOGC("trace", "seq=%lu aurora-end-frame retrace=%u", (unsigned long)sb_trace_seq(),
+                VIGetRetraceCount());
     } else {
         // Surface unpresentable (minimized): the frame's GX commands were
         // queued but never begun; drop them so the fifo doesn't grow.
         aurora_discard_frame();
-        if (trace_seq_on()) {
-            std::fprintf(stderr, "[trace] seq=%lu aurora-discard-frame retrace=%u\n",
-                         (unsigned long)sb_trace_seq(), VIGetRetraceCount());
-        }
+        SB_LOGC("trace", "seq=%lu aurora-discard-frame retrace=%u", (unsigned long)sb_trace_seq(),
+                VIGetRetraceCount());
     }
 
     const AuroraEvent* event = aurora_update();
@@ -189,19 +139,18 @@ void sb_frame_present(unsigned retraces) {
         }
         ++event;
     }
-    const bool quitAfterReached = quit_after() != 0 && s_presentCount >= quit_after();
+    const auto quitAfter = sb::runtime_config().quitAfter;
+    const bool quitAfterReached = quitAfter != 0 && s_presentCount >= quitAfter;
     exit_requested = exit_requested || quitAfterReached;
     if (exit_requested) {
-        std::fprintf(stderr, "[sms-boot] %s, exiting\n",
-                     quitAfterReached ? "SB_QUIT_AFTER reached" : "window closed");
+        sb_infof("runtime", "%s, exiting",
+                 quitAfterReached ? "SB_QUIT_AFTER reached" : "window closed");
         if (quitAfterReached && !sb_semantic_render_validate()) {
-            std::fprintf(stderr, "[sms-boot] bounded semantic output failed: %s\n",
-                         sb_semantic_render_last_error());
+            sb_errorf("semantic", "bounded output failed: %s", sb_semantic_render_last_error());
             std::abort();
         }
         if (!sb_semantic_render_shutdown()) {
-            std::fprintf(stderr, "[sms-boot] semantic renderer shutdown failed: %s\n",
-                         sb_semantic_render_last_error());
+            sb_errorf("semantic", "renderer shutdown failed: %s", sb_semantic_render_last_error());
             std::abort();
         }
         aurora_shutdown();
@@ -209,13 +158,10 @@ void sb_frame_present(unsigned retraces) {
     }
 
     s_frameOpen = aurora_begin_frame();
-    if (trace_seq_on()) {
-        std::fprintf(stderr, "[trace] seq=%lu aurora-begin-frame retrace=%u\n",
-                     (unsigned long)sb_trace_seq(), VIGetRetraceCount());
-    }
+    SB_LOGC("trace", "seq=%lu aurora-begin-frame retrace=%u", (unsigned long)sb_trace_seq(),
+            VIGetRetraceCount());
     if (!semanticFrame.begin()) {
-        std::fprintf(stderr, "[sms-boot] semantic frame begin failed: %s\n",
-                     semanticFrame.last_error());
+        sb_errorf("semantic", "frame begin failed: %s", semanticFrame.last_error());
         std::abort();
     }
     sb_host_alloc_pop();
@@ -232,26 +178,22 @@ void sb_frame_present(unsigned retraces) {
     sb_watchdog_kick();
     sb_audio_frame();
 
-    if (trace_seq_on()) {
-        std::fprintf(stderr, "[trace] seq=%lu present-exit retrace=%u\n",
-                     (unsigned long)sb_trace_seq(), VIGetRetraceCount());
-    }
+    SB_LOGC("trace", "seq=%lu present-exit retrace=%u", (unsigned long)sb_trace_seq(),
+            VIGetRetraceCount());
 
     // A CEILING ON GPU SUBMISSION THAT APPLIES EVEN IN TURBO. SB_TURBO exists to stop pacing the
     // GAME to the wall clock; what it also did was remove the only limit on how fast this process
     // hands work to the GPU. Aurora replays the whole GX stream and presents once per call here, so
     // an unpaced run submitted thousands of frames a second back to back and left the graphics ring
     // no gap for the compositor. On 2026-08-12 that helped make this machine unusable — see
-    // debug_journal/2026-08-12_gpu_hang_guards.md and the matching ceiling in the recomp's
-    // native_frame.cpp. Fast-forwarding does not need a frame per CPU-microsecond; the guest still
+    // debug_journal/2026-08-12_gpu_hang_guards.md. Fast-forwarding does not need a frame per
+    // CPU-microsecond; the guest still
     // runs unpaced between presents, only the submission rate is bounded. SB_MAX_PRESENT_HZ=0
     // disables it, and has to be typed to do so.
     {
-        static const int64_t s_minGapNs = [] {
-            const char* e = std::getenv("SB_MAX_PRESENT_HZ");
-            const double hz = e != nullptr ? std::strtod(e, nullptr) : 120.0;
-            return hz > 0.0 ? (int64_t)(1e9 / hz) : (int64_t)0;
-        }();
+        static const int64_t s_minGapNs = sb::runtime_config().maxPresentHz > 0.0
+                                              ? (int64_t)(1e9 / sb::runtime_config().maxPresentHz)
+                                              : (int64_t)0;
         static int64_t s_nextSubmitNs = 0;
         if (s_minGapNs != 0) {
             const int64_t now = now_ns();
@@ -266,7 +208,7 @@ void sb_frame_present(unsigned retraces) {
         }
     }
 
-    if (!turbo()) {
+    if (!sb::runtime_config().turbo) {
         s_nextDeadlineNs += (int64_t)retraces * kFieldNs;
         int64_t now = now_ns();
         if (now < s_nextDeadlineNs) {

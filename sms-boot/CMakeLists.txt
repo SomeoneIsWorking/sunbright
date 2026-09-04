@@ -22,6 +22,22 @@ endif()
 set(SMS_NATIVE_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(NOT TARGET lucent::lucent)
+    include(FetchContent)
+    set(LUCENT_CHANNEL_ENV "SB_LOG")
+    set(LUCENT_LOG_FILE_ENV "SB_LUCENT_LOG_FILE")
+    FetchContent_Declare(lucent
+        GIT_REPOSITORY https://github.com/SomeoneIsWorking/lucent.git
+        GIT_TAG af80097e454e1d280f95a4c2132cc27dea1c9998)
+    FetchContent_MakeAvailable(lucent)
+endif()
+
+add_library(sms-runtime-log STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/sb_log.cpp")
+target_include_directories(sms-runtime-log PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/shims")
+target_link_libraries(sms-runtime-log PUBLIC lucent::lucent)
+
 # Game-logic sources = decomp/sms/src/**.cpp MINUS the GC SDK/CRT dirs (Aurora
 # supplies dolphin/*; PowerPC_EABI_Support/TRK_MINNOW_DOLPHIN are PPC CRT).
 file(GLOB_RECURSE SMS_DECOMP_SOURCES CONFIGURE_DEPENDS
@@ -231,6 +247,7 @@ target_include_directories(sms-assets PUBLIC
     # single-logger rule exists to remove.
     "${SMS_NATIVE_REPO_ROOT}/sms-boot/shims")
 target_compile_options(sms-assets PRIVATE -Wall -Wextra)
+target_link_libraries(sms-assets PUBLIC sms-runtime-log)
 
 enable_testing()
 
@@ -286,6 +303,7 @@ foreach(_test ${SMS_RUNTIME_TESTS})
         # tests that check the GC sign convention against it (mtx_lookat_test).
         target_link_libraries(platform-${_name} PRIVATE aurora::mtx)
     endif()
+    target_link_libraries(platform-${_name} PRIVATE sms-runtime-log)
     add_test(NAME platform_${_name} COMMAND platform-${_name})
 endforeach()
 
@@ -325,6 +343,7 @@ if(TARGET aurora_core)
 
     add_executable(sms-boot
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/main.cpp"
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/config.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/frame_seam.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_j3d_lighting.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/semantic_render.cpp"
@@ -337,7 +356,6 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/hx_wipe.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pad_script.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/pin_state.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/fifo_player.cpp")
     add_dependencies(sms-boot sms-native-sjis)
     set_target_properties(sms-boot PROPERTIES
@@ -395,6 +413,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
+        sms-runtime-log
         sms-native-semantic
         sunbright-native-render-sdl3
         Threads::Threads)
@@ -411,7 +430,6 @@ if(TARGET aurora_core)
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_resource_font_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_solid_rectangle_adapter.cpp"
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/native_window_adapter.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DGrafContext.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DOrthoGraph.cpp"
         "${SMS_SOURCE_STAGED}/JSystem/J2D/J2DPane.cpp"
@@ -435,7 +453,7 @@ if(TARGET aurora_core)
         -w -fcommon -ffunction-sections -fdata-sections)
     target_link_options(platform-native_picture_adapter_test PRIVATE -Wl,--gc-sections)
     target_link_libraries(platform-native_picture_adapter_test PRIVATE
-        sunbright-native-render-core aurora::gx aurora::mtx aurora::vi)
+        sunbright-native-render-core aurora::gx aurora::mtx aurora::vi sms-runtime-log)
     add_test(NAME platform_native_picture_adapter_test COMMAND platform-native_picture_adapter_test)
 
     # -----------------------------------------------------------------------
@@ -448,8 +466,7 @@ if(TARGET aurora_core)
     # -----------------------------------------------------------------------
     add_executable(platform-jaudio_release_test
         "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/tests/jaudio_release_test.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp"
-        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sb_log.cpp")
+        "${SMS_NATIVE_REPO_ROOT}/sms-boot/runtime/sdk_stubs.cpp")
     add_dependencies(platform-jaudio_release_test sms-native-sjis)
     set_target_properties(platform-jaudio_release_test PROPERTIES
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
@@ -474,6 +491,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
+        sms-runtime-log
         sms-native-semantic
         Threads::Threads)
     add_test(NAME platform_jaudio_release_test COMMAND platform-jaudio_release_test)
@@ -509,6 +527,7 @@ if(TARGET aurora_core)
         aurora::dvd
         aurora::gd
         aurora::ms
+        sms-runtime-log
         sms-native-semantic
         Threads::Threads)
     add_test(NAME platform_gx_yscale_test COMMAND platform-gx_yscale_test)

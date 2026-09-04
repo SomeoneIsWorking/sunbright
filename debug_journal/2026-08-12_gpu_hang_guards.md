@@ -11,12 +11,12 @@ GPU work for the session instead of being retried.
 |---|---|
 | ~00:41 | first `VK_ERROR_DEVICE_LOST` during the 16-variant ablation sweep; `radv: GPUVM fault at 0x800000000000`, `RW: 1` |
 | 00:41–01:25 | **five further render runs started**, each after a reset, several failing at SDL init with `XIO: fatal IO error 2` |
-| — | amdgpu names `sms-recomp` on **7 ring timeouts**, alongside `kwin_wayland` (27), `plasma-systemmonitor` (8), `plasmashell` (3), `lf2` (3), `tomba2_port` (2), `xenia_oracle` (1) |
+| — | amdgpu names the Sunbright process on **7 ring timeouts**, alongside `kwin_wayland` (27), `plasma-systemmonitor` (8), `plasmashell` (3), `lf2` (3), `tomba2_port` (2), `xenia_oracle` (1) |
 | 01:25:17 | last render run of mine ends |
 | 01:25:48 | `watchdog: BUG: soft lockup - CPU#7 stuck for 26s! [kwin_wayland]`, kernel already `Tainted: [D]=DIE`, spinning in `native_queued_spin_lock_slowpath`; `lf2` follows |
 | 01:34 | reboot |
 
-The fatal lockup names kwin and lf2, not us, and `sms-recomp` appears nowhere in that boot's log.
+The fatal lockup names kwin and lf2, not us, and no Sunbright process appears in that boot's log.
 That is not a defence. Our runs hung the ring seven times over the preceding session and left the
 driver resetting repeatedly, and **the runs after the first device loss were the avoidable part** —
 the project's own standing rule says a device loss stops GPU runs, and it was ignored five times
@@ -107,7 +107,7 @@ our logs, which had just said "ran to the end with no GPU fault".
 So `SBR_RENDERER=native` additionally requires per-session approval, checked inside
 `sbr_render_init` before the device is created. The check lives there rather than only in
 `run-render.sh` because the runs that did the damage bypassed that script entirely: they set
-the renderer selector on `run-recomp.sh` directly. A gate in the launcher guards the launcher; a gate at
+the renderer selector on the lower-level launcher directly. A gate in the launcher guards the launcher; a gate at
 device creation guards the device.
 
 The later user directive removed the former “no agent may approve it” rule: approval is an accident

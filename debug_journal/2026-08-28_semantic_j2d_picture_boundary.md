@@ -116,9 +116,8 @@ completed 130 presents plus four exact-frame Aurora joins without a kernel GPU f
 
 `SdlSemanticFrameClient` is now the shared host consumer. It owns a 640x480 no-depth target,
 `Semantic2dPass`, fenced submission, and readback-until-nonclear; it consumes one sealed sequence once
-and never claims or presents a window. Recomp composition lives in
-`sms-recomp/host/render_composition.*`; decomp composition lives in
-`sms-boot/runtime/semantic_render.*`. Both initialize before the first semantic begin, encode after
+and never claims or presents a window. The guest-runtime and native-reference composition owners
+both initialize before the first semantic begin, encode after
 seal and before the next begin, and shut the semantic client/platform down before Aurora. Decomp's
 encode and teardown paths stay inside the host-allocation gate.
 

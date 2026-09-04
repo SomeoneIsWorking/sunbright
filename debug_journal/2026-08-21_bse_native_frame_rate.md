@@ -4,7 +4,7 @@ The previous Eclipse assessment in this file was wrong in two material ways: it 
 game-rate path as unwanted because interpolation exists, and it said no source was available to
 port. BetterSunshineEngine's FPS implementation is public source, and the user explicitly removed
 Eclipse/Kuribo from scope on 2026-08-21. The correct target is to port BSE's timing behavior directly
-into Sunbright's standalone recomp runtime without downloading or running Eclipse.
+into Sunbright's earlier standalone runtime without downloading or running Eclipse.
 
 Source specification reviewed locally: BetterSunshineEngine's
 [`src/patches/fps.cpp`](https://github.com/JoshuaMKW/BetterSunshineEngine/blob/69baa4f15bfb2980670cbde638fc22f97a394385/src/patches/fps.cpp)
@@ -35,24 +35,23 @@ must cover arbitrary display rates rather than only BSE's three discrete setting
 
 ## Ported ownership
 
-- `sms-recomp/app/frame_rate.{h,cpp}` is the sole policy/formula owner.
-- `sms-recomp/overrides/native_frame.cpp` writes the base timing trio immediately before the retail
+- The frame-rate subsystem is the sole policy/formula owner.
+- The native-frame seam writes the base timing trio immediately before the retail
   frame body.
-- `sms-recomp/bse/frame_rate_fixes.cpp` scopes BSE behavior to its original call sites while keeping
-  retail recompiled bodies alive: boid travel, AnimalBird/Boss Eel fixed animation delta,
+- The BSE-specific owner scopes behavior to its original call sites while keeping
+  original guest bodies alive: boid travel, AnimalBird/Boss Eel fixed animation delta,
   TJointCoin/Sand Bird rate, textbox entry duration, and `HX_MotionUpdate`.
-- `sms-recomp/bse/frame_rate_logic.{h,cpp}` is the pure HX integrator used by both production and its
+- The pure HX integrator is used by both production and its
   CPU close-test, so the test does not duplicate the formula.
 
 The function-entry override seam cannot faithfully express BSE's remaining discrete HX timer and
 frame-rate initializer patches, which replace individual instructions inside several functions.
-The proper fix is an instruction-level static-recompiler patchpoint facility or verified full ports
-of every owning function. Watching global timer values and rewriting recognized constants would be
+The proper fix is verified native ownership of every affected function, or an instruction-precise
+runtime hook with equivalent semantics. Watching global timer values and rewriting recognized constants would be
 a magic-value bandaid, so it is not used. This is the only known BSE FPS-source gap in this
 milestone.
 
-Sunbright's existing widescreen system remains authoritative:
-`sms-recomp/overrides/widescreen.cpp`, `hud.cpp`, and `widescreen_effects.cpp` already own native
+Sunbright's existing widescreen system remains authoritative. Its widescreen, HUD, and effect owners cover native
 projection, HUD anchoring, EFB-copy, and full-screen effect behavior. Importing BSE's guest
 widescreen patches would create a second policy owner and regress that coverage.
 

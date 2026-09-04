@@ -1,0 +1,81 @@
+name: Native components
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native-renderer:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+            cc: clang-18
+            cxx: clang++-18
+            clang_format: clang-format-18
+            clang_tidy: clang-tidy-18
+          - name: Windows x86_64
+            runner: windows-2025
+            cc: clang
+            cxx: clang++
+            clang_format: clang-format
+            clang_tidy: clang-tidy
+          - name: macOS Apple Silicon
+            runner: macos-15
+            cc: clang
+            cxx: clang++
+            clang_format: clang-format
+            clang_tidy: clang-tidy
+    steps:
+      - name: Check out source and retained evidence submodules
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@b75a909f75acd358c2196fb9a5f1299a9a8868a4
+        with:
+          version: 0.10.12
+          python-version: 3.13.7
+          enable-cache: true
+
+      - name: Install pinned SDL
+        id: sdl
+        uses: libsdl-org/setup-sdl@30cb786f3595c27d05018cd374b679f2313c59d3
+        with:
+          version: 3.4.16
+          install-linux-dependencies: true
+
+      - name: Select LLVM tools on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "$(brew --prefix llvm@18)/bin" >> "$GITHUB_PATH"
+
+      - name: Record toolchain
+        shell: bash
+        run: |
+          ${{ matrix.cxx }} --version
+          ${{ matrix.clang_format }} --version
+          ${{ matrix.clang_tidy }} --version
+          cmake --version
+          ninja --version
+          uv --version
+
+      - name: Verify asset-free native renderer and tooling
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+          CLANG_FORMAT: ${{ matrix.clang_format }}
+          CLANG_TIDY: ${{ matrix.clang_tidy }}
+          SDL3_ROOT: ${{ steps.sdl.outputs.prefix }}
+        run: uv run --frozen python tools/verify.py

@@ -34,7 +34,7 @@ a persisted renderer choice and is not represented as a complete game renderer.
 - The guarded production GPU control first rejects preview against its hidden window, then shows the
   same window, presents a known picture, hides it again, and requires exactly one presented plus one
   unavailable frame. Its existing empty and non-clear readback controls still pass.
-- A guarded recomp run stopped after 130 operating-system presents with exit 0. It completed 65
+- A guarded historical run stopped after 130 operating-system presents with exit 0. It completed 65
   semantic simulation frames, presented all 65, reported zero unavailable frames, and observed
   286,720 pixels different from clear.
 - A first guarded decomp run at 130 presents had 130 successful presentations but no non-clear

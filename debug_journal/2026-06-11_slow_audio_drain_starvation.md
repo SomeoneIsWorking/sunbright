@@ -44,7 +44,7 @@ User then reported the Nintendo-logo jingle under ./run.sh is jittery/skippy and
 Measured with SUNBRIGHT_DBG_MIXER (mixer_trace wrap): pushes 34.3k-37k samples/s against the
 32028 Hz DSP rate — the advancing paths SUM (per-call 96-cycle charge + heartbeat's forced
 field + poll_yield + idle_run), so emulated time ran 7-15% fast and the host mixer overran →
-drops/jitter. Fix: sb_time_ahead() host-clock governor (dolphin_hook.cpp) — all advancing
+drops/jitter. The retired host-clock governor made all advancing
 paths stand down once CoreTiming reaches host-elapsed × ticks/s; >250 ms behind slips the
 anchor (no catch-up bursts); TURBO bypasses. Verified: push rate locked to 32048-32072/s
 (0.1%). This is the own-the-timing-natively step from (retired: Dolphin substrate, see CLAUDE.md).

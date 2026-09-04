@@ -8,8 +8,7 @@ draw array (`this+0x1C` / count `this+0x20`). **That fix was implemented
 only RE'd the data plumbing) and explains why a geometry-only restore is insufficient.
 
 > Source caveat: `decomp/sms/src/MarioUtil/ShadowUtil.cpp` is empty in the decomp. Everything
-> below is from GMSE01 disassembly via
-> `./build/sunbright-recomp "$SUNBRIGHT_ROM" --disasm <addr> <n>`, cross-checked against
+> below is from GMSE01 disassembly at the named addresses, cross-checked against
 > `reference/sms_gmse01_funcs.txt`, the class header, and `MarDirectorDirect.cpp` / `JDREfbCtrl.cpp`.
 
 ---
@@ -228,7 +227,7 @@ other draw lists in order.
 - `SUNBRIGHT_INTERP60=1` + the new override (default-OFF env flag, see
   `runtime/overrides/cast_shadow_interp.cpp`) toggled on: the cast shadow is present on BOTH
   fields (no on/off), at 30 Hz position (held), correct shape/darkness.
-- A/B: flag off → blink returns; oracle (`SUNBRIGHT_DISABLE_RECOMP`, 30 fps) for shape/darkness
+- A/B: flag off → blink returns; Dolphin oracle at 30 fps for shape/darkness
   parity.
 - If 4b polish is added later: shadow position tracks Mario smoothly at 60 Hz.
 

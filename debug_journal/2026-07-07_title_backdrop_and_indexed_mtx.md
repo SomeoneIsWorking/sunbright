@@ -149,7 +149,7 @@ Oracle stood up (memory [[real-oracle-dolphin-fork-2026-07-07]]):
   persisted — the old DumpFrames perf trap), per-frame PNGs, degenerate-capture guard.
 - extern/dolphin submodule (upstream URL, pinned; user's SomeoneIsWorking/dolphin fork has
   branch sunbright-oracle for future hooks). NoGUI build at
-  extern/dolphin/build/Binaries/dolphin-emu-nogui (Qt6 devel absent → -DENABLE_QT=OFF,
+  extern/dolphin_fork/build/Binaries/dolphin-emu-nogui (Qt6 devel absent → -DENABLE_QT=OFF,
   -DENABLE_EVDEV=OFF).
 - GROUND TRUTH captured: scratch/oracle/oracle_title_reference.png (framedump_6000 of a
   300s unthrottled run) — title = sky w/ clouds + sea horizon + BLUE reflective logo +

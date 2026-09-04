@@ -5,7 +5,7 @@ and FMV pacing live here. Sources: `decomp/sms/src/THPPlayer/*` (SMS ships a
 *modified* Nintendo THPSimple library — see "SMS modifications") + USA map
 (this library IS named in `reference/sms_gmse01_funcs.txt`) + spot disasm.
 
-**Recompiled status:** all listed entry points are in `generated/functions.h`
+**Binary evidence:** all listed entry points were recovered from the analyzed GMSE01 executable.
 (recompiled, none JIT-only) — including the decode core (THPVideoDecode
 0x8036b644, THPAudioDecode 0x80372b84, the __THPDecompressiMCURow* family).
 The historic FMV comb bug here was the no-op'd `dcbz` (fixed, 8bc12c5).

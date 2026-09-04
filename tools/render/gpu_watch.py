@@ -296,7 +296,7 @@ def _flight_analysis(
     )
     if not flight_files:
         return "no new/changed post-launch submit-flight file matched the guarded process PID"
-    reader = reader or (REPO / "build-sms-recomp" / "gpu_flight_dump")
+    reader = reader or (REPO / "build" / "gpu_flight_dump")
     newest = flight_files[-1]
     if not reader.is_file() or not os.access(reader, os.X_OK):
         return f"submit-flight file: {newest} (reader is unavailable)"

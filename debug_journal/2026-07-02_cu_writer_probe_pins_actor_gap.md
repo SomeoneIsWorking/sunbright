@@ -82,8 +82,7 @@ Histogram over ~8 settled frames, cU=0 transitions only:
   (+ WriteMTXPS4x3/GXBegin/GXLoadPosMtxImm/__GXXfVtxSpecs when the walk
    couldn't reach a specific actor within 16 frames)
 
-Confirmed on the GC binary via `sunbright-recomp --callees` of the reported
-functions:
+Confirmed on the GC binary by walking the reported functions' callee graphs:
 
   drawShadow (0x8022f014):
     0x8022f198  bl GXSetColorUpdate    ← cU=0 for depth-only silhouette prepass

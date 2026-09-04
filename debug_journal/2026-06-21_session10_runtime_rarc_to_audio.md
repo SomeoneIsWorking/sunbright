@@ -105,7 +105,7 @@ list) null in fix #5. So they're null → deref crash.
   §WSYS). And the setup thread WAITS for waves to actually report "on aram"
   (checkWaveOnAram → true), so the wave LOAD must really complete (or be faithfully modeled),
   not just be allocated — else the while-loop hangs instead of crashing.
-- There is NO ARAM natively. The old recomp-era native_jas decoded AFC from the .aw on
+- There is NO ARAM natively. The earlier native_jas path decoded AFC from the .aw on
   demand (PC-native, no ARAM) — REUSE that knowledge/approach. docs/audio/data_formats.md +
   tools/jingle/jingle.py have the verified WSYS/.aw/AFC parse.
 

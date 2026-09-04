@@ -11,7 +11,7 @@ identity so it interpolates — then record the verdict in the row.
 ## How a row gets there
 
 Geometry reaches the GPU through three narrow waists, and all three are hooked
-(`sms-recomp/frame_interp/tag_gap.cpp`):
+as recorded by the retained graphics census:
 
 | waist | kind | what it means for interpolation |
 |---|---|---|
@@ -24,7 +24,7 @@ symbol is resolved against `reference/sms_gmse01_funcs.txt`, and it gets a row. 
 FIFO stream as `GX_AURORA_DRAW_POP`, so aurora can file every draw under the emitter that produced
 it and report the fate it received.
 
-The hand-labelled populations (`sms-recomp/frame_interp/populations.h`) have rows too, keyed
+Hand-labelled populations have rows too, keyed
 `pop.*`. A hand-written label always wins over an automatic one — it covers a whole subtree that the
 emitter address cannot.
 
@@ -108,8 +108,8 @@ interpolable and now are.
   scenery, the camera delta alone is exactly right. Distinguishing the two needs the object, which
   is what the RE work in `next` produces.
 - **A symbol like `sub_801983a8 (in drawUpper__8TMapWireCFv)`** is a function the US symbol list does
-  not have — it omits weak methods entirely. The containing function comes from the *recompiler's*
-  own table, which knows the real boundaries, and the parenthesised name is only the nearest listed
+  not have — it omits weak methods entirely. The containing function comes from the recovered
+  binary boundary table, and the parenthesised name is only the nearest listed
   neighbour. That distinction is not cosmetic: before it, three separate emitters were reported as
   `TMapWire::drawUpper+0x48 / +0x17c / +0x258`, and drawUpper contains exactly one `GXBegin` — two of
   the three were in `drawLower`.

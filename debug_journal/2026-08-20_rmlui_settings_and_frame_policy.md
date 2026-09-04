@@ -2,8 +2,8 @@
 
 ## Ownership
 
-The host settings layer now follows Dusklight: typed policy in `sms-recomp/app/`, RmlUi ownership in
-`sms-recomp/ui/`, resources under `res/`, and a thin host composition point. This removes the prior
+The host settings layer separated typed policy, RmlUi presentation, resources, and a thin host
+composition point. This removes the prior
 condition where launch scripts and interpolation code each parsed their own enable switch.
 
 ## Two controls that caught real defects
@@ -21,7 +21,7 @@ replacement control checks RmlUi's computed geometry directly. After constrainin
 viewport it reports a 1088x768 panel, a 180x49.2 Play button, and 7/7 visible choices in a 1280x960
 offscreen target. The safe wrapper reported zero amdgpu reset/timeout/fault lines.
 
-`SB_HEADLESS` originally hid an X11 window instead of being windowless: `run-recomp.sh` forced the
+`SB_HEADLESS` originally hid an X11 window instead of being windowless: the former launcher forced the
 X11 SDL driver, and WebGPU initialization required a compatible WSI surface before the later
 headless present guards could run. The shared launcher policy now selects SDL's offscreen driver and Aurora asks
 for a surfaceless adapter in headless mode, creates the same offscreen render targets, and never

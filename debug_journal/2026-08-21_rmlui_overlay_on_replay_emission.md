@@ -50,7 +50,7 @@ and no staging copy scheduled below it.
 * One-time line when the case actually occurs, so a run that exercises it and a run where the menu
   never drew do not both report silence:
   `[aurora::gfx] replay emission carried its own geometry above the reserved prefix: verts +N ...`
-* `/ui` on the probe server (`sms-recomp/overrides/ui_probe.cpp`; `SBR_PROBE=1`, `curl 127.0.0.1:17654/ui?want=open`) pushes a real SDL
+* `/ui` on the probe server (`ui_probe.cpp`; `SBR_PROBE=1`, `curl 127.0.0.1:17654/ui?want=open`) pushes a real SDL
   Escape, so an automated run can open the menu over a live game through the shipping event route.
   Without it this crash needed a human at the window and was unreproducible headless.
   NOTE: while the menu is open the game is paused inside `pause_while_open`, which never reaches

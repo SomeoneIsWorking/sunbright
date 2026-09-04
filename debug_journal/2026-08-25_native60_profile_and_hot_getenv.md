@@ -37,7 +37,7 @@ the cost of signal-safety review against the runtime's existing handlers.
 0.96% strncmp in the first profile. Now read once into a `static const bool`. Post-fix profile:
 getenv 0.44%, strncmp 0.73% — and the remaining string-compare cost is the GUEST's own
 `strncmp` (recompiled game code doing path/name lookups), i.e. faithful emulation, not runtime
-overhead. Audit of every other getenv in linked aurora/sms-recomp code found them all behind
+overhead. Audit of every other getenv in linked Aurora and host code found them all behind
 static-once caches.
 
 ## Verification

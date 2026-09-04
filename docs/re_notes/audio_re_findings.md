@@ -3,7 +3,7 @@
 Research-only session: reverse-engineering for the open native-audio defects listed in
 CLAUDE.md ("OPEN (quantified, post-fix)"). Ground-truth chain used throughout:
 
-1. **Binary disassembly** (`sunbright-recomp --disasm`, addresses from
+1. **Binary disassembly** (addresses from
    `reference/sms_gmse01_funcs.txt`) — final authority.
 2. **decomp/sms decomp** — used as a map; its `TInstParam` field NAMES were verified
    against the binary frame offsets below (they are correct; an earlier session's claim
@@ -272,7 +272,7 @@ Three layers, exactly parallel to volume/pan:
    The **effect buses** feed the ucode reverb/chorus units whose parameters
    (delay/coef tables) JAI uploads per stage; on hardware that's the AUX bus processing.
 
-### 5.2 How Dusklight ported this natively (scratch/ref/dusklight/src/dusk/audio/DuskDsp.cpp)
+### 5.2 Title-neutral reference pattern evaluated during the audio investigation
 
 - One **shared stereo freeverb** (`libs/freeverb/revmodel`, wet=1 dry=0 roomsize=0.5
   damp=0.7 width=1) for the whole mixer.
@@ -299,19 +299,19 @@ Three layers, exactly parallel to volume/pan:
    `dolby = clamp01(…)` (calc mode 13 = add-all default). Tee
    `JAISound::setFxmix`-class setters if the game uses them (check inner setter
    neighbors of 0x8030b700 in the funcs map).
-2. **Reverb bus** (Dusklight pattern): vendor freeverb (BSD/public-domain), one shared
+2. **Reverb bus**: vendor freeverb (BSD/public-domain), one shared
    stereo instance at 32028.5 Hz inside `render_subframe`; per voice add
    `sample × gl/gr × fxgain` into `fxbufL/R` where `fxgain = sinfT(fx)`-law
    (use `sinf(fx·π/2)`); after the voice loop run
-   `processmix(fxbuf → g_mixbuf)` with a tail-energy gate. Start with Dusklight's
-   tuning (wet-only, input-scaled, ÷~600-equivalent normalization → calibrate by A/B
-   RMS against the oracle on a reverb-heavy stage like Noki Bay / inside buildings).
+   `processmix(fxbuf → g_mixbuf)` with a tail-energy gate. Start from the measured
+   wet-only, input-scaled normalization and calibrate by A/B RMS against the oracle on a
+   reverb-heavy stage such as Noki Bay or an interior.
 3. **Dry-path attenuation**: when fx/dolby are live, scale the dry contribution the way
    the auto-mixer does (front = vol × (1−dolby·k) and the ucode's fx complement;
    take the exact law from Dolphin `ZeldaAudioRenderer`'s voice-mixing code rather than
    guessing — that is what the oracle measurement reflects). This is the piece that
    clears defect 3.
-4. **Dolby**: fold into stereo à la Dusklight — front scale `1 − dolby·0.6` (skip the
+4. **Dolby**: fold into stereo with the measured front scale `1 − dolby·0.6` (skip the
    HRTF surround return initially; we output 2.0). Faithful enough until we ever do
    real surround.
 5. Re-run `tools/audio/delfino_ab.sh`; expect 6:77/6:231 relative dB to collapse and

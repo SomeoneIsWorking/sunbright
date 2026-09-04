@@ -1,3 +1,5 @@
+#include "semantic_gpu_test_support.h"
+
 #include <sunbright/native_render/sdl_gpu_frame_target.h>
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
 #include <sunbright/native_render/semantic_2d_pass.h>
@@ -12,11 +14,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <string>
-#include <vector>
 
 namespace {
 
@@ -40,17 +39,12 @@ using sb::native_render::SemanticFrame;
 using sb::native_render::SemanticFramePixels;
 using sb::native_render::SolidRectangleDraw;
 using sb::native_render::Vec2;
-
-Color pixel(const SemanticFramePixels& frame, std::uint32_t x, std::uint32_t y) {
-    const std::size_t offset = (static_cast<std::size_t>(y) * frame.width + x) * 4;
-    constexpr float scale = 1.0f / 255.0f;
-    return {frame.rgba8[offset] * scale, frame.rgba8[offset + 1] * scale,
-            frame.rgba8[offset + 2] * scale, frame.rgba8[offset + 3] * scale};
-}
-
-bool near(float actual, float expected, float tolerance = 2.0f / 255.0f) {
-    return actual >= expected - tolerance && actual <= expected + tolerance;
-}
+using sb::native_render::test::encode_3d_and_readback;
+using sb::native_render::test::encode_and_readback;
+using sb::native_render::test::hash;
+using sb::native_render::test::near;
+using sb::native_render::test::pixel;
+using sb::native_render::test::require_color;
 
 float srgb_to_linear(float value) {
     return value <= 0.04045F ? value / 12.92F : std::pow((value + 0.055F) / 1.055F, 2.4F);
@@ -58,22 +52,6 @@ float srgb_to_linear(float value) {
 
 float linear_to_srgb(float value) {
     return value <= 0.0031308F ? value * 12.92F : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
-}
-
-void require_color(Color actual, Color expected) {
-    assert(near(actual.r, expected.r));
-    assert(near(actual.g, expected.g));
-    assert(near(actual.b, expected.b));
-    assert(near(actual.a, expected.a));
-}
-
-std::uint64_t hash(const SemanticFramePixels& frame) {
-    std::uint64_t value = 1469598103934665603ULL;
-    for (std::uint8_t byte : frame.rgba8) {
-        value ^= byte;
-        value *= 1099511628211ULL;
-    }
-    return value;
 }
 
 PictureCommand command() {
@@ -96,158 +74,6 @@ SolidRectangleDraw solid(std::uint64_t instance, float left, float top, float ri
          .source = sb::native_render::SolidRectangleSource::Gc2dFillRect,
          .positions = {Vec2{left, top}, Vec2{right, top}, Vec2{left, bottom}, Vec2{right, bottom}},
          .corner = {color, color, color, color}}};
-}
-
-bool encode_and_readback(Semantic2dPass& pass, const SemanticFrame& frame,
-                         const SdlGpuFrameTarget& target, SemanticFramePixels& output,
-                         std::string& error) {
-    SDL_GPUDevice* device = target.device();
-    SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(device);
-    const std::size_t byteCount =
-        static_cast<std::size_t>(frame.targetWidth) * frame.targetHeight * 4;
-    const SDL_GPUTransferBufferCreateInfo downloadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
-                                                       static_cast<Uint32>(byteCount), 0};
-    SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(device, &downloadInfo);
-    if (commandBuffer == nullptr || download == nullptr) {
-        if (commandBuffer != nullptr)
-            SDL_CancelGPUCommandBuffer(commandBuffer);
-        if (download != nullptr)
-            SDL_ReleaseGPUTransferBuffer(device, download);
-        error = std::string("GPU control resource creation failed: ") + SDL_GetError();
-        return false;
-    }
-    const sb::native_render::Semantic2dPassTarget passTarget{
-        commandBuffer, target.color(), target.desc().colorFormat, SDL_GPU_LOADOP_CLEAR,
-        SDL_GPU_STOREOP_STORE};
-    if (!pass.encode(frame, passTarget, error)) {
-        SDL_CancelGPUCommandBuffer(commandBuffer);
-        std::string completionError;
-        (void)pass.complete_encode(false, completionError);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        return false;
-    }
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commandBuffer);
-    if (copy == nullptr) {
-        SDL_CancelGPUCommandBuffer(commandBuffer);
-        std::string completionError;
-        (void)pass.complete_encode(false, completionError);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        error = std::string("GPU control copy pass failed: ") + SDL_GetError();
-        return false;
-    }
-    const SDL_GPUTextureRegion source{target.color(),     0, 0, 0, 0, 0, frame.targetWidth,
-                                      frame.targetHeight, 1};
-    const SDL_GPUTextureTransferInfo destination{download, 0, frame.targetWidth,
-                                                 frame.targetHeight};
-    SDL_DownloadFromGPUTexture(copy, &source, &destination);
-    SDL_EndGPUCopyPass(copy);
-    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
-    if (fence == nullptr) {
-        std::string completionError;
-        (void)pass.complete_encode(false, completionError);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        error = std::string("GPU control submit failed: ") + SDL_GetError();
-        return false;
-    }
-    if (!pass.complete_encode(true, error)) {
-        SDL_ReleaseGPUFence(device, fence);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        return false;
-    }
-    SDL_GPUFence* fences[] = {fence};
-    const bool waited = SDL_WaitForGPUFences(device, true, fences, 1);
-    SDL_ReleaseGPUFence(device, fence);
-    if (!waited) {
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        return false;
-    }
-    void* mapped = SDL_MapGPUTransferBuffer(device, download, false);
-    if (mapped == nullptr) {
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        return false;
-    }
-    output = {frame.targetWidth, frame.targetHeight, std::vector<std::uint8_t>(byteCount)};
-    std::memcpy(output.rgba8.data(), mapped, byteCount);
-    SDL_UnmapGPUTransferBuffer(device, download);
-    SDL_ReleaseGPUTransferBuffer(device, download);
-    return true;
-}
-
-bool encode_3d_and_readback(Semantic3dPass& pass, const SemanticFrame& frame,
-                            const SdlGpuFrameTarget& target, SemanticFramePixels& output,
-                            std::string& error) {
-    SDL_GPUDevice* device = target.device();
-    SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(device);
-    const std::size_t byteCount =
-        static_cast<std::size_t>(frame.targetWidth) * frame.targetHeight * 4;
-    const SDL_GPUTransferBufferCreateInfo downloadInfo{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
-                                                       static_cast<Uint32>(byteCount), 0};
-    SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(device, &downloadInfo);
-    if (commandBuffer == nullptr || download == nullptr) {
-        if (commandBuffer != nullptr)
-            SDL_CancelGPUCommandBuffer(commandBuffer);
-        if (download != nullptr)
-            SDL_ReleaseGPUTransferBuffer(device, download);
-        error = SDL_GetError();
-        return false;
-    }
-    const sb::native_render::Semantic3dPassTarget passTarget{
-        commandBuffer, target.color(), target.desc().colorFormat, target.depth(),
-        target.desc().depthFormat};
-    if (!pass.encode(frame, passTarget, error)) {
-        SDL_CancelGPUCommandBuffer(commandBuffer);
-        std::string completionError;
-        (void)pass.complete_encode(false, completionError);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        return false;
-    }
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commandBuffer);
-    if (copy == nullptr) {
-        SDL_CancelGPUCommandBuffer(commandBuffer);
-        std::string completionError;
-        (void)pass.complete_encode(false, completionError);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        error = SDL_GetError();
-        return false;
-    }
-    const SDL_GPUTextureRegion source{target.color(),     0, 0, 0, 0, 0, frame.targetWidth,
-                                      frame.targetHeight, 1};
-    const SDL_GPUTextureTransferInfo destination{download, 0, frame.targetWidth,
-                                                 frame.targetHeight};
-    SDL_DownloadFromGPUTexture(copy, &source, &destination);
-    SDL_EndGPUCopyPass(copy);
-    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
-    if (fence == nullptr) {
-        std::string completionError;
-        (void)pass.complete_encode(false, completionError);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        error = SDL_GetError();
-        return false;
-    }
-    if (!pass.complete_encode(true, error)) {
-        SDL_ReleaseGPUFence(device, fence);
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        return false;
-    }
-    SDL_GPUFence* fences[] = {fence};
-    const bool waited = SDL_WaitForGPUFences(device, true, fences, 1);
-    SDL_ReleaseGPUFence(device, fence);
-    if (!waited) {
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        error = SDL_GetError();
-        return false;
-    }
-    void* mapped = SDL_MapGPUTransferBuffer(device, download, false);
-    if (mapped == nullptr) {
-        SDL_ReleaseGPUTransferBuffer(device, download);
-        error = SDL_GetError();
-        return false;
-    }
-    output = {frame.targetWidth, frame.targetHeight, std::vector<std::uint8_t>(byteCount)};
-    std::memcpy(output.rgba8.data(), mapped, byteCount);
-    SDL_UnmapGPUTransferBuffer(device, download);
-    SDL_ReleaseGPUTransferBuffer(device, download);
-    return true;
 }
 
 } // namespace
@@ -878,11 +704,12 @@ int main() {
         assert(hash(tintedRed) != hash(tintedBlue));
 
         // Masked-toon control: the authored hand-mask alpha selects the primary or alternate
-        // image at 8-bit precision. Changing only that alpha from 255 to 128 must move the
+        // image at 8-bit precision. Changing only that alpha across the authored byte threshold
+        // must move the
         // shipping four-image shader from red to blue while its black ramp and zero highlights
         // stay inert.
-        const std::array<std::uint8_t, 4> maskedPrimaryTexel{255, 0, 0, 255};
-        std::array<std::uint8_t, 4> maskedMaskTexel{0, 0, 0, 255};
+        std::array<std::uint8_t, 4> maskedPrimaryTexel{255, 0, 0, 64};
+        std::array<std::uint8_t, 4> maskedMaskTexel{0, 0, 0, 132};
         const std::array<std::uint8_t, 4> maskedAlternateTexel{0, 0, 255, 255};
         const std::array<std::uint8_t, 4> maskedRampTexel{0, 0, 0, 255};
         std::array<DecodedImageView, 4> maskedImages{
@@ -913,13 +740,14 @@ int main() {
                          .pointLightCount = 1,
                          .specular = {.directionToLight = {0, 0, 1}, .color = {0, 0, 0, 1}}},
             .lightRampWeight = 3.0F / 8.0F,
+            .maskThreshold = 131.0F / 255.0F,
             .raster = {.cull = sb::native_render::ModelCullMode::None},
         };
         const SemanticFramePixels maskedPrimary =
             render(std::span<const ModelDraw>(&maskedModel, 1), maskedImages);
         const Color maskedPrimaryPixel = pixel(maskedPrimary, 8, 8);
         assert(maskedPrimaryPixel.r > 0.9F && maskedPrimaryPixel.b < 0.01F);
-        maskedMaskTexel[3] = 128;
+        maskedMaskTexel[3] = 131;
         maskedImages[1].revision = 2;
         std::get<sb::native_render::LitMaskedToonMaterial>(maskedModel.material)
             .maskTexture.revision = 2;
@@ -928,6 +756,18 @@ int main() {
         const Color maskedAlternatePixel = pixel(maskedAlternate, 8, 8);
         assert(maskedAlternatePixel.r < 0.01F && maskedAlternatePixel.b > 0.9F);
         assert(hash(maskedPrimary) != hash(maskedAlternate));
+
+        maskedMaskTexel[3] = 132;
+        maskedImages[1].revision = 3;
+        auto& maskedMaterial =
+            std::get<sb::native_render::LitMaskedToonMaterial>(maskedModel.material);
+        maskedMaterial.maskTexture.revision = 3;
+        maskedMaterial.alphaSource = sb::native_render::ModelAlphaSource::PrimaryTexture;
+        const SemanticFramePixels maskedTextureAlpha =
+            render(std::span<const ModelDraw>(&maskedModel, 1), maskedImages);
+        const Color maskedTextureAlphaPixel = pixel(maskedTextureAlpha, 8, 8);
+        assert(maskedTextureAlphaPixel.r > 0.9F && maskedTextureAlphaPixel.b < 0.01F);
+        assert(near(maskedTextureAlphaPixel.a, 64.0F / 255.0F));
 
         // Affine texture control for the specular-material shader path. The baseline exercises
         // texture * diffuse colour; changing only the semantic tint must add red while preserving

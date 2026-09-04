@@ -85,6 +85,7 @@ enum class ModelBlendMode : std::uint8_t {
 };
 enum class ModelTextureCoordinates : std::uint8_t { Primary, Secondary };
 enum class ModelTextureAlphaMode : std::uint8_t { MultiplyTexture, ReplaceTexture };
+enum class ModelAlphaSource : std::uint8_t { Constant, PrimaryTexture };
 
 enum class ModelFogMode : std::uint8_t { Disabled, Linear };
 
@@ -293,6 +294,8 @@ struct LitMaskedToonMaterial {
     float lightRampWeight = 0.0F;
     float staticHighlightWeight = 0.0F;
     float directionalHighlightWeight = 0.0F;
+    float maskThreshold = 0.5F;
+    ModelAlphaSource alphaSource = ModelAlphaSource::Constant;
     float outputAlpha = 1.0F;
     ModelRasterPolicy raster{};
 };
@@ -383,6 +386,7 @@ struct ClipVertex {
     Color color{};
     Color additiveColor{};
     float detailTextureWeight = 0.0F;
+    float textureAlphaWeight = 0.0F;
     float eyeDepth = 0.0F;
 };
 

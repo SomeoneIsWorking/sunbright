@@ -45,7 +45,7 @@ unchanged, so texture, TLUT, and other memory-bearing callers do not acquire an 
 Verification on 2026-08-25:
 
 - `gx_fifo_contracts`: pass;
-- full Clang `sms-recomp` build: pass;
+- full Clang guest-runtime build: pass;
 - `./run-safe.sh SBR_STAGE=1 SBR_QUIT_AFTER=700`: exit 0;
 - validated boot-wide amdgpu timeout/reset/fault counter: 42 before, 42 after.
 

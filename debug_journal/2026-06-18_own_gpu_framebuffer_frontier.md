@@ -5,7 +5,7 @@ ngx renders the scene and Dolphin's EFB is empty (ngx skips the guest GX draws).
 EFB-readback effects therefore read nothing and misbehave. Goal: make ngx's rendered framebuffer
 (color + depth) the EFB the guest reads back.
 
-## The EFB-readback surface (RE'd via sunbright-recomp --xref)
+## The EFB-readback surface (recovered from GMSE01 cross-references)
 | guest fn | addr | consumer | reads | effect |
 |---|---|---|---|---|
 | GXPeekZ      | 0x8035dcf0 | TSunModel::getZBufValue (8002ea70) | DEPTH at (x,y) | sun occlusion → lens-flare/glow |

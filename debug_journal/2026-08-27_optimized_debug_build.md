@@ -4,8 +4,8 @@
 
 Both launchers forced CMake `Release`. That made the game playable, but also selected `NDEBUG` and
 therefore removed assertions and GX debug groups while Aurora added Dawn's `skip_validation` and
-`disable_robustness` toggles. Stock CMake `Debug` kept diagnostics but compiled the generated guest
-and renderer at `-O0`.
+`disable_robustness` toggles. Stock CMake `Debug` kept diagnostics but compiled the renderer at
+`-O0`.
 
 ## Root cause
 
@@ -22,8 +22,7 @@ requirements. Two masked defects appeared as soon as that coupling was removed:
 ## Fix
 
 - `cmake/SunbrightBuildPolicy.cmake` makes Debug `-O2` while retaining assertions and compiler debug
-  information. Generated guest code uses line tables rather than full local-variable records, so
-  guest function names/backtraces remain available without pathological compiler memory use.
+  information.
 - Both launchers configure Debug on every launch. Release is still available for explicit packaging.
 - `AURORA_GPU_DIAGNOSTICS=off|standard|full` now owns Dawn validation/robustness and GX labels
   independently of `NDEBUG`. Standard requests partial backend validation and keeps WebGPU API

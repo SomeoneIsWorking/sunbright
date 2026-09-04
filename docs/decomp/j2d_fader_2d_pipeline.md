@@ -6,8 +6,8 @@ HUD work all live here). Unlike the MarDirector TU, the USA map
 are from the USA map directly (VERIFIED-named) unless noted. Field offsets
 marked VERIFIED were checked against `--disasm` of the USA binary.
 
-**Recompiled status:** every function listed below is present in
-`generated/functions.h` (recompiled; none JIT-only). Remember override
+**Binary evidence:** every function listed below was recovered from the analyzed GMSE01
+executable. Remember override
 blindness: recomp→recomp direct calls do NOT pass through overrides — a hook
 on e.g. `J2DScreen::draw` only fires for dispatch entries unless the caller is
 non-recomp or natively owned.

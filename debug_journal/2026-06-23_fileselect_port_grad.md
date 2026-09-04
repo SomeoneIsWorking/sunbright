@@ -62,8 +62,8 @@ Legacy (Ghidra 11.x, no extension):
    CREATES functions at every known boundary (Ghidra misses vtable-only fns like `direct`), then
    decompiles `DECOMP_TARGETS` → `scratch/decomp/<addr>.c`. `_SDA2_BASE_=0x80416ba0` (read SDA2
    float constants at `base+off` from sms_flat.bin).
-Anchors come from `reference/sms_gmse01_funcs.txt` (partial map) + `sunbright-recomp --disasm/--xref/
---callees`. Cross-reference Ghidra C against sister native code (MenuDir.cpp/MovieDirector.cpp) = Rosetta.
+Anchors come from `reference/sms_gmse01_funcs.txt` (partial map), direct disassembly, cross-references,
+and callee graphs. Cross-reference Ghidra C against sister native code (MenuDir.cpp/MovieDirector.cpp) = Rosetta.
 
 ## NEXT (the loop continues — tooling→RE→own)
 - TSelectMenu (file windows): ct 0x801753d0, setup 0x8017449c (3892 B), startOpenWindow 0x80172990,

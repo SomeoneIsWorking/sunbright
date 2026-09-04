@@ -238,10 +238,10 @@ draw full arms with white gloves.
 ## Harness defect found FIRST (and it produced a false negative)
 
 `SB_LOG=pnzero` reported "0 zero-rotation matrix uploads". That was meaningless: aurora gates its
-GX diagnostics on a **weak** `sb_log_enabled` that the hosting runtime must provide. Only sms-boot
-provided it, so in the recomp the symbol resolved to null and `sb_gx_log_on` returned false for
+GX diagnostics on a **weak** `sb_log_enabled` that the hosting runtime must provide. Only the
+native-reference target provided it, so in the guest runtime the symbol resolved to null and `sb_gx_log_on` returned false for
 EVERY channel — every aurora SB_LOG channel was silently dead in this runtime. Fixed by giving the
-recomp its own registry (`sms-recomp/runtime/sb_log.cpp`, same semantics, same SB_LOG spec).
+guest runtime its own registry with the same semantics and `SB_LOG` specification.
 
 Validation matters: `SB_LOG=list` announces a channel when a callsite CHECKS it, which is how the
 next result was read correctly rather than as another zero.
@@ -251,7 +251,7 @@ next result was read correctly rather than as another zero.
 I first read the silence as "the callsite is never reached, so there are no indexed pos/nrm matrix
 loads" and published that. It was wrong twice over.
 
-**The provider still was not linked.** `sb_log.cpp` went into the `sms-recomp-rt` STATIC LIBRARY,
+**The provider still was not linked.** `sb_log.cpp` went into a static runtime library,
 and a weak UNDEFINED reference does not pull a member out of a static archive — nothing strongly
 references `sb_log.o`, so it was never extracted and the weak symbol stayed null. `nm` showed
 `w sb_log_enabled` with no address in the final binary. The provider must be compiled into the

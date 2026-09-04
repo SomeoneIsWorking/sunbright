@@ -1,4 +1,4 @@
-# Decoding a J3DShape into triangles from guest memory (sms-recomp, US/GMSE01)
+# Decoding a J3DShape into triangles from guest memory (US/GMSE01)
 
 RE spec for the PC-native renderer, which overrides `J3DShape::draw` (0x802e0390) and reads the
 game's structures out of GUEST memory — all big-endian, 32-bit pointers, no C++ casts available.

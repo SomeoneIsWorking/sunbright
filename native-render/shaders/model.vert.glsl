@@ -9,6 +9,7 @@ layout(location = 5) in float in_detail_texture_weight;
 layout(location = 6) in float in_eye_depth;
 layout(location = 7) in vec2 in_uv2;
 layout(location = 8) in vec2 in_uv3;
+layout(location = 9) in float in_texture_alpha_weight;
 
 layout(location = 0) out vec2 model_uv;
 layout(location = 1) out vec4 model_color;
@@ -18,6 +19,7 @@ layout(location = 4) out float model_detail_texture_weight;
 layout(location = 5) out float model_eye_depth;
 layout(location = 6) out vec2 model_uv2;
 layout(location = 7) out vec2 model_uv3;
+layout(location = 8) out float model_texture_alpha_weight;
 
 void main() {
     gl_Position = in_position;
@@ -29,4 +31,5 @@ void main() {
     model_eye_depth = in_eye_depth;
     model_uv2 = in_uv2;
     model_uv3 = in_uv3;
+    model_texture_alpha_weight = in_texture_alpha_weight;
 }

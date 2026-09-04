@@ -39,7 +39,7 @@ def load():
         # REFUSE. "no rows" from a missing file and "no rows" from a game that drew nothing are the
         # same output and opposite facts; only one of them is answered by running the game.
         sys.exit(f"REFUSES: {DB} does not exist, so NOTHING was read — this is not an empty "
-                 f"registry, it is no registry. Run the game once (./run-recomp.sh) and it will "
+                 f"registry, it is no registry. Capture it from the native/dynarec product once available and it will "
                  f"write one.")
     rows, header_seen = [], False
     with open(DB, encoding="utf-8") as fh:
@@ -262,7 +262,9 @@ def selftest():
         if got != want_exit:
             failures.append(f"{name}: expected {want_exit}, got {got}")
 
-    with tempfile.TemporaryDirectory() as d:
+    scratch_root = os.path.join(ROOT, "scratch", "selftests")
+    os.makedirs(scratch_root, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="graphics-db-", dir=scratch_root) as d:
         # 1. A MISSING registry must refuse, not read as "no graphics".
         DB = os.path.join(d, "absent.tsv")
         expect("missing file refuses", load, "exit")

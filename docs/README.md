@@ -1,33 +1,24 @@
-# docs/ — what is where
+# Documentation map
 
-Start at **`codemap.md`**. It is the one-page map of every subsystem: where it lives, whether it
-works, and what is missing. Consult it at the start of a task and update it in the same commit that
-changes a subsystem.
+Sunbright's living authorities are deliberately small and distinct:
 
-| | |
-|---|---|
-| **`codemap.md`** | **START HERE.** Every subsystem, its status, its gap |
-| `architecture.md` | how the two runtimes fit together |
-| `diagnostics.md` | GENERATED (`tools/diag_registry.py write`) — every diagnostic switch and what reads it. Do not hand-edit |
-| `DO_NOT_REVISIT_FLIP.md` | a settled question. Read before proposing recomp↔decomp interop |
-| `60fps/` | interpolated 60fps: the map of the paths, the effect work, screen effects |
-| `audio/` | the JAS mixer port, data formats, the A/B harness |
-| `app/` | launcher-owned settings, renderer selection, frame-rate policy, and RmlUi behavior |
-| `port/` | the porting roadmap, worklist, workflow, threading model, renderer plan |
-| `re_notes/` | per-subject reverse-engineering notes, one file per mechanism |
-| `info/` | the CLAIMS and INSTRUMENTS registries (`tools/../project-info`) — what was proven, and which tools can be trusted. Machine-maintained; use the CLI |
-| `decomp/` | notes specific to the `decomp/sms` submodule |
+| Document | Question answered |
+| --- | --- |
+| `project-state.md` | What is verified, partial, or missing, and what is the current focus? |
+| `project-goals.md` | Why does the project exist and what outcomes define completion? |
+| `architecture.md` | How does the native/dynarec product fit together? |
+| `port/migration.md` | In what order does the executor migration land and what gates it? |
+| `codemap.md` | Which subsystem owns each responsibility and where does work go? |
+| `issues/` | What atomic bug, task, blocker, finding, or dead end is recorded? |
+| `info/claims/` | Which falsifiable facts have evidence? |
+| `info/instruments/` | Which diagnostic tools can be trusted and within what scope? |
+| `re_notes/` and `decomp/` | What has been recovered about exact GMSE01 behavior and layouts? |
+| `60fps/`, `audio/`, `app/`, `graphics/` | What is the detailed subsystem contract and evidence? |
 
-Findings go to **`debug_journal/<date>_<topic>.md`**, not here — dead ends as well as wins. `docs/`
-holds things that describe the CURRENT state; the journal holds what happened and when.
+The canonical portfolio migration contract lives in the shared `jit-common` repository. Local docs
+refine it for Sunbright and must not reintroduce offline guest translation, a gameplay interpreter,
+or a second shipping runtime.
 
-## Conventions this directory follows
-
-- **No handoff briefs.** A document that begins "read this first to continue" is a lossy self-summary
-  standing in for a conversation, and it goes stale the moment the code moves. Two of them lived here
-  for two months describing files that had been deleted; their durable content is now in
-  `60fps/effects.md` and they are gone.
-- **No tombstones.** When something is retired, references to it are deleted rather than annotated
-  as retired. Absence is the cleanest documentation.
-- **A stale doc is worse than a missing one**, because it is trusted. If a later session supersedes
-  something here, fix the file — do not append a correction below the wrong version.
+Historical debugging narratives remain in `debug_journal/`; they are not current architecture or
+status. A fact that still matters should be reachable through a current claim, issue, RE note, or
+state item rather than copied into several plans.

@@ -11,7 +11,7 @@ by the game. Design and caveats: `docs/graphics/README.md`.
 
 ## Findings that outlive this session
 
-**Symbol resolution must come from the recompiler's function table, not `sms_gmse01_funcs.txt`.**
+**Symbol resolution must come from authoritative discovered-function metadata, not `sms_gmse01_funcs.txt`.**
 That list omits weak methods, so an address inside one resolves to whatever function precedes the
 gap plus an offset — which reads as an answer. It reported three distinct emitters as
 `TMapWire::drawUpper+0x48 / +0x17c / +0x258`; `drawUpper` contains exactly one `GXBegin`, and two of

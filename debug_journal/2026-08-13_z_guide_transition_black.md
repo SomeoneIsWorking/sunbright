@@ -58,10 +58,10 @@ The remaining absent visual transition is the known render-only gap in wipe type
 framebuffer grid. Do not replace it with a generic fade; port the GX grid from US `0x8017df74` and
 compare intermediate frames to Dolphin.
 
-## Recomp-path correction and resolution
+## Guest-path correction and resolution
 
-The user clarified that the requested defect was in `sms-recomp`, not the native decomp path. The
-recomp executes retail `Hx_Test5`; its black transition had a different cause. Ghidra confirms that
+The user clarified that the requested defect was in the guest-runtime path, not the native-reference
+path. That path executes retail `Hx_Test5`; its black transition had a different cause. Ghidra confirms that
 US `0x8017df74` loops over a 10x8 grid, calling helper `0x80182a20` to copy and clear each 64x64 EFB
 cell before drawing one 18-vertex strip. Dolphin's `BPStructs.cpp` confirms that the clear applies
 to the copy source rectangle. Aurora instead used a render-pass load clear for every clear=true

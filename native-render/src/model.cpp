@@ -39,6 +39,7 @@ struct VertexColors {
     Color multiplicative{};
     Color additive{};
     float detailTextureWeight = 0.0F;
+    float textureAlphaWeight = 0.0F;
 };
 
 float dot(Vec3 first, Vec3 second) noexcept {
@@ -401,7 +402,10 @@ bool valid(const ModelDraw& draw) noexcept {
                        valid(material.ambientColor) && valid(material.staticHighlight) &&
                        valid(material.lighting) && material.lighting.pointLightCount != 0 &&
                        finite(material.lightRampWeight) && material.lightRampWeight >= 0.0F &&
-                       material.lightRampWeight <= 1.0F && finite(material.staticHighlightWeight) &&
+                       material.lightRampWeight <= 1.0F && finite(material.maskThreshold) &&
+                       material.maskThreshold >= 0.0F && material.maskThreshold <= 1.0F &&
+                       material.alphaSource <= ModelAlphaSource::PrimaryTexture &&
+                       finite(material.staticHighlightWeight) &&
                        material.staticHighlightWeight >= 0.0F &&
                        material.staticHighlightWeight <= 1.0F &&
                        finite(material.directionalHighlightWeight) &&
@@ -605,7 +609,7 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                                      eyePosition, normal, ModelDiffuseMode::Signed);
                 const Color directional = directional_specular(material.lighting.specular, normal);
                 return VertexColors{
-                    .multiplicative = {diffuse.r, diffuse.g, diffuse.b, material.outputAlpha},
+                    .multiplicative = {diffuse.r, diffuse.g, diffuse.b, material.maskThreshold},
                     .additive =
                         {
                             material.staticHighlightWeight * material.staticHighlight.r +
@@ -617,6 +621,8 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                             material.outputAlpha,
                         },
                     .detailTextureWeight = material.lightRampWeight,
+                    .textureAlphaWeight =
+                        material.alphaSource == ModelAlphaSource::PrimaryTexture ? 1.0F : 0.0F,
                 };
             } else if constexpr (std::is_same_v<Material, LitSpecularRampMaterial>) {
                 const Color highlight = directional_specular(material.lighting.specular, normal);
@@ -671,6 +677,7 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
             colors.multiplicative,
             colors.additive,
             colors.detailTextureWeight,
+            colors.textureAlphaWeight,
             -eyeZ};
 }
 

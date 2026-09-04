@@ -43,12 +43,14 @@ def _process_stopped(pid: int) -> bool:
     return False
 
 
-def _wait_for_path(path: Path, timeout: float = 3.0) -> None:
+def _wait_for_nonempty_path(path: Path, timeout: float = 3.0) -> None:
+    """Wait for a PID marker's payload, not merely the earlier file creation."""
     deadline = time.monotonic() + timeout
-    while not path.exists() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if path.exists() and path.stat().st_size > 0:
+            return
         time.sleep(0.01)
-    if not path.exists():
-        raise AssertionError(f"timed out waiting for selftest marker {path}")
+    raise AssertionError(f"timed out waiting for populated selftest marker {path}")
 
 
 def _wait_process_stopped(pid: int, timeout: float = 1.0) -> None:
@@ -752,8 +754,8 @@ def selftest() -> int:
                 devcoredump_root=no_dump_root,
             )
             os._exit(result.returncode)
-        _wait_for_path(signal_child_marker)
-        _wait_for_path(signal_journal_marker)
+        _wait_for_nonempty_path(signal_child_marker)
+        _wait_for_nonempty_path(signal_journal_marker)
         leader_pid, signal_descendant = map(
             int, signal_child_marker.read_text().split()
         )

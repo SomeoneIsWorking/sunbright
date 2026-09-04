@@ -20,7 +20,7 @@ STALE CMAKE BUILD TREES — the same problem one directory up:
 
     python3 tools/scratch_clean.py --build-dirs                 # LIST what it would remove
     python3 tools/scratch_clean.py --build-dirs --yes           # remove them
-    python3 tools/scratch_clean.py --build-dirs --yes --keep-dir build-sms-recomp
+    python tools/scratch_clean.py --build-dirs --yes --keep-dir build
 
 A repo that has been through several architectures accumulates build trees — this one had eight,
 2.7 GB, seven of them months stale. They are gitignored, so nothing notices, and `rm -rf build-*`

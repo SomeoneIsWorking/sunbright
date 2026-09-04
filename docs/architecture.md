@@ -1,107 +1,130 @@
-# Sunbright Architecture
+# Sunbright architecture
 
-## Overview
+Sunbright is one native/dynarec product for exact `GMSE01`. Native owners replace selected title or
+host behavior; Dolphin's runtime PowerPC JIT executes ordinary guest instructions directly from the
+user's authenticated image. There is no offline guest-code generation step. A bounded interpreter
+fallback is permitted only for blocks the JIT explicitly refuses to compile or execute safely.
 
-Sunbright is a static recompiler for Super Mario Sunshine (GameCube/PPC) that produces
-a native PC binary by translating PowerPC machine code to C, then compiling it with a
-standard C++ compiler.
+## Runtime flow
 
-```
-ROM (.rvz)
-   │
-   ▼ [DiscIO]
-DOL executable (PPC binary)
-   │
-   ▼ [sunbright-recomp]
-generated/functions.cpp   — one C++ function per PPC function
-generated/jump_table.cpp  — address → function pointer map
-   │
-   ▼ [g++ / clang++]
-libsms_recomp.so          — native shared library
-   │
-   ▼ [sunbright-runtime + Dolphin]
-Running game!
-```
-
-## Components
-
-### 1. sunbright-recomp (offline tool)
-- Reads the ROM via **Dolphin DiscIO** (handles RVZ, ISO, GCM)
-- Parses the **DOL executable** (GameCube's ELF-equivalent)
-- Scans for function boundaries (bl targets, linear scan)
-- Decodes every PowerPC instruction (`ppc_decoder.cpp`)
-- Emits equivalent C++ code (`c_emitter.cpp`)
-- Outputs `generated/functions.cpp` + `generated/jump_table.cpp`
-
-### 2. generated/ (auto-generated)
-- `functions.cpp`: Each PPC function becomes `extern "C" void func_XXXXXXXX(CPUState&)`
-- `jump_table.cpp`: `g_recomp_table[]` — address → function pointer, loaded by runtime
-- Do not edit manually; re-run `/recompile` after changing decoder/emitter
-
-### 3. sunbright-runtime (shared library)
-- **memory_bridge**: Routes effective addresses to Dolphin's MemMap (or a flat buffer)
-- **dolphin_hook**: Installs into Dolphin's JIT interface; dispatches to recompiled code
-- **os_hle**: GameCube OS high-level emulation (OSReport, time, etc.)
-- **intrinsics**: Inline helpers for psq_dequantize, rotl32, carry flags, etc.
-
-### 4. Dolphin (submodule)
-- **DiscIO**: Reads RVZ compressed disc images (used by recompiler)
-- **VideoBackend**: Renders GX commands (unchanged — game issues GX commands same way)
-- **DSP**: Audio (unchanged)
-- **EXI / SI**: Memory card, controller (unchanged)
-- **JIT**: Fallback for any unrecompiled code (REL modules before they're recompiled)
-
-## Data flow at runtime
-
-```
-Dolphin startup
-   │
-   ├─ Load ROM via DiscIO
-   ├─ Initialize VideoBackend, DSP, EXI, SI
-   ├─ Load libsms_recomp.so → populate g_recomp_map
-   └─ dolphin_hook_install()
-
-Game runs:
-   Dolphin JIT hits address X
-      │
-      ├─ X in g_recomp_map? → YES → call func_X(cpu_state); return
-      └─ NO → Dolphin JIT compiles and runs X normally
+```text
+user GMSE01 image
+        |
+        v
+gcnport image validation + Dolphin machine
+        |
+        v
+guest PC -> runtime override lookup -------------------------+
+        | hit                                                |
+        v                                                    |
+Sunbright native override -> semantic/native service owner   |
+        | optional original call                             |
+        +-------------------------> Dolphin JIT <-------------+
+                                      |
+                                      v
+                         translated block cache -> dispatcher
 ```
 
-## Emitted C++ pattern
+The JIT owns ordinary guest execution. The native table is consulted at a complete runtime identity
+and guest address before a translated path can bypass the decision. A native original call suppresses
+only its current override for one call and enters the ordinary JIT dispatcher. Hook changes revoke
+affected direct links.
 
-```cpp
-// PPC: addi r3, r0, 0x1234   (li r3, 0x1234)
-cpu.gpr[3] = 0x1234;
+## Dependency direction
 
-// PPC: lwz r4, 0x10(r3)
-cpu.gpr[4] = MEM_R32(cpu.gpr[3] + 0x10);
-
-// PPC: bl sub_80243B00
-cpu.lr = 0x80243ABC + 4;
-func_80243B00(cpu);
-
-// PPC: blr
-return;
-
-// PPC: ps_madd f1, f2, f3, f4
-cpu.fpr[1].ps0 = cpu.fpr[2].ps0 * cpu.fpr[3].ps0 + cpu.fpr[4].ps0;
-cpu.fpr[1].ps1 = cpu.fpr[2].ps1 * cpu.fpr[3].ps1 + cpu.fpr[4].ps1;
+```text
+composition root
+  -> typed config + Lucent logger
+  -> gcnport executor -> Dolphin runtime/JIT
+  -> title identity + override registry
+       -> native services
+       -> renderer-neutral adapters -> native-render
+  -> input / audio / UI / saves
 ```
 
-## SMS-specific notes
+Dependencies point inward through narrow interfaces. Product modules do not reach through the
+executor into Dolphin globals, parse process configuration, write diagnostics directly, or acquire a
+second GPU/window owner.
 
-- **REL modules**: SMS loads `.rel` files for each stage/object. These need separate
-  recompilation. The recompiler will handle them once symbol relocation is implemented.
-- **Paired singles**: SMS uses `psq_l/psq_st` extensively for position/velocity.
-  GQR registers are tracked in CPUState and correctly handled.
-- **Display lists**: Compiled via Dolphin's GX backend — no changes needed.
-- **JIT-modifiable code**: Not confirmed in SMS. Monitor if issues arise.
+## Owners
 
-## Next steps (in priority order)
-1. Get Dolphin DiscIO linking correctly in CMake
-2. Verify DOL extraction works on the actual RVZ
-3. Run analyze-only mode; check opcode coverage
-4. Fix any missing opcodes from the histogram
-5. REL module recompilation
-6. Dolphin JIT hook implementation
+### gcnport
+
+The shared GameCube framework owns the title-neutral executor around Dolphin: runtime image/module
+identity, CPU/thread state transitions, guest-address hook dispatch, original calls, bounded host
+exits, invalidation, and execution diagnostics. Dolphin retains its decoder, JIT backends, code
+cache, memory, and device implementations. `jit-common` does not wrap a mechanism Dolphin already
+owns.
+
+### Sunbright application
+
+The title owns exact `GMSE01` validation, the set of native overrides, application policy, native
+services, semantic adapters, input actions, UI, saves, and composition. The entry point constructs
+focused RAII owners with explicit dependencies and destroys them in reverse order; it does not
+implement their work.
+
+Configuration has one owner that ingests CLI, environment/`.env`, persisted files, and platform
+defaults into an immutable typed value. Logging has one Lucent-backed owner. No other product module
+reads the environment or writes stdout/stderr/debug APIs directly.
+
+### Native renderer
+
+`native-render/` owns ordinary scene values, decoded images, semantic material/pass logic, GPU
+resources, targets, and presentation. Runtime adapters copy only renderer-neutral values and stable
+resource identities. Guest addresses, decomp object pointers, GX/FIFO commands, BP/XF registers, TEV
+programs, EFB-copy protocols, and Dolphin/Aurora renderer state stop before this boundary.
+
+The first JIT-integrated adapter is `J3DShape::draw` at `0x802e0390`. Its existing binary/decomp
+layout knowledge and PC-native mesh/material implementation are retained; only execution ownership
+moves from the generated-address table to `gcnport`'s runtime hook contract.
+
+### Native services
+
+Audio, input, storage, settings, timing, and other selected host behavior are independent title
+owners. Each override reproduces the guest ABI and calls back through the executor when original game
+behavior remains required. A native service does not become a second CPU or hardware emulator.
+
+### Decomp and oracles
+
+`decomp/sms` is readable recovered source, a source of precise names/formulas, and an independent
+native-layout adapter for controls. It is not another shipping engine. `extern/dolphin_fork` and
+`tools/oracle/` provide independent emulator observations. Aurora and the project-owned GX renderer
+may answer bounded compatibility questions while semantic coverage migrates; they are not product
+rendering fallbacks.
+
+## Interpreter boundary
+
+An explicit interpreter-only mode is diagnostic. Gameplay may enter an interpreter only from a JIT
+refusal carrying a typed reason and guest PC; block and instruction counters are reported with total
+JIT denominators and control returns to JIT dispatch. First-pass interpretation, interpreting while
+waiting for compilation, filling in a missing host backend, and unbounded fallback are forbidden.
+Fallback-heavy and zero-JIT runs do not count as gameplay or performance evidence.
+
+## Host qualification
+
+x86_64, Apple Silicon macOS AArch64, and Android arm64-v8a are separate release targets. Each must
+prove the shipping JIT's executable-memory policy, instruction-cache coherence, ABI transitions,
+exceptions/signals, packaging, representative gameplay, and fallback ratios.
+
+## Lifetime model
+
+One application instance owns configuration and logging, then the Dolphin/gcnport executor, title
+overrides/services, GPU platform, renderer clients, UI, and control endpoints. Destruction reverses
+that order so clients release targets before the platform and native callbacks detach before the
+executor dies. Background library threads may exist, but guest execution and title state remain
+owned by the application instance and cross boundaries only through explicit synchronized APIs.
+
+## Mechanical boundaries
+
+The normal verifier must enforce:
+
+- a 1,200-line first-party source cap, with oversized existing files frozen and ratcheted down;
+- native-render independence from GX, Aurora, Dolphin renderer state, and title layouts;
+- environment/CLI ingestion only in the configuration owner;
+- stdout/stderr/platform debug output only in the logging boundary;
+- no retired executor object, dispatcher, or alternate selector in gameplay;
+- no untyped, uncounted, first-pass, compile-wait, missing-backend, or unbounded interpreter path;
+- no offline guest-code generation/build rule or static launcher path; and
+- Clang formatting, Clang-Tidy, tests, and portable paths.
+
+Detailed migration order and evidence gates are in `docs/port/migration.md`.

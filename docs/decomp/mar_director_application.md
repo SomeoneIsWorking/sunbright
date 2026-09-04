@@ -4,7 +4,7 @@ Decomp research notes for the port. Sources: `decomp/sms` (community decomp;
 USA map `reference/sms_gmse01_funcs.txt` is sparse here — most state-machine
 functions are unnamed in it) + the PAL/JP full symbol maps in
 `decomp/sms/config/GMS{P,J}01/symbols.txt` + direct disassembly of the USA
-binary (`sunbright-recomp --disasm`).
+binary.
 
 **Address-resolution method (important):** the USA map names only
 `registerEventWatcher` (0x80296cd8), `fireEndDemoCamera` (0x8029a22c),
@@ -22,7 +22,7 @@ disassembling its first instructions and matching them to the decomp source.
 | USA addr | Function | Size | Status | Evidence |
 |---|---|---|---|---|
 | 0x802a5998 | `mountStageArchive` | 0x1AC | VERIFIED | named in USA map |
-| 0x802a5b44 | `drawDVDErr` | 0x40C | VERIFIED | `bl DVDGetDriveStatus`(0x8034e144) then 13-case bctr jump table, base 0x803df3f0 — **this is the historic boot jump-table function** from the constprop recompiler fix (CLAUDE.md); its case bodies 0x802a5b94..0x802a5c40 are registered as pointer-discovered entries (interior labels, NOT real functions) |
+| 0x802a5b44 | `drawDVDErr` | 0x40C | VERIFIED | `bl DVDGetDriveStatus`(0x8034e144) then 13-case bctr jump table, base 0x803df3f0; case bodies 0x802a5b94..0x802a5c40 are interior labels, not independent functions |
 | 0x802a5f50 | `gameLoop` | 0x430 | VERIFIED | size matches PAL exactly; matches the known "TApplication frame state machine" func_802a5f50 |
 | 0x802a6398 | `proc` | 0x450 | VERIFIED | `cmpli 9` switch on mAppState (states 0..9), jump-table prologue; size matches JP (0x450), PAL is 0x498 |
 | 0x802a67e8 | `checkAdditionalMovie` | 0x1E4 | UNVERIFIED (delta+size fit) | |
@@ -62,7 +62,7 @@ loadParticle*, loadResource, createObjects, setupObjects, decideMarioPosIdx)
 lives near 0x802b3xxx in USA (PAL 0x802AB4DC–0x802B1A08, delta there not yet
 established) — UNRESOLVED, resolve when needed.
 
-**Recompiled status:** every function above appears in `generated/functions.h`
+**Binary evidence:** every function above was recovered from the analyzed GMSE01 executable.
 (recompiled, none JIT-only). Caveat: the interior jump-table labels
 (0x802a5b94.., 0x80297708.., 0x8029829c.., 0x80298bf8..) are also registered
 as entries by pointer discovery — they are NOT C-call entry points (known
@@ -238,7 +238,7 @@ anything wanting a stage change
   NULL-deref (open bug) is in this window.
 - `drawDVDErr` runs every frame of every mode; with native CARD/DVD it should
   always take the status==1 (no error) path. Its jump table was the historic
-  recompiler constprop bug.
+  earlier guest constant-propagation defect.
 - Pause (state 5) does NOT stop `direct()`; it masks perform lists. THP movies
   get THPPlayerPause/Play around pause states.
 

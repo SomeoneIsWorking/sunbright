@@ -3,18 +3,20 @@ id: C050
 kind: claim
 status: holds
 created: 2026-08-20
-tags:
-depends: sms-recomp/overrides/native_frame.cpp
+tags: timing,native-60,re
 ---
 
 ## Claim
 
-Native 60 FPS changes the game-owned TVideo retrace request to one field at the native frame seam
+The title-owned Native-60 seam requests one TVideo retrace per simulation tick rather than the
+retail two-retrace cadence.
 
 ## Evidence
 
-Windowless run-safe Native 60 run logged repeated +1 retrace deltas after NLOGO and exited cleanly after 24 presents on 2026-08-20
+A bounded windowless Native-60 observation logged repeated `+1` retrace deltas after the logo phase
+and completed 24 presentations cleanly.
 
 ## What would falsify it
 
-A Native 60 run logs steady-state +2 retrace deltas, or the native waitForRetrace override moves away from the TVideo seam
+A representative Native-60 run logs steady-state `+2` retrace deltas, or binary analysis places the
+cadence change outside the TVideo seam.

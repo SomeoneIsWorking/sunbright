@@ -6,7 +6,7 @@ present, Dolphin's GX output is discarded). Port = capture the movie frame and c
 This is the most bounded piece of the "own-the-GPU / EFB" frontier (the only remaining native-engine
 gap with visible missing features — the re-grounding of owned subsystems is complete: render/audio/card).
 
-## The draw path (RE'd via sunbright-recomp --xref / --callees)
+## The draw path (recovered from GMSE01 cross-references and callee graphs)
 - `THPPlayerDrawCurrentFrame` (0x8001ea34) — high-level "draw current movie frame"; called from one
   site (snapGXTime/TTimeRec region 0x802a9900 — the movie director frame tick).
 - `THPGXYuv2RgbSetup` (0x8001e00c) — builds the GX state: GXSetProjection(ortho)/Viewport/Scissor,

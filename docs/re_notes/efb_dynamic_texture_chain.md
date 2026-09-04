@@ -82,7 +82,7 @@ void TEfbCtrlTex::perform(u32 param_1, TGraphics* param_2) {
     }
 }
 ```
-Disasm cross-check (`./build/sunbright-recomp $SUNBRIGHT_ROM --disasm 0x802f8bac`):
+GMSE01 disassembly cross-check at `0x802f8bac`:
 - `0x802f8bd4 rlwinm. 549c0631` → tests `param_1 & 0x80` (the post branch).
 - `0x802f8cb8 rlwinm. 57c00739` → tests `param_1 & 0x8` (the copy branch).
 - `0x802f8cf8 lwz r0,0x2C(r29)` then `cmpli`/`bc` → loads `mImagePtr` from **+0x2C** and
@@ -317,7 +317,7 @@ registry tag in `interp_capture.cpp` and is left as the documented follow-up so 
 a clean, self-contained, low-risk A/B that can be enabled without touching the registry.
 
 The override coexists with the existing `ov_efbctrltex_perform` (both call the same recomp body
-via `recomp_raw`/`func_802f8bac`); to avoid double-registration on the same address it is written
+via the recovered `func_802f8bac` entry); to avoid double-registration on the same address it is written
 as an INDEPENDENT no-op-unless-flagged guard that the existing seam already covers — therefore
 the shipped sketch is gated so that it only fires when the env flag is set AND the existing
 `skip_efbcopy` probe is OFF, documenting the relationship. See the file for details. If enabling,

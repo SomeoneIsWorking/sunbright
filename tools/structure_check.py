@@ -1,152 +1,162 @@
 #!/usr/bin/env python3
-"""Ratchet first-party source-file size at the host application boundary.
-
-The default limit is 1,200 lines. Existing files above that limit are explicit legacy ratchets:
-they may shrink but never grow, and files at 2,000+ lines remain critical extraction territory.
-
-  tools/structure_check.py             check the real tree
-  tools/structure_check.py --selftest  prove over-limit and boundary cases disagree
-"""
+"""Enforce Sunbright's source ownership and size boundaries."""
 
 from __future__ import annotations
 
 import argparse
 import re
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-ROOT_LIMITS = {
-    "native-render": 1200,
-    "sms-boot": 1200,
-    "sms-recomp": 1200,
-    "tools/recompiler": 1200,
-}
-
-NATIVE_RENDER_FORBIDDEN = {
-    "GX compatibility include": re.compile(r'^\s*#\s*include\s*[<\"].*(?:native_render|scene)\.h[>\"]', re.MULTILINE),
-    "Aurora/GX include": re.compile(r'^\s*#\s*include\s*[<\"].*(?:aurora|dolphin/gx)', re.MULTILINE),
-    "GX compatibility identifier": re.compile(r'\b(?:Sbr[A-Z]\w*|GX[A-Z_]\w*|sbr_render_tris)\b'),
-}
-EXCLUDED_ROOTS = {
-    "sms-recomp/generated",
-    "sms-recomp/runtime/shaders",
-}
+SOURCE_ROOTS = ("native-render", "sms-boot", "src")
+SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
+DEFAULT_LIMIT = 1200
 FILE_LIMITS = {
-    "sms-recomp/frame_interp/subframe_legacy.cpp": 2951,
-    "sms-recomp/runtime/devices/dev_gxfifo.cpp": 1968,
-    "sms-recomp/runtime/render/native_render.cpp": 1708,
-    "sms-recomp/runtime/render/scene.cpp": 1210,
+    # Pre-existing native-render work crossed the default boundary before this migration.
+    # It may shrink but cannot grow.
+    "native-render/tests/semantic_2d_pass_gpu_test.cpp": 1209,
+}
+NATIVE_RENDER_FORBIDDEN = {
+    "Aurora/Dolphin/GX include": re.compile(
+        r"^\s*#\s*include\s*[<\"].*(?:aurora|dolphin|gx/)", re.MULTILINE
+    ),
+    "guest/platform renderer identifier": re.compile(
+        r"\b(?:Sbr[A-Z]\w*|GX[A-Z_]\w*|sbr_render_tris)\b"
+    ),
+}
+PRODUCT_FORBIDDEN = {
+    "environment read outside config owner": re.compile(r"\b(?:std::)?getenv\s*\("),
+    "direct stderr/stdout write outside logger owner": re.compile(
+        r"\b(?:std::(?:cerr|clog|cout)|fprintf\s*\(\s*(?:stderr|stdout)|"
+        r"vfprintf\s*\(\s*(?:stderr|stdout)|fputs\s*\([^,]+,\s*(?:stderr|stdout)|"
+        r"printf\s*\(|dprintf\s*\(\s*2\s*,|write\s*\(\s*2\s*,)"
+    ),
+}
+PRODUCT_ALLOWED_PATHS = {
+    "environment read outside config owner": ("sms-boot/runtime/config.cpp",),
+    "direct stderr/stdout write outside logger owner": (
+        "sms-boot/runtime/watchdog.cpp",
+    ),
 }
 
 
-def source_files() -> dict[str, int]:
+def source_files(root: Path = REPO) -> dict[str, int]:
     measured: dict[str, int] = {}
-    for relative, limit in ROOT_LIMITS.items():
-        root = REPO / relative
-        if not root.is_dir():
-            measured[relative + "/<MISSING>"] = limit + 1
+    for relative_root in SOURCE_ROOTS:
+        directory = root / relative_root
+        if not directory.is_dir():
             continue
-        for path in sorted(root.rglob("*")):
-            relative_path = str(path.relative_to(REPO))
-            if any(
-                relative_path == excluded or relative_path.startswith(excluded + "/")
-                for excluded in EXCLUDED_ROOTS
-            ):
-                continue
-            if path.suffix in {".c", ".cc", ".cpp", ".h", ".hpp"}:
-                measured[relative_path] = len(path.read_text(errors="replace").splitlines())
-    for relative in FILE_LIMITS:
-        path = REPO / relative
-        measured[relative] = len(path.read_text(errors="replace").splitlines()) if path.is_file() else -1
+        for path in sorted(directory.rglob("*")):
+            if path.is_file() and path.suffix in SOURCE_SUFFIXES:
+                relative = path.relative_to(root).as_posix()
+                measured[relative] = len(path.read_text(errors="replace").splitlines())
     return measured
 
 
-def limit_for(path: str) -> int | None:
-    if path in FILE_LIMITS:
-        return FILE_LIMITS[path]
-    for root, limit in ROOT_LIMITS.items():
-        if path.startswith(root + "/"):
-            return limit
-    return None
+def size_violations(measured: dict[str, int]) -> list[tuple[str, int, int]]:
+    return sorted(
+        (path, lines, FILE_LIMITS.get(path, DEFAULT_LIMIT))
+        for path, lines in measured.items()
+        if lines > FILE_LIMITS.get(path, DEFAULT_LIMIT)
+    )
 
 
-def violations(measured: dict[str, int]) -> list[tuple[str, int, int]]:
-    bad = []
-    for path, lines in measured.items():
-        limit = limit_for(path)
-        if limit is not None and (lines < 0 or lines > limit):
-            bad.append((path, lines, limit))
-    return sorted(bad)
+def pattern_violations(
+    sources: dict[str, str],
+    patterns: dict[str, re.Pattern[str]],
+    allowed_paths: dict[str, tuple[str, ...]] | None = None,
+) -> list[tuple[str, str]]:
+    allowed_paths = allowed_paths or {}
+    return sorted(
+        (path, label)
+        for path, source in sources.items()
+        for label, pattern in patterns.items()
+        if path not in allowed_paths.get(label, ())
+        if pattern.search(source)
+    )
 
 
-def native_render_boundary_violations(sources: dict[str, str]) -> list[tuple[str, str]]:
-    bad = []
-    for path, source in sources.items():
-        for label, pattern in NATIVE_RENDER_FORBIDDEN.items():
-            if pattern.search(source):
-                bad.append((path, label))
-    return sorted(bad)
+def load_sources(directory: Path) -> dict[str, str]:
+    if not directory.is_dir():
+        return {}
+    return {
+        path.relative_to(REPO).as_posix(): path.read_text(errors="replace")
+        for path in sorted(directory.rglob("*"))
+        if path.is_file() and path.suffix in SOURCE_SUFFIXES
+    }
+
+
+def load_product_sources(root: Path = REPO) -> dict[str, str]:
+    return {
+        path: source
+        for path, source in load_sources(root / "sms-boot").items()
+        if "/tests/" not in path
+    }
 
 
 def check() -> int:
     measured = source_files()
-    bad = violations(measured)
-    for path, lines, limit in bad:
-        actual = "missing" if lines < 0 else f"{lines} lines"
-        print(f"structure: {path}: {actual}, limit {limit}")
-    native_sources = {
-        str(path.relative_to(REPO)): path.read_text(errors="replace")
-        for path in sorted((REPO / "native-render").rglob("*"))
-        if path.suffix in {".c", ".cc", ".cpp", ".h", ".hpp"}
-    }
-    boundary_bad = native_render_boundary_violations(native_sources)
-    for path, label in boundary_bad:
-        print(f"structure: {path}: forbidden {label}")
-    print(
-        f"structure: measured {len(measured)} source files; "
-        f"{len(bad) + len(boundary_bad)} violation(s)"
+    bad_sizes = size_violations(measured)
+    boundary_bad = pattern_violations(
+        load_sources(REPO / "native-render"), NATIVE_RENDER_FORBIDDEN
     )
-    return 1 if bad or boundary_bad else 0
+    product_bad = pattern_violations(
+        load_product_sources(), PRODUCT_FORBIDDEN, PRODUCT_ALLOWED_PATHS
+    )
+    for path, lines, limit in bad_sizes:
+        print(f"structure: {path}: {lines} lines, limit {limit}")
+    for path, label in [*boundary_bad, *product_bad]:
+        print(f"structure: {path}: forbidden {label}")
+    total_bad = len(bad_sizes) + len(boundary_bad) + len(product_bad)
+    print(f"structure: measured {len(measured)} source files; {total_bad} violation(s)")
+    return 1 if total_bad else 0
 
 
 def selftest() -> int:
-    sample = {
-        "sms-recomp/ui/boundary.cpp": 1200,
-        "sms-recomp/app/too_large.cpp": 1201,
-        "sms-recomp/frame_interp/subframe_legacy.cpp": 2951,
-        "sms-recomp/runtime/devices/dev_gxfifo.cpp": 1969,
+    measured = {
+        "src/app/at_limit.cpp": 1200,
+        "src/app/too_large.cpp": 1201,
+        "native-render/tests/semantic_2d_pass_gpu_test.cpp": 1209,
     }
-    got = violations(sample)
-    expected = [
-        ("sms-recomp/app/too_large.cpp", 1201, 1200),
-        ("sms-recomp/runtime/devices/dev_gxfifo.cpp", 1969, 1968),
+    assert size_violations(measured) == [("src/app/too_large.cpp", 1201, 1200)]
+    assert pattern_violations(
+        {
+            "native-render/good.cpp": "struct Mesh {};",
+            "native-render/bad.cpp": "GXBlendMode x;",
+        },
+        NATIVE_RENDER_FORBIDDEN,
+    ) == [("native-render/bad.cpp", "guest/platform renderer identifier")]
+    assert pattern_violations(
+        {
+            "sms-boot/good.cpp": 'sb_errorf("runtime", "%s", message);',
+            "sms-boot/bad.cpp": "std::cerr << message;",
+            "sms-boot/runtime/config.cpp": "std::getenv(name);",
+            "sms-boot/other/environment.cpp": "std::getenv(name);",
+            "sms-boot/runtime/watchdog.cpp": "write(2, message, size);",
+            "sms-boot/runtime/wrong_signal.cpp": 'dprintf(2, "broken");',
+            "sms-boot/serialize.cpp": 'std::fprintf(file, "%u", value);',
+        },
+        PRODUCT_FORBIDDEN,
+        PRODUCT_ALLOWED_PATHS,
+    ) == [
+        ("sms-boot/bad.cpp", "direct stderr/stdout write outside logger owner"),
+        ("sms-boot/other/environment.cpp", "environment read outside config owner"),
+        (
+            "sms-boot/runtime/wrong_signal.cpp",
+            "direct stderr/stdout write outside logger owner",
+        ),
     ]
-    if got != expected:
-        print(f"FAIL: got {got}, expected {expected}")
-        return 1
-    boundary_sample = {
-        "native-render/good.cpp": "struct Picture {};\n",
-        "native-render/bad.cpp": "SbrDepthState state;\n",
-        "native-render/bad_include.cpp": '#include \"../runtime/render/scene.h\"\n',
-    }
-    boundary_got = native_render_boundary_violations(boundary_sample)
-    boundary_expected = [
-        ("native-render/bad.cpp", "GX compatibility identifier"),
-        ("native-render/bad_include.cpp", "GX compatibility include"),
-    ]
-    if boundary_got != boundary_expected:
-        print(f"FAIL: boundary got {boundary_got}, expected {boundary_expected}")
-        return 1
     if not source_files():
         print("FAIL: real-tree discovery measured no files")
         return 1
-    print("PASS: line limits and native-render dependency boundaries distinguish both controls")
+    print(
+        "PASS: source limits and dependency/config/log controls distinguish both answers"
+    )
     return 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selftest", action="store_true")
-    args = parser.parse_args()
-    sys.exit(selftest() if args.selftest else check())
+    arguments = parser.parse_args()
+    raise SystemExit(selftest() if arguments.selftest else check())

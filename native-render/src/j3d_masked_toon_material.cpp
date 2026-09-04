@@ -18,16 +18,26 @@ constexpr std::uint8_t kThreeEighths = 0x05;
 constexpr std::uint8_t kFiveEighths = 0x03;
 constexpr std::uint8_t kHalf = 0x04;
 constexpr std::uint8_t kKonstAlpha0 = 0x1C;
+constexpr std::uint8_t kKonstAlpha1 = 0x1D;
+constexpr std::uint8_t kKonstAlpha2 = 0x1E;
 constexpr std::array<std::uint8_t, 8> kMaskCompareStage{0xC0, 0xDB, 0x9E, 0xCF,
                                                         0xC1, 0x08, 0xFF, 0xF0};
 constexpr std::array<std::uint8_t, 8> kPrimaryMaskedStage{0xC2, 0x08, 0xF8, 0x6F,
                                                           0xC3, 0x08, 0xFF, 0xF0};
+constexpr std::array<std::uint8_t, 8> kPrimaryTextureAlphaStage{0xC2, 0x08, 0xF8, 0x6F,
+                                                                0xC3, 0x08, 0xF3, 0x70};
 constexpr std::array<std::uint8_t, 8> kAlternateMaskedStage{0xC4, 0x08, 0x8F, 0x60,
                                                             0xC5, 0x08, 0xFF, 0xF0};
+constexpr std::array<std::uint8_t, 8> kAlternateTextureAlphaStage{0xC4, 0x08, 0x8F, 0x60,
+                                                                  0xC5, 0x08, 0xE3, 0x70};
 constexpr std::array<std::uint8_t, 8> kLightRampStage{0xC6, 0x8A, 0x8A, 0xE2,
                                                       0xC7, 0x00, 0xFF, 0xF0};
+constexpr std::array<std::uint8_t, 8> kLightRampTextureAlphaStage{0xC6, 0x8A, 0x8A, 0xE2,
+                                                                  0xC7, 0x00, 0xE3, 0x70};
 constexpr std::array<std::uint8_t, 8> kHighlightStage{0xC8, 0x0A, 0x4A, 0xE0,
                                                       0xC9, 0x00, 0xFF, 0xD0};
+constexpr std::array<std::uint8_t, 8> kHighlightTextureAlphaStage{0xC8, 0x0A, 0x4A, 0xE0,
+                                                                  0xC9, 0x00, 0xF8, 0x70};
 
 bool valid_texture(const PictureTexture& texture) noexcept {
     return texture.resource != 0 && texture.width != 0 && texture.height != 0;
@@ -119,21 +129,30 @@ J3dMaskedToonMaterialResult classify_j3d_masked_toon_material(
     if (!valid_texture(primaryTexture) || !valid_texture(maskTexture) ||
         !valid_texture(alternateTexture) || !valid_texture(lightRampTexture))
         return J3dMaskedToonMaterialResult::InvalidTextureResource;
+    const bool constantAlphaProgram = state.tevStages[1].program == kPrimaryMaskedStage &&
+                                      state.tevStages[2].program == kAlternateMaskedStage &&
+                                      state.tevStages[3].program == kLightRampStage &&
+                                      state.tevStages[4].program == kHighlightStage &&
+                                      state.tevStages[2].konstAlphaSelection == kKonstAlpha0 &&
+                                      state.tevStages[3].konstAlphaSelection == kKonstAlpha0 &&
+                                      state.tevStages[4].konstAlphaSelection == kKonstAlpha0;
+    const bool primaryTextureAlphaProgram =
+        state.tevStages[1].program == kPrimaryTextureAlphaStage &&
+        state.tevStages[2].program == kAlternateTextureAlphaStage &&
+        state.tevStages[3].program == kLightRampTextureAlphaStage &&
+        state.tevStages[4].program == kHighlightTextureAlphaStage &&
+        state.tevStages[2].konstAlphaSelection == kKonstAlpha1 &&
+        state.tevStages[3].konstAlphaSelection == kKonstAlpha1 &&
+        state.tevStages[4].konstAlphaSelection == kKonstAlpha2;
     if (state.tevStages[0].program != kMaskCompareStage ||
-        state.tevStages[1].program != kPrimaryMaskedStage ||
-        state.tevStages[2].program != kAlternateMaskedStage ||
-        state.tevStages[3].program != kLightRampStage ||
-        state.tevStages[4].program != kHighlightStage ||
+        (!constantAlphaProgram && !primaryTextureAlphaProgram) ||
         state.tevStages[0].konstColorSelection != kKonstAlpha0 ||
         state.tevStages[0].konstAlphaSelection != kKonstAlpha0 ||
         state.tevStages[1].konstColorSelection != kFiveEighths ||
         state.tevStages[1].konstAlphaSelection != 0 ||
         state.tevStages[2].konstColorSelection != kThreeEighths ||
-        state.tevStages[2].konstAlphaSelection != kKonstAlpha0 ||
         state.tevStages[3].konstColorSelection != kFiveEighths ||
-        state.tevStages[3].konstAlphaSelection != kKonstAlpha0 ||
-        state.tevStages[4].konstColorSelection != kHalf ||
-        state.tevStages[4].konstAlphaSelection != kKonstAlpha0) {
+        state.tevStages[4].konstColorSelection != kHalf) {
         return J3dMaskedToonMaterialResult::UnsupportedColorProgram;
     }
     if (!state.hasTevColors)
@@ -160,6 +179,9 @@ J3dMaskedToonMaterialResult classify_j3d_masked_toon_material(
     material.lightRampWeight = 3.0F / 8.0F;
     material.staticHighlightWeight = 0.5F;
     material.directionalHighlightWeight = 0.5F;
+    material.maskThreshold = color_from_rgba8(state.konstColorRgba8[0]).a;
+    material.alphaSource =
+        primaryTextureAlphaProgram ? ModelAlphaSource::PrimaryTexture : ModelAlphaSource::Constant;
     material.outputAlpha = secondaryMaterialColor.a;
     material.raster = raster;
     return J3dMaskedToonMaterialResult::Success;

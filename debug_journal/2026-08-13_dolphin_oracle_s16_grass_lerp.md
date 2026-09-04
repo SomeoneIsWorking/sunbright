@@ -26,7 +26,7 @@ a successful pair.
 
 ## Verification
 
-`ctest --test-dir build-sms-recomp -R '^(tev_eval|gx_light|interp_pairing)$'` passed.
+The focused `tev_eval`, `gx_light`, and `interp_pairing` tests passed.
 
 `gpuguard run --timeout 150 -- ./run-safe.sh SBR_STAGE=8 SBR_SCENARIO=0 SBR_LERP60=1
 SBR_QUIT_AFTER=400` completed with exit 0 and no kernel amdgpu event. Its final audit reports:

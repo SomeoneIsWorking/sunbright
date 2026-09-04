@@ -5,35 +5,38 @@
 // replace them as the boot path exercises the feature.
 // VI retrace / frame pacing lives in runtime/frame_seam.cpp, not here.
 
-#include <dolphin/types.h>
-#include <dolphin/os.h>
-#include <dolphin/os/OSThread.h>
-#include <dolphin/os/OSMutex.h>
-#include <dolphin/os/OSMessage.h>
-#include <dolphin/os/OSFont.h>
-#include <dolphin/os/OSReset.h>
-#include <dolphin/os/OSResetSW.h>
-#include <dolphin/os/OSRtc.h>
-#include <dolphin/os/OSMemory.h>
-#include <dolphin/vi.h>
+#include "../boot_stubs/stub_trace.h"
+#include <cstdlib>
+#include <cstring>
 #include <dolphin/ai.h>
 #include <dolphin/ar.h>
 #include <dolphin/dsp.h>
-#include <dolphin/os/OSCache.h>
 #include <dolphin/gx.h>
-#include <dolphin/gx/GXFifo.h>
-#include <dolphin/gx/GXPerf.h>
-#include <dolphin/gx/GXManage.h>
 #include <dolphin/gx/GXCpu2Efb.h>
-#include <dolphin/gx/GXFrameBuffer.h>
-#include <dolphin/gx/GXTransform.h>
-#include <dolphin/gx/GXTexture.h>
-#include <dolphin/gx/GXGet.h>
 #include <dolphin/gx/GXEnum.h>
+#include <dolphin/gx/GXFifo.h>
+#include <dolphin/gx/GXFrameBuffer.h>
+#include <dolphin/gx/GXGet.h>
+#include <dolphin/gx/GXManage.h>
+#include <dolphin/gx/GXPerf.h>
+#include <dolphin/gx/GXTexture.h>
+#include <dolphin/gx/GXTransform.h>
+#include <dolphin/os.h>
+#include <dolphin/os/OSCache.h>
+#include <dolphin/os/OSFont.h>
+#include <dolphin/os/OSMemory.h>
+#include <dolphin/os/OSMessage.h>
+#include <dolphin/os/OSMutex.h>
+#include <dolphin/os/OSReset.h>
+#include <dolphin/os/OSResetSW.h>
+#include <dolphin/os/OSRtc.h>
+#include <dolphin/os/OSThread.h>
 #include <dolphin/thp.h>
-#include <cstring>
-#include <cstdlib>
-#include "../boot_stubs/stub_trace.h"
+#include <dolphin/types.h>
+#include <dolphin/vi.h>
+#include <sb_log.h>
+
+#include <cstdio>
 
 extern "C" {
 
@@ -41,7 +44,9 @@ extern "C" {
 void OSInitMutex(OSMutex*) {}
 void OSLockMutex(OSMutex*) {}
 void OSUnlockMutex(OSMutex*) {}
-BOOL OSTryLockMutex(OSMutex*) { return TRUE; }
+BOOL OSTryLockMutex(OSMutex*) {
+    return TRUE;
+}
 void OSInitCond(OSCond*) {}
 void OSSignalCond(OSCond*) {}
 void OSWaitCond(OSCond*, OSMutex*) {}
@@ -54,16 +59,28 @@ void OSWaitCond(OSCond*, OSMutex*) {}
 void OSInitThreadQueue(OSThreadQueue*) {}
 void OSSleepThread(OSThreadQueue*) {}
 void OSWakeupThread(OSThreadQueue*) {}
-OSThread* OSGetCurrentThread(void) { return nullptr; }
+OSThread* OSGetCurrentThread(void) {
+    return nullptr;
+}
 void OSCancelThread(OSThread*) {}
-BOOL OSIsThreadTerminated(OSThread*) { return TRUE; }
+BOOL OSIsThreadTerminated(OSThread*) {
+    return TRUE;
+}
 void OSYieldThread(void) {}
-BOOL OSCreateThread(OSThread*, void* (*)(void*), void*, void*, u32, s32, u16) { return TRUE; }
-s32  OSResumeThread(OSThread*) { return 0; }
+BOOL OSCreateThread(OSThread*, void* (*)(void*), void*, void*, u32, s32, u16) {
+    return TRUE;
+}
+s32 OSResumeThread(OSThread*) {
+    return 0;
+}
 void OSExitThread(void*) {}
-BOOL OSJoinThread(OSThread*, void**) { return TRUE; }
+BOOL OSJoinThread(OSThread*, void**) {
+    return TRUE;
+}
 void OSDetachThread(OSThread*) {}
-s32  OSGetThreadPriority(OSThread*) { return 0; }
+s32 OSGetThreadPriority(OSThread*) {
+    return 0;
+}
 
 // Real single-threaded message queues. Workers are gone (their loop bodies run
 // inline at the enqueue sites — JKRDecomp::sendCommand, JKRAramPiece::orderAsync),
@@ -84,7 +101,8 @@ BOOL OSSendMessage(OSMessageQueue* mq, OSMessage msg, s32 flags) {
         if (flags & OS_MESSAGE_BLOCK)
             OSPanic(__FILE__, __LINE__,
                     "OSSendMessage: blocking send on full queue %p (count=%d) — "
-                    "single-threaded deadlock", (void*)mq, (int)mq->msgCount);
+                    "single-threaded deadlock",
+                    (void*)mq, (int)mq->msgCount);
         return FALSE;
     }
     mq->msgArray[(mq->firstIndex + mq->usedCount) % mq->msgCount] = msg;
@@ -96,10 +114,12 @@ BOOL OSReceiveMessage(OSMessageQueue* mq, OSMessage* msg, s32 flags) {
         if (flags & OS_MESSAGE_BLOCK)
             OSPanic(__FILE__, __LINE__,
                     "OSReceiveMessage: blocking receive on empty queue %p — "
-                    "single-threaded deadlock (producer never ran?)", (void*)mq);
+                    "single-threaded deadlock (producer never ran?)",
+                    (void*)mq);
         return FALSE;
     }
-    if (msg) *msg = mq->msgArray[mq->firstIndex];
+    if (msg)
+        *msg = mq->msgArray[mq->firstIndex];
     mq->firstIndex = (mq->firstIndex + 1) % mq->msgCount;
     --mq->usedCount;
     return TRUE;
@@ -109,7 +129,8 @@ BOOL OSJamMessage(OSMessageQueue* mq, OSMessage msg, s32 flags) {
         if (flags & OS_MESSAGE_BLOCK)
             OSPanic(__FILE__, __LINE__,
                     "OSJamMessage: blocking jam on full queue %p — "
-                    "single-threaded deadlock", (void*)mq);
+                    "single-threaded deadlock",
+                    (void*)mq);
         return FALSE;
     }
     mq->firstIndex = (mq->firstIndex + mq->msgCount - 1) % mq->msgCount;
@@ -121,62 +142,106 @@ BOOL OSJamMessage(OSMessageQueue* mq, OSMessage msg, s32 flags) {
 // ---- OSReport (Aurora declares weak but has no impl) ----
 #include <cstdarg>
 void OSReport(const char* fmt, ...) {
-    std::va_list ap; va_start(ap, fmt);
-    std::vfprintf(stderr, fmt, ap);
+    char message[2048];
+    std::va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
+    sb_infof("os", "%s", message);
 }
 void OSPanic(const char* file, int line, const char* fmt, ...) {
-    std::fprintf(stderr, "OSPanic %s:%d: ", file, line);
-    std::va_list ap; va_start(ap, fmt);
-    std::vfprintf(stderr, fmt, ap);
+    char message[2048];
+    std::va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
-    std::fputc('\n', stderr);
+    sb_errorf("os", "OSPanic %s:%d: %s", file, line, message);
     abort();
 }
-// ---- (a) INTENTIONAL SEAM — OS misc (reset/sound-mode/interrupt hooks; no PC equivalent needed) ----
-BOOL OSEnableInterrupts(void) { return TRUE; }
-BOOL OSDisableInterrupts(void) { return TRUE; }
-BOOL OSRestoreInterrupts(BOOL) { return TRUE; }
+// ---- (a) INTENTIONAL SEAM — OS misc (reset/sound-mode/interrupt hooks; no PC equivalent needed)
+// ----
+BOOL OSEnableInterrupts(void) {
+    return TRUE;
+}
+BOOL OSDisableInterrupts(void) {
+    return TRUE;
+}
+BOOL OSRestoreInterrupts(BOOL) {
+    return TRUE;
+}
 void OSProtectRange(u32, void*, u32, u32) {}
 void OSResetSystem(int, u32, BOOL) {}
-BOOL OSGetResetSwitchState(void) { return FALSE; }
-u32  OSGetSoundMode(void) { return 1; }
+BOOL OSGetResetSwitchState(void) {
+    return FALSE;
+}
+u32 OSGetSoundMode(void) {
+    return 1;
+}
 void OSSetSoundMode(u32) {}
-u32  OSGetProgressiveMode(void) { return 0; }
+u32 OSGetProgressiveMode(void) {
+    return 0;
+}
 void OSSetProgressiveMode(u32) {}
 
-// ---- (a) INTENTIONAL SEAM — OS stopwatch (kept as zeros — no perf timing needed for bring-up) ----
+// ---- (a) INTENTIONAL SEAM — OS stopwatch (kept as zeros — no perf timing needed for bring-up)
+// ----
 void OSInitStopwatch(OSStopwatch*, char*) {}
 void OSStartStopwatch(OSStopwatch*) {}
 void OSStopStopwatch(OSStopwatch*) {}
-OSTime OSCheckStopwatch(OSStopwatch*) { return 0; }
+OSTime OSCheckStopwatch(OSStopwatch*) {
+    return 0;
+}
 void OSResetStopwatch(OSStopwatch*) {}
 
-// ---- (a) INTENTIONAL SEAM — OS font (returns nulls — SMS_NATIVE_PLATFORM=1 skips font rendering) ----
-u16   OSGetFontEncode(void) { return 0; }
-BOOL  OSInitFont(OSFontHeader*) { return TRUE; }
-char* OSGetFontTexture(const char* s, void**, s32*, s32*, s32*) { return const_cast<char*>(s); }
-char* OSGetFontWidth(const char* s, s32* w) { if (w) *w = 0; return const_cast<char*>(s); }
+// ---- (a) INTENTIONAL SEAM — OS font (returns nulls — SMS_NATIVE_PLATFORM=1 skips font rendering)
+// ----
+u16 OSGetFontEncode(void) {
+    return 0;
+}
+BOOL OSInitFont(OSFontHeader*) {
+    return TRUE;
+}
+char* OSGetFontTexture(const char* s, void**, s32*, s32*, s32*) {
+    return const_cast<char*>(s);
+}
+char* OSGetFontWidth(const char* s, s32* w) {
+    if (w)
+        *w = 0;
+    return const_cast<char*>(s);
+}
 
-// ---- (a) INTENTIONAL SEAM — DC cache: no-op on x86 (coherent, no PPC cache-line management needed) ----
+// ---- (a) INTENTIONAL SEAM — DC cache: no-op on x86 (coherent, no PPC cache-line management
+// needed) ----
 void DCInvalidateRange(void*, u32) {}
 void DCFlushRange(void*, u32) {}
 void DCStoreRange(void*, u32) {}
 void DCFlushRangeNoSync(void*, u32) {}
 void DCZeroRange(void*, u32) {}
 
-// ---- (a) INTENTIONAL SEAM — ARAM base (ARAM DMA copies run inline at the enqueue site; base address is a GC-hardware detail no native caller reads) ----
-u32 ARGetBaseAddress(void) { return 0; }
+// ---- (a) INTENTIONAL SEAM — ARAM base (ARAM DMA copies run inline at the enqueue site; base
+// address is a GC-hardware detail no native caller reads) ----
+u32 ARGetBaseAddress(void) {
+    return 0;
+}
 
-// ---- (a) INTENTIONAL SEAM — DSP mailboxes (no DSP coprocessor on PC; audio out is aurora::audio, see AI section) ----
-u32 DSPCheckMailFromDSP(void) { return 0; }
-u32 DSPReadMailFromDSP(void) { return 0; }
+// ---- (a) INTENTIONAL SEAM — DSP mailboxes (no DSP coprocessor on PC; audio out is aurora::audio,
+// see AI section) ----
+u32 DSPCheckMailFromDSP(void) {
+    return 0;
+}
+u32 DSPReadMailFromDSP(void) {
+    return 0;
+}
 
-// ---- (a) INTENTIONAL SEAM — AI (audio interface — part of the documented audio-silence gap, CLAUDE.md "Named audio arc": aurora::audio owns output via sb_audio_frame, the JAS DSP mixer is not ported yet) ----
+// ---- (a) INTENTIONAL SEAM — AI (audio interface — part of the documented audio-silence gap,
+// CLAUDE.md "Named audio arc": aurora::audio owns output via sb_audio_frame, the JAS DSP mixer is
+// not ported yet) ----
 void AIInit(u8*) {}
 void AIInitDMA(u32, u32) {}
 void AIStartDMA(void) {}
-AIDCallback AIRegisterDMACallback(AIDCallback) { return nullptr; }
+AIDCallback AIRegisterDMACallback(AIDCallback) {
+    return nullptr;
+}
 void AIResetStreamSampleCount(void) {}
 void AISetStreamPlayState(u32) {}
 void AISetDSPSampleRate(u32) {}
@@ -184,17 +249,24 @@ void AISetStreamSampleRate(u32) {}
 void AISetStreamVolLeft(u8) {}
 void AISetStreamVolRight(u8) {}
 
-// ---- (a) INTENTIONAL SEAM — VI retrace counter (real frame pacing is sb_frame_present, runtime/frame_seam.cpp) ----
-// VIWaitForRetrace is a PURE COUNTER, not the frame boundary: the game also
-// calls it from load-polling spin loops and TV-mode settle loops (all of
-// which complete instantly now that I/O is synchronous). The real per-frame
-// present/pump/pace seam is sb_frame_present(), called from JDrama::
-// TVideo::waitForRetrace (runtime/frame_seam.cpp).
+// ---- (a) INTENTIONAL SEAM — VI retrace counter (real frame pacing is sb_frame_present,
+// runtime/frame_seam.cpp) ---- VIWaitForRetrace is a PURE COUNTER, not the frame boundary: the game
+// also calls it from load-polling spin loops and TV-mode settle loops (all of which complete
+// instantly now that I/O is synchronous). The real per-frame present/pump/pace seam is
+// sb_frame_present(), called from JDrama:: TVideo::waitForRetrace (runtime/frame_seam.cpp).
 static u32 s_retraceCount = 0;
-void VIWaitForRetrace(void) { ++s_retraceCount; }
-u32  VIGetRetraceCount(void) { return s_retraceCount; }
-u32  VIGetNextField(void) { return 0; }
-u32  VIGetDTVStatus(void) { return 0; }
+void VIWaitForRetrace(void) {
+    ++s_retraceCount;
+}
+u32 VIGetRetraceCount(void) {
+    return s_retraceCount;
+}
+u32 VIGetNextField(void) {
+    return 0;
+}
+u32 VIGetDTVStatus(void) {
+    return 0;
+}
 void VISetBlack(BOOL) {}
 void VISetNextFrameBuffer(void*) {}
 
@@ -206,7 +278,8 @@ void VISetNextFrameBuffer(void*) {}
 // set, so dispatch the callback inline.
 static GXDrawSyncCallback s_drawSyncCallback = nullptr;
 void GXSetDrawSync(u16 token) {
-    if (s_drawSyncCallback) s_drawSyncCallback(token);
+    if (s_drawSyncCallback)
+        s_drawSyncCallback(token);
 }
 // GXClearPixMetric/GXReadPixMetric back TPollutionCount's on-screen goop-pixel counter
 // (Map/PollutionCount.cpp) — a real gameplay mechanic (Mare/Ricco pollution meter), not
@@ -217,8 +290,18 @@ void GXSetDrawSync(u16 token) {
 void GXClearPixMetric(void) {}
 void GXReadPixMetric(u32* a, u32* b, u32* c, u32* d, u32* e, u32* f) {
     SB_STUB_HIT("GXReadPixMetric");
-    if (a) *a = 0; if (b) *b = 0; if (c) *c = 0; if (d) *d = 0;
-    if (e) *e = 0; if (f) *f = 0;
+    if (a)
+        *a = 0;
+    if (b)
+        *b = 0;
+    if (c)
+        *c = 0;
+    if (d)
+        *d = 0;
+    if (e)
+        *e = 0;
+    if (f)
+        *f = 0;
 }
 // GXEnableBreakPt/GXDisableBreakPt: INTENTIONAL SEAM, already documented at the
 // callsite (decomp/sms/src/System/DrawSyncManager.cpp:124) — single-threaded/
@@ -253,7 +336,8 @@ void GXPeekARGB(u16, u16, u32* col) {
     // (Tested 2026-07-16: this was NOT the file-select black-patch cause — the
     // patches are unchanged either way — but not-occluded is the correct answer
     // whenever nothing covers Mario.) Proper fix: aurora EFB readback (GXCpu2Efb).
-    if (col) *col = 0x10000000;
+    if (col)
+        *col = 0x10000000;
 }
 // GXSetCopyClamp/GXSetDispCopyFrame2Field: EFB->XFB copy clamp/interlace config.
 // INTENTIONAL SEAM — Aurora manages its own framebuffer scaling internally and has
@@ -306,30 +390,47 @@ void GXInitTexCacheRegion(GXTexRegion*, GXBool, u32, GXTexCacheSize, u32, GXTexC
 // A movie that finishes normally reports state 3, not 5 (5 is the DVD/codec
 // error branch) — so this stub fakes 3, taking the SAME code path a real
 // completed movie takes rather than borrowing the unrelated error branch.
-static bool sThpOpen  = false;
-static u8   sThpState = 0; // idle
+static bool sThpOpen = false;
+static u8 sThpState = 0; // idle
 
-BOOL THPPlayerInit() { sThpOpen = false; sThpState = 0; return TRUE; }
-void THPPlayerQuit() { sThpOpen = false; sThpState = 0; }
+BOOL THPPlayerInit() {
+    sThpOpen = false;
+    sThpState = 0;
+    return TRUE;
+}
+void THPPlayerQuit() {
+    sThpOpen = false;
+    sThpState = 0;
+}
 
 BOOL THPPlayerOpen(const char*, BOOL) {
     // Real THPPlayerOpen parses the .thp header off DVD (THPPlayer.c:120-211).
     // We never decode a real movie, so any filename opens successfully.
-    sThpOpen  = true;
+    sThpOpen = true;
     sThpState = 0;
     return TRUE;
 }
 
 BOOL THPPlayerClose() {
-    if (sThpOpen && sThpState == 0) { sThpOpen = false; return TRUE; }
+    if (sThpOpen && sThpState == 0) {
+        sThpOpen = false;
+        return TRUE;
+    }
     return FALSE;
 }
 
-u32  THPPlayerCalcNeedMemory() { return 0; }
-BOOL THPPlayerSetBuffer(u8*) { return sThpOpen; }
+u32 THPPlayerCalcNeedMemory() {
+    return 0;
+}
+BOOL THPPlayerSetBuffer(u8*) {
+    return sThpOpen;
+}
 
 BOOL THPPlayerPrepare(s32, s32, s32, s32) {
-    if (sThpOpen && sThpState == 0) { sThpState = 1; return TRUE; }
+    if (sThpOpen && sThpState == 0) {
+        sThpState = 1;
+        return TRUE;
+    }
     return FALSE;
 }
 
@@ -347,21 +448,33 @@ BOOL THPPlayerPlay() {
 }
 
 BOOL THPPlayerPause() {
-    if (sThpOpen && sThpState == 2) { sThpState = 4; return TRUE; }
+    if (sThpOpen && sThpState == 2) {
+        sThpState = 4;
+        return TRUE;
+    }
     return FALSE;
 }
 
 BOOL THPPlayerStop() {
-    if (sThpOpen) sThpState = 0;
+    if (sThpOpen)
+        sThpState = 0;
     return TRUE;
 }
 
-u32  THPPlayerGetState() { return sThpState; }
+u32 THPPlayerGetState() {
+    return sThpState;
+}
 
-u32  THPPlayerDrawCurrentFrame(void*, void*, u32, u32, u32) { return 0; } // no frame ever decoded
-BOOL THPPlayerDrawDone() { return TRUE; }
+u32 THPPlayerDrawCurrentFrame(void*, void*, u32, u32, u32) {
+    return 0;
+} // no frame ever decoded
+BOOL THPPlayerDrawDone() {
+    return TRUE;
+}
 
-BOOL THPPlayerGetAudioInfo(THPAudioInfo*) { return FALSE; } // no audio track decoded
+BOOL THPPlayerGetAudioInfo(THPAudioInfo*) {
+    return FALSE;
+} // no audio track decoded
 
 BOOL THPPlayerGetVideoInfo(THPVideoInfo* info) {
     // MovieDirector::rsetup() (MovieDirector.cpp:177) reads this unconditionally
@@ -370,7 +483,11 @@ BOOL THPPlayerGetVideoInfo(THPVideoInfo* info) {
     // 640x480 matches the usual NTSC game-render frame size; videoType=0 =
     // progressive (no interlace field bits set) — sane placeholder dims for
     // a movie that never actually decodes a frame.
-    if (info) { info->xSize = 640; info->ySize = 480; info->videoType = 0; }
+    if (info) {
+        info->xSize = 640;
+        info->ySize = 480;
+        info->videoType = 0;
+    }
     return sThpOpen;
 }
 
@@ -390,7 +507,10 @@ void THPPlayerSetVolume(s32, s32) {}
 struct _GXFogAdjTable;
 struct JPADataBlock;
 struct JPAParticle;
-class JPABaseField { public: JPABaseField(); };
+class JPABaseField {
+  public:
+    JPABaseField();
+};
 
 // (Removed: JPAField.cpp is now built as part of sms-native — see CMakeLists.txt.
 // The stubs here previously provided empty ctors/methods that skipped critical
@@ -425,34 +545,35 @@ class JPABaseField { public: JPABaseField(); };
 #include <JSystem/JUtility/JUTException.hpp>
 
 JUTDirectPrint* JUTDirectPrint::sDirectPrint = nullptr;
-JUTDirectPrint* JUTDirectPrint::start()
-{
-	alignas(JUTDirectPrint) static unsigned char storage[sizeof(JUTDirectPrint)];
-	sDirectPrint = reinterpret_cast<JUTDirectPrint*>(storage);
-	return sDirectPrint;
+JUTDirectPrint* JUTDirectPrint::start() {
+    alignas(JUTDirectPrint) static unsigned char storage[sizeof(JUTDirectPrint)];
+    sDirectPrint = reinterpret_cast<JUTDirectPrint*>(storage);
+    return sDirectPrint;
 }
 void JUTDirectPrint::changeFrameBuffer(void*, u16, u16) {}
 void JUTDirectPrint::drawString(u16, u16, char*) {}
 void JUTDirectPrint::erase(int, int, int, int) {}
 
 JUTException* JUTException::sErrorManager = nullptr;
-JUTException* JUTException::create(JUTDirectPrint*)
-{
-	alignas(JUTException) static unsigned char storage[sizeof(JUTException)];
-	sErrorManager = reinterpret_cast<JUTException*>(storage);
-	return sErrorManager;
+JUTException* JUTException::create(JUTDirectPrint*) {
+    alignas(JUTException) static unsigned char storage[sizeof(JUTException)];
+    sErrorManager = reinterpret_cast<JUTException*>(storage);
+    return sErrorManager;
 }
 void JUTException::createConsole(void*, u32) {}
 void JUTException::appendMapFile(char*) {}
-OSErrorHandler JUTException::setPreUserCallback(OSErrorHandler) { return nullptr; }
+OSErrorHandler JUTException::setPreUserCallback(OSErrorHandler) {
+    return nullptr;
+}
 void JUTException::waitTime(s32) {}
 // real signature returns bool (the old local stub declared it void — part of the
 // same ODR divergence); no pad is ever read natively, so report "nothing pressed".
-bool JUTException::readPad(u32* buttons, u32* trigger)
-{
-	if (buttons) *buttons = 0;
-	if (trigger) *trigger = 0;
-	return false;
+bool JUTException::readPad(u32* buttons, u32* trigger) {
+    if (buttons)
+        *buttons = 0;
+    if (trigger)
+        *trigger = 0;
+    return false;
 }
 
 // ---- sb_* capture no-ops still referenced by SMS_NATIVE_PLATFORM branches in
@@ -503,7 +624,8 @@ void sb_gx_get_color_alpha_update(int* cu, int* au) {
     // default rather than reading uninitialized memory, but it's still a fabricated
     // answer: the real cU/aU never gets read from the live TEV stage state.
     SB_STUB_HIT("sb_gx_get_color_alpha_update");
-    (void)cu; (void)au;
+    (void)cu;
+    (void)au;
 }
 void sb_gx_get_projection(int* projType, float* proj, float* vp) {
     // SB_J3D_DBG diagnostic (J3DModel.cpp): live projection type/matrix/viewport for
@@ -511,6 +633,8 @@ void sb_gx_get_projection(int* projType, float* proj, float* vp) {
     // regardless of what we do here — leave them as the caller's garbage rather than
     // fabricating plausible-looking numbers that would misrepresent real GX state.
     SB_STUB_HIT("sb_gx_get_projection");
-    (void)projType; (void)proj; (void)vp;
+    (void)projType;
+    (void)proj;
+    (void)vp;
 }
 }

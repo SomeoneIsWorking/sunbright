@@ -3,23 +3,21 @@ id: C003
 kind: claim
 status: holds
 created: 2026-07-28
-tags: native-render
+tags: native-render,re
+depends: decomp/sms/src/dolphin/gx/GXTev.c#GXSetTevColorOp, decomp/sms/src/dolphin/gx/GXTev.c#GXSetTevAlphaOp
 ---
 
 ## Claim
 
-GX TEV compare mode is implemented: bias==3 selects compare, the SCALE field carries the comparison width, the subtract bit selects == over >
+GX TEV compare mode uses bias 3 to select comparison, the scale field to select comparison width,
+and the subtract bit to select equality rather than greater-than.
 
 ## Evidence
 
-RE'd from GXSetTevColorOp/GXSetTevAlphaOp in decomp/sms/src/dolphin/gx/GXTev.c; 537 of 2816 enabled stages in a settled Delfino tick use it; pinned by sms-recomp/tests/tev_eval_test.cpp across all four widths
+Recovered `GXSetTevColorOp` and `GXSetTevAlphaOp` packing in `decomp/sms` establishes the field
+meanings. A settled Delfino observation found compare mode in 537 of 2,816 enabled stages.
 
 ## What would falsify it
 
-if tev_eval_test stops failing when compare handling is disabled, the tests are no longer checking it
-
-## Path corrected 2026-08-12
-
-Recorded as `tests/tev_eval_test.cpp`; the tests live under `sms-recomp/tests/`. Found by `tools/info/registry_paths.py`, which exists because a live entry pointing at a file that is not there reads as "the check is gone" to whoever consults this registry instead of searching.
-
-The evidence was RE-RUN, not just re-pathed: `./build-sms-recomp/tev_eval_test` prints "tev_eval: all checks passed" and exits 0 today. That is a CPU-only unit test, so it could be verified during a session in which no GPU work was permitted.
+A retail disassembly or independently decoded command stream that assigns different meanings to
+these fields.

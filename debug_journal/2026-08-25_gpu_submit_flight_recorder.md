@@ -27,7 +27,7 @@ gpu_crash_watch.py/submit-tail instrument was absent from HEAD.
    const-ref and reread the mutable global inside the render worker while `GXCopyDisp` replaced
    it on the game thread — racing WebGPU handle assignment/destruction. It is now a value copy of
    the refcounted source selected at this frame boundary.
-3. **The recorder** (`sms-recomp/runtime/gpu_incident_recorder.{h,cpp}`): armed BEFORE
+3. **The recorder** (the runtime's `gpu_incident_recorder` owner): armed BEFORE
    `aurora_initialize` in `host/main.cpp`; writes 2 KiB records into a 512-slot pwrite ring
    (`scratch/gpu_crash/session_<pid>_<session>_<label>.flight`, ~1 MiB). Commit markers +
    FNV-1a checksums distinguish torn from committed records; a wrapped slot is invalidated
@@ -36,7 +36,7 @@ gpu_crash_watch.py/submit-tail instrument was absent from HEAD.
    arrive on a driver thread). Post-mortem analysis (`analyze_file`) pairs BEGIN/RETURN/COMPLETE
    by submitId and rejects stale files by pid+session so an old flight file cannot impersonate a
    new incident.
-4. **The reader** (`sms-recomp/tools/gpu_flight_dump_main.cpp` -> `build-sms-recomp/gpu_flight_dump`):
+4. **The reader** (the runtime's `gpu_flight_dump` tool):
    prints session identity, corrupt counts, submit-state census, any IN-FLIGHT submit, and the
    record tail. The discriminator: **API-PENDING** = the process died inside the host queue call;
    **GPU-PENDING** = accepted by the queue, never completed on the device (ring hang).

@@ -9,6 +9,6 @@ Checks: >
   performance-*,
   readability-container-size-empty
 WarningsAsErrors: '*'
-HeaderFilterRegex: '^(sms-boot|sms-recomp|tools/recompiler)/'
+HeaderFilterRegex: '^(native-render|sms-boot)/'
 SystemHeaders: false
 FormatStyle: file

@@ -24,7 +24,7 @@ controls change the second stage, change the raster source, and remove the autho
 colours. A directional-only control sets the point-light count to zero and still succeeds, proving
 that the classifier does not require an unused light source.
 
-The focused classifier executable passed, and both Clang builds (`sms-recomp` and `sms-boot`)
+The focused classifier executable passed, and both guest-runtime and native-reference Clang builds
 completed. A guarded 20-present recomp audit then advanced the family through
 300/300 classification and 192/192 visible model submissions. Total native coverage rose from
 1,464 models/1,211,328 vertices to 1,656 models/1,407,168 vertices, including 1,320 lit models. The

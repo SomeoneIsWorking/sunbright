@@ -82,8 +82,8 @@ session — see next):
 The real fix remains what debug_journal/2026-06-30_fileselect_overbright_is_efb_target_structure.md
 already scopes: reproduce GC's EFB-copy-texture composite. **CORRECTION (2026-07-02):** an earlier
 hand-off named `TMapObjSeaIndirect::perform` as the fix target based on it being an empty stub in
-the decomp source. But directly disassembling the ROM (`./build/sunbright-recomp --disasm 0x801eabf4
-4`) shows GC's `TMapObjSeaIndirect::perform` is ALSO EMPTY (a single `blr`). The source stub matches
+the decomp source. But direct GMSE01 disassembly at `0x801eabf4` shows
+`TMapObjSeaIndirect::perform` is ALSO EMPTY (a single `blr`). The source stub matches
 the ROM. So porting THAT function accomplishes nothing.
 
 The `init()` at ROM 0x801eaacc..0x801eabf0 DOES load `/common/map/UNDERwater.bmd` and bind the

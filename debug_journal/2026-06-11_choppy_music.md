@@ -9,7 +9,7 @@ THP audio fine; JAS music = brief note onsets ("first frames of sounds"). Oracle
 - /vpb (CH_BUF 0x8040E5B8, 64×0x180 VPBs): oracle ~12+ concurrent voices at title; recomp 1-3.
   Voice volumes/params look sane while alive — voices just END early. Low ids reused ⇒
   channels freed quickly (notes die), not pool exhaustion.
-- Note-event trace (SUNBRIGHT_DBG_NOTE, call_ppc ring): noteOn ~6/s (musical rate ✓);
+- Note-event trace: noteOn ~6/s (musical rate ✓);
   noteOff storm ×8 bursts = TTrack::allNoteOff from closeTrack (lr 8031c998).
   closeTrack callers: cmdCloseTrack (seq command, lr 803200bc) + mainProc track-end.
   openTrack ≈ closeTrack ≈ 2-4/s — CHILD TRACK CHURN. TrackMgr::allocNewRoot = 0 (no song
@@ -27,7 +27,7 @@ end -1 early (position/loop misread inside the CHILD streams), or (b) the sectio
 
 ## Next
 Compare child-track lifetimes oracle-vs-recomp by polling TrackMgr's regist table (find its
-.bss address from registTrack 8031df48 disasm) — the probe works in BOTH builds (no call_ppc
+.bss address from registTrack 8031df48 disasm) — the probe works in BOTH measured paths (no host-call
 needed). Then decode the child stream at its close position.
 
 ## Tools added this session
@@ -58,10 +58,10 @@ needed). Then decode the child stream at its close position.
   not a loader bug. MUST scene-sync before trusting the ARAM hole. The user heard chopping at
   the TITLE (banks present) → the voice-level investigation at the title remains primary.
 
-## Overlap-entry recompiler issue (separate, real)
+## Overlap-entry translation issue (separate, real)
 Discovered entries emit the SAME code bytes inside multiple functions (func_802bc10c overlaps
 func_802bb920; earlier 8031204c vs 80311f78 loop-head). Tracing/overrides on the orphan copy
-see zero traffic. Worth a recompiler-level dedupe/containment pass eventually.
+see zero traffic. Worth a discovery-level dedupe/containment pass eventually.
 
 ## Next concrete steps
 1. Scene-synced compare AT THE TITLE (no A-spam past title): /aram + /vpb + audio RMS, both
@@ -106,7 +106,7 @@ OSJoinThread handling / who could double-join).
   store after the 802b76f4 call: `r0=1` → find its target address in the emitted body of
   func_80299838 around // 802998bc-802998d0) to learn which stage the machine is stuck in at
   the title. Then root-cause that stage's gate.
-- All tooling for this is in place (SUNBRIGHT_DBG_NOTE list in dolphin_hook.cpp — just extend
+- All tooling for this was in place in the retired executor — just extend
   the address list; /tracelog windowed; /r).
 
 ## Session 2 closing addendum (stage-flag finding)
@@ -125,8 +125,8 @@ OSJoinThread handling / who could double-join).
 - Method note: trace windows are ring-limited — capture from seq 1 for boot-era events.
 
 ## Session 3 (early morning) — corrections + tooling lessons
-- ★ FIVE EXECUTION CONTEXTS: call_ppc, bridge JIT-entry (Run), interpreter (interp_run_until),
-  raw-JIT mid-function, and tail_ppc→recomp DIRECT DISPATCH. Tracers now cover call_ppc + bridge
+- ★ FIVE EXECUTION CONTEXTS were observed: host calls, bridge JIT entry, diagnostic interpretation,
+  raw-JIT mid-function, and direct tail dispatch. Tracers covered host calls and bridge
   + interp + tail-to-recomp (jnote/inote tags). Raw-JIT mid-function remains invisible by nature
   — but zero non-recomp tails this session means raw-JIT exposure is currently nil.
 - CORRECTION: the "wave id global = 0x212" was a MISREAD — the value at 0x8040E1E8 increments
@@ -322,7 +322,7 @@ NEXT SESSION (unchanged plan, sharpened):
 1. Find checkStoppedSeq addr + the exact condition it polls (decomp JAIBasic.cpp); trace that
    flag/seq under recomp during the boot-era stop.
 2. Root-cause why it never completes (likely the seq side never signals done — note seq tracks
-   DID close); fix per the debugging path (recompiler defect → fix+test, else native port).
+   DID close); fix per the debugging path (execution defect → fix+test, else native port).
 3. Verify: handle releases (state 4 → free, unk38=0) during boot; then the title's two early
    startBGM calls succeed; clean no-input A/B RMS shows sustained music.
 4. Machine note: GPU was exhausted (VK_ERROR_OUT_OF_DEVICE_MEMORY after ~50 runs) — reboot
@@ -357,13 +357,13 @@ Mechanism (traced with new SUNBRIGHT_DBG_SEQ stderr tracer + sampled BMS-cursor 
 
 OPEN: who writes the 0xFF to ports0/1 each frame, and who (in the oracle) writes the section
 cue (1). Oracle memory comparison in progress — note track heap addresses DIFFER under
-DISABLE_RECOMP; locate via TrackMgr handle table (ptr @0x8040E6C0, count @0x8040E6C8, SDA
+Dolphin oracle; locate via TrackMgr handle table (ptr @0x8040E6C0, count @0x8040E6C8, SDA
 r13-23296/-23288).
 
-Infra gotchas today: /r probe reads under DISABLE_RECOMP initially looked dead (was the
+Infrastructure gotcha: oracle `/r` probe reads initially looked dead (was the
 GPU-failed runs, not the probe); VK_ERROR_OUT_OF_DEVICE_MEMORY recurred on oracle runs at
 3D-scene entry while plain VRAM usage is only 3.3/12.8 GB — NOT global VRAM pressure;
-recomp runs unaffected; investigating (suspect: descriptor-pool sizing under the
+host runs unaffected; investigating (suspect: descriptor-pool sizing under the
 JIT-timing path; do NOT overlap two sunbright instances — also breaks probe port).
 
 ## ★★ ROOT CAUSE FOUND AND FIXED — music plays (2026-06-11 11:25)
@@ -436,7 +436,7 @@ Exonerated along the way (kept as owned native ports + tools):
   with all ports survived). Needs its own session: collect the watchdog dumps, classify, RE the
   DSP-mail wait path. NEXT after that: screenspace effects under widescreen (TScreenTexture /
   TMirrorModelManager EFB-copy rects — survey started, addresses 8022d360 / 80192d60 region),
-  then the 60fps model-interpolation project (docs/60fps/model_interpolation.md).
+  then the object-level frame presentation work.
 
 ## Title-screen mystery SOLVED + save import VERIFIED IN-GAME (evening)
 Why /pad "didn't work": THREE stacked causes, all fixed/understood:
@@ -459,12 +459,11 @@ a 500 (START); ~20 s scene load.
   into a host double buffer keyed by J3DModel*. Verified live: 32 models/227 joints (title),
   124/631 (busy scene), ~640 snaps/s, pointer IDs stable, 5s expiry. The doc's "need a symbol
   map" blocker is obsolete — sms_gmse01_funcs.txt names everything. NEXT (stage 2): prev→cur
-  slerp + draw replay with overwritten mNodeMatrices, present pacing between VI swaps
-  (docs/60fps/model_interpolation.md §4-5).
+  slerp + draw replay with overwritten mNodeMatrices, present pacing between VI swaps.
 - USER VISUAL FINDINGS (Plaza orbit shots): (1) the location-name banner BACKDROP (scene-entry
   "DELFINO PLAZA" pan-in) is not widescreen-accommodated — it's the known "backdrops must
   EXPAND to fill 16:9, not centre-squeeze" class (same fix shape as the fader: widen the fill
-  rect; see docs/60fps/model_interpolation.md 2D-element classification). (2) the dock tower/column
+  rect). (2) the dock tower/column
   "splits at the waterline unnaturally" + flat gray open sea = the screenspace WATER surface
   effect (refraction/reflection EFB-copy) not rendering right in Plaza — top suspect list:
   TScreenTexture (8022d360 replace), TMirrorModelManager (80192d60), sea J3D material with

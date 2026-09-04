@@ -14,7 +14,7 @@ That conclusion rested on aurora being a third-party black box we could not modi
 
 The game ticks at 30 Hz on the process main thread. Aurora is an immediate-mode GX replay: FIFO
 parse → `handle_draw` → per-frame staging buffers → `end_frame` → present. Exactly one present per
-tick, from `sms-recomp/overrides/native_frame.cpp` (`gxfifo_send_last(); present_and_reopen();`).
+tick, from the then-current native-frame owner (`gxfifo_send_last(); present_and_reopen();`).
 
 Interpolation is possible at all because **a tick contributes matrices, not geometry**. Model-space
 vertices do not change between ticks; animation moves the matrices. So a 60 Hz render of a 30 Hz
@@ -215,8 +215,8 @@ ordinals when a pass boundary or state write lands differently. Pairing on an or
 counts for itself would be the seventh instance of the failure mode catalogued in `CLAUDE.md`.
 
 **The viable key is the guest `J3DShape` pointer**, composited with element and pass index — a
-persistent scene-graph address that both ticks name identically. We already capture it
-(`sms-recomp/overrides/j3d_capture.cpp`, override of `0x802e0390`). It reaches aurora through a new
+persistent scene-graph address that both ticks name identically. The J3D capture seam at
+`0x802e0390` already records it. It reaches Aurora through a new
 `GX_AURORA` sub-opcode setting a pending tag, plus a `tag` field on `DrawData`; on merge the head's
 tag wins. The sub-ordinal within a tag is scoped to that tag and resets at each one — it is not a
 global ordinal, and it is stable because the same shape replays the same display list each tick.
@@ -240,8 +240,8 @@ Per the user's requirement that *all* full-screen effects respect it:
 
 ## Verification
 
-`sms-recomp/runtime/frame_smoothness.{h,cpp}` (committed `01fdeb9`), armed with `SBR_SMOOTH=1`.
-Validated against **both** classes on a moving scene:
+The runtime's `frame_smoothness` instrument (committed `01fdeb9`), armed with `SBR_SMOOTH=1`, was
+validated against **both** classes on a moving scene:
 
 | | dupFrac | mean alternation |
 |---|---|---|

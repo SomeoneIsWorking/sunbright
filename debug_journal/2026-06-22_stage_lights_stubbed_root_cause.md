@@ -67,5 +67,5 @@ porting (tooling-first). [RESULT: pending the run.]
 - 802298fc TLightCommon::perform · 80229a30 setLight · 80229ca0 getLightPosition · 80229cec getAmbColor
   · 80229d78 getLightColor · 80229e30 loadAfter · 80229fbc ctor
 - 802298c0 TLightShadow::perform · 80229880 TLightMario::perform · 80229610 TLightMario::setLight
-- Disassemble with: `./build-freshtest/sunbright-recomp scratch/disc/sms.iso --disasm <addr> <n>`
-  (`--callees <addr> --funcs reference/sms_gmse01_funcs.txt` resolves bl targets).
+- Disassemble the listed addresses with the current PPC RE tooling; use
+  `reference/sms_gmse01_funcs.txt` to resolve branch targets.

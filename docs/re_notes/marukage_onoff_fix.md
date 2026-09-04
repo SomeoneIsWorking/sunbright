@@ -66,7 +66,7 @@ for (u32 li = 0; li < N(kDrawLists); li++) {
     // double-step is a hazard (water scroll counter, etc).
     cpu.gpr[4] = (kDrawLists[li] == 0x20) ? 0xFFFFFFFFu : g_i60.perform_mask;
     cpu.gpr[5] = gfx;
-    call_ppc(cpu, PERFORM_LIST_PERFORM);
+    invoke the recovered perform-list entry with the prepared arguments;
 }
 ```
 

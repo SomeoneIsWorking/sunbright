@@ -30,11 +30,12 @@
 // SB_PAD_SCRIPT is unset. Game's PADClamp applies the real dead-zone to the
 // full-deflect ±72 the same way it would a physical stick.
 
-#include <sb_log.h>
 #include <dolphin/pad.h>
+#include <sb_log.h>
+
+#include "config.h"
 
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -42,30 +43,53 @@
 
 namespace {
 
-struct PadState { uint16_t button = 0; int8_t sx = 0, sy = 0, cx = 0, cy = 0; };
-struct ScriptEntry { uint32_t frame; PadState st; std::string label; };
+struct PadState {
+    uint16_t button = 0;
+    int8_t sx = 0, sy = 0, cx = 0, cy = 0;
+};
+struct ScriptEntry {
+    uint32_t frame;
+    PadState st;
+    std::string label;
+};
 
-std::vector<ScriptEntry> g_script;   // sorted by frame ascending
+std::vector<ScriptEntry> g_script; // sorted by frame ascending
 bool g_enabled = false;
 int g_lastFired = -1; // index into g_script of the last entry whose action fired
 
 void apply_token(PadState& st, const std::string& tok) {
-    if (tok == "A") st.button |= PAD_BUTTON_A;
-    else if (tok == "B") st.button |= PAD_BUTTON_B;
-    else if (tok == "X") st.button |= PAD_BUTTON_X;
-    else if (tok == "Y") st.button |= PAD_BUTTON_Y;
-    else if (tok == "START") st.button |= PAD_BUTTON_START;
-    else if (tok == "Z") st.button |= PAD_TRIGGER_Z;
-    else if (tok == "L") st.button |= PAD_TRIGGER_L;
-    else if (tok == "R") st.button |= PAD_TRIGGER_R;
-    else if (tok == "UP") st.sy = 72;
-    else if (tok == "DOWN") st.sy = -72;
-    else if (tok == "LEFT") st.sx = -72;
-    else if (tok == "RIGHT") st.sx = 72;
-    else if (tok == "CUP") st.cy = 72;
-    else if (tok == "CDOWN") st.cy = -72;
-    else if (tok == "CLEFT") st.cx = -72;
-    else if (tok == "CRIGHT") st.cx = 72;
+    if (tok == "A")
+        st.button |= PAD_BUTTON_A;
+    else if (tok == "B")
+        st.button |= PAD_BUTTON_B;
+    else if (tok == "X")
+        st.button |= PAD_BUTTON_X;
+    else if (tok == "Y")
+        st.button |= PAD_BUTTON_Y;
+    else if (tok == "START")
+        st.button |= PAD_BUTTON_START;
+    else if (tok == "Z")
+        st.button |= PAD_TRIGGER_Z;
+    else if (tok == "L")
+        st.button |= PAD_TRIGGER_L;
+    else if (tok == "R")
+        st.button |= PAD_TRIGGER_R;
+    else if (tok == "UP")
+        st.sy = 72;
+    else if (tok == "DOWN")
+        st.sy = -72;
+    else if (tok == "LEFT")
+        st.sx = -72;
+    else if (tok == "RIGHT")
+        st.sx = 72;
+    else if (tok == "CUP")
+        st.cy = 72;
+    else if (tok == "CDOWN")
+        st.cy = -72;
+    else if (tok == "CLEFT")
+        st.cx = -72;
+    else if (tok == "CRIGHT")
+        st.cx = 72;
     // '-' / NONE / unknown -> neutral contribution
 }
 
@@ -74,7 +98,8 @@ PadState parse_tokens(const std::string& s) {
     size_t i = 0;
     while (i < s.size()) {
         size_t j = s.find('+', i);
-        if (j == std::string::npos) j = s.size();
+        if (j == std::string::npos)
+            j = s.size();
         apply_token(st, s.substr(i, j - i));
         i = j + 1;
     }
@@ -85,14 +110,18 @@ void parse_script(const char* spec) {
     std::string s(spec);
     size_t i = 0;
     while (i < s.size()) {
-        while (i < s.size() && (s[i] == ' ' || s[i] == ',' || s[i] == ';')) ++i;
-        if (i >= s.size()) break;
+        while (i < s.size() && (s[i] == ' ' || s[i] == ',' || s[i] == ';'))
+            ++i;
+        if (i >= s.size())
+            break;
         size_t j = i;
-        while (j < s.size() && s[j] != ' ' && s[j] != ',' && s[j] != ';') ++j;
+        while (j < s.size() && s[j] != ' ' && s[j] != ',' && s[j] != ';')
+            ++j;
         std::string item = s.substr(i, j - i);
         i = j;
         size_t colon = item.find(':');
-        if (colon == std::string::npos) continue;
+        if (colon == std::string::npos)
+            continue;
         ScriptEntry e;
         e.frame = (uint32_t)std::strtoul(item.substr(0, colon).c_str(), nullptr, 10);
         e.label = item.substr(colon + 1);
@@ -111,35 +140,39 @@ extern "C" {
 
 // Called once from main() before the frame seam starts pumping retraces.
 void sb_pad_script_install(void) {
-    const char* spec = std::getenv("SB_PAD_SCRIPT");
-    if (!spec || !spec[0]) return;
-    parse_script(spec);
+    const auto& spec = sb::runtime_config().padScript;
+    if (spec.empty())
+        return;
+    parse_script(spec.c_str());
     g_enabled = !g_script.empty();
     if (g_enabled) {
         // A normal-run message (the user asked for a pad script and wants confirmation it
         // loaded), so it goes through the logger at an always-emitted channel rather than a raw
         // stdout write.
-        SB_LOGC("padscript", "loaded %zu event(s) from SB_PAD_SCRIPT", g_script.size());
+        sb_infof("padscript", "loaded %zu controller script event(s)", g_script.size());
     }
 }
 
 // Called once per VIWaitForRetrace() from the frame seam (frame_seam.cpp),
 // with the SDK's current retrace count.
 void sb_pad_script_tick(uint32_t retrace_count) {
-    if (!g_enabled) return;
+    if (!g_enabled)
+        return;
 
     int active = -1;
     for (size_t k = 0; k < g_script.size(); ++k) {
-        if (g_script[k].frame <= retrace_count) active = (int)k;
-        else break;
+        if (g_script[k].frame <= retrace_count)
+            active = (int)k;
+        else
+            break;
     }
-    if (active < 0) return;
+    if (active < 0)
+        return;
 
     if (active != g_lastFired) {
         g_lastFired = active;
-        std::fprintf(stdout, "[padscript] fire frame=%u entry=%u:%s\n",
-                     retrace_count, g_script[active].frame, g_script[active].label.c_str());
-        std::fflush(stdout);
+        sb_infof("padscript", "controller script fire frame=%u entry=%u:%s", retrace_count,
+                 g_script[active].frame, g_script[active].label.c_str());
     }
 
     const PadState& s = g_script[active].st;

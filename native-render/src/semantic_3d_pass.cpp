@@ -32,6 +32,7 @@ struct GpuVertex {
     float uv2[2];
     float uv3[2];
     float detailTextureWeight;
+    float textureAlphaWeight;
     float eyeDepth;
 };
 
@@ -255,6 +256,8 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
                                offsetof(GpuVertex, eyeDepth)},
         SDL_GPUVertexAttribute{7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv2)},
         SDL_GPUVertexAttribute{8, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv3)},
+        SDL_GPUVertexAttribute{9, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT,
+                               offsetof(GpuVertex, textureAlphaWeight)},
     };
     SDL_GPUColorTargetDescription colorTarget{};
     colorTarget.format = key.color;
@@ -365,6 +368,8 @@ Semantic3dPass::~Semantic3dPass() {
             SDL_ReleaseGPUShader(impl_->device, impl_->dualAlphaEffectFragmentShader);
         if (impl_->litAlphaMaskFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->litAlphaMaskFragmentShader);
+        if (impl_->litAlphaTintFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->litAlphaTintFragmentShader);
         if (impl_->layeredLitFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->layeredLitFragmentShader);
         if (impl_->tintedLayeredFragmentShader != nullptr)
@@ -534,6 +539,7 @@ bool Semantic3dPass::encode(const SemanticFrame& frame, const Semantic3dPassTarg
                                 {transformed.uv2.x, transformed.uv2.y},
                                 {transformed.uv3.x, transformed.uv3.y},
                                 transformed.detailTextureWeight,
+                                transformed.textureAlphaWeight,
                                 transformed.eyeDepth});
         }
         batches.push_back(batch);

@@ -1,5 +1,6 @@
 #include "semantic_render.h"
 
+#include "config.h"
 #include "native_j3d_adapter.h"
 #include "native_particle_adapter.h"
 
@@ -11,7 +12,6 @@
 #include <aurora/aurora.h>
 #include <sb_log.h>
 
-#include <cstdlib>
 #include <string>
 
 namespace {
@@ -31,33 +31,33 @@ void report_stats() {
     if (g_statsReported)
         return;
     const auto& stats = sb::native_render::sdl_semantic_frame_client().stats();
-    sb_logf("semantic",
-            "semantic summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
-            "operations=%llu "
-            "pictures=%llu j2d-window-pictures=%llu glyphs=%llu solid-rectangles=%llu "
-            "j2d-fill-boxes=%llu j2d-window-contents=%llu images=%llu models=%llu "
-            "meshes=%llu mesh-vertices=%llu "
-            "samples=%llu presented=%llu window-unavailable=%llu "
-            "first-nonclear-frame=%llu first-nonclear-pixels=%zu",
-            static_cast<unsigned long long>(stats.submittedFrames),
-            static_cast<unsigned long long>(stats.completedFrames),
-            static_cast<unsigned long long>(stats.nonEmptyFrames),
-            static_cast<unsigned long long>(stats.mixedOperationFrames),
-            static_cast<unsigned long long>(stats.submittedOperations),
-            static_cast<unsigned long long>(stats.submittedPictures),
-            static_cast<unsigned long long>(stats.submittedJ2dWindowPictures),
-            static_cast<unsigned long long>(stats.submittedGlyphs),
-            static_cast<unsigned long long>(stats.submittedSolidRectangles),
-            static_cast<unsigned long long>(stats.submittedJ2dFillBoxes),
-            static_cast<unsigned long long>(stats.submittedJ2dWindowContents),
-            static_cast<unsigned long long>(stats.submittedImages),
-            static_cast<unsigned long long>(stats.submittedModels),
-            static_cast<unsigned long long>(stats.submittedMeshes),
-            static_cast<unsigned long long>(stats.submittedMeshVertices),
-            static_cast<unsigned long long>(stats.sampledFrames),
-            static_cast<unsigned long long>(stats.presentedFrames),
-            static_cast<unsigned long long>(stats.windowUnavailableFrames),
-            static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);
+    sb_infof("semantic",
+             "semantic summary: submitted=%llu completed=%llu nonempty=%llu mixed=%llu "
+             "operations=%llu "
+             "pictures=%llu j2d-window-pictures=%llu glyphs=%llu solid-rectangles=%llu "
+             "j2d-fill-boxes=%llu j2d-window-contents=%llu images=%llu models=%llu "
+             "meshes=%llu mesh-vertices=%llu "
+             "samples=%llu presented=%llu window-unavailable=%llu "
+             "first-nonclear-frame=%llu first-nonclear-pixels=%zu",
+             static_cast<unsigned long long>(stats.submittedFrames),
+             static_cast<unsigned long long>(stats.completedFrames),
+             static_cast<unsigned long long>(stats.nonEmptyFrames),
+             static_cast<unsigned long long>(stats.mixedOperationFrames),
+             static_cast<unsigned long long>(stats.submittedOperations),
+             static_cast<unsigned long long>(stats.submittedPictures),
+             static_cast<unsigned long long>(stats.submittedJ2dWindowPictures),
+             static_cast<unsigned long long>(stats.submittedGlyphs),
+             static_cast<unsigned long long>(stats.submittedSolidRectangles),
+             static_cast<unsigned long long>(stats.submittedJ2dFillBoxes),
+             static_cast<unsigned long long>(stats.submittedJ2dWindowContents),
+             static_cast<unsigned long long>(stats.submittedImages),
+             static_cast<unsigned long long>(stats.submittedModels),
+             static_cast<unsigned long long>(stats.submittedMeshes),
+             static_cast<unsigned long long>(stats.submittedMeshVertices),
+             static_cast<unsigned long long>(stats.sampledFrames),
+             static_cast<unsigned long long>(stats.presentedFrames),
+             static_cast<unsigned long long>(stats.windowUnavailableFrames),
+             static_cast<unsigned long long>(stats.firstNonClearFrame), stats.firstNonClearPixels);
     sb_native_j3d_report_stats();
     sb_native_particle_report_stats();
     g_statsReported = true;
@@ -71,7 +71,8 @@ extern "C" bool sb_semantic_render_configure(void) {
         g_error = "semantic render composition was configured more than once";
         return false;
     }
-    g_mode = sb::native_render::parse_semantic_frame_mode(std::getenv("SB_SEMANTIC_FRAME_MODE"));
+    const auto& mode = sb::runtime_config().semanticFrameMode;
+    g_mode = sb::native_render::parse_semantic_frame_mode(mode.empty() ? nullptr : mode.c_str());
     if (g_mode == sb::native_render::SemanticFrameMode::Invalid) {
         g_error = "SB_SEMANTIC_FRAME_MODE accepts only off, audit, or preview";
         return false;
@@ -107,11 +108,11 @@ extern "C" bool sb_semantic_render_initialize(SDL_Window* window) {
         return false;
     }
     if (preview) {
-        sb_logf("semantic", "INCOMPLETE native semantic preview active at 640x480; rigid unlit "
-                            "single-texture J3D models and the ported 2D families are present; "
-                            "other materials, particles, lights, and effects are absent");
+        sb_infof("semantic", "INCOMPLETE native semantic preview active at 640x480; rigid unlit "
+                             "single-texture J3D models and the ported 2D families are present; "
+                             "other materials, particles, lights, and effects are absent");
     } else {
-        sb_logf("semantic", "offscreen semantic frame audit active at 640x480");
+        sb_infof("semantic", "offscreen semantic frame audit active at 640x480");
     }
     return true;
 }

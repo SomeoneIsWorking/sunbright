@@ -3,18 +3,23 @@ id: C014
 kind: claim
 status: holds
 created: 2026-08-04
-tags: interp60,j3d
-depends: sms-recomp/frame_interp/tag_deforming.cpp, extern/aurora/lib/gfx/interp.cpp
+tags: interpolation,j3d,re
+depends: decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp#J3DShapePacket::draw
 ---
 
 ## Claim
 
-interp60 pairing tag must be (J3DShape << 32 | mDrawMatrices), not J3DShape alone: a J3DShape belongs to the shared J3DModelData, and J3DShapePacket::draw swaps the instance's matrices into it per draw, so shape-only tags collapse every instance of a model into one identity and pair by unstable draw order.
+An interpolation identity for a J3D draw must include both `J3DShape` and the active draw-matrix
+owner. A shape alone identifies shared model data and collapses multiple instances into unstable
+draw-order pairing.
 
 ## Evidence
 
-debug_journal/2026-08-04_interp60_pairing_attribution.md; object motion mean 48.3 -> 14.9 at equal N=598 ticks
+`J3DShapePacket::draw` installs the instance's matrices into the shared shape for each draw. A
+controlled 598-tick comparison reduced mean object motion from 48.3 to 14.9 when the matrix owner was
+added to the identity.
 
 ## What would falsify it
 
-if a future J3D path draws a shape without the packet installing per-instance mDrawMatrices, the instance half of the tag becomes constant and pairing silently degrades to the old behaviour
+A supported J3D path proves that each shape has exactly one instance, or draws a shape without
+installing an instance-specific matrix owner.

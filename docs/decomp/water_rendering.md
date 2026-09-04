@@ -4,7 +4,7 @@ Status: RE complete for the screen-texture refraction stack (the user-visible "a
 effects" class). Port: `runtime/overrides/water_native.cpp` (supersedes the draft
 `water_widescreen.cpp`, now a tombstone). Verification key at the bottom.
 
-Ground truth used: `./build/sunbright-recomp --disasm` on the named addresses +
+Ground truth used: GMSE01 disassembly at the named addresses +
 `decomp/sms` decomp + `reference/sms_gmse01_funcs.txt`. Each claim is tagged
 **[disasm]**, **[decomp]**, or **UNVERIFIED**.
 
@@ -178,7 +178,7 @@ Native ownership of the two lookup-matrix derivations, parameterized by an aspec
   `ws_squeeze_scale()` ALWAYS (default since 2026-06-12 — the gate is removed; at 4:3 the
 scale is 1.0 so guest math is untouched by construction) (true-aspect: lookup m00 matches the
   squeezed raster m00, because raster_m00 = guest_m00 × squeeze ⇒ lookup must scale the same).
-- Seam 1: override 0x8022ba74 — guest body via `recomp_raw` (keeps guest trig bit-exact),
+- Seam 1: recovered override at 0x8022ba74 kept guest trigonometry bit-exact,
   then `out[0][0] ×= scale` computed natively. Multiplication is the EXACT aspect
   parameterization (m00 ∝ 1/aspect; everything else aspect-free per the derivations above).
 - Seam 2: scope flag around 0x8027c12c + override on 0x8034a17c applying `m[0][0] ×= scale`

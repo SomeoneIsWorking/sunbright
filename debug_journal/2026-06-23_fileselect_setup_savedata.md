@@ -3,7 +3,7 @@
 Continues `2026-06-23_fileselect_textured_2d.md` (milestone 3: textured 2D renders, but the
 menu was STATIC at .blo defaults). This stage ports the foundation of `TSelectMenu::setup`
 (DOL @0x8017449c) — the per-file pane-visibility decisions — fixing the headline residual:
-**"EPISODE 1" rendered TWICE.** Boot-order port (`port-in-boot-order-not-delfino`). No recompiler.
+**"EPISODE 1" rendered TWICE.** Boot-order native port (`port-in-boot-order-not-delfino`).
 
 ## Verified result
 `scratch/frames/stage1_s4.png` (SB_STAGE=4): a SINGLE centred "EPISODE 1" window (was doubled),
@@ -47,7 +47,7 @@ both drew → doubling. Fix = port that hide (+ the rest of setup's resting visi
   r13-0x6060 = 0x8040e160 (= `TFlagManager::getInstance()`). The setup "float constants" are
   mostly the compiler's int-division idiom: r2-0x47ec=0.1 (÷10), r2-0x47e8=0.01 (÷100),
   r2-0x47f0=1.0 (frameScale numerator + insert arg). Port the integer semantics, not the floats.
-- **DOL data extraction**: `sunbright-recomp <disc> --dump-dol --output scratch/sms.dol`, then
+- **DOL data extraction**: extract the authenticated DOL to `scratch/sms.dol`, then use
   `scratch/dolread.py {hex|u32|u8} <va> [n]` (parses the DOL section table, VA→file-offset).
 
 ## NEXT (stage 2, same unit)

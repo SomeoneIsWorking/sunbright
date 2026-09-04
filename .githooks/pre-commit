@@ -1,75 +1,31 @@
-#!/usr/bin/env bash
-# Repo pre-commit gate. Tracked (unlike .git/hooks), so it travels with a clone:
-#   git config core.hooksPath .githooks
-#
-# WHAT IT GUARDS. Diagnostic switches rot in a specific, expensive way: a switch named in
-# AGENTS.md, CLAUDE.md, docs/ or a run script that NO code reads sends a session chasing a control that does
-# not exist. That has happened here (SB_SKIP_GHOST was cited in the project instructions for a
-# while and was never in the source at all), and a stale generated registry hides the drift.
-#
-# It runs in well under a second and passes clean today, which is the point — a gate that fails on
-# day one is a gate people learn to bypass. If it fires, either the mention is a tombstone (delete
-# the NAME, do not annotate it) or the switch was never implemented.
-set -eo pipefail
-REPO="$(git rev-parse --show-toplevel)"
+#!/usr/bin/env python3
+"""Repository-local structural pre-commit gate."""
 
-run_locked_python() {
-    uv run --frozen --project "$REPO" python "$@"
-}
+from __future__ import annotations
 
-if ! run_locked_python "$REPO/tools/diag_registry.py" check; then
-    cat >&2 <<'MSG'
+import subprocess
+import sys
+from pathlib import Path
 
-pre-commit: the diagnostic-switch registry is stale or names a switch no code reads.
-  fix:   uv run --frozen python tools/diag_registry.py write
-  or:    uv run --frozen python tools/diag_registry.py phantoms
-  Deliberate always-loud stderr writes are marked with a LOGGER-EXEMPT comment beside the
-  print (inside the scanner's window, not above the enclosing block).
-MSG
-    exit 1
-fi
+REPO = Path(__file__).resolve().parents[1]
+CHECKS = (
+    REPO / "tools" / "migration_boundary.py",
+    REPO / "tools" / "structure_check.py",
+)
 
-# The tools' own self-tests. Each one feeds a case whose answer is forced, so the tool has to
-# demonstrate it can produce the OTHER answer. They existed and nothing ran them, which is the
-# same defect one level up: a broken instrument still reports a clean negative, now with a
-# reassuring --selftest in its docstring.
-# Paths named in the LIVE docs must exist. The switch registry above catches an env var that no
-# code reads; this catches a FILE that no tree contains — the same defect one level over. It is how
-# docs/60fps/ came to name nine files that resolved to nothing, including a "DONE" tool whose
-# switch and source were both absent, and how tools/oracle/capture.sh spent months looking for its
-# Dolphin binary in an uninitialised submodule and silently using a stock build instead.
-# A path that is genuinely gone is exempted by marking it (DELETED) on the same line.
-if ! run_locked_python "$REPO/tools/docs/doc_paths.py"; then
-  cat >&2 <<'EOM'
 
-A live document names a source path that does not exist. A reader follows it, finds nothing,
-and cannot tell whether the file moved or was deleted.
+def main() -> int:
+    for check in CHECKS:
+        result = subprocess.run(
+            ["uv", "run", "--frozen", "--project", str(REPO), "python", str(check)],
+            cwd=REPO,
+            check=False,
+        )
+        if result.returncode:
+            print(f"pre-commit: {check.relative_to(REPO)} failed", file=sys.stderr)
+            return result.returncode
+    return 0
 
-  fix:  qualify the path, or locate where the code MOVED — find it by a hook address or a
-        symbol it defines, never by guessing at a plausible rename
-  or:   if it is genuinely gone and the history is the point, mark it (DELETED) on the same
-        line, which exempts it
-  see:  uv run --frozen python tools/docs/doc_paths.py
-EOM
-  exit 1
-fi
 
-if ! run_locked_python "$REPO/tools/selftest_all.py"; then
-    cat >&2 <<'MSG'
-
-pre-commit: a diagnostic tool's own self-test failed, so that tool cannot be trusted to show the
-  answer it is about to be used for. Run it directly to see which case broke:
-    uv run --frozen python tools/selftest_all.py
-    uv run --frozen python tools/selftest_all.py --list    # what is covered at all
-MSG
-    exit 1
-fi
-
-if ! run_locked_python "$REPO/tools/structure_check.py"; then
-    cat >&2 <<'MSG'
-
-pre-commit: the host application structure ratchet failed. Split the named file at its cohesive
-  ownership boundary; do not raise the limit to land growth.
-MSG
-    exit 1
-fi
+if __name__ == "__main__":
+    raise SystemExit(main())

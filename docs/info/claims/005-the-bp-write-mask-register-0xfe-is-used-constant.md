@@ -3,18 +3,22 @@ id: C005
 kind: claim
 status: holds
 created: 2026-07-28
-tags: native-render
-depends: sms-recomp/runtime/devices/dev_gxfifo.cpp
+tags: gx,re
+depends: decomp/sms/src/dolphin/gx/GXGeometry.c, decomp/sms/src/dolphin/gx/GXTev.c
 ---
 
 ## Claim
 
-The BP write-mask register 0xFE is used constantly by this game and must be modelled
+GMSE01 relies on BP write-mask register `0xFE`; a decoder that models BP state must merge the next
+write as `(cached & ~mask) | (value & mask)`.
 
 ## Evidence
 
-3.5 MILLION mask writes per report, more than any other BP register; GDSetGenMode2 arms 0x07FC3F before GENMODE, GDSetCullMode arms 0xC000. aurora has always implemented merged = (cached & ~mask) | (value & mask)
+A title trace counted roughly 3.5 million mask writes. Recovered GX helpers arm `0x07FC3F` before
+GENMODE and `0xC000` before the cull-mode update, independently demonstrating partial-register
+writes.
 
 ## What would falsify it
 
-if the 0xFE write count ever reads zero, the mask handling is inert and anything blamed on it is wrong
+An independently decoded representative trace contains no `0xFE` writes, or retail GX code is shown
+to apply the mask with different merge semantics.

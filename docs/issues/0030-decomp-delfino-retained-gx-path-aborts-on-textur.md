@@ -3,7 +3,7 @@ id: 30
 title: Decomp Delfino retained GX path aborts on texture wrap mode 3
 status: open
 symptom: A bounded decomp stage-1 run can abort in Aurora while building the DrawBuf Indirect sampler because texture map 0 contains GX wrap-S value 3, which is not a valid GXTexWrapMode
-state_items: S002
+state_items: S005
 tags: decomp,aurora,gx,texture,crash,stage1
 created: 2026-08-30
 updated: 2026-08-30

@@ -74,8 +74,8 @@ not pixels.
 a `JDrama::TViewObj`) has `drawShadowGD(u32, TGraphics*)`, `drawShadowVolume(bool, TAlphaShadowQuad*)`,
 `drawShadow(...)`, plus `TCircleShadowRequest` (circle shadows under actors). The `...GD` naming =
 direct GD/immediate-mode GX emission, NOT `J3DShape::draw` → **ngx's J3DShape capture never sees it**.
-`ShadowUtil.cpp` is NOT decompiled (empty stub), so the exact GX calls must be RE'd from the binary
-(`sunbright-recomp --disasm`) or observed via a GX-call tee. This is the prime suspect for BOTH the
+`ShadowUtil.cpp` is NOT decompiled (empty stub), so the exact GX calls must be recovered from direct
+GMSE01 disassembly or observed via a GX-call tee. This is the prime suspect for BOTH the
 missing Mario marukage (finding #2) and the near-floor darkening (finding #1): if the near plaza floor
 sits in a cast shadow that GX draws via this system, ngx misses it → near floor renders only its bright
 base shape (8112bfdc, white CLR0). Next session: tee/RE the shadow draw, capture it natively, composite

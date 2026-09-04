@@ -4,7 +4,7 @@
 WHY THIS EXISTS
 ---------------
 On 2026-08-12 this project's SDL3-GPU GX compatibility path hung the graphics ring repeatedly.
-amdgpu named `sms-recomp` on seven ring timeouts in one session, reset the device each time, and
+amdgpu named the former gameplay executable on seven ring timeouts in one session, reset the device each time, and
 the desktop session went down with it — twice, the second time hard enough to need a reboot.
 
 Every one of those resets was avoidable. The first device loss is a stop signal, and the runs

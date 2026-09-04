@@ -3,25 +3,28 @@ id: C034
 kind: claim
 status: falsified
 created: 2026-08-11
-tags: 60fps
-depends: sms-recomp/frame_interp/motion_truth.cpp
+tags: interpolation,motion
 falsified_on: 2026-08-11
 ---
 
 ## Claim
 
-An object's own motion of 10-100 world units per SIMULATION TICK is ORDINARY, not evidence of interpolation mispairing. gpMario measured walking/running spends 90 of 593 ticks in [10,100) with a max of 58.5 units/tick. The interpolation audit's long-standing wording — 'anything from [10,100) up is a pose no object reaches in 1/30 s, so those counts are the mispairings' — is FALSE and was condemning 84,507 legitimate draws (12.5% of world geometry) on a plaza run. The measured boundary is ~100, but NOT because of a clean gap: the same run has 36 paired draws in [100,1k), 73 in [1k,10k) and 73 in [10k,inf). What justifies the boundary is (a) the independent ground truth sitting far below it and (b) an asymmetry of failure — snapping a genuinely fast object costs one frame of interpolation on ~36 draws in 670,000, while interpolating a mispair sweeps a whole model across the screen.
+A fixed 100-world-unit-per-tick cutoff can distinguish ordinary object motion from interpolation
+mispairing.
 
 ## Evidence
 
-sms-recomp/frame_interp/motion_truth.cpp reads gpMario (0x8040E10C) once per tick and buckets |dPos| with the SAME edges as aurora's paired-draw histogram. Run: SBR_FASTBOOT=1 SBR_LERP60=1 SBR_PAD_SCRIPT='60:STICK=0/-90,400:STICK=90/0,700:STICK=0/90' SBR_QUIT_AFTER=900. Ground truth: mean 7.657 max 58.479, [0,0.1) 249 | [0.1,1) 1 | [1,10) 253 | [10,100) 90. Paired-draw histogram same run: [10,100) 84507 | [100,1k) 36 | [1k,10k) 73 | [10k,inf) 73.
+A controlled Mario movement trace reached 58.479 units per tick, initially suggesting a cutoff near
+100. Pianta Village then supplied the required counterexample: one legitimate object moves 250–320
+units per tick along a smooth continuous arc, producing 12,657 false refusals in the 100–1,000
+bucket.
 
 ## What would falsify it
 
-a stage where an ordinary object routinely exceeds 100 units/tick (a fast vehicle, a launched Mario, a scripted mover) would move the boundary; and Mario is ONE object, so this bounds a player character's speed, not every object's
+This claim is already falsified by the smooth Pianta Village motion. Per-object continuity, rather
+than a global speed bound, is required; see C035.
 
 ## FALSIFIED 2026-08-11
 
-Superseded rather than wrong: C034's OBSERVATION (10-100 units/tick is ordinary motion) still holds and stage 8 confirms it, but the BOUND it justified — a fixed 100-unit discontinuity gate — is falsified. Pianta Village has an object moving 250-320 units/tick along a smooth continuous arc, and the gate snapped it every frame for 282 ticks (12791 refusals, 12657 of them in [100,1k) contiguous with the accepted bulk). Replaced by the per-object continuity test in C035.
-
-> Anything that cited this claim as proof must be re-checked. Grep the repo for it.
+The 10–100 observation remains valid for the measured player motion, but it cannot define a global
+identity or continuity boundary.

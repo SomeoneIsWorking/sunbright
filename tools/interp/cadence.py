@@ -3,12 +3,9 @@
 
 WHY THIS EXISTS
 
-Every metric this arc built so far needs to know which presents are "main" and which are "sub", and
-each one therefore only works on the path it was written for. There are three 60fps paths
-(docs/60fps/README.md) and no way to put their output on one axis. Worse, the thing a player actually
-reports — "it's flickery" — is not what those metrics measure. Asymmetry says WHERE a sub-frame sits
-between its neighbours; it says nothing about whether the series as a whole steps evenly, and a
-series can score a perfect asymmetry while juddering.
+Most presentation metrics need to know which presents are "main" and which are "sub". This one
+instead puts any consecutive series on the same axis. The thing a player reports — "it's flickery"
+— is not what positional asymmetry measures: a series can score a perfect midpoint while juddering.
 
 Judder is uneven motion. So measure that directly and label nothing: take the difference between
 each pair of CONSECUTIVE presents and ask whether those steps are the same size.
@@ -54,6 +51,7 @@ import argparse
 import glob
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -75,7 +73,7 @@ def fraction_box(text):
 
 
 def load(path, width, crop=None):
-    raw = np.frombuffer(open(path, "rb").read(), dtype=np.uint8)
+    raw = np.frombuffer(Path(path).read_bytes(), dtype=np.uint8)
     if raw.size % (width * 4) != 0:
         raise SystemExit(f"REFUSES: {path} is {raw.size} bytes, not a multiple of width*4 "
                          f"({width * 4}). Wrong --width, or not an RGBA dump.")
@@ -86,8 +84,8 @@ def load(path, width, crop=None):
     x0, y0, x1, y1 = crop
     # Fractions of the frame, not pixels: a crop written in pixels silently means a different part
     # of the picture at a different window size, and these dumps are whatever SB_W/SB_H were set to.
-    a, b = int(round(y0 * h)), int(round(y1 * h))
-    c, d = int(round(x0 * width)), int(round(x1 * width))
+    a, b = round(y0 * h), round(y1 * h)
+    c, d = round(x0 * width), round(x1 * width)
     if b - a < 8 or d - c < 8:
         raise SystemExit(f"REFUSES: --crop {x0},{y0},{x1},{y1} leaves {d - c}x{b - a} pixels, which "
                          f"is too small to say anything about motion. A crop that measures almost "
@@ -218,10 +216,10 @@ def score(steps, label="", ticks=None):
         counts, inner = ppt
         span = (min(counts), max(counts))
         print(f"  presents per retrace label (excluding the partial first/last): {inner}")
-        print(f"  ^ NOT the present cadence. The label is the game's own retrace counter and it "
-              f"advances by however many fields the game asked for that frame, so consecutive ticks "
-              f"can share one. For the cadence, read the runtime: SBR_LUCENT_DEBUG=interp prints "
-              f"simulation ticks against in-between frames presented.")
+        print("  ^ NOT the present cadence. The label is the game's own retrace counter and it "
+              "advances by however many fields the game asked for that frame, so consecutive ticks "
+              "can share one. For the cadence, read the runtime: SBR_LUCENT_DEBUG=interp prints "
+              "simulation ticks against in-between frames presented.")
         print(f"  guest retrace labels covered: {min(counts)}..{max(counts)}")
     print(f"  SCALE: mean step {mean:.3f}. Two runs are comparable ONLY over the SAME GUEST TICKS — "
           f"SB_DUMP_FRAME_AFTER counts presents, so a 60fps run reaches a given present at half the "
@@ -330,9 +328,9 @@ def main():
             lo = max(s[0] for s in spans)
             hi = min(s[1] for s in spans)
             if lo > hi:
-                print(f"  ^ THESE SERIES DO NOT OVERLAP IN GAME TIME AT ALL (no common tick). They "
-                      f"are different scenes and the numbers above are not a comparison of "
-                      f"anything. Scale DUMP_AFTER by each run's presents-per-tick and re-run.")
+                print("  ^ THESE SERIES DO NOT OVERLAP IN GAME TIME AT ALL (no common tick). They "
+                      "are different scenes and the numbers above are not a comparison of "
+                      "anything. Scale DUMP_AFTER by each run's presents-per-tick and re-run.")
             else:
                 print(f"  ^ common guest ticks: {lo}..{hi}")
     return 0

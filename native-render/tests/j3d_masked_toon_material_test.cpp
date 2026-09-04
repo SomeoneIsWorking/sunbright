@@ -45,6 +45,7 @@ sb::native_render::J3dMaterialState material_state() {
             },
         .hasTevColors = true,
         .tevColorsS10 = {{{150, 150, 180, 161}, {157, 161, 169, 255}, {255, 255, 255, 255}}},
+        .konstColorRgba8 = {0x4C6C6183, 0, 0, 0},
         .pixelEngineBlockType = 0x5045464CU,
         .hasExplicitPixelPolicy = true,
         .alphaCompare0 = 7,
@@ -58,6 +59,20 @@ sb::native_render::J3dMaterialState material_state() {
         .depthWrite = true,
         .hasNormal = true,
     };
+}
+
+sb::native_render::J3dMaterialState primary_texture_alpha_state() {
+    auto state = material_state();
+    state.materialColor1Rgba8 = 0xFFFFFFFF;
+    state.tevColorsS10[0] = {150, 150, 180, 113};
+    state.tevStages[1].program = {0xC2, 0x08, 0xF8, 0x6F, 0xC3, 0x08, 0xF3, 0x70};
+    state.tevStages[2].program = {0xC4, 0x08, 0x8F, 0x60, 0xC5, 0x08, 0xE3, 0x70};
+    state.tevStages[3].program = {0xC6, 0x8A, 0x8A, 0xE2, 0xC7, 0x00, 0xE3, 0x70};
+    state.tevStages[4].program = {0xC8, 0x0A, 0x4A, 0xE0, 0xC9, 0x00, 0xF8, 0x70};
+    state.tevStages[2].konstAlphaSelection = 0x1D;
+    state.tevStages[3].konstAlphaSelection = 0x1D;
+    state.tevStages[4].konstAlphaSelection = 0x1E;
+    return state;
 }
 
 } // namespace
@@ -89,6 +104,8 @@ int main() {
     assert(near(material.lightRampWeight, 3.0F / 8.0F));
     assert(near(material.staticHighlightWeight, 0.5F));
     assert(near(material.directionalHighlightWeight, 0.5F));
+    assert(near(material.maskThreshold, 131.0F / 255.0F));
+    assert(material.alphaSource == ModelAlphaSource::Constant);
     assert(near(material.outputAlpha, 160.0F / 255.0F));
     assert(near(material.lighting.specular.color.g, 0.5F * (192.0F / 255.0F)));
     const ModelMaterial materialVariant{material};
@@ -107,10 +124,27 @@ int main() {
     const ClipVertex transformed = transform_vertex(draw, MeshVertex{.normal = {0, 0, 1}});
     assert(near(transformed.color.r, 128.0F / 255.0F));
     assert(near(transformed.color.g, 128.0F / 255.0F));
-    assert(near(transformed.color.a, 160.0F / 255.0F));
+    assert(near(transformed.color.a, 131.0F / 255.0F));
     assert(near(transformed.additiveColor.r, 0.5F * (157.0F / 255.0F) + 0.25F));
     assert(near(transformed.additiveColor.a, 160.0F / 255.0F));
+    assert(near(transformed.textureAlphaWeight, 0.0F));
 
+    state = primary_texture_alpha_state();
+    assert(classify_j3d_masked_toon_material(state, primary, mask, alternate, lightRamp, lighting,
+                                             material) == J3dMaskedToonMaterialResult::Success);
+    assert(near(material.maskThreshold, 131.0F / 255.0F));
+    assert(material.alphaSource == ModelAlphaSource::PrimaryTexture);
+    ModelDraw textureAlphaDraw = draw;
+    textureAlphaDraw.material = material;
+    const ClipVertex textureAlphaVertex =
+        transform_vertex(textureAlphaDraw, MeshVertex{.normal = {0, 0, 1}});
+    assert(near(textureAlphaVertex.textureAlphaWeight, 1.0F));
+    state.tevStages[4].program[6] ^= 1U;
+    assert(classify_j3d_masked_toon_material(state, primary, mask, alternate, lightRamp, lighting,
+                                             material) ==
+           J3dMaskedToonMaterialResult::UnsupportedColorProgram);
+
+    state = material_state();
     state.tevStages[3].program[1] ^= 1U;
     assert(classify_j3d_masked_toon_material(state, primary, mask, alternate, lightRamp, lighting,
                                              material) ==

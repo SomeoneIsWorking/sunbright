@@ -152,7 +152,7 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
      max-distance table (read once from the DOL image) and JAIGlobalParameter constants.
    - Outputs feed the existing M2 move slots (vol/pan/pitch slot 4, doppler pitch slot 1).
    - KEY ENABLER (2026-06-12): overrides DO intercept recomp→recomp calls — every
-     emitted `bl`/`bctrl` goes through call_ppc → recomp_lookup → override table. The
+     recovered `bl`/`bctrl` path used the retired executor's override table. The
      old "overrides are blind to direct calls" gotcha was pre-C-call-model and is gone;
      the whole JAI surface can be natively owned with plain overrides.
 4. **M4 — delete the guest path**: audioproc thread never started; JAS DSP/ucode/driver/mails
@@ -160,7 +160,7 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
 
 ## Ground rules
 - Reference implementation is the decomp (decomp/sms/src/JSystem/JAudio) — port semantics,
-  not emulate hardware. The oracle (DISABLE_RECOMP, with the pass-through guard) is the
+  not emulate hardware. The Dolphin oracle with the pass-through guard is the
   behavioral test: same scene, compare WAV pitch/envelope profiles.
 - Data parsing in C++ mirrors tools/jingle/jingle.py exactly (it is the verified decoder).
 - The native sink (native_audio.cpp) stays the device clock; the engine renders on demand

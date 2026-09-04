@@ -1,6 +1,6 @@
 # MSL trig + PSMTX decode notes (sinf/cosf, MultVecSR/Array, Inverse)
 
-Decoded 2026-06-12 from the GMSE01 binary via `sunbright-recomp --disasm` plus a
+Decoded 2026-06-12 from the GMSE01 binary disassembly plus a
 paired-single operand decoder (`scratch/psdec.py`, opcode-4 field extraction —
 needed because PS operand fields are unreadable by eye). Source reference:
 `decomp/sms/src/PowerPC_EABI_Support/Msl/MSL_C/MSL_Common_Embedded/Math/Single_precision/trigf.c`.

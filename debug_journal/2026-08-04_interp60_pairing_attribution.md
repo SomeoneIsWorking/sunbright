@@ -91,7 +91,7 @@ measured camera-step distribution has a populated middle (34 ticks in [10,100), 
 with no gap to put a threshold in, so any threshold either cuts genuinely fast motion or misses
 small warps, invisibly.
 
-Landed: `sms-recomp/overrides/camera_cut.cpp` hooks both `CPolarSubCamera::warpPosAndAt` overloads
+The then-current camera-cut owner hooked both `CPolarSubCamera::warpPosAndAt` overloads
 (US `0x800335d4`, `0x80033390`) as observe-only wrappers, and `aurora::gfx::snap_next_interpolation`
 forces alpha 1 for that tick. Alpha 1 rather than skipping the pass, so the pairing table is still
 filled and the tick AFTER the cut interpolates normally — skipping would leave the table holding the
@@ -99,7 +99,7 @@ pre-cut pose and merely move the artefact one frame later.
 
 **It does not fire on this run: 0 warp calls in ~900 ticks.** That is reported with its denominator
 rather than as silence, and it is not a plumbing failure — every guest call site of both overloads
-goes through `call_ppc`, which consults the override table, and 59 other overrides announced
+went through the retired executor's override table, and 59 other overrides announced
 normally in the same run. The plaza fastboot simply never warps the camera. The hook is kept because
 it is the correct signal for the cases it covers (`bosseel`, `CameraJetCoaster`, `CameraChange`,
 `CameraCodeControl`); it is just not the mechanism behind the cuts measured here.

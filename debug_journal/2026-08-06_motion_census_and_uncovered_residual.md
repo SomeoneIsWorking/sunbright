@@ -9,7 +9,7 @@ watches one can be pointed at the wrong one and will then report a plausible neg
 
 ## The instrument: `SBR_INTERP60_CENSUS=1`
 
-`sbr_i60r_census()` (`sms-recomp/overrides/interp60_replace.cpp`) buckets `|cur - prev|` over the
+`sbr_i60r_census()` in the interpolation owner buckets `|cur - prev|` over the
 TRANSLATION of every draw matrix recorded that tick, and prints one greppable line per 300 ticks.
 It measures the matrices the hardware is about to read, so "nothing moved" from it is a statement
 about the drawn geometry rather than about whichever object an instrument happened to follow.
@@ -163,8 +163,9 @@ REGION to the draw that produced it, so the population carrying the offset is na
 instead of guessed and then eliminated. Until that exists, no theory about the buildings, palms or
 sea belongs in this file.
 
-`lookup_concat_replacement(lhs, rhs)` in dusklight exists because some draw sites resolve a
-view ⊗ world pair rather than a single final matrix. If SMS has such sites, that is where to look.
+An earlier reference port needed a `lookup_concat_replacement(lhs, rhs)` seam because some draw
+sites resolve a view ⊗ world pair rather than a single final matrix. If SMS has such sites, that
+is where to look.
 
 ## Reproduce
 

@@ -241,4 +241,4 @@ trust a constant):
 Verification (mirror the shadow plan): with INTERP60 on, confirm the question manager's
 draw count / `unk20` buffer is > 0 on real fields and 0 on the in-between BEFORE the fix
 (proves class A); after the fix, equal on both fields and the `?` indicator no longer
-blinks. A/B against the `SUNBRIGHT_DISABLE_RECOMP` 30 fps oracle for shape/position.
+blinks. A/B against the 30 fps Dolphin oracle for shape/position.

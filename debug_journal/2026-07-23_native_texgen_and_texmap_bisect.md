@@ -1,6 +1,6 @@
 # Native SDL3-GPU render: texgen lands, multi-texmap regresses (bisected)
 
-2026-07-23, recomp native renderer (`sms-recomp/runtime/render/native_render.cpp` + `scene.cpp`).
+2026-07-23, native renderer (`native_render.cpp` + `scene.cpp`).
 
 ## The harness change that made this session's conclusions possible
 
@@ -629,7 +629,7 @@ a GPU backend.
 cites where its expected value comes from (`GXSetTevColorOp`'s packing, the `GXTevOp` enum, the
 konst ramp, `GXCompare`). Six groups: the lerp form with bias/scale/subtract, compare mode across
 all four widths, register chaining, a disabled stage sampling nothing, the alpha test including a
-BAND, and the konst ramp. `ctest` / `./build-sms-recomp/tev_eval_test`.
+BAND, and the konst ramp. The focused `tev_eval_test` passed.
 
 **Negative control, because a suite that passes on first write is exactly when to distrust it.**
 Disabling compare-mode handling makes 7 checks fail with specific values; restoring it makes them
@@ -945,7 +945,7 @@ unit 1 — the strip carries it on unit 0 AND 1. `SBR_TEV_TRACE_ADDR=80cfafa0` (
 the strip end to end: `final = TEX0 * RAS * TEX1` — black with zero texels, alpha 1, PASS.
 
 **What remains open — and it is a semantics question, not a routing one.** `texwatch` proves the
-game NEVER writes `0x80cfafa0` in a recomp run (zero from present 0; `0x80da3860` by contrast
+game NEVER wrote `0x80cfafa0` in the measured run (zero from present 0; `0x80da3860` by contrast
 fills at present 9, so dynamic textures do get written). Aurora samples the same black-opaque
 texels for those draws and still shows no black — so in aurora those draws must be invisible or
 irrelevant (blend semantics, ordering, or occlusion), while this port paints them. Two candidate
@@ -1414,7 +1414,7 @@ refuted. Its synthesis found the gap, and it was one this arc had structurally e
 test/write/func and blend mode/src/dst only (`dev_gxfifo.cpp` vs `command_processor.cpp:3228`).
 **Scissor and cull were never in it** — and `state_oracle.h` even documented "bits5-7 cullMode" that
 neither side ever wrote, a comment that reads as coverage and is not. Verified before acting:
-`grep -rn scissor sms-recomp/runtime/` returned NOTHING, and `native_render.cpp:536` hardcoded
+A runtime-source search for `scissor` returned NOTHING, and `native_render.cpp:536` hardcoded
 `SDL_GPU_CULLMODE_NONE` behind a comment claiming "GX cull comes with the state machine" — it does
 not, we simply never applied it.
 

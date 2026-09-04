@@ -1,147 +1,129 @@
 # Project goals
 
-This is the canonical registry of Sunbright's durable epic-level outcomes. It does not track
-current progress; consult `docs/project-state.md` when that registry exists, then the issue catalog
-and `docs/codemap.md`, for the next concrete work point.
+This document owns Sunbright's durable product outcomes. Factual coverage lives in
+`docs/project-state.md`; architecture and migration order live in `docs/architecture.md` and
+`docs/port/migration.md`; atomic work lives in `docs/issues/`.
 
-The goal names are stable commands. When the user says **Work on _name_**, use the matching goal
-below as the scope, consult the project registries for current evidence, and take the next
-ground-truth-ready work point without asking the user to restate the goal.
+## G001 — Smooth presentation without changing authored gameplay
 
-| ID | Name | Command |
-|---|---|---|
-| G001 | Lerp Coverage | `Work on Lerp Coverage` |
-| G002 | Decomp Expansion | `Work on Decomp Expansion` |
-| G003 | Recomp Native Renderer | `Work on Recomp Native Renderer` |
-| G004 | Decomp Native Renderer | `Work on Decomp Native Renderer` |
+**Outcome:** Present the original 30 Hz simulation smoothly and offer separately qualified native
+simulation-rate modes without changing game rules or using frame-content heuristics.
 
-## G001 — Lerp Coverage
-
-**Outcome:** Every rendered target that should move between simulation ticks is identified and
-given the correct interpolation treatment.
-
-**Why it matters:** Missing or wrongly classified lerp targets leave visible 30 Hz stepping in an
-otherwise interpolated presentation path. A complete census also prevents first sightings,
-discontinuous returns, and intentionally exact or 2D draws from being misreported as defects.
+**Why it matters:** Sunshine's motion should feel appropriate on current displays while retaining
+the original simulation as the faithful baseline.
 
 **Success conditions:**
 
-- The graphics census observes the exercised rendering waists and keeps an explicit unlabelled
-  control for output it could not attribute.
-- Each observed target is evidence-classified as interpolated, correctly snapped, or a genuine
-  missing target; targets that interpolate have stable identity and the required matrix, vertex,
-  texture, camera, or effect state coverage.
-- Representative coverage includes every stage and game path needed to expose stage-specific
-  emitters, rather than treating a shared boot scaffold as stage coverage.
-- Every new comparison or coverage instrument has a control that visibly produces the other
-  answer and declares what it does not measure.
+- Every continuously visible moving source has stable provenance and is explicitly interpolated,
+  snapped, or reported missing.
+- First sightings, discontinuities, long absences, 2D/exact effects, and mismatched geometry do not
+  count as interpolation successes.
+- Native-rate modes preserve gameplay timing and meet their frame-time budgets independently of the
+  interpolated path.
+- Widescreen and interpolation decisions never depend on adjacent-frame pixels or sampled content.
 
-**Constraints and non-goals:**
+**Constraints and non-goals:** Interpolation may blend only matching source state; it does not
+fast-forward simulation, fabricate geometry, or hide a performance failure.
 
-- Do not raise a percentage by counting births, long gaps, discontinuities, 2D draws, or exact
-  screen-space effects as interpolation successes.
-- Do not use a magic motion threshold or unstable draw ordinal as identity.
-- This goal covers presentation interpolation of 30 Hz game state. Native simulation-rate work is
-  separate unless it directly exposes a missing interpolation target.
+Contributing state items: S006, S008, S015.
 
-## G002 — Decomp Expansion
+## G002 — Maintain readable, evidence-grounded game behavior
 
-**Outcome:** Grow the native decomp toward complete, well-named game behavior while converging with
-upstream instead of building a permanent fork.
+**Outcome:** Keep the native decomp useful as readable game source and expand it from upstream and
+binary evidence without turning it into a second shipping execution engine.
 
-**Why it matters:** The decomp is the moddable end state, the readable specification for retail
-guest behavior, and the source path that prevents guest-dependent recomp work from existing only as
-an opaque override.
-
-**Required order whenever this goal is selected:**
-
-1. Rebase on upstream first, audit the result, and converge equal-or-better upstream files.
-2. Rename known `unk*` fields and functions whose semantics are already established by binary
-   evidence or use sites.
-3. Extend the remaining decomp gaps from binary evidence, with close tests before whole-system
-   checks.
+**Why it matters:** The decomp names retail behavior, supplies native-layout controls, and makes
+native replacements reviewable without requiring gameplay code to be rewritten.
 
 **Success conditions:**
 
-- The current upstream work is integrated before any gap is hand-ported, so local work does not
-  duplicate community implementations.
-- Established unknown semantics receive precise names and every declaration, definition, and use
-  moves together.
-- Remaining reachable gaps are replaced by faithful implementations supported by decompiler or
-  equivalent binary evidence and focused regression tests.
-- Native-platform adaptations preserve observable GameCube behavior without reproducing host-side
-  corruption, and rendering-affecting game logic runs natively.
+- Upstream is integrated before local gap work; equal-or-better header/source units converge.
+- Established unknowns are named precisely and remaining reachable gaps are implemented from binary
+  or equivalent independent evidence.
+- Native-layout adapters and pure formulas exercise the same renderer/service contracts as the
+  guest-layout path without sharing game objects or layouts.
+- The product continues to execute non-native game behavior from the original image through the JIT;
+  decomp completeness is not a prerequisite for playing.
 
-**Constraints and non-goals:**
+**Constraints and non-goals:** Do not rewrite portable game behavior merely to eliminate guest
+execution, and do not link native decomp objects to guest-layout objects.
 
-- Do not guess names from shape or proximity; an unknown stays unknown until its semantics are
-  established.
-- Do not preserve local divergence when upstream is equal or better, and do not treat a green
-  rebase as completion of the expansion pass.
-- Do not hunk-merge class interfaces and implementations from different sides; move matching
-  header/source ownership together.
+Contributing state items: S005, S007, S010.
 
-## G003 — Recomp Native Renderer
+## G003 — Ship one native/dynarec gameplay product
 
-**Outcome:** The recomp runtime renders through a PC-native, game-semantic renderer that does not
-consume or reproduce the GameCube GX/FIFO pipeline.
+**Outcome:** Run exact `GMSE01` as a single product composed of native overrides and Dolphin's
+runtime PowerPC dynarec through `gcnport`.
 
-**Why it matters:** A second implementation of GX is still GameCube rendering. The native renderer
-exists to own PC scene, material, lighting, effect, resource, and presentation semantics directly,
-making them understandable and extensible without a fixed-function compatibility layer.
+**Why it matters:** Runtime translation preserves complete title coverage without a generated source
+corpus, while native ownership can replace deliberately chosen behavior at stable semantic seams.
 
 **Success conditions:**
 
-- Runtime overrides at verified J3D, J2D, particle, camera/light, material/resource, and named-effect
-  seams emit renderer-neutral semantic scene data while retaining the original recomp bodies.
-- The renderer owns PC-native meshes, materials, shaders, passes, resources, and presentation; its
-  shipping input contains no FIFO commands, BP/XF register model, TEV program, or EFB-copy protocol.
-- Representative scenes preserve the game's authored content, ordering, visibility, animation, and
-  intended appearance without requiring pixel identity to GameCube fixed-function output.
-- The completed recomp native lane runs and presents without Aurora or the SDL3 GX compatibility
-  renderer.
+- `gcnport` owns the title-neutral Dolphin executor, authenticated image, runtime hooks, original
+  calls, bounded exits, invalidation, and diagnostics.
+- Ordinary cold guest blocks compile through Dolphin's JIT before execution. A bounded fallback may
+  run only after explicit compile/safe-execution refusal, with typed reasons, guest PCs, block and
+  instruction counters, denominators, and return to JIT dispatch.
+- Interpreter-only execution is diagnostic; first-pass, compile-wait, missing-backend, unbounded,
+  fallback-heavy, and zero-JIT execution cannot establish gameplay or performance compatibility.
+- Native overrides are keyed by complete runtime image/module identity plus guest address, can call
+  the original body through the JIT without recursion, and remain correct across chaining and cache
+  invalidation.
+- A fresh checkout provisions from the user's original game image without generating or compiling
+  guest code offline.
+- The offline generator, emitted corpus, static dispatch/runtime glue, static-only tests, and static
+  launch paths remain absent from every development and release milestone.
+- x86_64, Apple Silicon macOS AArch64, and Android arm64-v8a pass representative gameplay and host
+  JIT qualification independently.
 
-**Constraints and non-goals:**
+**Constraints and non-goals:** The first `GMSE01` boot and `J3DShape::draw` hook at `0x802e0390`
+prove wiring only; they do not count as gameplay parity.
 
-- Aurora and the SDL3 GX compatibility renderer are coverage/reference tools, not target
-  architecture. Exact parity to either is neither necessary nor sufficient for this goal.
-- Keep guest layout end to end. Recomp-to-decomp object interop remains banned.
-- Native overrides keep their recompiled bodies available for controlled A/B and fallback; do not
-  delete game behavior merely because a semantic native pass supersedes its draw path.
-- The guest-code parity rule below applies to any renderer work that depends on game-owned guest
-  behavior.
+Contributing state items: S001–S003, S008, S009, S013, S017.
 
-## G004 — Decomp Native Renderer
+## G004 — Render through PC-native game semantics
 
-**Outcome:** The decomp runtime feeds the same PC-native, game-semantic renderer directly from native
-game code, without lowering its shipping draw path through GX.
+USER 2026-08-28: "Native renderer doesn't mean anything if it'll be identical to Aurora meaning still using GameCube rendering"
 
-**Why it matters:** This gives the moddable native game path a fully project-owned renderer and
-keeps renderer behavior shared across both runtimes instead of creating two implementations that
-drift.
+**Outcome:** Render the complete game through renderer-neutral J3D, J2D, particle, camera/light,
+resource, and effect values rather than through GX/FIFO reproduction.
+
+**Why it matters:** A PC renderer should own understandable meshes, materials, shaders, passes,
+resources, and presentation instead of recreating the GameCube fixed-function pipeline.
 
 **Success conditions:**
 
-- Native J3D, J2D, particle, camera/light, material/resource, and effect owners emit the same
-  renderer-neutral semantic schema as the recomp adapters.
-- The PC-native renderer implementation and semantic resource formats are shared between runtimes;
-  only their object-layout adapters differ.
-- Controlled comparisons against decomp-plus-Aurora establish content and behavior coverage without
-  making GameCube pixel identity the endpoint.
-- The completed decomp native lane launches, renders, and presents without Aurora or GX translation.
+- Native hooks at verified game-semantic boundaries submit ordinary PC values and stable resource
+  identities to `native-render/`.
+- The renderer accepts no FIFO commands, BP/XF registers, TEV program representation, EFB-copy
+  protocol, Dolphin renderer state, or runtime-specific object layout.
+- Representative scenes preserve authored content, ordering, visibility, animation, lighting,
+  effects, and intended appearance; unsupported semantic families fail visibly during development.
+- The completed product presents without Aurora or the SDL3-GPU GX compatibility renderer.
 
-**Constraints and non-goals:**
+**Constraints and non-goals:** Aurora and GX compatibility may supply bounded coverage/oracle
+evidence, but pixel identity to either is neither necessary nor sufficient for completion.
 
-- Do not build a second decomp-only renderer or copy the recomp layout adapter.
-- The decomp remains native game code; do not route it through recompiled guest objects or revive
-  the retired flip/interoperability boundary.
-- Do not route the native result back through GX calls, FIFO records, TEV emulation, or EFB-copy
-  emulation and call that native rendering.
+Contributing state items: S003–S005, S008, S015.
 
-## Cross-goal rule — guest-code parity
+## G005 — Deliver a maintainable player-facing port
 
-**Any recomp work that relies on guest code must also go through the decomp path.** A recomp-only
-result is not complete when its behavior depends on game-owned guest logic: the corresponding
-behavior, naming, evidence, or implementation must be carried through the decomp as part of the
-same work. Recomp-only ownership remains appropriate for the recompiler, guest runtime substrate,
-host application, hardware/OS seams, and renderer machinery that does not reimplement game logic.
+**Outcome:** Provide a portable, configurable, packaged PC application whose architecture remains
+cohesive and whose player data is owned by the operating system's user-data locations.
+
+**Why it matters:** A correct engine path is not a usable port if setup requires maintainer scripts,
+the code grows into monoliths, or diagnostics/configuration are scattered through product modules.
+
+**Success conditions:**
+
+- The composition root wires focused RAII owners; configuration is immutable and typed; Lucent is
+  the only product logging boundary.
+- Mechanical gates enforce source-size ratchets, dependency direction, configuration/logging
+  ownership, formatting, linting, and the absence of static/interpreter product paths.
+- Zero-argument `./run.sh` provisions and launches the intended product without running tests.
+- Desktop packages contain no game files, provide a native first-run picker, validate exact title
+  identity, and persist configuration/saves in OS user data.
+- Input, audio, saves, settings, and supported host architectures pass bounded gameplay checks.
+
+Contributing state items: S011–S017.

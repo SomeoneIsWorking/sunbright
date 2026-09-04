@@ -1,24 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
-project(sunbright CXX)
+project(sunbright_native_components CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
+
 include(cmake/SunbrightBuildPolicy.cmake)
 sunbright_enable_fast_debug_builds()
 
-# The sole shipping binary: sms-boot — decomp/sms decomp compiled native,
-# with Aurora (encounter/aurora, SDL3 + WebGPU/Dawn) providing the whole GC
-# platform surface: GX render, DVD (synchronous, nod-backed), CARD, PAD/SI,
-# VI, MTX, and host audio out (aurora::audio). One runtime, one thread — see
-# sms-boot/CMakeLists.txt.
-set(AURORA_ENABLE_GX   ON  CACHE BOOL "" FORCE)
-set(AURORA_ENABLE_CARD ON  CACHE BOOL "" FORCE)
-set(AURORA_ENABLE_DVD  ON  CACHE BOOL "" FORCE)
-set(AURORA_GPU_DIAGNOSTICS standard CACHE STRING "" FORCE)
-add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
+find_package(SDL3 3 CONFIG REQUIRED)
+
+# Sunbright currently has no gameplay executable. The retired executor was removed before gcnport
+# exists. Keep the independently reusable,
+# renderer-neutral library buildable while the shared Dolphin-JIT executor is built.
 add_subdirectory(native-render)
 
-set(SMS_BUILD_BOOT ON CACHE BOOL "" FORCE)
-add_subdirectory(sms-boot)
+message(STATUS
+  "Sunbright gameplay unavailable: shared gcnport with an embedded Dolphin JIT is not implemented")

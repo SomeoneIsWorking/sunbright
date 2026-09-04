@@ -92,7 +92,7 @@ Stages 1 and 8 still render, so nothing was traded for it.
 
 ## The guard
 
-`sms-recomp/overrides/guard_arena.cpp` overrides `OSSetArenaLo` and aborts when the new arena lo is at
+The runtime's arena guard overrides `OSSetArenaLo` and aborts when the new arena lo is at
 or below **the caller's own stack pointer** — an address that is inside a stack by definition, so the
 check needs no constant and no threshold, and every term is measured at the moment of the call. It
 would have failed at boot, in one line, instead of surfacing as a missing archive directory in one

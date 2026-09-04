@@ -108,7 +108,7 @@ paths — 22.7% of immediate-mode draws, and the fountain.
 
 ## LANDED (2026-08-06) — particles interpolate
 
-`sms-recomp/frame_interp/tag_particle.cpp` + `aurora::gfx::interp::{set_tag_world_pos,patch_billboard}`.
+The retained particle evidence uses stable world-position tags plus billboard patching at presentation.
 
 Measured on a plaza run with the camera rotating:
 

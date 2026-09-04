@@ -4,8 +4,6 @@ build/
 build-*/
 build.stale*/
 port/build*/
-generated/
-generated-*/
 *.o
 *.so
 *.a
@@ -38,6 +36,3 @@ rom.rvz
 # Python bytecode
 __pycache__/
 *.pyc
-
-# recompiler output (build artifact)
-sms-recomp/generated/

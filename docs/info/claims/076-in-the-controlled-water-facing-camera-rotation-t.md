@@ -3,18 +3,22 @@ id: C076
 kind: claim
 status: holds
 created: 2026-08-28
-tags: 60fps,interpolation,water
-depends: tools/interp/compare_modes.py, sms-recomp/frame_interp/frame_interp.cpp, sms-recomp/overrides/native_pad.cpp
+tags: interpolation,water
 ---
 
 ## Claim
 
-In the controlled water-facing camera rotation, the visible sea region is not a whole-population missing-lerp target: Lerp60 slightly reduces its mean spatial alternation versus Native60 from 0.234 to 0.227.
+In the measured water-facing camera rotation, the visible sea was not a whole-population missing-
+interpolation target: interpolation reduced mean spatial alternation from 0.234 to 0.227.
 
 ## Evidence
 
-Schema-5 three-run capture on 2026-08-28: Native60, byte-exact Native60 repeat, and Lerp60 each supplied 33 complete 1280x960 frames at shared guest retraces 1822..1854 with identical settled camera matrices and texture descriptor sets. For grid ROI [9,3..14,5), which covers the visible sea while excluding the dialogue band, the forced-snap control raised alternation 0.234 to 1.000 and real Lerp60 measured 0.227. One worse cell above the sea, [10,2], contains a moving palm trunk/sky edge, not water.
+A three-run capture supplied 33 complete 1280×960 frames at shared guest retraces 1822–1854, with
+identical settled cameras and texture sets plus a byte-exact baseline repeat. In grid region
+`[9,3..14,5)`, a forced-snap control raised alternation to 1.000 while the interpolated run measured
+0.227.
 
 ## What would falsify it
 
-A different water view, motion pattern, renderer/interpolation change, or a draw-identity join showing a water draw snapping despite this aggregate screen-region result requires remeasurement.
+A different water view, motion pattern, renderer, or draw-identity join shows water draws snapping;
+this aggregate screen-region measurement must not be generalized beyond its captured scene.

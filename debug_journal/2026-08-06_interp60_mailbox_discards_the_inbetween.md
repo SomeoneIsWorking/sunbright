@@ -11,7 +11,7 @@ User report, from playing: interpolated 60fps "drops the interpolated frames whe
 
 ## Root cause
 
-`sms-recomp/host/main.cpp` set `acfg.vsync = false`. aurora maps that to **Mailbox**
+The then-current host set `acfg.vsync = false`. Aurora maps that to **Mailbox**
 (`extern/aurora/lib/webgpu/gpu.cpp`, `best_present_mode`), confirmed at runtime:
 
     [aurora::gpu] Using surface format BGRA8Unorm, present mode Mailbox

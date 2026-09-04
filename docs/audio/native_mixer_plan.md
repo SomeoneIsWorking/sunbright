@@ -85,7 +85,7 @@ than duplicating state.
 - Historical `runtime/native_jas.cpp` (DELETED; recoverable from Git before `5736439`) — proven
   AFC decoder, IBNK/WSYS parsing, ADSR.
 - `docs/audio/audio_data_formats.md` plus historical `native_audio_engine.md` (DELETED;
-  recoverable from Git before `5736439`) — recomp-era engine docs with formats and verified test
+  recoverable from Git before `5736439`) — earlier engine docs with formats and verified test
   vectors.
 - Dolphin `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.cpp` (in the Dolphin fork, not this repo) — the same ucode's HLE,
   field-by-field reference for the VPB semantics (consult for layout/semantics;
@@ -140,7 +140,7 @@ JASDSPInterface.cpp setters (the fields the native sequencer fills each frame):
 PCM16 + AFC (reuse proven `afc_decode` from historical `runtime/native_jas.cpp:205` (DELETED;
 recoverable from Git before `5736439`)), linear resample by
 `unk4` step, L/R (buses 0/1) volume-ramp mix into bufL/bufR, host-side Voice[64] state. No
-aux/filters/osc. Target: title BGM audible. Unit test: afc_decode vs the recomp-era test vector.
+aux/filters/osc. Target: title BGM audible. Unit test: afc_decode vs the recovered test vector.
 
 ## M2 RE cont'd (2026-07-17): pitch scale nailed + voice liveness + decode confirmed
 

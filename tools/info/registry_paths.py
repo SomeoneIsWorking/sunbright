@@ -44,7 +44,7 @@ HISTORY_RE = re.compile(
 )
 
 SRC_RE = re.compile(
-    r"\b((?:tools|sms-recomp|sms-boot|extern|tests|decomp|docs)/[\w./-]+"
+    r"\b((?:tools|sms-boot|native-render|extern|tests|decomp|docs)/[\w./-]+"
     r"\.(?:cpp|h|hpp|py|sh|glsl|tsv|md))\b"
 )
 
@@ -141,7 +141,7 @@ def selftest() -> int:
         "---\nid: I996\nstatus: superseded\n---\n\n"
         "## What\n\nLived in tools/does_not_exist_xyz.py, which is gone.\n"
     )
-    iid, status, _, missing = scan_entry(planted_dead)
+    _, status, _, missing = scan_entry(planted_dead)
     if missing and status.lower() in DEAD_STATUS:
         print("  PASS  a superseded entry naming dead code is seen but NOT flagged")
     else:

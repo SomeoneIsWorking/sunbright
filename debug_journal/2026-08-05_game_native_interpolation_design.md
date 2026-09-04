@@ -564,8 +564,8 @@ own state. **That is false.**
 blended over the new frame. It is a **screen-space temporal feedback blur**, not per-actor
 geometry. There is no per-tick vertex rebuild and no position-sample history to interpolate.
 
-Its 60fps failure mode is correspondingly different, and it was diagnosed and FIXED in the recomp
-already (`sms-recomp/overrides/afterimage.cpp`): interpolation presents twice per tick, both
+Its 60fps failure mode is correspondingly different, and it was diagnosed and fixed in the former
+guest-runtime path: interpolation presents twice per tick, both
 emissions replay the recorded pass list *including its EFB copies*, so the screen texture is
 written twice per tick from two different images (the interpolated pose at t-0.5 and the true pose
 at t) and the feedback advances at double rate. The fix is not prev/cur state — it is telling the
@@ -619,9 +619,9 @@ Owed (genuine RE still to do):
 The transform half of the RE is therefore complete. That is what today's decomp work bought, and it
 transfers to a recomp override unchanged.
 
-## The recomp 60fps stack already exists — and the fork is COST vs COVERAGE, not feasibility
+## The established 60fps stack — the fork is COST vs COVERAGE, not feasibility
 
-`sms-recomp/runtime/lerp60.h` + `overrides/native_frame.cpp` are a mature stack: two presents per
+The interpolation and native-frame owners form a mature stack: two presents per
 30 Hz tick, **mid-tick pacing** between them (sixty presents a second is not sixty frames to the eye
 with vsync off), camera-cut detection taken from the game's own
 `CPolarSubCamera::warpPosAndAt` rather than inferred from eye movement, tag-coverage reporting that
@@ -743,8 +743,8 @@ re-decided after the render cost is known rather than inherited from either dire
 
 ### The instrument
 
-`perf` is not installed here. Sampled instead with `eu-stack` (poor-man's profiler,
-`$CLAUDE_JOB_DIR/tmp/pmp.sh`), which reports `attempted / ok / failed` and **refuses to print a
+`perf` was not installed. Sampling instead used an `eu-stack`-based poor-man's profiler,
+which reports `attempted / ok / failed` and **refuses to print a
 profile when zero samples succeeded** — "no hot spots" and "never sampled" must not look alike.
 Blocked worker threads (`__syscall_cancel_arch`, futex/epoll waits) are excluded; only game-thread
 leaf frames are counted.
@@ -758,7 +758,7 @@ leaf frames are counted.
 |---|---|---|---|
 | guest memory accessors — `sb_r32` 28, `sb_w32` 9, `psq_load` 4 | 41 | 12.5% | every guest load/store |
 | aurora GX — `draw_prim` 24, `prepare_idx_buffer` 9, `XXH3` 10 | 43 | 13.1% | GX stream -> draw records |
-| guest call dispatch — `call_ppc` 31, `override_lookup` 8 | 39 | 11.9% | two table lookups per call |
+| guest call dispatch and override lookup | 39 | 11.9% | two table lookups per call |
 | GX FIFO pipe — `parse` 18, `fifo_write` 13, `vertex_size` 6 | 37 | 11.2% | `dev_gxfifo` write-gather |
 | tail — `mmio_write` 6, `memcpy` 7, `strncmp` 3, guest funcs | ~40 | ~12% | |
 
@@ -916,7 +916,7 @@ The blocker is addresses. `reference/` holds exactly two files:
 * `sms_gmse01_funcs.txt` — **US**, functions only, **zero** `__vt__` symbols;
 * `sms_gmsj01_symbols.txt` / `decomp/sms/config/GMSJ01/symbols.txt` — **JP**, 1,508 vtables.
 
-The recomp runs the **US** build (every override address in it is US). So the vtable set exists in
+The analyzed execution used the **US** build (every override address in it is US). So the vtable set exists in
 the JP symbol data and the class hierarchy exists in the decomp, but **no current reference file
 gives US vtable addresses**.
 
@@ -1056,9 +1056,9 @@ interpolate.
 
 The type-identity blocker is cleared; the snapshot override can be written against this list.
 
-## LANDED (recomp): the game-native (prev) snapshot runs, and it captures MARIO
+## LANDED: the game-native (prev) snapshot runs, and it captures MARIO
 
-`sms-recomp/overrides/interp60_snapshot.cpp` (`SBR_INTERP60=1`) owns the `testPerform` override and
+The interpolation snapshot owner (`SBR_INTERP60=1`) owns the `testPerform` override and
 snapshots each actor's transform before its movement. On Delfino with the stick driving Mario:
 
     SNAPSHOT: dispatches=3560510 (tactor=2944404 non-actor=616106) | compared=735690
@@ -1160,7 +1160,7 @@ LIVE (`moved=1.9%`, birds stepping 123 units/tick).
 
 ### Root cause
 
-`tb_get()` (`sms-recomp/runtime/rt_core.cpp`) derived the Gekko time base from
+`tb_get()` in the former runtime derived the Gekko time base from
 `clock_gettime(CLOCK_MONOTONIC)`. Every `OSGetTime` the game made therefore differed run to run, and
 everything seeded from or timed against it diverged. `SBR_DETERMINISTIC=1` substitutes a virtual
 clock advancing one nominal NTSC field per present.

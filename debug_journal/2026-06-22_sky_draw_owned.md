@@ -122,7 +122,7 @@ fine because it is entirely IN FRONT of the camera (no wrap, all w>0).
 **FIX (the real next task): near-plane clipping for the capture path.** Either (a) pass CLIP-space
 coords (x,y,z,w) to nvk and let Vulkan's near-plane clip handle it (stop pre-dividing in `imm_project`),
 or (b) Sutherland-Hodgman clip each triangle against `w+z≥0` in the capture before the divide (the
-`ngx_j3d_shape.cpp` WIP referenced in CLAUDE.md is exactly this for the recomp-era ngx path — port it
+`ngx_j3d_shape.cpp` WIP referenced in CLAUDE.md is exactly this for the earlier NGX path — port it
 to the sms-boot capture). This is a general renderer capability: ANY geometry that crosses/surrounds the
 near plane (sky, interiors, anything the camera is inside) needs it. Verify via `[cov]` (on-screen sky
 verts should then RASTER blue) + the frame dump. Camera + far + dome-position are all PROVEN correct;
