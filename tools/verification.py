@@ -27,6 +27,7 @@ def gate_steps() -> tuple[Step, ...]:
                 "ruff",
                 "check",
                 "tools/cpp_quality.py",
+                "tools/cpp_quality_test.py",
                 "tools/migration_boundary.py",
                 "tools/structure_check.py",
                 "tools/verification.py",
@@ -54,11 +55,13 @@ def gate_steps() -> tuple[Step, ...]:
         python_step("shader provenance", "tools/render/build_shaders.py", "--check"),
         python_step("decomp symbol tool", "decomp/sms/tools/symbol_demangle_test.py"),
         Step(
-            "runtime deployment formatting",
+            "quality and runtime deployment formatting",
             (
                 "ruff",
                 "format",
                 "--check",
+                "tools/cpp_quality.py",
+                "tools/cpp_quality_test.py",
                 "tools/runtime_dependencies.py",
                 "tools/runtime_dependencies_test.py",
             ),

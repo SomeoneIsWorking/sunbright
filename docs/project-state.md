@@ -267,5 +267,20 @@ The combined Linux Clang landing gate passes all 14 asset-free steps: 20/20 sele
 tool self-tests, 27/27 CTests, formatting for 111 files, and clang-tidy for 68 translation
 units. Its one excluded self-test requires user-supplied game data.
 
-Gap: Native Windows execution with the runtime deployment change awaits hosted confirmation. Android remains
-missing until its real application and executor boundaries exist.
+Hosted run `33964399865` at `8d4731cc411f93994f84fd5b161d0885ea887952` confirms the Windows
+deployment change: `native_render_sdl_gpu_platform` passes in 0.02 seconds, both runtime-DLL
+integrity checks pass, and all 29 CTests pass in 5.16 seconds. Linux x86_64 and macOS Apple Silicon
+complete the whole job successfully. Windows then fails at C++ lint selection: the database index
+used native backslash-separated relative strings while the candidate list used forward slashes,
+incorrectly reporting all 68 translation units missing.
+
+The quality owner now indexes and selects by the same full native absolute-path identity, resolves
+relative command files against their recorded compilation directory, and preserves the original
+command and owning build database. Seven controls exercise Windows drive/separator/case handling,
+UNC share identity, POSIX case distinctions, wrong-directory/drive rejection, relative-directory
+refusal, and actual native file matching; the local database matches 68/68 selected translation
+units. No source or lint check is excluded to repair the mismatch.
+
+Gap: The Windows job remains red until hosted confirmation of corrected compile-database matching
+and the subsequent real clang-tidy stage. Android remains missing until its real application and
+executor boundaries exist.

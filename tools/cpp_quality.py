@@ -14,7 +14,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
+from types import ModuleType
 
 REPO = Path(__file__).resolve().parents[1]
 BUILD_DIRECTORIES = (REPO / "build",)
@@ -65,29 +67,56 @@ def built_native_renderer_files() -> list[str]:
     )
 
 
-def compile_databases() -> dict[str, tuple[dict[str, object], Path]]:
+def source_identity(
+    source: str, directory: str, *, path_module: ModuleType = os.path
+) -> str:
+    """Keep full native path identity; command files are relative to their own directory."""
+    if not path_module.isabs(directory):
+        raise ValueError(f"compile command directory must be absolute: {directory}")
+    return path_module.normcase(
+        path_module.realpath(path_module.join(directory, source))
+    )
+
+
+def compile_databases(
+    *,
+    build_directories: tuple[Path, ...] = BUILD_DIRECTORIES,
+    path_module: ModuleType = os.path,
+) -> dict[str, tuple[dict[str, object], Path]]:
     commands: dict[str, tuple[dict[str, object], Path]] = {}
     found = False
-    for build in BUILD_DIRECTORIES:
+    for build in build_directories:
         database_path = build / "compile_commands.json"
         if not database_path.is_file():
             continue
         found = True
         entries = json.loads(database_path.read_text())
         for entry in entries:
-            source = Path(str(entry["file"])).resolve()
-            try:
-                relative = str(source.relative_to(REPO))
-            except ValueError:
-                continue
-            commands.setdefault(relative, (entry, build))
+            identity = source_identity(
+                str(entry["file"]), str(entry["directory"]), path_module=path_module
+            )
+            commands.setdefault(identity, (entry, build))
     if not found:
         expected = ", ".join(
-            str(path.relative_to(REPO) / "compile_commands.json")
-            for path in BUILD_DIRECTORIES
+            str(path / "compile_commands.json") for path in build_directories
         )
         raise RuntimeError(f"no compile database found; expected one of: {expected}")
     return commands
+
+
+def matching_commands(
+    sources: list[str],
+    commands: dict[str, tuple[dict[str, object], Path]],
+    *,
+    root: str = str(REPO),
+    path_module: ModuleType = os.path,
+) -> dict[str, tuple[dict[str, object], Path]]:
+    selected = {}
+    for source in sources:
+        identity = source_identity(source, root, path_module=path_module)
+        if identity in commands:
+            selected[source] = commands[identity]
+    return selected
 
 
 def check(paths: list[str]) -> int:
@@ -111,8 +140,8 @@ def check(paths: list[str]) -> int:
         return 0
 
     try:
-        commands = compile_databases()
-    except (RuntimeError, json.JSONDecodeError) as error:
+        commands = matching_commands(sources, compile_databases())
+    except (RuntimeError, ValueError) as error:
         print(f"cpp-quality: {error}")
         return 2
 
@@ -142,6 +171,11 @@ def check(paths: list[str]) -> int:
 
 
 def selftest() -> int:
+    from cpp_quality_test import CompileDatabasePathsTest
+
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(CompileDatabasePathsTest)
+    if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
+        return 1
     if is_first_party_cpp("native-render/shaders/example_spv.h"):
         print("FAIL: generated SPIR-V header was classified as first-party source")
         return 1
