@@ -281,6 +281,13 @@ UNC share identity, POSIX case distinctions, wrong-directory/drive rejection, re
 refusal, and actual native file matching; the local database matches 68/68 selected translation
 units. No source or lint check is excluded to repair the mismatch.
 
-Gap: The Windows job remains red until hosted confirmation of corrected compile-database matching
-and the subsequent real clang-tidy stage. Android remains missing until its real application and
-executor boundaries exist.
+Hosted run `33965495457` at `1922ef70b1ccbd687ca103ab80e6ab0e0266497f` passes on Linux x86_64,
+macOS Apple Silicon, and Windows x86_64. Native Windows passes 16/16 selected tool self-tests,
+29/29 CTests (including the SDL platform test and both runtime-DLL integrity checks), formatting
+for 111 files, and real clang-tidy for all 68 translation units; the canonical verifier completes
+all 14 asset-free steps. This confirms the corrected native compile-database matching and DLL
+deployment on Windows, not merely the portable metadata fixtures.
+
+Gap: Android remains missing until its real application and executor boundaries exist. Gameplay,
+JIT host qualification, and performance remain missing under S017 on every host; these successful
+asset-free component jobs do not supply game-conformance evidence.
