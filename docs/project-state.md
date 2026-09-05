@@ -207,11 +207,21 @@ actions, Python, uv, and SDL inputs. This proves only redistributable native com
 it does not claim boot or gameplay.
 
 Shader provenance uses one host-neutral Python provisioner for Linux, Windows, and macOS. It pins
-shaderc v2026.1 plus the exact compatible glslang, SPIRV-Tools, and SPIRV-Headers commits, verifies
-every downloaded source archive against its recorded SHA-256 before bounded traversal-safe
+the maintained shaderc v2026.1 fork plus the exact compatible glslang, SPIRV-Tools, and SPIRV-Headers
+commits, verifies every downloaded source archive against its recorded SHA-256 before bounded traversal-safe
 extraction, builds with Ninja under the locked Python interpreter, and refuses any missing or stale
 installed tool instead of consulting `PATH`. All 13 embedded shader headers match this exact
 compiler/validator pair locally.
+
+The shaderc dependency is `SomeoneIsWorking/shaderc` at
+`50f71a748725b3df267128e519ef6c59881fc33e`, published as `v2026.1-port.1` and based on upstream
+`301b4ede53d59b68bf55f95bb26412d9233c8187`. Its bounded string-to-word copy preserves NUL truncation
+and zero padding while avoiding the deprecated CRT `strncpy` call rejected by the Windows
+Clang/MSVC-target build under `-Werror`. The source change and its regression tests live in the
+fork; the provisioner applies no patches. The fork's remote `main` tracks newer upstream code and
+is deliberately not the consumed release. The versioned fix passes all 12 copy cases and all 103
+compiler tests locally. macOS CI selects AppleClang explicitly; Homebrew LLVM supplies only the
+formatting and lint tools.
 
 Self-tests declare game-image and host instrumentation requirements. The asset-free gate reports
 the selected, skipped, and discovered denominators, runs Linux kernel/RADV instruments only on
@@ -224,5 +234,7 @@ consumer, package identity, or `gcnport` arm64-v8a executor to build. Add the An
 those real owners exist, and route it through the shared Android build contract. JIT gameplay and
 performance remain missing on every host under S017 regardless of these component jobs.
 
-Gap: the corrected Linux, Windows, and macOS component jobs still require a successful hosted run;
-Android remains inapplicable until its real application and executor boundaries exist.
+Hosted run `33895010050` passed Linux and macOS with the previous compiler selection, but exposed
+the Windows shaderc CRT failure. The fork fix and explicit AppleClang selection require a new
+successful hosted run. Android remains inapplicable until its real application and executor
+boundaries exist.

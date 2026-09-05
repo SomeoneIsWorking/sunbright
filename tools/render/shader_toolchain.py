@@ -57,10 +57,10 @@ class SourceArchive:
 SOURCES = (
     SourceArchive(
         "shaderc",
-        "google",
+        "SomeoneIsWorking",
         "shaderc",
-        "301b4ede53d59b68bf55f95bb26412d9233c8187",
-        "b938f85dec78ca7eb8139dcd1f613930eb7a84a8ce5ea944b6f861c291d916bc",
+        "50f71a748725b3df267128e519ef6c59881fc33e",
+        "b269580b3df0220173925f313369eb735dc30787f52b1a2d9fa60e1dfc776bbf",
         ".",
     ),
     SourceArchive(

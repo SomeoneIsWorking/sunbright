@@ -30,8 +30,8 @@ jobs:
             clang_tidy: clang-tidy
           - name: macOS Apple Silicon
             runner: macos-15
-            cc: clang
-            cxx: clang++
+            cc: /usr/bin/clang
+            cxx: /usr/bin/clang++
             clang_format: clang-format
             clang_tidy: clang-tidy
     steps:
