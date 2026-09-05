@@ -59,4 +59,8 @@ def compile_header(shader: Shader, repo: Path, build_dir: Path) -> str:
 
 
 def header_matches(path: Path, expected: str) -> bool:
-    return path.is_file() and path.read_text() == expected
+    return path.is_file() and path.read_text(encoding="utf-8") == expected
+
+
+def write_header(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8", newline="\n")

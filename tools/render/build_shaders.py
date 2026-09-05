@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import argparse
 import struct
+import tempfile
 from pathlib import Path
 
 from shader_manifest import SHADERS, Shader
-from shader_pipeline import compile_header, header_matches, render_header
+from shader_pipeline import compile_header, header_matches, render_header, write_header
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_DIR = REPO / "build" / "shaders"
@@ -23,7 +24,7 @@ def verify_or_write(check: bool) -> int:
             if not header_matches(destination, expected):
                 stale.append(shader.header)
             continue
-        destination.write_text(expected)
+        write_header(destination, expected)
         print(f"wrote {shader.header}")
     if stale:
         for path in stale:
@@ -51,8 +52,27 @@ def selftest() -> int:
     if header_matches(REPO / "does-not-exist_spv.h", expected):
         print("FAIL: missing header reported current")
         return 1
+    scratch = REPO / "scratch"
+    scratch.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=scratch) as directory:
+        header = Path(directory) / shader.header
+        write_header(header, expected)
+        if header.read_bytes() != expected.encode("utf-8") or not header_matches(
+            header, expected
+        ):
+            print("FAIL: UTF-8 shader header did not round-trip through its file owner")
+            return 1
+        header.write_bytes(expected.replace("\n", "\r\n").encode("utf-8"))
+        if not header_matches(header, expected):
+            print("FAIL: CRLF checkout changed shader provenance")
+            return 1
+        write_header(header, expected.replace("0x00000007", "0x00000008"))
+        if header_matches(header, expected):
+            print("FAIL: altered shader word reported current")
+            return 1
     print(
-        "PASS: deterministic header, misalignment refusal, and missing-header negative"
+        "PASS: deterministic UTF-8 header, CRLF checkout, misalignment refusal, "
+        "missing-header and altered-word negatives"
     )
     return 0
 

@@ -234,7 +234,12 @@ consumer, package identity, or `gcnport` arm64-v8a executor to build. Add the An
 those real owners exist, and route it through the shared Android build contract. JIT gameplay and
 performance remain missing on every host under S017 regardless of these component jobs.
 
-Hosted run `33895010050` passed Linux and macOS with the previous compiler selection, but exposed
-the Windows shaderc CRT failure. The fork fix and explicit AppleClang selection require a new
-successful hosted run. Android remains inapplicable until its real application and executor
-boundaries exist.
+Hosted run `33958640602` passed Linux and macOS AppleClang. Windows built the pinned shaderc fork
+but exposed locale-dependent header decoding: all 13 UTF-8 provenance comments differed under
+the Windows default encoding. Header I/O now explicitly uses UTF-8, writes LF, and accepts Git's
+CRLF checkout through universal-newline reading. The shipping self-test covers file round trips
+and altered-word rejection; the actual 13-shader check passes with Python UTF-8 mode disabled
+under the ASCII locale.
+
+Gap: Native Windows confirmation awaits the next hosted run. Android remains
+missing until its real application and executor boundaries exist.
