@@ -150,6 +150,8 @@ target_link_libraries(sunbright-native-render-sdl3 PUBLIC sunbright-native-rende
 add_executable(native_render_sdl_gpu_platform_test tests/sdl_gpu_platform_test.cpp)
 target_link_libraries(native_render_sdl_gpu_platform_test PRIVATE sunbright-native-render-sdl3)
 add_test(NAME native_render_sdl_gpu_platform COMMAND native_render_sdl_gpu_platform_test)
+sunbright_deploy_runtime_dependencies(native_render_sdl_gpu_platform_test SDL3::SDL3)
+set_tests_properties(native_render_sdl_gpu_platform PROPERTIES TIMEOUT 30)
 
 add_executable(native_render_semantic_frame_mode_test tests/semantic_frame_mode_test.cpp)
 target_link_libraries(native_render_semantic_frame_mode_test PRIVATE sunbright-native-render-core)
@@ -161,3 +163,4 @@ add_executable(native_render_semantic_2d_gpu_test
                tests/semantic_2d_pass_gpu_test.cpp
                tests/semantic_gpu_test_support.cpp)
 target_link_libraries(native_render_semantic_2d_gpu_test PRIVATE sunbright-native-render-sdl3)
+sunbright_deploy_runtime_dependencies(native_render_semantic_2d_gpu_test SDL3::SDL3)

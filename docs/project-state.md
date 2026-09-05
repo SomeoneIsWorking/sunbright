@@ -247,5 +247,25 @@ suite, including repeated same-frame image resolution, resident reuse, and chang
 readback controls; three focused image/platform CTests and both touched translation units'
 format/tidy checks also pass.
 
-Gap: Native Windows confirmation awaits the next hosted run. Android remains
+Run `33960561447` subsequently compiled all 98 native build steps and passed 25 CPU tests on
+Windows, then stalled at the first SDL-linked test, `native_render_sdl_gpu_platform`. GitHub's
+check annotation records the 45-minute job execution limit, not runner shortage or concurrency
+cancellation. SDL was found for linking but its runtime DLL was neither staged beside the
+executables nor exported by setup-sdl into the runtime search path; the log does not expose the
+loader's exact blocking UI or exit state.
+
+CMake now resolves transitive Windows runtime DLLs from imported-target metadata (requiring CMake
+3.21), stages them beside both SDL test executables, and registers integrity checks that reject
+missing or stale DLLs. The fake-SDL platform test and deployment checks have individual 30-second
+limits; the real-GPU executable remains outside unguarded CTest. Seven portable controls cover
+deployment, refusal, repair, static linkage, and a configure-only Windows dependency graph whose
+registered CTest fails before staging and passes afterward. The existing fake-SDL platform test
+passes locally with Clang; no Windows execution is inferred from this metadata fixture. There is
+no gameplay executable to deploy yet.
+
+The combined Linux Clang landing gate passes all 14 asset-free steps: 20/20 selected
+tool self-tests, 27/27 CTests, formatting for 111 files, and clang-tidy for 68 translation
+units. Its one excluded self-test requires user-supplied game data.
+
+Gap: Native Windows execution with the runtime deployment change awaits hosted confirmation. Android remains
 missing until its real application and executor boundaries exist.

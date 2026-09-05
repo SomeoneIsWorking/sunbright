@@ -34,6 +34,7 @@ application composition
 | Configuration | Sole CLI/environment/file ingestion and immutable validation | `tools/launch/config.py`; future product configuration owner | `parse_launch_config` | `docs/app/settings.md` |
 | Logging | Sole product sink/filter/format boundary through Lucent | Future logging owner | Injected logger interface | `docs/architecture.md` |
 | Verification policy | Asset-free build/quality checks, checksum-pinned shader tools, explicit self-test requirements, and the separate game-image RE gate | `tools/verification.py`, `tools/render/shader_toolchain.py`, `tools/selftest_all.py`, `tools/verify_re.py` | `tools/verify.py`, `tools/verify_re.py` | `AGENTS.md` |
+| Native runtime deployment | Resolve Windows DLLs from CMake imported targets, stage beside executables, and reject missing or stale deployment | `cmake/SunbrightRuntimeDependencies.cmake`, `tools/runtime_dependencies.py`, `tools/runtime_dependencies_test.py`, `tools/fixtures/runtime-dependencies/` | `sunbright_deploy_runtime_dependencies` | `AGENTS.md` |
 | Structure policy | Source caps, dependency edges, config/log ownership, deleted-path checks | `tools/structure_check.py`, `tools/migration_boundary.py` | Python verifier entry points | `AGENTS.md` |
 | Audio analysis | Parse and compare native audio evidence | `tools/audio/` | Focused Python tools | `docs/audio/` |
 | Document validation | Reject dead live-document paths | `tools/docs/` | `tools/docs/doc_paths.py` | `docs/README.md` |
@@ -56,6 +57,7 @@ decomp/sms/          recovered upstream game source
 extern/dolphin_fork/ maintained Dolphin core and independent oracle hooks
 extern/aurora/       bounded GX compatibility/oracle library
 tools/               Python verification, RE, oracle parsing, and diagnostics
+  tools/fixtures/      redistributable build-metadata fixtures
   tools/audio/         audio analysis and comparison data
   tools/docs/          living-document validation
   tools/gfx/           graphics census tooling
@@ -79,3 +81,5 @@ docs/                goals, state, ownership, issues, claims, and RE facts
   `tools/verify.py`, and `tools/verify_re.py`.
 - Shader compiler/validator source pins, safe provisioning, and installed-tool resolution →
   `tools/render/shader_toolchain.py`.
+- Windows executable DLL deployment and integrity → `cmake/SunbrightRuntimeDependencies.cmake`
+  and `tools/runtime_dependencies.py`; dependency paths come from the CMake target graph.

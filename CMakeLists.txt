@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 project(sunbright_native_components CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -7,9 +7,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 
 include(cmake/SunbrightBuildPolicy.cmake)
+include(cmake/SunbrightRuntimeDependencies.cmake)
 sunbright_enable_fast_debug_builds()
 
 find_package(SDL3 3 CONFIG REQUIRED)
+find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
 
 # Sunbright currently has no gameplay executable. The retired executor was removed before gcnport
 # exists. Keep the independently reusable,
