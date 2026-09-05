@@ -129,6 +129,20 @@ int main() {
         assert(alphaPixel.r > 0.70f && alphaPixel.g > 0.70f && alphaPixel.b > 0.70f);
         assert(near(alphaPixel.a, 128.0f / 255.0f));
 
+        // Repeated resolutions in one frame reuse the same resident image. The opaque texel
+        // remains red even though the same resource is drawn twice; the next frame also reuses it.
+        const std::array<SemanticDraw, 2> repeatedDraws{semanticDraw, semanticDraw};
+        SemanticFrame repeatedFrame = frame;
+        repeatedFrame.draws = repeatedDraws;
+        SemanticFramePixels repeatedResolution{};
+        assert(encode_and_readback(pass, repeatedFrame, target, repeatedResolution, error) &&
+               error.empty());
+        assert(pass.resident_image_count() == 1);
+        require_color(pixel(repeatedResolution, 5, 5), {1, 0, 0, 1});
+        assert(encode_and_readback(pass, frame, target, repeatedResolution, error) &&
+               error.empty());
+        assert(pass.resident_image_count() == 1 && hash(repeatedResolution) == hash(first));
+
         // Known-positive mip control: this one-pixel draw minifies a 4x4 red base level. The
         // only authored lower level is blue, so the sampled pixel proves that the production image
         // cache uploaded the lower level and exposed it to the semantic sampler.

@@ -234,12 +234,18 @@ consumer, package identity, or `gcnport` arm64-v8a executor to build. Add the An
 those real owners exist, and route it through the shared Android build contract. JIT gameplay and
 performance remain missing on every host under S017 regardless of these component jobs.
 
-Hosted run `33958640602` passed Linux and macOS AppleClang. Windows built the pinned shaderc fork
-but exposed locale-dependent header decoding: all 13 UTF-8 provenance comments differed under
-the Windows default encoding. Header I/O now explicitly uses UTF-8, writes LF, and accepts Git's
-CRLF checkout through universal-newline reading. The shipping self-test covers file round trips
-and altered-word rejection; the actual 13-shader check passes with Python UTF-8 mode disabled
-under the ASCII locale.
+Hosted run `33959423142` confirms Windows builds the pinned shaderc fork and passes the 13-shader
+UTF-8 header check. Header I/O explicitly uses UTF-8, writes LF, and accepts Git's CRLF checkout
+through universal-newline reading. The shipping self-test covers file round trips and altered-word
+rejection, including Python UTF-8 mode disabled under the ASCII locale.
+
+The same Windows run then exposed MSVC STL's vectorized `std::find` instantiation on the image
+cache's 16-byte key. The key's default memberwise equality remains unchanged; the unused
+current-frame key vector and its search are removed. `CachedImage::lastUsedFrame` remains the
+single eviction-use owner. Local Clang 22.1.8 verification passes the real watched semantic GPU
+suite, including repeated same-frame image resolution, resident reuse, and changed-revision
+readback controls; three focused image/platform CTests and both touched translation units'
+format/tidy checks also pass.
 
 Gap: Native Windows confirmation awaits the next hosted run. Android remains
 missing until its real application and executor boundaries exist.

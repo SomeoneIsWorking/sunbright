@@ -5,7 +5,6 @@
 #include <exception>
 #include <limits>
 #include <unordered_map>
-#include <vector>
 
 namespace sb::native_render {
 namespace {
@@ -121,7 +120,6 @@ struct SdlImageCache::Impl {
     std::unordered_map<ImageKey, CachedImage, ImageKeyHash> images{};
     std::unordered_map<ImageKey, CachedImage, ImageKeyHash> pending{};
     std::unordered_map<SamplerKey, SDL_GPUSampler*, SamplerKeyHash> samplers{};
-    std::vector<ImageKey> current{};
     bool active = false;
     bool uploadsEncoded = false;
     std::uint64_t frame = 0;
@@ -157,7 +155,6 @@ bool SdlImageCache::begin(std::span<const DecodedImageView> images, std::string&
     }
     impl_->sources.clear();
     impl_->pending.clear();
-    impl_->current.clear();
     impl_->uploadsEncoded = false;
     ++impl_->frame;
     for (const DecodedImageView& image : images) {
@@ -256,8 +253,6 @@ bool SdlImageCache::resolve(const PictureTexture& texture, SDL_GPUTextureSampler
         return false;
     }
     image->lastUsedFrame = impl_->frame;
-    if (std::find(impl_->current.begin(), impl_->current.end(), imageKey) == impl_->current.end())
-        impl_->current.push_back(imageKey);
 
     const SamplerKey samplerKey{texture.addressU,  texture.addressV,  texture.minFilter,
                                 texture.magFilter, texture.mipFilter, image->mipLevels};
@@ -370,7 +365,6 @@ bool SdlImageCache::complete(bool submitted, std::string& error) noexcept {
         impl_->pending.clear();
     }
     impl_->sources.clear();
-    impl_->current.clear();
     impl_->active = false;
     impl_->uploadsEncoded = false;
     return true;
