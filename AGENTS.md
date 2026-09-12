@@ -84,8 +84,6 @@ PowerPC instruction semantic or an unknown crash.
 
 ## Native renderer contract
 
-USER 2026-08-28: "Native renderer doesn't mean anything if it'll be identical to Aurora meaning still using GameCube rendering"
-
 Intercept above GX at game-semantic owners: J3D meshes/poses/materials, cameras/lights, particles,
 J2D/UI, resources, and named effects. Preserve authored content, ordering, visibility, animation, and
 appearance without preserving GameCube fixed-function implementation details. The semantic contract
