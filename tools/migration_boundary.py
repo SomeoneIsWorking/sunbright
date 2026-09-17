@@ -76,10 +76,15 @@ def path_finding(relative: str) -> Finding | None:
 
 def content_findings(relative: str, source: str) -> list[Finding]:
     folded = source.casefold()
+    # "extern/dolphin/" bans reviving a direct top-level Dolphin path the retired static-recomp
+    # product once used. It must not also ban the unrelated, sanctioned "extern/gcnport/extern/
+    # dolphin/" path: that is gcnport's OWN pinned fork, nested three levels deep inside the new
+    # shared runtime framework, not a revival of the old top-level path.
+    scrubbed = folded.replace("gcnport/extern/dolphin/", "")
     return [
         Finding(relative, retired_reason(needle))
         for needle in CONTENT_NEEDLES
-        if needle in folded
+        if needle in (scrubbed if needle == "extern/dolphin/" else folded)
     ]
 
 
@@ -152,6 +157,11 @@ def selftest() -> int:
     got.extend(content_findings("docs/oracle.md", "use extern/dolphin/build"))
     got.extend(
         content_findings(".claude/commands/old.md", "offline-" + "translated product")
+    )
+    got.extend(
+        content_findings(
+            "tools/gcnport_boot/CMakeLists.txt", "extern/gcnport/extern/dolphin/Source/Core"
+        )
     )
     got = sorted(got, key=lambda item: (item.path, item.reason))
     expected = [

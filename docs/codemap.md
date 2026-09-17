@@ -56,6 +56,9 @@ sms-boot/            non-product native/decomp evidence adapters and host experi
 decomp/sms/          recovered upstream game source
 extern/dolphin_fork/ maintained Dolphin core and independent oracle hooks
 extern/aurora/       bounded GX compatibility/oracle library
+extern/gcnport/      pinned shared gcnport framework (title-neutral Dolphin-JIT executor); its own
+                     pinned extern/dolphin fork provides the Core/UICommon libraries
+                     tools/gcnport_boot links against directly
 tools/               Python verification, RE, oracle parsing, and diagnostics
   tools/fixtures/      redistributable build-metadata fixtures
   tools/audio/         audio analysis and comparison data
@@ -65,6 +68,9 @@ tools/               Python verification, RE, oracle parsing, and diagnostics
   tools/interp/        presentation-analysis tooling
   tools/perf/          bounded performance probes
   tools/render/        renderer and GPU diagnostic tooling
+  tools/gcnport_boot/  standalone maintainer diagnostic (gmse01_boot.cpp): boots the real GMSE01
+                       image through gcnport's public API; NOT the gameplay product, excluded from
+                       the default CMake `all` target (see cmake/GcnPortDependency.cmake)
 docs/                goals, state, ownership, issues, claims, and RE facts
 ```
 

@@ -11,3 +11,6 @@
 	url = https://github.com/SomeoneIsWorking/dolphin.git
 	branch = sunbright
 	shallow = true
+[submodule "extern/gcnport"]
+	path = extern/gcnport
+	url = https://github.com/SomeoneIsWorking/gcnport.git

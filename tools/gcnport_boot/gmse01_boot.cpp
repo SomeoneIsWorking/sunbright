@@ -186,8 +186,21 @@ void RunBoot(const DolImage& image)
   identity.module_generation = 1;
 
   Core::System& system = Core::System::GetInstance();
+  // apply_gamecube_os_init=true: reproduce the exact GameCube MSR/HID/BAT register setup every
+  // retail title's real BS2/IPL performs before jumping to a disc's DOL entry point (gcnport's
+  // PowerPC::GcnPort::BootAuthenticatedImage, backed by CBoot::SetupGameCubeBS2Registers, which
+  // reuses CBoot::EmulatedBS2_GC's own SetupMSR/SetupHID/SetupBAT -- see
+  // shared/gcnport/docs/dolphin-embedding-contract.md). Without it MSR.DR/IR stay at their
+  // power-on-reset value of 0 (real mode), so GMSE01's own effective addresses (0x80xxxxxx) get
+  // used as physical addresses far outside the console's 24 MiB of RAM and fault immediately.
+  //
+  // GMSE01's own linked __start does NOT need this tool to seed r1/r2/r13: its first instructions
+  // (decomp/sms's __init_registers, see src/dolphin/os/__start.c) load r1/r2/r13 from the DOL's own
+  // linked _stack_addr/_SDA2_BASE_/_SDA_BASE_ immediates via lis/ori before any memory access, so a
+  // manually guessed stack pointer here would be redundant at best and wrong at worst.
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
-      system, identity, image.flat, image.load_address, image.entry_point);
+      system, identity, image.flat, image.load_address, image.entry_point,
+      /*apply_gamecube_os_init=*/true);
   if (!booted.ok)
   {
     std::fprintf(stderr, "gmse01_boot: BootAuthenticatedImage failed: %s\n", booted.detail.c_str());
@@ -196,20 +209,6 @@ void RunBoot(const DolImage& image)
 
   std::printf("gmse01_boot: booted at entry 0x%08x, load address 0x%08x, image size %zu bytes\n",
               image.entry_point, image.load_address, image.flat.size());
-
-  // GMSE01's __start (like every GameCube DOL entry point) assumes the OS/apploader already placed
-  // a valid stack pointer in r1 before transferring control -- it never sets up its own stack from
-  // nothing. BootAuthenticatedImage deliberately does not implement that OS-init pipeline (see
-  // shared/gcnport/docs/dolphin-embedding-contract.md: it is a raw in-memory image boot, not a
-  // BootParameters/DVD/apploader boot). Without this, __start's own prologue stack accesses fault
-  // immediately. This sets r1 to the top of the mapped RAM this session actually reports, not a
-  // hardcoded address, leaving standard GameCube CRT headroom for the initial stack frame.
-  {
-    auto& state = system.GetPPCState();
-    const u32 effective_ram_base = image.load_address & 0xF0000000;
-    const u32 ram_size = static_cast<u32>(system.GetMemory().GetRamSizeReal());
-    state.gpr[1] = effective_ram_base + ram_size - 0x10;
-  }
 
   {
     PowerPC::GcnPort::RuntimeSession runtime(system, identity);

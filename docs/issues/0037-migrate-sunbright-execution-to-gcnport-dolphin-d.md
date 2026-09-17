@@ -6,7 +6,7 @@ symptom: The intended native/dynarec product is not runnable: exact GMSE01 still
 state_items: S001,S002,S003
 tags: migration,gcnport,dolphin,jit,override
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-18
 ---
 
 ## Root cause
@@ -178,6 +178,53 @@ gcnport's own repo or tests — it never touches the ROM):
   through a future gcnport adapter, or a narrower hand-authored GMSE01-specific init) so boot survives
   past early hardware/OS bring-up. The `J3DShape::draw` override attempt (this issue's third
   acceptance bullet) is blocked on both of these and was not attempted this session.
+
+## Progress note (2026-09-18, second continuation)
+
+Closed both concrete gaps this issue's previous note left open, in order:
+
+**CMake build wiring** — `extern/gcnport` is now a real pinned git submodule (gcnport `bf6dc3c`,
+Dolphin fork `a188e7b0`), wired through `cmake/GcnPortDependency.cmake` (an `EXCLUDE_FROM_ALL`
+`add_subdirectory` of the pinned Dolphin fork, mirroring `shared/gcnport`'s own verified build
+options) and `tools/gcnport_boot/CMakeLists.txt`. `cmake --build build --target
+sunbright_gcnport_boot` now produces a working binary from a fresh submodule checkout with no
+hand-assembled compiler/linker flags. Two real integration issues surfaced and were fixed at their
+cause rather than special-cased: Dolphin's own CMake selects C++23 and its architecture macros
+(`_M_X86_64`/`_ARCH_64`) through directory-scoped `set()`/`add_definitions()`, which do not reach a
+sibling directory's target through `target_link_libraries()`, so this directory mirrors that exact
+selection (detected by `CMAKE_SYSTEM_PROCESSOR`, not hardcoded); and `core` requires frontend
+`Host_*` callback definitions, resolved by compiling in Dolphin's own reusable
+`Source/UnitTests/StubHost.cpp` rather than writing a Sunbright-local copy.
+
+**OS-init/apploader adapter (option b: generic gcnport adapter)** — landed in `shared/gcnport`
+(commit `bf6dc3c`, Dolphin fork `a188e7b0`, not pushed): `BootAuthenticatedImage` gained an
+`apply_gamecube_os_init` parameter (default `false`) that calls a new public
+`CBoot::SetupGameCubeBS2Registers`, itself a thin wrapper around Dolphin's own existing
+`CBoot::SetupMSR`/`SetupHID`/`SetupBAT` — the exact register setup `CBoot::EmulatedBS2_GC` performs
+before jumping to a disc's DOL entry point. This is title-neutral (standard GameCube BS2 behavior,
+no GMSE01-specific values) and reuses Dolphin's own maintained implementation rather than
+duplicating it. Two new `GcnPortRuntimeTest` cases prove the flag installs the exact retail MSR/BAT
+values and that the default leaves every existing caller unchanged; both are now part of the
+required regression inventory (which also gained three previously-unlisted-but-passing tests from
+earlier sessions, bringing it to 22/21/19 tests on POSIX x64/Windows x64/POSIX arm64). Full
+`tools/verify.py --runtime` passes.
+
+`gmse01_boot.cpp` now passes `apply_gamecube_os_init=true` and no longer manually guesses a stack
+pointer: `decomp/sms/src/dolphin/os/__start.c`'s `__init_registers` shows GMSE01's own linked
+`__start` sets `r1`/`r2`/`r13` itself from the DOL's own linked `_stack_addr`/`_SDA2_BASE_`/
+`_SDA_BASE_` immediates before any memory access, so a caller-supplied guess was redundant.
+
+**Result**: 96 real JIT blocks compiled and 7,511 total block executions (7,415 cache hits) from the
+real `GMSE01` entry point, up from 3. The previous real-mode/BAT fault is gone. A **new**, precisely
+diagnosed fault occurs further into boot: SIGSEGV inside `MMIO::WriteHandler<u32>::Write`
+(`Source/Core/Core/HW/MMIO.cpp:379`, gdb backtrace captured), writing to physical address
+`0x0C003004` (GameCube `ProcessorInterface` MMIO range) through an uninitialized/garbage handler
+function pointer — because `BootAuthenticatedImage` never calls Dolphin's `HW::Init()`, so no
+`MMIO::Mapping` handler table exists for any hardware register. This is GMSE01's own
+`__init_hardware` performing real hardware bring-up. Next step: either extend the same
+`apply_gamecube_os_init`-style option to also invoke `HW::Init()` (broader side effects — video/
+audio backend selection, DSP, EXI wiring — deserving its own scoped investigation), or add a native
+override for GMSE01's hardware bring-up path before this point. Not attempted this session.
 
 ## Acceptance
 

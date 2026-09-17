@@ -42,34 +42,61 @@ runtime `J3DShape::draw` hook at `0x802e0390` and its one-call original-body pat
 
 ### S001 — first dynamic title discriminator
 
-Partial capability (was missing): a standalone, uncommitted diagnostic tool
-(`tools/gcnport_boot/gmse01_boot.cpp`) authenticated the exact retail `GMSE01` main.dol (already
-extracted to the gitignored `scratch/bin/sms.dol`, load address `0x80003100`, entry point
-`0x8000522c`) through gcnport's public `BootAuthenticatedImage`/`ExecuteJitBlock` adapter and
-observed 3 real cold JIT blocks compiled and executed from the real entry point (`GetExecutionCounters`
-read live via a diagnostic SIGSEGV handler, since the run does not survive past block 3). This proves
-nonzero real-`GMSE01` Dolphin JIT execution through gcnport for the first time, but is far short of
-this item's full bar (runtime override at `0x802e0390`, one-call suppression, stable boot).
+Partial capability: `tools/gcnport_boot/gmse01_boot.cpp` (still uncommitted, left for operator
+review) authenticates the exact retail `GMSE01` main.dol (gitignored `scratch/bin/sms.dol`, load
+address `0x80003100`, entry point `0x8000522c`) through gcnport's public
+`BootAuthenticatedImage`/`ExecuteJitBlock` adapter.
 
-The run faults inside JIT-generated code executing a real GMSE01 store instruction: `rbx` (fastmem
-physical base) plus `r13` (the raw, unmasked effective guest address `0x804277e8`) lands in fastmem's
-unbacked guard region. Diagnosis: `BootAuthenticatedImage` only runs `Memory::Init`/`CoreTiming::Init`/
-`CPU::Init` and sets PC/NPC — by design (see `shared/gcnport/docs/dolphin-embedding-contract.md`,
-"deliberately scoped to a raw in-memory image"). It never performs the BS2/IPL-equivalent OS-init a
-real apploader runs before jumping to a DOL's `__start` (MSR and the PPC BAT registers are left at
-their power-on-reset state instead of the values retail boot configures); this tool also had to set
-`r1` itself (a real DOL entry assumes the apploader already supplied a valid stack pointer). GMSE01's
-own early code runs far enough to translate and execute 3 real blocks before a translated store address
-depends on BAT/MSR state this raw boot never configures. This is not a gcnport fastmem-wiring defect
-(`Jit64::Init()`, called from the `CPU::Init()` `BootAuthenticatedImage` already performs, owns calling
-`InitFastmemArena()`) and is not a target for a local patch: the actual fix is a BS2/IPL-equivalent
-OS-init/apploader adapter, explicitly out of gcnport's current scope.
+Two of this item's three remaining gaps from the previous session are now closed:
 
-Still missing before this item is complete: (1) real Sunbright↔gcnport CMake build wiring (this
-session linked by hand against gcnport's already-built static libraries); (2) an OS-init/apploader
-adapter so boot survives past early hardware/OS bring-up; (3) the `0x802e0390` `J3DShape::draw`
-runtime override and one-call suppression, blocked on both of the above. Boot alone does not advance
-S008.
+1. **Real CMake build wiring.** `extern/gcnport` is now a pinned git submodule (at gcnport
+   `bf6dc3c`, Dolphin fork `a188e7b0`), and `tools/gcnport_boot/CMakeLists.txt` +
+   `cmake/GcnPortDependency.cmake` wire it as a real, `EXCLUDE_FROM_ALL` CMake subdirectory: the
+   `sunbright_gcnport_boot` target links Dolphin's own `core`/`uicommon` targets and builds
+   correctly via plain `cmake --build build --target sunbright_gcnport_boot` (verified end to end
+   on Linux x86_64/Clang/Ninja from a fresh submodule checkout). It is excluded from the default
+   `all` target so an ordinary product build never drags in the whole Dolphin fork. Two real,
+   non-hand-tuned issues had to be fixed along the way, both documented in the CMakeLists' own
+   comments: Dolphin's own `CMakeLists.txt`/`Source/CMakeLists.txt` select C++23 and
+   `_M_X86_64`/`_ARCH_64` etc. through directory-scoped `set()`/`add_definitions()` calls that do
+   not propagate to a sibling directory's target through `target_link_libraries()`, so this
+   directory mirrors the same selection explicitly (by architecture detection, not a hardcoded
+   single arch); and `core` calls back into frontend `Host_*` functions the tool has no GUI to
+   provide, resolved by compiling Dolphin's own reusable, frontend-neutral
+   `Source/UnitTests/StubHost.cpp` (the same file Dolphin's own gtest binary uses) into the tool
+   instead of writing a bespoke Sunbright copy.
+2. **OS-init/apploader gap (partially closed).** `shared/gcnport` gained a title-neutral
+   `apply_gamecube_os_init` parameter on `BootAuthenticatedImage` (default `false`) that applies
+   the exact retail GameCube MSR/HID/BAT register setup `CBoot::EmulatedBS2_GC` performs before a
+   disc boot's DOL entry (`CBoot::SetupGameCubeBS2Registers`, reusing Dolphin's own
+   `SetupMSR`/`SetupHID`/`SetupBAT` — see `shared/gcnport/docs/dolphin-embedding-contract.md`).
+   `gmse01_boot.cpp` now passes this flag and no longer manually guesses a stack pointer: decomp
+   evidence (`decomp/sms/src/dolphin/os/__start.c`'s `__init_registers`) shows GMSE01's own linked
+   `__start` sets `r1`/`r2`/`r13` itself from the DOL's own `_stack_addr`/`_SDA2_BASE_`/
+   `_SDA_BASE_` immediates before any memory access, so a caller-guessed value was an unnecessary
+   bandaid.
+
+   Result: **96 real JIT blocks compiled and 7,511 total block executions (7,415 cache hits, 96
+   cold) from the real entry point**, versus 3 blocks before this session — the previous
+   real-mode/BAT fault is gone. A **new, distinct, and precisely diagnosed** fault now occurs
+   further into boot (gdb backtrace, `scratch/gdb_backtrace.log`): a SIGSEGV inside
+   `MMIO::WriteHandler<u32>::Write` (`Source/Core/Core/HW/MMIO.cpp:379`), reached from
+   `PowerPC::MMU::WriteToHardware` while writing `val=240` to physical address `0x0C003004`
+   (GameCube `ProcessorInterface` register range) — a real hardware MMIO write GMSE01's own
+   `__init_hardware` performs, landing on an uninitialized/garbage `m_WriteFunc` function pointer
+   because `BootAuthenticatedImage` never calls Dolphin's `HW::Init()` (it only calls
+   `Memory::Init`/`CoreTiming::Init`/`CPU::Init`, so no `MMIO::Mapping` handler table for
+   VI/PI/MI/DSP/DI/SI/EXI/AI is ever registered). This is the next concrete OS-init gap: either a
+   further `apply_gamecube_os_init`-style option that also runs `HW::Init()` (title-neutral, same
+   pattern as the register fix), or an explicit decision that MMIO emulation is out of scope for a
+   raw in-memory image boot and GMSE01's own hardware bring-up path needs a native override before
+   this point. Not attempted this session — a real HW::Init() call has broader side effects
+   (video/audio backend selection, DSP, EXI device wiring) that deserve their own scoped
+   investigation rather than a same-session follow-on patch.
+
+Still missing before this item is complete: (1) the `HW::Init()` MMIO gap above; (2) the
+`0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone
+does not advance S008.
 
 ### S002 — gcnport Dolphin executor
 
