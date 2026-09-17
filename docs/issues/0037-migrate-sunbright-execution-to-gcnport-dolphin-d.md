@@ -121,6 +121,64 @@ been deleted and its code changes reverted — this issue's own acceptance text 
 revive removed executor artifacts "as a migration bridge, oracle, or comparison arm," and that applies
 project-wide, not only to this issue's own scope.
 
+## Progress note (2026-09-18, continuation)
+
+`shared/gcnport`'s synchronous native → original → native gap (the item directly above) is now
+closed: `PowerPC::GcnPort::RuntimeSession::CallOriginalSynchronously` lands at fork revision
+`8296bbe` (gcnport commit `aa60ab6`, both local/unpushed pending operator review), proven by
+`GcnPortRuntimeTest.HookCallsOriginalSynchronouslyThenResumesNativeWork` plus the unchanged
+1,362 existing tests (1,363 total). `tools/check_dolphin_contract.py` reports 0/12 absent. gcnport's
+own `docs/project-state.md` now marks S003 `verified`. This is the last item the `J3DShape::draw`
+override needs from gcnport's side of the contract; the override itself (S003 in *this* project's
+state) is still not attempted — that remains separate follow-on work, not done this session.
+
+**First real exact-`GMSE01` boot attempt** (this session, sunbright-only, no changes needed in
+gcnport's own repo or tests — it never touches the ROM):
+
+- Added `tools/gcnport_boot/gmse01_boot.cpp`, a standalone maintainer tool (uncommitted, left in the
+  working tree for review) that parses a raw GameCube DOL (this session reused the already-extracted,
+  gitignored `scratch/bin/sms.dol`, 4,128,928 bytes, matching this repo's real GMSE01 image via the
+  `.env` `SUNBRIGHT_ROM` convention), assembles one contiguous flat image from the DOL's own section
+  addresses (load address `0x80003100`, entry point `0x8000522c`, span 4,278,016 bytes), and calls
+  gcnport's public `PowerPC::GcnPort::BootAuthenticatedImage`/`RuntimeSession::ExecuteJitBlock`
+  exactly as a title consumer would. It was built and run standalone (not wired into the main
+  `CMakeLists.txt`) by compiling and linking directly against the already-built
+  `shared/gcnport/build/dolphin-runtime` static libraries — that build-wiring gap (a proper
+  `add_subdirectory`/`FetchContent` integration into Sunbright's own CMake project) is still open;
+  this session proved the API boundary works before investing in that wiring.
+- **Result: 3 JIT blocks compiled and executed (all cold, 0 cache hits) from real GMSE01 code at
+  the real entry point, before a hard fault.** This is nonzero Dolphin JIT block execution against
+  the exact retail image, i.e. this issue's second acceptance bullet's literal condition is met, but
+  only for 3 blocks before a crash — not a stable or complete boot.
+- The fault is a SIGSEGV "invalid permissions for mapped object" inside JIT-generated code executing
+  a real GMSE01 store instruction (`stwbrx`-shaped, x86 `movbel` to `(rbx,r13)`), diagnosed live via a
+  narrow SIGSEGV handler in the tool that reads `RuntimeSession::GetExecutionCounters()` before
+  re-raising (see the tool's `ReportCountersOnFault`). Register state at the fault (`rbx` = fastmem
+  physical base, `r13` = the raw effective guest address `0x804277e8`, unmasked) points to a real,
+  understood gap rather than a JIT correctness bug: `BootAuthenticatedImage` only calls
+  `Memory::Init`/`CoreTiming::Init`/`CPU::Init` and sets PC/NPC (see
+  `shared/gcnport/docs/dolphin-embedding-contract.md`, "deliberately scoped to a raw in-memory
+  image"). It never runs the BS2/IPL-equivalent OS-init a real apploader performs before jumping to
+  a DOL's `__start` — in particular MSR and the PPC BAT (block address translation) registers are
+  left at their power-on-reset state, not the values the retail boot process configures. GMSE01's
+  own `__start`/OS-init code executes far enough to compile and run 3 real blocks (this session also
+  had to set `r1` to a computed top-of-RAM value first, since raw PC/NPC boot leaves GPRs zero and a
+  real DOL entry assumes the apploader already gave it a valid stack pointer) before it reaches a
+  store whose translated address, under the boot-time MSR/BAT state, lands in fastmem's unbacked
+  guard region rather than real RAM.
+- This is not a fastmem-arena wiring bug in gcnport (Jit64 owns calling `InitFastmemArena()` during
+  its own `Init()`, invoked from `CPU::Init()`, which `BootAuthenticatedImage` already calls) and not
+  something to patch around locally: correctly resuming past it needs an actual BS2/IPL-equivalent
+  OS-init/apploader adapter, which `docs/dolphin-embedding-contract.md` already names as "a title's
+  real GameCube disc boot is a separate, later adapter" — out of scope for this session's two gaps.
+- Remaining before this issue's second acceptance bullet is durably true (not just "3 blocks before a
+  crash"): (1) a real CMake build-wiring path for Sunbright to link `shared/gcnport`'s built Dolphin
+  fork without hand-assembled compiler/linker flags; (2) an OS-init/apploader adapter (BS2-equivalent
+  MSR/BAT/stack setup, either through Dolphin's own `BootParameters::Disc`+apploader path exposed
+  through a future gcnport adapter, or a narrower hand-authored GMSE01-specific init) so boot survives
+  past early hardware/OS bring-up. The `J3DShape::draw` override attempt (this issue's third
+  acceptance bullet) is blocked on both of these and was not attempted this session.
+
 ## Acceptance
 
 - `gcnport` owns image generations, runtime hooks, original calls, bounded exits, invalidation, and

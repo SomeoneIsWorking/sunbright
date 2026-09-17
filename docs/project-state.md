@@ -19,8 +19,8 @@ runtime `J3DShape::draw` hook at `0x802e0390` and its one-call original-body pat
 
 | ID | Capability / observable outcome | State | Dependencies | Goals |
 | --- | --- | --- | --- | --- |
-| S001 | Exact `GMSE01` boots under `gcnport`/Dolphin JIT and reaches the `J3DShape::draw` runtime hook at `0x802e0390` | missing | S002, S003 | G003, G004 |
-| S002 | `gcnport` supplies a title-neutral Dolphin dynarec executor with image identity, bounded exits, invalidation, and diagnostics | missing | — | G003 |
+| S001 | Exact `GMSE01` boots under `gcnport`/Dolphin JIT and reaches the `J3DShape::draw` runtime hook at `0x802e0390` | partial | S002, S003 | G003, G004 |
+| S002 | `gcnport` supplies a title-neutral Dolphin dynarec executor with image identity, bounded exits, invalidation, and diagnostics | partial | — | G003 |
 | S003 | Sunbright native overrides and original calls use robust image-scoped runtime dispatch | missing | S002 | G003, G004 |
 | S004 | The PC-native semantic renderer covers the complete visible J3D/J2D/particle/effect stream | partial | S003 | G004 |
 | S005 | Native decomp adapters and recovered source provide independent semantic and behavior evidence | partial | — | G002, G004 |
@@ -42,21 +42,52 @@ runtime `J3DShape::draw` hook at `0x802e0390` and its one-call original-body pat
 
 ### S001 — first dynamic title discriminator
 
-Missing capability: authenticate exact `GMSE01`, start it through `gcnport` and Dolphin's shipping
-JIT, report nonzero translated-block execution, invoke a runtime override at `0x802e0390`, submit its
-semantic J3D value, and execute the original body through a one-call override suppression. Link and
-selector inspection must prove ordinary cold blocks compiled before execution and every bounded
-fallback has a typed reason, guest PC, block/instruction counters, and JIT denominators. Boot alone
-does not advance S008.
+Partial capability (was missing): a standalone, uncommitted diagnostic tool
+(`tools/gcnport_boot/gmse01_boot.cpp`) authenticated the exact retail `GMSE01` main.dol (already
+extracted to the gitignored `scratch/bin/sms.dol`, load address `0x80003100`, entry point
+`0x8000522c`) through gcnport's public `BootAuthenticatedImage`/`ExecuteJitBlock` adapter and
+observed 3 real cold JIT blocks compiled and executed from the real entry point (`GetExecutionCounters`
+read live via a diagnostic SIGSEGV handler, since the run does not survive past block 3). This proves
+nonzero real-`GMSE01` Dolphin JIT execution through gcnport for the first time, but is far short of
+this item's full bar (runtime override at `0x802e0390`, one-call suppression, stable boot).
+
+The run faults inside JIT-generated code executing a real GMSE01 store instruction: `rbx` (fastmem
+physical base) plus `r13` (the raw, unmasked effective guest address `0x804277e8`) lands in fastmem's
+unbacked guard region. Diagnosis: `BootAuthenticatedImage` only runs `Memory::Init`/`CoreTiming::Init`/
+`CPU::Init` and sets PC/NPC — by design (see `shared/gcnport/docs/dolphin-embedding-contract.md`,
+"deliberately scoped to a raw in-memory image"). It never performs the BS2/IPL-equivalent OS-init a
+real apploader runs before jumping to a DOL's `__start` (MSR and the PPC BAT registers are left at
+their power-on-reset state instead of the values retail boot configures); this tool also had to set
+`r1` itself (a real DOL entry assumes the apploader already supplied a valid stack pointer). GMSE01's
+own early code runs far enough to translate and execute 3 real blocks before a translated store address
+depends on BAT/MSR state this raw boot never configures. This is not a gcnport fastmem-wiring defect
+(`Jit64::Init()`, called from the `CPU::Init()` `BootAuthenticatedImage` already performs, owns calling
+`InitFastmemArena()`) and is not a target for a local patch: the actual fix is a BS2/IPL-equivalent
+OS-init/apploader adapter, explicitly out of gcnport's current scope.
+
+Still missing before this item is complete: (1) real Sunbright↔gcnport CMake build wiring (this
+session linked by hand against gcnport's already-built static libraries); (2) an OS-init/apploader
+adapter so boot survives past early hardware/OS bring-up; (3) the `0x802e0390` `J3DShape::draw`
+runtime override and one-call suppression, blocked on both of the above. Boot alone does not advance
+S008.
 
 ### S002 — gcnport Dolphin executor
 
-Missing capability: create the shared GameCube framework around Dolphin's maintained runtime dynarec.
-It must own authenticated image/module generations, CPU/thread state, hooks, original calls, bounded
-host exits, executable-memory invalidation, and diagnostic counters without duplicating Dolphin's
-decoder, code cache, memory, or device implementations. It must permit only DuckStation-style
-bounded fallback after JIT compile/safe-execution refusal and keep interpreter-only execution an
-explicit diagnostic mode.
+Partial capability (was missing): `shared/gcnport`'s pinned Dolphin fork now implements the complete
+embedding contract as a public API — `PowerPC::GcnPort::RuntimeSession`, `BootAuthenticatedImage`,
+`ExecuteJitBlock`/`ExecuteRefusedBlock`/`ExecuteDiagnosticInterpreterBlock`, `InstallNativeHook`/
+`RemoveNativeHook`, `ExecuteOriginalOnce`, `CallOriginalSynchronously` (the synchronous
+native→original→native "superCall" continuation S003 below needs), `InvalidateGuestCode`, and typed
+`ExecutionCounters` (0/12 `tools/check_dolphin_contract.py` requirements absent; gcnport's own
+`docs/project-state.md` S003 now `verified`). This session also drove that public API against real
+`GMSE01` code for the first time (a standalone, uncommitted `tools/gcnport_boot/gmse01_boot.cpp`):
+3 real JIT blocks compiled and executed from the retail entry point before a fault. See S001's
+evidence for the exact fault and its cause (a genuine OS-init/apploader gap, not a gcnport defect).
+
+Gap: gcnport owns no disc/apploader/BS2-equivalent OS-init pipeline (its boot adapter is deliberately
+scoped to a raw in-memory image, load address, and entry point), and Sunbright has no CMake build
+wiring linking against gcnport yet (this session linked by hand against gcnport's already-built
+static libraries to prove the API works, not through the product's own build).
 
 ### S003 — native override dispatch
 
