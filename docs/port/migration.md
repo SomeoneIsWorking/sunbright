@@ -19,6 +19,11 @@ First-pass interpretation, interpreting while compilation is pending, substituti
 host backend, and unbounded fallback are forbidden. Fallback-heavy and zero-JIT runs cannot prove
 gameplay or performance.
 
+WebAssembly is part of this migration release contract: the browser-capable build must use the same
+runtime boundary, dynarec-first execution, and bounded fallback accounting used for desktop hosts.
+Release status remains blocked until representative interactive gameplay and telemetry coverage are
+recorded on web.
+
 ## Phase 0 — destructive boundary (complete)
 
 The former generator, emitted corpus, dispatcher/runtime substrate, build and launch selectors,
