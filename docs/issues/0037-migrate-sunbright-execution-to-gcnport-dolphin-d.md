@@ -87,6 +87,40 @@ absent):
 Not resolved. Do not treat the passing synthetic-image test or the committed test-inventory fix as
 S001/issue-37 acceptance; both still require the public adapter API and an exact `GMSE01` boot.
 
+## Progress note (2026-09-18)
+
+The public adapter API named above as the acceptance blocker is now real, at `shared/gcnport`
+revision `961f0e7` (Dolphin fork revision `5a0d43d42e03f1dfe9bb5377ab90c3532da0e4cd`).
+`PowerPC::GcnPort::RuntimeSession`, `BootAuthenticatedImage`/`ShutdownBootedImage`, `ExecuteJitBlock`,
+`ExecuteRefusedBlock`, `ExecuteDiagnosticInterpreterBlock`, `InstallNativeHook`/`RemoveNativeHook`,
+`ExecuteOriginalOnce`, `InvalidateGuestCode`, and typed `ExecutionCounters` (with
+`JitRefusalReason`-classified fallback events, replacing the untyped `FallBackToInterpreter(inst)`
+call) all exist as a public C++ facade callable from outside Dolphin's own gtest binary.
+`tools/check_dolphin_contract.py` reports 0 of 11 required operations absent (was 6). Proven by
+`GcnPortRuntime.PublicAdapterBootExecuteOriginalAndTypedFallback` plus the existing
+`ShippingJitCacheHookOriginalAndInvalidation` scenario, both green, alongside the full 1,362-test
+Dolphin suite on Linux x64/Clang with `-DENABLE_QT=OFF`.
+
+Still open before this issue's acceptance bullets are met:
+- The API has only booted a small synthetic redistributable PPC test image, never exact `GMSE01` —
+  that boot attempt is Sunbright's own next step, consuming gcnport's now-real API rather than
+  Dolphin internals directly.
+- A synchronous native → original → native call continuation after the guest body returns is still
+  missing; the current guard scheme only covers a tail replacement (a hook that never resumes native
+  code after the guest call). The `J3DShape::draw` override needs this if its native body is meant to
+  resume guest execution afterward rather than fully replacing it.
+- Android arm64-v8a has no runtime boundary yet (S006 missing in gcnport's own project-state).
+- A separate, previously-uncommitted Windows-portability batch is now landed in the same fork commit;
+  the earlier note here that it was blocked on `qt6-qtbase-devel` was wrong — `DolphinQt` (including
+  the touched file) only builds under `ENABLE_QT`, which gcnport never sets, so no gate this project
+  runs was actually blocked by that missing package.
+
+Separately: a prior session investigating issue 11 (statue graffiti stripes) reconstructed the
+retired executor's build recipe to get something bootable for diagnosis. That reconstruction has
+been deleted and its code changes reverted — this issue's own acceptance text already says not to
+revive removed executor artifacts "as a migration bridge, oracle, or comparison arm," and that applies
+project-wide, not only to this issue's own scope.
+
 ## Acceptance
 
 - `gcnport` owns image generations, runtime hooks, original calls, bounded exits, invalidation, and
