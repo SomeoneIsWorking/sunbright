@@ -85,6 +85,32 @@ def pattern_violations(
     )
 
 
+MATERIAL_FAMILY_ROSTER = "native-render/src/j3d_material_family.cpp"
+MATERIAL_CLASSIFIER = re.compile(r"\bclassify_j3d_\w+_material\b")
+
+
+def unreached_material_families(headers: dict[str, str], roster: str) -> list[str]:
+    """Material classifiers the shared family rule never calls.
+
+    A classifier that nothing calls is invisible: it compiles, its own tests pass, and the draws it
+    was written to accept refuse as unsupported anyway. `classify_j3d_effect_material` sat that way
+    and cost 10,248 of GMSE01's draws, which is why this is checked rather than remembered.
+    """
+    declared = {
+        name
+        for source in headers.values()
+        for name in MATERIAL_CLASSIFIER.findall(source)
+    }
+    # A call site, not a mention: a name that appears only in a comment or in a longer identifier
+    # is not a caller, and counting it as one is how this check would quietly stop checking.
+    called = {
+        name
+        for name in declared
+        if re.search(rf"\b{re.escape(name)}\s*\(", roster)
+    }
+    return sorted(declared - called)
+
+
 def load_sources(directory: Path) -> dict[str, str]:
     if not directory.is_dir():
         return {}
@@ -112,11 +138,20 @@ def check() -> int:
     product_bad = pattern_violations(
         load_product_sources(), PRODUCT_FORBIDDEN, PRODUCT_ALLOWED_PATHS
     )
+    roster_path = REPO / MATERIAL_FAMILY_ROSTER
+    if not roster_path.is_file():
+        print(f"structure: REFUSES: the material family roster {MATERIAL_FAMILY_ROSTER} is missing")
+        return 1
+    orphans = unreached_material_families(
+        load_sources(REPO / "native-render" / "include"), roster_path.read_text()
+    )
+    for name in orphans:
+        print(f"structure: {name} is declared but never called by {MATERIAL_FAMILY_ROSTER}")
     for path, lines, limit in bad_sizes:
         print(f"structure: {path}: {lines} lines, limit {limit}")
     for path, label in [*boundary_bad, *product_bad]:
         print(f"structure: {path}: forbidden {label}")
-    total_bad = len(bad_sizes) + len(boundary_bad) + len(product_bad)
+    total_bad = len(bad_sizes) + len(boundary_bad) + len(product_bad) + len(orphans)
     print(f"structure: measured {len(measured)} source files; {total_bad} violation(s)")
     return 1 if total_bad else 0
 
@@ -155,11 +190,37 @@ def selftest() -> int:
             "direct stderr/stdout write outside logger owner",
         ),
     ]
+    assert unreached_material_families(
+        {"a.h": "classify_j3d_glow_material(state);\nclassify_j3d_used_material(state);"},
+        "classify_j3d_used_material(state, texture, out);",
+    ) == ["classify_j3d_glow_material"]
+    # A mention is not a call: naming the classifier in a comment, or inside a longer identifier,
+    # must still count as unreached.
+    assert unreached_material_families(
+        {"a.h": "classify_j3d_glow_material(state);"},
+        "// see classify_j3d_glow_material\nclassify_j3d_glow_materialX(state);",
+    ) == ["classify_j3d_glow_material"]
+    assert (
+        unreached_material_families(
+            {"a.h": "classify_j3d_used_material(state);"},
+            "classify_j3d_used_material(state, texture, out);",
+        )
+        == []
+    )
+    # The rule has to hold on the real tree, not only on fixtures: this is the check that would
+    # have caught the orphaned effect family, so it must pass against the shipping roster.
+    if unreached_material_families(
+        load_sources(REPO / "native-render" / "include"),
+        (REPO / MATERIAL_FAMILY_ROSTER).read_text(),
+    ):
+        print("FAIL: the shipping material family roster has an unreached classifier")
+        return 1
     if not source_files():
         print("FAIL: real-tree discovery measured no files")
         return 1
     print(
-        "PASS: source limits and dependency/config/log controls distinguish both answers"
+        "PASS: source limits, dependency/config/log controls, and the material family\n"
+        "roster check each distinguish both answers"
     )
     return 0
 
