@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <limits>
 #include <span>
+#include <utility>
 
 namespace sunbright::gcnport_boot {
 namespace {
@@ -58,16 +59,21 @@ void print_four_cc(std::uint32_t type, std::uint64_t count) {
 
 // Prints an error histogram, and says so when it is empty rather than printing an empty line: a
 // blank where a denominator belongs cannot be told from a run in which nothing was ever read.
-template <typename Error>
-void print_errors(const char* label, const std::map<Error, std::uint64_t>& histogram) {
+template <typename Error, typename Name>
+void print_errors(const char* label, const std::map<Error, std::uint64_t>& histogram, Name naming) {
     std::printf("gmse01_boot:   %s:", label);
     if (histogram.empty()) {
         std::printf(" none recorded -- nothing was read");
     }
     for (const auto& [error, count] : histogram) {
-        std::printf(" %s=%llu", name(error), static_cast<unsigned long long>(count));
+        std::printf(" %s=%llu", naming(error), static_cast<unsigned long long>(count));
     }
     std::printf("\n");
+}
+
+template <typename Error>
+void print_errors(const char* label, const std::map<Error, std::uint64_t>& histogram) {
+    print_errors(label, histogram, [](Error error) { return name(error); });
 }
 
 void print_histogram(const char* label, const std::map<std::uint32_t, std::uint64_t>& histogram,
@@ -98,62 +104,121 @@ void GuestMaterialProbe::record(std::map<std::uint32_t, std::uint64_t>& histogra
     untracked += 1;
 }
 
-void GuestMaterialProbe::read_textures(gcnport::GuestContext& guest,
-                                       const sb::title_adapter::GuestMemory& memory,
-                                       sb::title_adapter::GuestAddress packet,
-                                       const sb::native_render::J3dMaterialState& state,
-                                       const sb::title_adapter::GuestTevBlock& tev) {
+bool GuestMaterialProbe::resolve_texture(gcnport::GuestContext& guest,
+                                         const sb::title_adapter::GuestTextureTable& table,
+                                         std::uint16_t number,
+                                         sb::native_render::DecodedTexture& texture,
+                                         sb::native_render::ResTimgDecodeError& error) {
+    if (number == 0xFFFF) {
+        return false;
+    }
+    if (number >= table.count) {
+        texturesPastTheTable_ += 1;
+        return false;
+    }
+    const sb::title_adapter::GuestAddress header =
+        table.resources + static_cast<sb::title_adapter::GuestAddress>(number) *
+                              sb::title_adapter::GUEST_RES_TIMG_BYTES;
+    // A texture is the same bytes every time it is bound, so it is decoded once per resource. With
+    // 78,380 binds of fewer than a hundred textures, decoding per bind would have measured the
+    // cache rather than the decoder.
+    if (const auto cached = textureCache_.find(header); cached != textureCache_.end()) {
+        texture = cached->second;
+        return true;
+    }
+    sb::native_render::DecodedTexture decoded{};
+    const sb::title_adapter::GuestTextureError textureError =
+        decode_guest_texture({read_through_byte_address, &guest}, table, number, decoded, error);
+    decodeErrors_[error] += 1;
+    if (textureError != sb::title_adapter::GuestTextureError::None) {
+        return false;
+    }
+    texturesDecoded_ += 1;
+    textureBytes_ += decoded.rgba8.size();
+    record(textureSizes_, textureSizesUntracked_,
+           decoded.texture.width * 0x10000U + decoded.texture.height);
+    texture = decoded;
+    textureCache_.emplace(header, std::move(decoded));
+    return true;
+}
+
+bool GuestMaterialProbe::resolve_texture_thunk(std::uint16_t number,
+                                               sb::native_render::DecodedTexture& texture,
+                                               sb::native_render::ResTimgDecodeError& error,
+                                               void* context) {
+    auto& resolver = *static_cast<TextureResolver*>(context);
+    return resolver.probe->resolve_texture(*resolver.guest, resolver.table, number, texture, error);
+}
+
+bool GuestMaterialProbe::read_texture_table(gcnport::GuestContext& guest,
+                                            const sb::title_adapter::GuestMemory& memory,
+                                            sb::title_adapter::GuestAddress packet,
+                                            sb::title_adapter::GuestTextureTable& table) {
     const sb::title_adapter::GuestReader reader(memory);
     sb::title_adapter::GuestAddress tableAddress = 0;
     if (!reader.word(packet + MAT_PACKET_TEXTURE, tableAddress)) {
         textureErrors_[sb::title_adapter::GuestTextureError::UnreadableTable] += 1;
-        return;
+        return false;
     }
-    sb::title_adapter::GuestTextureTable table{};
-    const sb::title_adapter::GuestTextureError tableError =
+    const sb::title_adapter::GuestTextureError error =
         read_guest_texture_table(memory, tableAddress, table);
-    textureErrors_[tableError] += 1;
-    if (tableError != sb::title_adapter::GuestTextureError::None) {
-        return;
+    textureErrors_[error] += 1;
+    if (error != sb::title_adapter::GuestTextureError::None) {
+        return false;
     }
     textureTablesRead_ += 1;
     if (table.padding != 0) {
         texturePaddingNonZero_ += 1;
     }
     record(textureTableSizes_, textureTableSizesUntracked_, table.count);
+    static_cast<void>(guest);
+    return true;
+}
 
-    const sb::native_render::AssetByteSource source{read_through_byte_address, &guest};
-    for (std::uint8_t binding = 0; binding < tev.textureBindingCount; ++binding) {
+void GuestMaterialProbe::measure_bindings(gcnport::GuestContext& guest,
+                                          const sb::native_render::J3dMaterialState& state,
+                                          const sb::title_adapter::GuestTextureTable& table,
+                                          std::uint8_t bindingCount) {
+    for (std::uint8_t binding = 0; binding < bindingCount; ++binding) {
         const std::uint16_t number = state.textureBindings[binding].textureNumber;
         if (number == 0xFFFF) {
             continue;
         }
         texturesBound_ += 1;
-        if (number >= table.count) {
-            texturesPastTheTable_ += 1;
-            continue;
-        }
-        const sb::title_adapter::GuestAddress header =
-            table.resources + static_cast<sb::title_adapter::GuestAddress>(number) *
-                                  sb::title_adapter::GUEST_RES_TIMG_BYTES;
-        if (decodedTextures_.contains(header)) {
-            continue;
-        }
-        sb::native_render::DecodedTexture decoded{};
-        sb::native_render::ResTimgDecodeError decodeError =
-            sb::native_render::ResTimgDecodeError::None;
-        const sb::title_adapter::GuestTextureError error =
-            decode_guest_texture(source, table, number, decoded, decodeError);
-        decodeErrors_[decodeError] += 1;
-        if (error != sb::title_adapter::GuestTextureError::None) {
-            continue;
-        }
-        decodedTextures_.insert(header);
-        texturesDecoded_ += 1;
-        textureBytes_ += decoded.rgba8.size();
-        record(textureSizes_, textureSizesUntracked_,
-               decoded.texture.width * 0x10000U + decoded.texture.height);
+        sb::native_render::DecodedTexture texture{};
+        sb::native_render::ResTimgDecodeError error = sb::native_render::ResTimgDecodeError::None;
+        static_cast<void>(resolve_texture(guest, table, number, texture, error));
     }
+}
+
+// Why a material was refused, asked of the shipping classifiers themselves rather than re-derived.
+// A bare "unsupported program" count cannot be acted on: it says nothing about whether the gate is
+// the raster policy, the colour program, or an input this hook cannot see.
+void GuestMaterialProbe::measure_refusals(const sb::native_render::J3dMaterialState& state) {
+    sb::native_render::ModelRasterPolicy policy{};
+    rasterResults_[sb::native_render::classify_j3d_raster_policy(state, policy)] += 1;
+    sb::native_render::UnlitColorMaterial unlitColor{};
+    unlitResults_[sb::native_render::classify_j3d_unlit_material(state, unlitColor)] += 1;
+    const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
+    sb::native_render::UnlitTexturedMaterial unlitTextured{};
+    unlitTexturedResults_[sb::native_render::classify_j3d_unlit_textured_material(
+        state, placeholder, unlitTextured)] += 1;
+}
+
+void GuestMaterialProbe::classify(gcnport::GuestContext& guest,
+                                  const sb::native_render::J3dMaterialState& state,
+                                  const sb::title_adapter::GuestTextureTable& table) {
+    TextureResolver resolver{.probe = this, .guest = &guest, .table = table};
+    sb::native_render::ClassifiedJ3dMaterial classified{};
+    // No stage lighting is published from the guest yet, so every lit family is out of reach by
+    // construction and this measures how far the unlit half alone gets. That is the honest
+    // denominator for the lighting reader that has to come next, not a limitation of the
+    // classifier: the same call answers the lit families the moment a context is passed here.
+    const sb::native_render::J3dMaterialFamilyResult result =
+        sb::native_render::classify_j3d_material(state, /*lighting=*/nullptr,
+                                                 {resolve_texture_thunk, &resolver}, classified);
+    classifyResults_[result] += 1;
+    families_[classified.family] += 1;
 }
 
 gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest) {
@@ -212,7 +277,12 @@ gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest)
     tevKinds_[read.tev.kind] += 1;
     record(tevStageCounts_, tevStageCountsUntracked_, read.tev.stageCount);
 
-    read_textures(guest, memory, packet, state, read.tev);
+    sb::title_adapter::GuestTextureTable table{};
+    if (read_texture_table(guest, memory, packet, table)) {
+        measure_bindings(guest, state, table, read.tev.textureBindingCount);
+        classify(guest, state, table);
+    }
+    measure_refusals(state);
 
     const sb::title_adapter::GuestPixelEngineBlock& block = read.pixelEngine;
     blocksRead_ += 1;
@@ -382,6 +452,30 @@ void GuestMaterialProbe::report() const {
         }
         std::printf("\n");
     }
+    print_errors("raster policy results", rasterResults_,
+                 sb::native_render::j3d_raster_policy_result_name);
+    print_errors("unlit colour results", unlitResults_,
+                 sb::native_render::j3d_unlit_material_result_name);
+    print_errors("unlit textured results", unlitTexturedResults_,
+                 sb::native_render::j3d_unlit_textured_result_name);
+    std::printf("gmse01_boot:   material classification:");
+    if (classifyResults_.empty()) {
+        std::printf(" none recorded -- no material reached the classifier");
+    }
+    for (const auto& [result, count] : classifyResults_) {
+        std::printf(" %s=%llu", sb::native_render::j3d_material_family_result_name(result),
+                    static_cast<unsigned long long>(count));
+    }
+    std::printf("\n");
+    std::printf("gmse01_boot:   material families:");
+    if (families_.empty()) {
+        std::printf(" none recorded -- no material reached the classifier");
+    }
+    for (const auto& [family, count] : families_) {
+        std::printf(" %s=%llu", sb::native_render::j3d_material_family_name(family),
+                    static_cast<unsigned long long>(count));
+    }
+    std::printf("\n");
     std::printf("gmse01_boot:   texture decode results:");
     if (decodeErrors_.empty()) {
         std::printf(" none recorded -- nothing was decoded");

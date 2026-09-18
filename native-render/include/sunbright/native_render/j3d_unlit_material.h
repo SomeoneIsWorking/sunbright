@@ -51,6 +51,7 @@ struct J3dUnlitMaterialFeatures {
     bool requiredVertexColorPresent = false;
 };
 
+[[nodiscard]] const char* j3d_raster_policy_result_name(J3dRasterPolicyResult result) noexcept;
 [[nodiscard]] const char* j3d_unlit_material_result_name(J3dUnlitMaterialResult result) noexcept;
 [[nodiscard]] J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
                                                                ModelRasterPolicy& policy) noexcept;

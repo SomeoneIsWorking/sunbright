@@ -5,6 +5,9 @@
 #include <map>
 #include <set>
 
+#include <sunbright/native_render/j3d_material_family.h>
+#include <sunbright/native_render/j3d_unlit_material.h>
+
 #include <sunbright/title_adapter/guest_j3d_material.h>
 #include <sunbright/title_adapter/guest_j3d_texture.h>
 
@@ -71,12 +74,33 @@ class GuestMaterialProbe {
     void record(std::map<std::uint32_t, std::uint64_t>& histogram, std::uint64_t& untracked,
                 std::uint32_t value);
 
-    // Resolves the packet's texture table and decodes each texture the TEV block binds, once per
-    // distinct resource.
-    void read_textures(gcnport::GuestContext& guest, const sb::title_adapter::GuestMemory& memory,
-                       sb::title_adapter::GuestAddress packet,
-                       const sb::native_render::J3dMaterialState& state,
-                       const sb::title_adapter::GuestTevBlock& tev);
+    // What `classify_j3d_material` is given to turn a texture number into pixels. The probe's own
+    // cache and counters live behind it, so the classifier never learns it is reading a guest.
+    struct TextureResolver {
+        GuestMaterialProbe* probe = nullptr;
+        gcnport::GuestContext* guest = nullptr;
+        sb::title_adapter::GuestTextureTable table{};
+    };
+
+    [[nodiscard]] bool read_texture_table(gcnport::GuestContext& guest,
+                                          const sb::title_adapter::GuestMemory& memory,
+                                          sb::title_adapter::GuestAddress packet,
+                                          sb::title_adapter::GuestTextureTable& table);
+    [[nodiscard]] bool resolve_texture(gcnport::GuestContext& guest,
+                                       const sb::title_adapter::GuestTextureTable& table,
+                                       std::uint16_t number,
+                                       sb::native_render::DecodedTexture& texture,
+                                       sb::native_render::ResTimgDecodeError& error);
+    static bool resolve_texture_thunk(std::uint16_t number,
+                                      sb::native_render::DecodedTexture& texture,
+                                      sb::native_render::ResTimgDecodeError& error, void* context);
+    void measure_bindings(gcnport::GuestContext& guest,
+                          const sb::native_render::J3dMaterialState& state,
+                          const sb::title_adapter::GuestTextureTable& table,
+                          std::uint8_t bindingCount);
+    void measure_refusals(const sb::native_render::J3dMaterialState& state);
+    void classify(gcnport::GuestContext& guest, const sb::native_render::J3dMaterialState& state,
+                  const sb::title_adapter::GuestTextureTable& table);
 
     std::uint64_t maxReports_ = 0;
     std::uint64_t entries_ = 0;
@@ -94,7 +118,7 @@ class GuestMaterialProbe {
     std::uint64_t materialsPastTheSet_ = 0;
 
     std::set<std::uint32_t> materials_;
-    std::set<std::uint32_t> decodedTextures_;
+    std::map<sb::title_adapter::GuestAddress, sb::native_render::DecodedTexture> textureCache_;
     std::uint64_t textureTablesRead_ = 0;
     std::uint64_t texturesBound_ = 0;
     std::uint64_t texturesPastTheTable_ = 0;
@@ -107,6 +131,11 @@ class GuestMaterialProbe {
     std::map<std::uint32_t, std::uint64_t> textureSizes_;
     std::uint64_t textureSizesUntracked_ = 0;
     std::map<sb::native_render::ResTimgDecodeError, std::uint64_t> decodeErrors_;
+    std::map<sb::native_render::J3dMaterialFamilyResult, std::uint64_t> classifyResults_;
+    std::map<sb::native_render::J3dMaterialFamily, std::uint64_t> families_;
+    std::map<sb::native_render::J3dRasterPolicyResult, std::uint64_t> rasterResults_;
+    std::map<sb::native_render::J3dUnlitMaterialResult, std::uint64_t> unlitResults_;
+    std::map<sb::native_render::J3dUnlitTexturedResult, std::uint64_t> unlitTexturedResults_;
     std::map<sb::title_adapter::GuestMaterialError, std::uint64_t> materialErrors_;
     std::map<sb::title_adapter::GuestColorError, std::uint64_t> colorErrors_;
     std::map<sb::title_adapter::GuestTexGenError, std::uint64_t> texGenErrors_;

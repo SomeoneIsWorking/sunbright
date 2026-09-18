@@ -6,6 +6,7 @@ add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/
                                                  src/j3d_lit_alpha_tint_material.cpp
                                                  src/j3d_layered_material.cpp
                                                  src/j3d_lit_material.cpp
+                                                 src/j3d_material_family.cpp
                                                  src/j3d_masked_toon_material.cpp
                                                  src/j3d_fog.cpp
                                                  src/j3d_mesh_decode.cpp
@@ -119,6 +120,9 @@ target_link_libraries(native_render_j3d_masked_toon_material_test
 add_test(NAME native_render_j3d_masked_toon_material
          COMMAND native_render_j3d_masked_toon_material_test)
 
+add_executable(native_render_j3d_material_family_test tests/j3d_material_family_test.cpp)
+target_link_libraries(native_render_j3d_material_family_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_material_family COMMAND native_render_j3d_material_family_test)
 add_executable(native_render_j3d_lit_material_test tests/j3d_lit_material_test.cpp)
 target_link_libraries(native_render_j3d_lit_material_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_lit_material COMMAND native_render_j3d_lit_material_test)

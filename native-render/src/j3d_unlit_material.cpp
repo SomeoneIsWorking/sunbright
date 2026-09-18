@@ -45,6 +45,18 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
 
 } // namespace
 
+const char* j3d_raster_policy_result_name(J3dRasterPolicyResult result) noexcept {
+    switch (result) {
+    case J3dRasterPolicyResult::Success:
+        return "success";
+    case J3dRasterPolicyResult::UnsupportedCullMode:
+        return "unsupported cull mode";
+    case J3dRasterPolicyResult::UnsupportedPixelEngineBlock:
+        return "unsupported pixel-engine block";
+    }
+    return "unknown";
+}
+
 const char* j3d_unlit_material_result_name(J3dUnlitMaterialResult result) noexcept {
     switch (result) {
     case J3dUnlitMaterialResult::Success:

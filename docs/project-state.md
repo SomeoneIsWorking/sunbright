@@ -416,10 +416,35 @@ belongs**. The dimensions are all GameCube-plausible powers of two from `4x32` t
 dimension histogram and the decoded byte total are derived independently yet agree exactly:
 `sum(w * h * 4) = 4,516,864`, the reported total.
 
+Choosing a material family from that state is now one shared rule in
+`native-render/src/j3d_material_family.cpp` (`classify_j3d_material`), extracted from the decomp
+adapter it used to live inside rather than copied: the decomp path and the guest path call the same
+function and differ only in the `J3dTextureSource` they hand it. That extraction dropped
+`sms-boot/runtime/native_j3d_material_adapter.cpp` from 452 lines to 289 and is behaviour
+preserving, including the two rules that read the whole match set rather than the winning family --
+how many textures to decode, and the fact that a program the unlit-textured family accepts names its
+first texture through its stage's texture map even when a higher-priority family wins.
+
+Run against the real title with no stage lighting available, all 44,314 materials are refused, and
+the shipping classifiers name why:
+
+    raster policy results: success=38430 unsupported pixel-engine block=5884
+    unlit colour results:  lighting=37482 texture binding=3416
+                           multiple active colour stages=2562 unsupported colour program=854
+    unlit textured results: lighting=37482 multiple active colour stages=2562
+                           missing texture coordinate=854 unsupported colour program=854
+                           missing vertex colour=1708 unsupported raster policy=854
+
+**37,482 of 44,314 -- 84.6% -- are refused for one reason: `lighting`.** GMSE01's materials enable
+their colour channel's lighting, and every lit family needs a `ModelLightingContext` that nothing
+publishes from the guest yet. That is one missing input rather than a long tail, and it is what the
+next guest reader has to supply. Of the rest, 1,708 `missing vertex colour` are an artefact of this
+hook: `hasVertexColor` and `hasNormal` describe the shape, not the material, and `J3DMatPacket::draw`
+cannot see one.
+
 Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
-textures are counted and discarded; no `ModelDraw` is built, no `ModelMaterial` is classified from
-the state that is now read, no stage lighting is published from the guest (so only the unlit
-classifiers could run), no semantic frame is produced under
+textures are counted and discarded; no `ModelDraw` is built, no material classifies into a family
+(measured above), no stage lighting is published from the guest, no semantic frame is produced under
 the dynarec, and the run uses Dolphin's Null video backend so no frame is presented. `native_render::ModelDraw` also has no place for the normal matrix, which under the CPU
 pipelines genuinely differs from the position matrix; the adapter carries it as
 `GuestShapePose::normalViews` and the semantic boundary has yet to accept it. The surviving decomp-side adapters
