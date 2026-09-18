@@ -10,8 +10,8 @@
 // gcnport's BootAuthenticatedImage is scoped to a raw in-memory image plus an explicit load address
 // and entry point (see shared/gcnport/docs/dolphin-embedding-contract.md), so this tool boots
 // GMSE01's already-extracted main.dol directly: it parses the DOL header, assembles one contiguous
-// flat image spanning the DOL's lowest to highest loaded address (gaps zero-filled, matching how the
-// loader would place each section), and boots at the DOL's own entry point.
+// flat image spanning the DOL's lowest to highest loaded address (gaps zero-filled, matching how
+// the loader would place each section), and boots at the DOL's own entry point.
 //
 // --disc additionally hands gcnport a path to the retail disc image, which mounts the real volume
 // behind the title's DVD reads and lets gcnport configure the console from it (region, and
@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -221,6 +222,39 @@ struct GuestMemoryWindow {
     u32 words = 0;
 };
 
+// One --count-calls request: a guest function whose every entry is counted by a native hook.
+//
+// A native implementation standing in for a guest function is the seam this whole port is built on,
+// and counting entries is the smallest thing that exercises it end to end on the real title: the
+// JIT has to plant the guard at that address, dispatch has to reach the callback, and the
+// callback's RunOriginalOnce has to hand the original body back to the translated code so the title
+// carries on behaving exactly as it did. Zero is a real answer here and is printed as one -- "the
+// hook never fired" and "the hook was never installed" are different failures, and a silent counter
+// cannot tell them apart, so installation is verified at install time and a zero afterwards means
+// the address genuinely was never dispatched.
+struct CountedCall {
+    u32 address = 0;
+    u64 entries = 0;
+};
+
+PowerPC::GcnPort::HookResult CountCallEntry(void* context, PowerPC::PowerPCState&) noexcept {
+    static_cast<CountedCall*>(context)->entries += 1;
+    return PowerPC::GcnPort::HookResult::RunOriginalOnce();
+}
+
+// A guest address on the command line: 32-bit, hexadecimal, and refused rather than truncated.
+// strtoull saturates at ULLONG_MAX on overflow, so errno is the only thing that separates an
+// out-of-range argument from a legitimately large one.
+bool ParseGuestAddress(const char* text, char** end, u32& address) {
+    errno = 0;
+    const unsigned long long parsed = std::strtoull(text, end, 16);
+    if (*end == text || parsed > 0xffffffffull || errno == ERANGE) {
+        return false;
+    }
+    address = static_cast<u32>(parsed);
+    return true;
+}
+
 void ReportGuestBacktrace(const Memory::MemoryManager& memory, u32 stack_pointer) {
     constexpr u32 FRAME_RETURN_ADDRESS = 4;
     constexpr u32 GUEST_RAM_START = 0x80000000;
@@ -358,8 +392,18 @@ void ReportActiveThreads(const Memory::MemoryManager& memory) {
     }
 }
 
-void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_image_path,
-             bool report_counters_on_fault, const std::vector<GuestMemoryWindow>& dump_windows) {
+// Everything one invocation of this tool asks for, past the image itself. These arrived as
+// positional parameters until there were five of them, at which point the call site said nothing
+// about which flag each one came from.
+struct BootRequest {
+    u64 block_budget = 0;
+    std::string disc_image_path;
+    bool report_counters_on_fault = true;
+    std::vector<GuestMemoryWindow> dump_windows;
+    std::vector<u32> counted_call_addresses;
+};
+
+void RunBoot(const DolImage& image, const BootRequest& request) {
     const std::string profile_path = File::CreateTempDir();
     if (profile_path.empty()) {
         std::fprintf(stderr, "gmse01_boot: failed to create an isolated Dolphin user directory\n");
@@ -439,7 +483,7 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
     // of at whichever recoverable fastmem trap happened to come first. The cost is losing the
     // counter report on a crash, which is exactly what this handler exists to preserve, so it is
     // opt-in.
-    if (report_counters_on_fault) {
+    if (request.report_counters_on_fault) {
         std::signal(SIGSEGV, ReportCountersOnFault);
     }
 
@@ -447,9 +491,9 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
         system, identity, image.flat, image.load_address, image.entry_point,
         PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
                                               .apply_hardware_init = true,
-                                              .disc_image_path = disc_image_path,
+                                              .disc_image_path = request.disc_image_path,
                                               .apply_media_init = true,
-                                              .run_apploader = !disc_image_path.empty()});
+                                              .run_apploader = !request.disc_image_path.empty()});
     if (!booted.ok) {
         std::fprintf(stderr, "gmse01_boot: BootAuthenticatedImage failed: %s\n",
                      booted.detail.c_str());
@@ -462,6 +506,27 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
     {
         PowerPC::GcnPort::RuntimeSession runtime(system, identity);
         g_diagnostic_runtime = &runtime;
+
+        // Hook mutations require a stopped CPU safe point, which is where this is: the session
+        // exists and nothing has dispatched yet. Each counter's storage has to outlive every
+        // dispatch and keep a stable address, because the runtime holds the raw pointer as the
+        // callback's context -- hence the indirection rather than a vector of values that would
+        // rehome its elements on the next push_back.
+        std::vector<std::unique_ptr<CountedCall>> counted_calls;
+        for (const u32 address : request.counted_call_addresses) {
+            counted_calls.push_back(std::make_unique<CountedCall>(CountedCall{.address = address}));
+            runtime.InstallNativeHook(
+                {.identity = runtime.GetExecutionIdentity(), .address = address},
+                {.context = counted_calls.back().get(), .function = &CountCallEntry});
+            if (!runtime.HasNativeHook(address)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
+                             "a count it could not have measured\n",
+                             address);
+                std::exit(1);
+            }
+            std::printf("gmse01_boot: counting entries to 0x%08x\n", address);
+        }
 
         // Bounded: this is a diagnostic boot attempt, not a gameplay loop.
         //
@@ -507,7 +572,8 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
         constexpr u32 STEPPED_BLOCKS = 32;
         constexpr u64 BATCH_BLOCKS = 1000000;
         constexpr u64 DEFAULT_MAX_BLOCKS = 160000000;
-        const u64 max_blocks = block_budget != 0 ? block_budget : DEFAULT_MAX_BLOCKS;
+        const u64 max_blocks =
+            request.block_budget != 0 ? request.block_budget : DEFAULT_MAX_BLOCKS;
         u64 blocks_run = 0;
         u32 previous_sample_pc = 0;
         u64 previous_sample_ticks = 0;
@@ -600,16 +666,16 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
                     const auto& ppc_state = system.GetPPCState();
                     const auto& processor_interface = system.GetProcessorInterface();
                     const u32 current_thread = memory.Read_U32(GUEST_CURRENT_THREAD);
-                    std::printf(
-                        "gmse01_boot: no retrace delivered at pc=0x%08x msr=0x%08x (ee=%u) "
-                        "exceptions=0x%08x pi_cause=0x%08x pi_mask=0x%08x disc_inside=%d "
-                        "cur_thread=0x%08x retraces=%u ticks=%llu (+%llu)\n",
-                        batch.guest_pc, ppc_state.msr.Hex, static_cast<u32>(ppc_state.msr.EE),
-                        ppc_state.Exceptions, processor_interface.GetCause(),
-                        processor_interface.GetMask(),
-                        static_cast<int>(system.GetDVDInterface().IsDiscInside()), current_thread,
-                        retrace_count, static_cast<unsigned long long>(ticks),
-                        static_cast<unsigned long long>(ticks - previous_sample_ticks));
+                    std::printf("gmse01_boot: no retrace delivered at pc=0x%08x msr=0x%08x (ee=%u) "
+                                "exceptions=0x%08x pi_cause=0x%08x pi_mask=0x%08x disc_inside=%d "
+                                "cur_thread=0x%08x retraces=%u ticks=%llu (+%llu)\n",
+                                batch.guest_pc, ppc_state.msr.Hex,
+                                static_cast<u32>(ppc_state.msr.EE), ppc_state.Exceptions,
+                                processor_interface.GetCause(), processor_interface.GetMask(),
+                                static_cast<int>(system.GetDVDInterface().IsDiscInside()),
+                                current_thread, retrace_count,
+                                static_cast<unsigned long long>(ticks),
+                                static_cast<unsigned long long>(ticks - previous_sample_ticks));
                     // The running thread has no saved OSThread context to walk --
                     // ReportActiveThreads below reads each queued thread's saved SRR0/LR, and the
                     // one actually executing is the one whose saved copy is stale. Its live link
@@ -680,6 +746,12 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
                         PowerPC::GcnPort::ToString(ranked[rank].second.reason));
         }
 
+        for (const auto& counted : counted_calls) {
+            std::printf("gmse01_boot: hook 0x%08x entered %llu time(s)%s\n", counted->address,
+                        static_cast<unsigned long long>(counted->entries),
+                        counted->entries == 0 ? "  -- installed, never dispatched" : "");
+        }
+
         std::printf("gmse01_boot: dolphin_alerts=%llu\n",
                     static_cast<unsigned long long>(g_alerts_reported.load()));
 
@@ -691,7 +763,7 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
                     static_cast<int>(Config::Get(Config::GFX_HACK_SKIP_EFB_COPY_TO_RAM)),
                     static_cast<int>(Config::Get(Config::GFX_HACK_EFB_ACCESS_ENABLE)));
 
-        for (const GuestMemoryWindow& window : dump_windows) {
+        for (const GuestMemoryWindow& window : request.dump_windows) {
             std::printf("gmse01_boot: guest memory at 0x%08x (%u word(s))\n", window.address,
                         window.words);
             ReportGuestMemory(system.GetMemory(), window.address, window.words, 0);
@@ -712,7 +784,8 @@ int main(int argc, char** argv) {
     const auto usage = [argv]() {
         std::fprintf(stderr,
                      "usage: %s <path-to-extracted-main.dol> [--disc <disc-image>] "
-                     "[--max-blocks <n>] [--raw-faults] [--dump-guest <hex-addr>[:<words>] ...]\n",
+                     "[--max-blocks <n>] [--raw-faults] [--dump-guest <hex-addr>[:<words>] ...] "
+                     "[--count-calls <hex-addr> ...]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -723,16 +796,13 @@ int main(int argc, char** argv) {
     // Optional overrides. Every one of these refuses a malformed value rather than silently falling
     // back to its default: a run that quietly used a different budget, or quietly mounted no disc,
     // would be indistinguishable from one that genuinely reached a different boundary.
-    u64 block_budget = 0;
-    std::string disc_image_path;
-    bool report_counters_on_fault = true;
-    std::vector<GuestMemoryWindow> dump_windows;
+    BootRequest request;
     for (int argument = 2; argument < argc; ++argument) {
         const std::string_view name = argv[argument];
         // The one flag that takes no value. Handled before the value check below, which would
         // otherwise reject it for having nothing after it.
         if (name == "--raw-faults") {
-            report_counters_on_fault = false;
+            request.report_counters_on_fault = false;
             continue;
         }
         if (argument + 1 >= argc) {
@@ -742,7 +812,7 @@ int main(int argc, char** argv) {
         const char* const value = argv[++argument];
 
         if (name == "--disc") {
-            disc_image_path = value;
+            request.disc_image_path = value;
         } else if (name == "--max-blocks") {
             char* end = nullptr;
             errno = 0;
@@ -756,7 +826,7 @@ int main(int argc, char** argv) {
                              value);
                 return 1;
             }
-            block_budget = parsed;
+            request.block_budget = parsed;
         } else if (name == "--dump-guest") {
             // <hex-addr>[:<words>]. A default window is one cache line, which is enough to
             // recognise an object header and its first members without hiding a typo in a wall of
@@ -765,16 +835,12 @@ int main(int argc, char** argv) {
             constexpr u32 MAX_WORDS = 4096;
             GuestMemoryWindow window;
             char* end = nullptr;
-            errno = 0;
-            const unsigned long long parsed_address = std::strtoull(value, &end, 16);
-            if (end == value || parsed_address > 0xffffffffull || errno == ERANGE ||
-                (*end != '\0' && *end != ':')) {
+            if (!ParseGuestAddress(value, &end, window.address) || (*end != '\0' && *end != ':')) {
                 std::fprintf(stderr,
                              "gmse01_boot: --dump-guest needs <hex-addr>[:<words>], got '%s'\n",
                              value);
                 return 1;
             }
-            window.address = static_cast<u32>(parsed_address);
             window.words = DEFAULT_WORDS;
             if (*end == ':') {
                 const char* const words_text = end + 1;
@@ -789,7 +855,16 @@ int main(int argc, char** argv) {
                 }
                 window.words = static_cast<u32>(parsed_words);
             }
-            dump_windows.push_back(window);
+            request.dump_windows.push_back(window);
+        } else if (name == "--count-calls") {
+            u32 address = 0;
+            char* end = nullptr;
+            if (!ParseGuestAddress(value, &end, address) || *end != '\0') {
+                std::fprintf(stderr, "gmse01_boot: --count-calls needs <hex-addr>, got '%s'\n",
+                             value);
+                return 1;
+            }
+            request.counted_call_addresses.push_back(address);
         } else {
             std::fprintf(stderr, "gmse01_boot: unknown option '%s'\n", argv[argument - 1]);
             usage();
@@ -802,8 +877,7 @@ int main(int argc, char** argv) {
     // Dolphin's BLR-return optimization installs a guard in the current CPU thread's own stack; a
     // dedicated thread gives this tool the same fully mapped stack contract Dolphin's shipping CPU
     // thread has (matching gcnport's own GcnPortRuntimeTest.cpp convention).
-    std::thread cpu_thread(RunBoot, image, block_budget, disc_image_path, report_counters_on_fault,
-                           dump_windows);
+    std::thread cpu_thread(RunBoot, std::cref(image), std::cref(request));
     cpu_thread.join();
     return 0;
 }

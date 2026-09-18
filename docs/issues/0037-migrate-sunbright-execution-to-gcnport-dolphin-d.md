@@ -629,10 +629,51 @@ guest registers in host registers and writes back only what an access needs, so 
 with the faulting effective address the alert itself reported. Guest RAM is the reliable one, and
 `--dump-guest` is what actually settled this.
 
-**Open: 79,952 interpreter fallback events** over the 400M-block run, against 141 before. The THP
-decoder is paired-single-heavy, so the likely cause is a paired-single opcode the JIT declines;
-`ClassifyFallbackReason` already names reasons, so the next step is to report them by reason with
-denominators rather than as one total.
+~~**Open: 79,952 interpreter fallback events**~~ -- answered in the tenth continuation below, and
+the paired-single guess was wrong.
 
 **Superseded:** the earlier reading of this fault as a host fault inside `RegCache::Realize` (Jit64
 block compilation) was a mis-symbolised frame on the wrong thread.
+
+**2026-09-18 (tenth continuation): the `J3DShape::draw` hook is entered 245,874 times on the real
+title, and every interpreter fallback is a Gekko SPR access.**
+
+The fallback question first. gcnport's `RecordFallback` discarded the guest address, so a count could
+equally have been one hot helper or a missing instruction form used everywhere. It now keeps a
+bounded per-site map (`GetFallbackSites()`, 256 sites, with `fallback_sites_not_tracked` reporting
+its own truncation) and the owner names its reasons (`PowerPC::GcnPort::ToString`). A 4-billion-block
+run: 1,109,684 events, 22 sites, none untracked, and every site is an `mfspr`/`mtspr` on a
+Gekko-specific SPR that Jit64 hands to the interpreter by design. `0x803438f8` is `mtspr DMAL` -- the
+locked-cache DMA kick, 1,099,470 events -- and `0x80341ab0` is `mtspr DEC`, 10,093. Two more sit at
+`0x003464c8` and `0x00346500`, one event each: the OS exception path with address translation off.
+There is no unimplemented-instruction gap behind the number, the paired-single hypothesis is dead,
+and 99.97% of block executions are compiled code.
+
+Then S001's own discriminator. `--count-calls <hex-addr>` installs a native hook that counts entries
+and returns `HookAction::RunOriginalOnce`, so the translated body still runs and the title is
+unchanged. Four addresses in one 4B-block run of the retail disc: `J3DShape::draw` (`0x802e0390`)
+**245,874**, `J3DModel::entry` (`0x802dedc8`) 106,615, `TApplication::gameLoop` (`0x802a5f5c`) 9,
+`TApplication::drawDVDErr` (`0x802a5b50`) 12,538. Zero Dolphin alerts, zero invalid guest accesses,
+29,243 blocks compiled, full budget retired. S001 is verified.
+
+The counts also correct two readings. `gameLoop` is the per-app-state loop called from
+`TApplication::proc`, not a per-frame one -- 9 is nine director/area transitions. `drawDVDErr` is the
+per-frame call, invoked from `gameLoop` every iteration as a drive-status check that returns 0 and
+draws nothing on a healthy drive (`decomp/sms/src/System/Application.cpp:857`); it was chosen as a
+negative control and is nothing of the sort. A 600M-block run counting 1,428 entries to it and 0 to
+`J3DShape::draw` reads as a DVD error screen right up until the decomp says otherwise -- it is the
+opening, which is `J2D` and THP and contains no J3D geometry.
+
+`gpApplication` (`0x803e9700`) agrees from the other side: at 600M blocks `mAppState` is 4
+(`APP_STATE_DONE`) with all areas zero, the case that sets `mMovie = 9` (`Entrance.thp`) and
+`mNextArea = (15,0,0)` before falling through to `APP_STATE_MOVIE`; at 4B blocks it is 6
+(`APP_STATE_MOVIE`), `mMovie` 12, all three areas 15. The attract loop is running and `mDisplay` is
+still the intact 640x448 `JDrama::TDisplay` at `0x8056dd90`.
+
+**Instrument fixed:** the stall reporter fired on any two consecutive batches ending at the same
+guest PC. That was the shape of every stall while the boot died in its first seconds; once the title
+runs a main loop it means nothing, because a million-block batch ends inside a cache-flush or
+soft-divide leaf often enough that one run printed 204 "stalled" reports, each with a full thread
+walk, while its retrace count climbed past 20,000. The repeated PC is still the trigger for taking a
+sample; the label now comes from whether a VI retrace was delivered since the last one, and only the
+genuine no-retrace case pays for the state dump.

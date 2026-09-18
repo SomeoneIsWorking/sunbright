@@ -12,14 +12,16 @@ currently has no gameplay executable while its shared runtime executor is missin
 
 ## Current focus
 
-S001 is the current focus: boot exact `GMSE01` through `gcnport` and Dolphin's JIT, then prove the
-runtime `J3DShape::draw` hook at `0x802e0390` and its one-call original-body path.
+S003 is the current focus. S001 is verified: exact `GMSE01` boots through `gcnport` and Dolphin's
+JIT and its `J3DShape::draw` hook at `0x802e0390` was entered 245,874 times, each one returning
+through the one-call original-body path. What remains is turning that one proven hook into the
+image-scoped override dispatch Sunbright's native code will actually be mounted on.
 
 ## Capability inventory
 
 | ID | Capability / observable outcome | State | Dependencies | Goals |
 | --- | --- | --- | --- | --- |
-| S001 | Exact `GMSE01` boots under `gcnport`/Dolphin JIT and reaches the `J3DShape::draw` runtime hook at `0x802e0390` | partial | S002, S003 | G003, G004 |
+| S001 | Exact `GMSE01` boots under `gcnport`/Dolphin JIT and reaches the `J3DShape::draw` runtime hook at `0x802e0390` | verified | S002, S003 | G003, G004 |
 | S002 | `gcnport` supplies a title-neutral Dolphin dynarec executor with image identity, bounded exits, invalidation, and diagnostics | partial | — | G003 |
 | S003 | Sunbright native overrides and original calls use robust image-scoped runtime dispatch | missing | S002 | G003, G004 |
 | S004 | The PC-native semantic renderer covers the complete visible J3D/J2D/particle/effect stream | partial | S003 | G004 |
@@ -42,15 +44,15 @@ runtime `J3DShape::draw` hook at `0x802e0390` and its one-call original-body pat
 
 ### S001 — first dynamic title discriminator
 
-Partial capability: `tools/gcnport_boot/gmse01_boot.cpp` (still uncommitted, left for operator
-review) authenticates the exact retail `GMSE01` main.dol (gitignored `scratch/bin/sms.dol`, load
+Partial capability: `tools/gcnport_boot/gmse01_boot.cpp` authenticates the exact retail `GMSE01`
+main.dol (gitignored `scratch/bin/sms.dol`, load
 address `0x80003100`, entry point `0x8000522c`) through gcnport's public
 `BootAuthenticatedImage`/`ExecuteJitBlock` adapter.
 
 Two of this item's three remaining gaps from the previous session are now closed:
 
 1. **Real CMake build wiring.** `extern/gcnport` is now a pinned git submodule (at gcnport
-   `bf6dc3c`, Dolphin fork `a188e7b0`), and `tools/gcnport_boot/CMakeLists.txt` +
+   `185d616`, Dolphin fork `f5e7b38e16`), and `tools/gcnport_boot/CMakeLists.txt` +
    `cmake/GcnPortDependency.cmake` wire it as a real, `EXCLUDE_FROM_ALL` CMake subdirectory: the
    `sunbright_gcnport_boot` target links Dolphin's own `core`/`uicommon` targets and builds
    correctly via plain `cmake --build build --target sunbright_gcnport_boot` (verified end to end
@@ -531,3 +533,54 @@ asset-free disc headers differing only in country code.
 Remaining under S001: interpreter fallbacks rose from 141 to 79,952 events over the same budget once
 the THP decoder was reached, which needs reporting by reason with denominators before it can be
 called understood; and the `J3DShape::draw` runtime override at `0x802e0390` is still not reached.
+Both were settled in the tenth continuation below, and S001 is now verified.
+
+**2026-09-18 (tenth continuation, S001 verified): the `J3DShape::draw` hook is entered 245,874 times
+on the real title, and every interpreter fallback is a Gekko SPR access.**
+
+`--count-calls <hex-addr>` installs a native hook that counts entries to a guest function and returns
+`HookAction::RunOriginalOnce`, so the translated body still runs and the title behaves exactly as it
+did. One 4-billion-block run of the retail disc, four addresses:
+
+| address | function | entries |
+| --- | --- | --- |
+| `0x802e0390` | `J3DShape::draw` | 245,874 |
+| `0x802dedc8` | `J3DModel::entry` | 106,615 |
+| `0x802a5f5c` | `TApplication::gameLoop` | 9 |
+| `0x802a5b50` | `TApplication::drawDVDErr` | 12,538 |
+
+Zero Dolphin alerts, zero invalid guest accesses, 29,243 JIT blocks compiled, and the run retired its
+whole budget. That is S001's success condition measured rather than argued: a native callback at a
+real guest address in the real title, entered a quarter of a million times, each returning through
+the one-call original-body path, with the title drawing 3D geometry throughout.
+
+`gameLoop` at 9 entries is the reading that makes the rest legible: it is the per-app-state loop
+called from `TApplication::proc`, not a per-frame one, so 9 is nine director/area transitions.
+`drawDVDErr` is the per-frame one -- `gameLoop` calls it every iteration as a drive-status check that
+returns 0 and draws nothing when the drive is healthy (`decomp/sms/src/System/Application.cpp:857`).
+A 600M-block run counted 1,428 entries to it and 0 to `J3DShape::draw`, which reads as a DVD error
+screen until the decomp says otherwise; it is simply the opening, which is `J2D` and THP with no J3D
+geometry in it at all.
+
+`gpApplication` at `0x803e9700` confirms the same progression from the other side. At 600M blocks
+`mAppState` is 4 (`APP_STATE_DONE`) with all three areas zero; that case sets `mMovie = 9` --
+`Entrance.thp` -- and `mNextArea = (15,0,0)` before falling through to `APP_STATE_MOVIE`. At 4B
+blocks `mAppState` is 6 (`APP_STATE_MOVIE`), `mMovie` is 12 and all three areas are 15. The title is
+running its real attract loop, and `mDisplay` is still the intact 640x448 `JDrama::TDisplay` at
+`0x8056dd90`.
+
+The open fallback question is closed, and the earlier guess was wrong. gcnport now records WHERE it
+falls back, not just how often (`GetFallbackSites()`, bounded at 256 sites with its own truncation
+counter). All 1,109,684 events across the 4B-block run fall in 22 sites, none untracked, and every
+one is an `mfspr`/`mtspr` on a Gekko-specific SPR that Jit64 routes to the interpreter by design:
+`0x803438f8` (`mtspr DMAL`, the locked-cache DMA kick) is 1,099,470 of them and `0x80341ab0`
+(`mtspr DEC`) another 10,093. The suspected paired-single opcode gap does not exist. 99.97% of block
+executions are compiled code.
+
+One instrument was lying and is fixed. The stall reporter fired whenever two consecutive batches
+ended at the same guest PC -- the shape of every stall back when the boot died in its first seconds,
+and meaningless once the title runs a main loop, because a million-block batch ends inside a
+cache-flush or soft-divide leaf often enough that one run printed 204 "stalled" reports, each with a
+full thread walk, while its retrace count climbed past 20,000. The repeated PC is still the cheap
+trigger for taking a sample; what the sample is called now comes from whether any VI retrace was
+delivered since the last one, and only the genuine no-retrace case pays for the state dump.
