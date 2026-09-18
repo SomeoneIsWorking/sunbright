@@ -6,6 +6,7 @@
 #include <set>
 
 #include <sunbright/title_adapter/guest_j3d_material.h>
+#include <sunbright/title_adapter/guest_j3d_texture.h>
 
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"
@@ -44,6 +45,10 @@ namespace sunbright::gcnport_boot {
 // fetched for. A table that was never built, or a table read at the wrong address or the wrong
 // stride, answers zeroes or a neighbour's row -- all of which re-encode to the wrong id. That check
 // is what tells "the game's table says GX_NEVER" apart from "this read never reached the table".
+// The material's textures are resolved and decoded too, through `native_render::decode_res_timg` --
+// the same decoder the decomp path has always used, reading the guest header directly. Decoding is
+// per distinct resource rather than per draw: a texture is the same bytes every time it is bound,
+// and decoding 44,000 binds of 50 textures would measure the cache rather than the decoder.
 class GuestMaterialProbe {
   public:
     explicit GuestMaterialProbe(std::uint64_t max_reports) noexcept : maxReports_(max_reports) {}
@@ -66,6 +71,13 @@ class GuestMaterialProbe {
     void record(std::map<std::uint32_t, std::uint64_t>& histogram, std::uint64_t& untracked,
                 std::uint32_t value);
 
+    // Resolves the packet's texture table and decodes each texture the TEV block binds, once per
+    // distinct resource.
+    void read_textures(gcnport::GuestContext& guest, const sb::title_adapter::GuestMemory& memory,
+                       sb::title_adapter::GuestAddress packet,
+                       const sb::native_render::J3dMaterialState& state,
+                       const sb::title_adapter::GuestTevBlock& tev);
+
     std::uint64_t maxReports_ = 0;
     std::uint64_t entries_ = 0;
     std::uint64_t reports_ = 0;
@@ -82,6 +94,19 @@ class GuestMaterialProbe {
     std::uint64_t materialsPastTheSet_ = 0;
 
     std::set<std::uint32_t> materials_;
+    std::set<std::uint32_t> decodedTextures_;
+    std::uint64_t textureTablesRead_ = 0;
+    std::uint64_t texturesBound_ = 0;
+    std::uint64_t texturesPastTheTable_ = 0;
+    std::uint64_t texturesDecoded_ = 0;
+    std::uint64_t textureBytes_ = 0;
+    std::uint64_t texturePaddingNonZero_ = 0;
+    std::map<sb::title_adapter::GuestTextureError, std::uint64_t> textureErrors_;
+    std::map<std::uint32_t, std::uint64_t> textureTableSizes_;
+    std::uint64_t textureTableSizesUntracked_ = 0;
+    std::map<std::uint32_t, std::uint64_t> textureSizes_;
+    std::uint64_t textureSizesUntracked_ = 0;
+    std::map<sb::native_render::ResTimgDecodeError, std::uint64_t> decodeErrors_;
     std::map<sb::title_adapter::GuestMaterialError, std::uint64_t> materialErrors_;
     std::map<sb::title_adapter::GuestColorError, std::uint64_t> colorErrors_;
     std::map<sb::title_adapter::GuestTexGenError, std::uint64_t> texGenErrors_;

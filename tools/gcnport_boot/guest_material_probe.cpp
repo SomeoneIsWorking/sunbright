@@ -3,14 +3,16 @@
 
 #include <array>
 #include <cstdio>
+#include <limits>
 #include <span>
 
 namespace sunbright::gcnport_boot {
 namespace {
 
 // Retail J3DMatPacket, from decomp/sms/include/JSystem/J3D/J3DGraphBase/J3DPacket.hpp. Everything
-// below the material pointer belongs to `title_adapter`, which owns those layouts.
+// below these two pointers belongs to `title_adapter`, which owns those layouts.
 constexpr sb::title_adapter::GuestAddress MAT_PACKET_MATERIAL = 0x38;
+constexpr sb::title_adapter::GuestAddress MAT_PACKET_TEXTURE = 0x40;
 
 // `this` is in r3 on entry to J3DMatPacket::draw, whose own first instructions read 0x34(r3).
 constexpr std::size_t THIS_REGISTER = 3;
@@ -19,6 +21,20 @@ bool read_through_guest_context(sb::title_adapter::GuestAddress address,
                                 std::span<std::uint8_t> destination, void* context) {
     auto* const guest = static_cast<gcnport::GuestContext*>(context);
     return guest->read_memory(address, std::as_writable_bytes(destination));
+}
+
+// The texture decoder reads through a ByteAddress rather than a raw guest address. Both adapters
+// end at `guest->read_memory`, so a range the runtime refuses is refused identically either way.
+bool read_through_byte_address(sb::native_render::ByteAddress address,
+                               std::span<std::uint8_t> destination, void* context) {
+    std::uint64_t guestAddress = 0;
+    if (!address.guest_value(guestAddress) ||
+        guestAddress > std::numeric_limits<sb::title_adapter::GuestAddress>::max()) {
+        return false;
+    }
+    auto* const guest = static_cast<gcnport::GuestContext*>(context);
+    return guest->read_memory(static_cast<sb::title_adapter::GuestAddress>(guestAddress),
+                              std::as_writable_bytes(destination));
 }
 
 // The two encodings J3D's own `calcAlphaCmpID`/`calcZModeID` use to build the ids the tables are
@@ -82,6 +98,64 @@ void GuestMaterialProbe::record(std::map<std::uint32_t, std::uint64_t>& histogra
     untracked += 1;
 }
 
+void GuestMaterialProbe::read_textures(gcnport::GuestContext& guest,
+                                       const sb::title_adapter::GuestMemory& memory,
+                                       sb::title_adapter::GuestAddress packet,
+                                       const sb::native_render::J3dMaterialState& state,
+                                       const sb::title_adapter::GuestTevBlock& tev) {
+    const sb::title_adapter::GuestReader reader(memory);
+    sb::title_adapter::GuestAddress tableAddress = 0;
+    if (!reader.word(packet + MAT_PACKET_TEXTURE, tableAddress)) {
+        textureErrors_[sb::title_adapter::GuestTextureError::UnreadableTable] += 1;
+        return;
+    }
+    sb::title_adapter::GuestTextureTable table{};
+    const sb::title_adapter::GuestTextureError tableError =
+        read_guest_texture_table(memory, tableAddress, table);
+    textureErrors_[tableError] += 1;
+    if (tableError != sb::title_adapter::GuestTextureError::None) {
+        return;
+    }
+    textureTablesRead_ += 1;
+    if (table.padding != 0) {
+        texturePaddingNonZero_ += 1;
+    }
+    record(textureTableSizes_, textureTableSizesUntracked_, table.count);
+
+    const sb::native_render::AssetByteSource source{read_through_byte_address, &guest};
+    for (std::uint8_t binding = 0; binding < tev.textureBindingCount; ++binding) {
+        const std::uint16_t number = state.textureBindings[binding].textureNumber;
+        if (number == 0xFFFF) {
+            continue;
+        }
+        texturesBound_ += 1;
+        if (number >= table.count) {
+            texturesPastTheTable_ += 1;
+            continue;
+        }
+        const sb::title_adapter::GuestAddress header =
+            table.resources + static_cast<sb::title_adapter::GuestAddress>(number) *
+                                  sb::title_adapter::GUEST_RES_TIMG_BYTES;
+        if (decodedTextures_.contains(header)) {
+            continue;
+        }
+        sb::native_render::DecodedTexture decoded{};
+        sb::native_render::ResTimgDecodeError decodeError =
+            sb::native_render::ResTimgDecodeError::None;
+        const sb::title_adapter::GuestTextureError error =
+            decode_guest_texture(source, table, number, decoded, decodeError);
+        decodeErrors_[decodeError] += 1;
+        if (error != sb::title_adapter::GuestTextureError::None) {
+            continue;
+        }
+        decodedTextures_.insert(header);
+        texturesDecoded_ += 1;
+        textureBytes_ += decoded.rgba8.size();
+        record(textureSizes_, textureSizesUntracked_,
+               decoded.texture.width * 0x10000U + decoded.texture.height);
+    }
+}
+
 gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest) {
     entries_ += 1;
 
@@ -137,6 +211,8 @@ gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest)
     }
     tevKinds_[read.tev.kind] += 1;
     record(tevStageCounts_, tevStageCountsUntracked_, read.tev.stageCount);
+
+    read_textures(guest, memory, packet, state, read.tev);
 
     const sb::title_adapter::GuestPixelEngineBlock& block = read.pixelEngine;
     blocksRead_ += 1;
@@ -276,6 +352,45 @@ void GuestMaterialProbe::report() const {
     print_histogram("blend modes", blendModes_, blendModesUntracked_);
     print_histogram("blend src*16+dst", blendFactors_, blendFactorsUntracked_);
     print_histogram("depth compare functions", depthCompares_, depthComparesUntracked_);
+
+    print_errors("texture table errors", textureErrors_);
+    std::printf("gmse01_boot:   %llu texture table(s) resolved, %llu binding(s), %llu distinct "
+                "texture(s) decoded, %llu byte(s) of RGBA\n",
+                static_cast<unsigned long long>(textureTablesRead_),
+                static_cast<unsigned long long>(texturesBound_),
+                static_cast<unsigned long long>(texturesDecoded_),
+                static_cast<unsigned long long>(textureBytes_));
+    // Two checks on the table layout rather than on the decoder. `mResourceCount` is a u16 at 0x00
+    // with two bytes of padding behind it, and a texture number a TEV block binds must name a
+    // resource the table holds. A count read at the wrong offset breaks both.
+    std::printf("gmse01_boot:   %llu binding(s) named a texture past the table's count, %llu "
+                "table(s) had a non-zero halfword where the count's padding belongs\n",
+                static_cast<unsigned long long>(texturesPastTheTable_),
+                static_cast<unsigned long long>(texturePaddingNonZero_));
+    print_histogram("texture table sizes", textureTableSizes_, textureTableSizesUntracked_);
+    if (textureSizes_.empty()) {
+        std::printf("gmse01_boot:   texture dimensions: none recorded -- nothing was decoded\n");
+    } else {
+        std::printf("gmse01_boot:   texture dimensions:");
+        for (const auto& [size, count] : textureSizes_) {
+            std::printf(" %ux%u=%llu", size >> 16U, size & 0xffffU,
+                        static_cast<unsigned long long>(count));
+        }
+        if (textureSizesUntracked_ != 0) {
+            std::printf(" (+%llu past the tracked distinct values)",
+                        static_cast<unsigned long long>(textureSizesUntracked_));
+        }
+        std::printf("\n");
+    }
+    std::printf("gmse01_boot:   texture decode results:");
+    if (decodeErrors_.empty()) {
+        std::printf(" none recorded -- nothing was decoded");
+    }
+    for (const auto& [error, count] : decodeErrors_) {
+        std::printf(" %s=%llu", sb::native_render::res_timg_decode_error_name(error),
+                    static_cast<unsigned long long>(count));
+    }
+    std::printf("\n");
 
     // The one check here that could fail on its own. A zero denominator is not a pass: it means no
     // block ever carried a policy to check, which is reported as such rather than as agreement.

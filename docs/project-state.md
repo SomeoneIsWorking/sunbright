@@ -401,9 +401,25 @@ run, 0 Dolphin alerts, every entry still calling the original:
   address, or read at the wrong stride fails this; an all-zero answer from an unbuilt table is
   otherwise indistinguishable from a material that authored `GX_NEVER`.
 
-Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses and materials are
-counted and discarded; no `ModelDraw` is built, no `ModelMaterial` is classified from the state that
-is now read, no texture is decoded from the guest texture table, no semantic frame is produced under
+Each material's textures are resolved and decoded as well, through the same
+`native_render::decode_res_timg` the decomp path has always used. `J3DMatPacket` holds the texture
+table at `+0x40`; the table is `mResourceCount` (`u16`) at `0x00` and `mResources` at **`0x04`**,
+which is the one layout fact the decomp header disagrees with -- it declares a virtual destructor,
+implying a vptr, while the shipping image's `loadTexNo__FUlRCUs` (`0x802eea04`) reads
+`lwz r4, 4(r4)` and then indexes by `number << 5`. `ResTIMG` is `0x20` bytes. Decoding is per
+distinct resource rather than per draw, so the measurement is of the decoder rather than of a cache.
+In the same run: **44,314 tables resolved, 78,380 bindings, 92 distinct textures decoded, 0 decode
+errors**. Two checks constrain the layout rather than the decoder, and both are the shape a wrong
+offset breaks: **0 bindings named a texture past their table's count** (a count read at the wrong
+offset answers a wrong bound) and **0 tables carried a non-zero halfword where the count's padding
+belongs**. The dimensions are all GameCube-plausible powers of two from `4x32` to `256x256`, and the
+dimension histogram and the decoded byte total are derived independently yet agree exactly:
+`sum(w * h * 4) = 4,516,864`, the reported total.
+
+Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
+textures are counted and discarded; no `ModelDraw` is built, no `ModelMaterial` is classified from
+the state that is now read, no stage lighting is published from the guest (so only the unlit
+classifiers could run), no semantic frame is produced under
 the dynarec, and the run uses Dolphin's Null video backend so no frame is presented. `native_render::ModelDraw` also has no place for the normal matrix, which under the CPU
 pipelines genuinely differs from the position matrix; the adapter carries it as
 `GuestShapePose::normalViews` and the semantic boundary has yet to accept it. The surviving decomp-side adapters
