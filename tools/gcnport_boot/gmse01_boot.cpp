@@ -55,12 +55,15 @@
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 #include "UICommon/UICommon.h"
+#include "boot_options.h"
 #include "gcnport/dolphin_adapter.h"
 #include "guest_lighting_probe.h"
 #include "guest_material_probe.h"
+#include "guest_model_probe.h"
 #include "guest_report.h"
 #include "guest_shape_probe.h"
 
+namespace sunbright::gcnport_boot {
 namespace {
 // Diagnostic-only: guest code this tool boots may fault on a host page the minimal (non-disc,
 // non-apploader) boot path never mapped or initialized -- e.g. a memory access to a region
@@ -223,161 +226,6 @@ bool ReportAlertWithoutPrompting(const char* caption, const char* text, bool /*y
 // Each step is bounded and each way of stopping is reported, because a truncated backtrace that
 // looks complete is worse than none: the chain must stay inside RAM, stay word-aligned, and move
 // strictly upward, which is what distinguishes a finished walk from a corrupt or circular one.
-// One --dump-guest request: where to look in guest RAM once the run has stopped, and how much.
-struct GuestMemoryWindow {
-    u32 address = 0;
-    u32 words = 0;
-};
-
-// The SDK's own `retraceCount` (vi.c), incremented by __VIRetraceHandler and read back by
-// VIGetRetraceCount at 0x803504ec, whose single `lwz r3, -0x58f0(r13)` resolves it through SDA1 to
-// this address. It advances only when a VI interrupt is both raised by the hardware and dispatched
-// into the title's handler, so it measures end-to-end delivery rather than the instant of a sample.
-constexpr u32 GUEST_RETRACE_COUNT = 0x8040e8d0;
-
-// One --watch-guest request: a small guest window sampled as the run goes, reported only when its
-// contents change.
-//
-// --dump-guest answers "what does this look like when the run ends", which is the wrong question
-// for a state machine. A title that reached its title screen and one that reached it and fell back
-// look identical in a final dump, and a run long enough to be interesting produces far too many
-// samples to print unconditionally. So: print the first sample, print every change, and print
-// nothing in between. A window that never changes says so by producing exactly one line, which is a
-// real answer and a different one from a window that was never sampled.
-struct GuestWatch {
-    u32 address = 0;
-    u32 words = 0;
-
-    std::vector<u32> previous;
-    u64 samples = 0;
-    u64 changes = 0;
-};
-
-// One --count-calls request: a guest function whose every entry is counted by a native hook.
-//
-// A native implementation standing in for a guest function is the seam this whole port is built on,
-// and counting entries is the smallest thing that exercises it end to end on the real title: the
-// JIT has to plant the guard at that address, dispatch has to reach the callback, and the
-// callback's RunOriginalOnce has to hand the original body back to the translated code so the title
-// carries on behaving exactly as it did. Zero is a real answer here and is printed as one -- "the
-// hook never fired" and "the hook was never installed" are different failures, and a silent counter
-// cannot tell them apart, so installation is verified at install time and a zero afterwards means
-// the address genuinely was never dispatched.
-//
-// Installed through gcnport::DolphinRuntimeAdapter rather than Dolphin's raw hook ABI, so the real
-// title exercises the same adapter a native override will be mounted on -- the adapter's own test
-// drives a synthetic image, and this is the only thing that drives it against GMSE01.
-struct CountedCall {
-    u32 address = 0;
-    u64 entries = 0;
-
-    gcnport::HookResult operator()(gcnport::GuestContext&) {
-        entries += 1;
-        return gcnport::HookResult::call_original_once();
-    }
-};
-
-// One --super-call request: the complete native -> original -> native round trip at a guest
-// function, on the real title.
-//
-// --count-calls proves a native hook is reached and hands the body back to the translated code.
-// That is the easy half. The half a native override actually needs is this one: run native code,
-// call the real guest function as a subroutine, get control back with its result still in the
-// register file, and only then decide what the caller sees. Nothing about that is provable from a
-// counter, because a counter never looks at what the body did.
-//
-// Bounded on purpose, in two directions. `max_round_trips` caps how many entries take the
-// synchronous path, because that path drives the interpreter through the whole callee and turning
-// a function entered a quarter of a million times into an interpreted one would measure the
-// diagnostic rather than the title; past the cap the hook goes back to handing the body to the JIT.
-// `instruction_budget` caps one call, and exceeding it is a hard fault in gcnport rather than a
-// truncated call -- a body that does not return within its budget means the budget or the address
-// is wrong, and half an executed function is not a result to carry on from.
-struct SuperCall {
-    u32 address = 0;
-    u64 max_round_trips = 0;
-    u32 instruction_budget = 0;
-
-    u64 entries = 0;
-    u64 round_trips = 0;
-    u64 original_instructions = 0;
-    // An average over several calls hides the shape of the answer: a function whose calls all cost
-    // the same and one that took a wildly different path on one of them produce the same mean, and
-    // only the second is telling you the address or the budget is wrong.
-    u32 shortest_original = 0;
-    u32 longest_original = 0;
-    // Every distinct value the body returned, with how often. The first return value alone answers
-    // "did the call work"; it cannot answer "does this function keep telling the title the same
-    // thing", which is the question a native override standing in for it has to get right.
-    std::map<u32, u64> return_values;
-    static constexpr std::size_t MAX_DISTINCT_RETURN_VALUES = 16;
-    u64 return_values_not_tracked = 0;
-
-    gcnport::HookResult operator()(gcnport::GuestContext& guest) {
-        entries += 1;
-        if (round_trips >= max_round_trips) {
-            return gcnport::HookResult::call_original_once();
-        }
-
-        const gcnport::InterpretedBlock block = guest.call_original(instruction_budget);
-        round_trips += 1;
-        original_instructions += block.instruction_count;
-        if (round_trips == 1 || block.instruction_count < shortest_original) {
-            shortest_original = block.instruction_count;
-        }
-        if (block.instruction_count > longest_original) {
-            longest_original = block.instruction_count;
-        }
-        // r3 is the PowerPC ABI's first return register, so this is the value the guest caller is
-        // about to act on -- read by native code, after the original ran, inside the same callback.
-        // That ordering is the whole point.
-        const u32 returned = guest.general_register(3);
-        if (return_values.size() < MAX_DISTINCT_RETURN_VALUES || return_values.contains(returned)) {
-            return_values[returned] += 1;
-        } else {
-            return_values_not_tracked += 1;
-        }
-        // The body has already run, and PC/NPC were restored around it, so returning to the caller
-        // is exactly what the function itself would have done next.
-        return gcnport::HookResult::return_to_caller();
-    }
-};
-
-// A guest address on the command line: 32-bit, hexadecimal, and refused rather than truncated.
-// strtoull saturates at ULLONG_MAX on overflow, so errno is the only thing that separates an
-// out-of-range argument from a legitimately large one.
-bool ParseGuestAddress(const char* text, char** end, u32& address) {
-    errno = 0;
-    const unsigned long long parsed = std::strtoull(text, end, 16);
-    if (*end == text || parsed > 0xffffffffull || errno == ERANGE) {
-        return false;
-    }
-    address = static_cast<u32>(parsed);
-    return true;
-}
-
-// Everything one invocation of this tool asks for, past the image itself. These arrived as
-// positional parameters until there were five of them, at which point the call site said nothing
-// about which flag each one came from.
-struct BootRequest {
-    u64 block_budget = 0;
-    std::string disc_image_path;
-    bool report_counters_on_fault = true;
-    std::vector<GuestMemoryWindow> dump_windows;
-    std::vector<u32> counted_call_addresses;
-    std::vector<SuperCall> super_calls;
-    std::vector<GuestWatch> guest_watches;
-    std::vector<u32> material_probe_addresses;
-    u64 material_probe_reports = 0;
-    std::vector<u32> lighting_probe_addresses;
-    u64 lighting_probe_reports = 0;
-    std::vector<u32> shape_probe_addresses;
-    u64 shape_probe_reports = 0;
-    u32 shape_probe_system = sb::title_adapter::GMSE01_J3D_SYS;
-};
-
-// Reads the watched window and reports it if this is the first sample or anything in it moved.
-// Returns nothing: a watch that sees no change is not an error and has nothing to say.
 void SampleGuestWatch(const Memory::MemoryManager& memory, GuestWatch& watch, u64 blocks_run,
                       u32 retrace_count) {
     std::vector<u32> current(watch.words);
@@ -581,6 +429,25 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             std::printf("gmse01_boot: reading guest stage lighting at 0x%08x (first %llu reported "
                         "in full)\n",
                         address, static_cast<unsigned long long>(request.lighting_probe_reports));
+        }
+
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestModelProbe>> model_probes;
+        for (const u32 address : request.model_probe_addresses) {
+            model_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestModelProbe>(
+                request.shape_probe_system, request.model_probe_reports));
+            adapter.install_hook({.identity = adapter.identity(), .address = address},
+                                 std::ref(*model_probes.back()));
+            if (!runtime.HasNativeHook(address)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
+                             "draws it could not have composed\n",
+                             address);
+                std::exit(1);
+            }
+            std::printf("gmse01_boot: composing guest draws at 0x%08x through j3dSys 0x%08x (first "
+                        "%llu reported in full)\n",
+                        address, request.shape_probe_system,
+                        static_cast<unsigned long long>(request.model_probe_reports));
         }
 
         std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMaterialProbe>> material_probes;
@@ -863,6 +730,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         for (const auto& probe : material_probes) {
             probe->report();
         }
+        for (const auto& probe : model_probes) {
+            probe->report();
+        }
 
         for (const GuestWatch& watch : guest_watches) {
             std::printf("gmse01_boot: watch 0x%08x sampled %llu time(s), changed %llu time(s)\n",
@@ -901,275 +771,17 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
     File::DeleteDirRecursively(profile_path);
 }
 } // namespace
+} // namespace sunbright::gcnport_boot
 
 int main(int argc, char** argv) {
+    using namespace sunbright::gcnport_boot;
+
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
-    const auto usage = [argv]() {
-        std::fprintf(stderr,
-                     "usage: %s <path-to-extracted-main.dol> [--disc <disc-image>] "
-                     "[--max-blocks <n>] [--raw-faults] [--dump-guest <hex-addr>[:<words>] ...] "
-                     "[--count-calls <hex-addr> ...] [--watch-guest <hex-addr>[:<words>] ...] "
-                     "[--super-call <hex-addr>:<round-trips>:<instruction-budget> ...] "
-                     "[--read-shapes <hex-addr>[:<reports>]] [--j3d-sys <hex-addr>]\n"
-                     "[--read-materials <hex-addr>[:<reports>]] "
-                     "[--read-lighting <hex-addr>[:<reports>] ...]\n",
-                     argv[0]);
-    };
-    if (argc < 2 || argv[1][0] == '-') {
-        usage();
+    BootRequest request;
+    if (!parse_boot_options(argc, argv, request)) {
         return 1;
     }
-
-    // Optional overrides. Every one of these refuses a malformed value rather than silently falling
-    // back to its default: a run that quietly used a different budget, or quietly mounted no disc,
-    // would be indistinguishable from one that genuinely reached a different boundary.
-    BootRequest request;
-    for (int argument = 2; argument < argc; ++argument) {
-        const std::string_view name = argv[argument];
-        // The one flag that takes no value. Handled before the value check below, which would
-        // otherwise reject it for having nothing after it.
-        if (name == "--raw-faults") {
-            request.report_counters_on_fault = false;
-            continue;
-        }
-        if (argument + 1 >= argc) {
-            std::fprintf(stderr, "gmse01_boot: %s needs a value\n", argv[argument]);
-            return 1;
-        }
-        const char* const value = argv[++argument];
-
-        if (name == "--disc") {
-            request.disc_image_path = value;
-        } else if (name == "--max-blocks") {
-            char* end = nullptr;
-            errno = 0;
-            const unsigned long long parsed = std::strtoull(value, &end, 0);
-            // strtoull saturates at ULLONG_MAX on overflow, so an out-of-range argument would
-            // otherwise be accepted as a huge budget rather than refused; errno is the only way to
-            // tell them apart.
-            if (end == value || *end != '\0' || parsed == 0 || errno == ERANGE) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --max-blocks must be a positive value, got '%s'\n",
-                             value);
-                return 1;
-            }
-            request.block_budget = parsed;
-        } else if (name == "--dump-guest") {
-            // <hex-addr>[:<words>]. A default window is one cache line, which is enough to
-            // recognise an object header and its first members without hiding a typo in a wall of
-            // zeroes.
-            constexpr u32 DEFAULT_WORDS = 8;
-            constexpr u32 MAX_WORDS = 4096;
-            GuestMemoryWindow window;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, window.address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --dump-guest needs <hex-addr>[:<words>], got '%s'\n",
-                             value);
-                return 1;
-            }
-            window.words = DEFAULT_WORDS;
-            if (*end == ':') {
-                const char* const words_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed_words = std::strtoull(words_text, &end, 0);
-                if (end == words_text || *end != '\0' || parsed_words == 0 ||
-                    parsed_words > MAX_WORDS || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --dump-guest word count must be 1..%u, got '%s'\n",
-                                 MAX_WORDS, words_text);
-                    return 1;
-                }
-                window.words = static_cast<u32>(parsed_words);
-            }
-            request.dump_windows.push_back(window);
-        } else if (name == "--count-calls") {
-            u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || *end != '\0') {
-                std::fprintf(stderr, "gmse01_boot: --count-calls needs <hex-addr>, got '%s'\n",
-                             value);
-                return 1;
-            }
-            request.counted_call_addresses.push_back(address);
-        } else if (name == "--watch-guest") {
-            // <hex-addr>[:<words>]. Kept small on purpose: this window is re-read and compared at
-            // every batch report, and a wide one turns a change report into a wall of text in which
-            // the word that actually moved is the hard part to find.
-            constexpr u32 DEFAULT_WATCH_WORDS = 4;
-            constexpr u32 MAX_WATCH_WORDS = 64;
-            GuestWatch watch;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, watch.address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --watch-guest needs <hex-addr>[:<words>], got '%s'\n",
-                             value);
-                return 1;
-            }
-            watch.words = DEFAULT_WATCH_WORDS;
-            if (*end == ':') {
-                const char* const words_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed_words = std::strtoull(words_text, &end, 0);
-                if (end == words_text || *end != '\0' || parsed_words == 0 ||
-                    parsed_words > MAX_WATCH_WORDS || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --watch-guest word count must be 1..%u, got '%s'\n",
-                                 MAX_WATCH_WORDS, words_text);
-                    return 1;
-                }
-                watch.words = static_cast<u32>(parsed_words);
-            }
-            constexpr u32 GUEST_RAM_START = 0x80000000;
-            constexpr u32 GUEST_RAM_END = 0x81800000;
-            if (watch.address < GUEST_RAM_START || watch.address % 4 != 0 ||
-                watch.address + watch.words * 4 > GUEST_RAM_END) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --watch-guest 0x%08x is not a word-aligned guest RAM "
-                             "window of %u word(s)\n",
-                             watch.address, watch.words);
-                return 1;
-            }
-            request.guest_watches.push_back(watch);
-        } else if (name == "--read-shapes") {
-            // <hex-addr>[:<reports>]. The address is J3DShape::draw (0x802e0390 in GMSE01); the
-            // count bounds only how many are printed in full, never how many are read.
-            constexpr u64 DEFAULT_REPORTS = 8;
-            u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --read-shapes needs <hex-addr>[:<reports>], got '%s'\n",
-                             value);
-                return 1;
-            }
-            request.shape_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-shapes report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return 1;
-                }
-                request.shape_probe_reports = parsed;
-            }
-            request.shape_probe_addresses.push_back(address);
-        } else if (name == "--read-materials") {
-            // <hex-addr>[:<reports>]. The address is J3DMatPacket::draw (0x802edc38 in GMSE01),
-            // which is where the title resolves the material its shape packets are drawn with. The
-            // count bounds only how many are printed in full, never how many are read.
-            constexpr u64 DEFAULT_REPORTS = 8;
-            u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(
-                    stderr,
-                    "gmse01_boot: --read-materials needs <hex-addr>[:<reports>], got '%s'\n",
-                    value);
-                return 1;
-            }
-            request.material_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-materials report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return 1;
-                }
-                request.material_probe_reports = parsed;
-            }
-            request.material_probe_addresses.push_back(address);
-        } else if (name == "--read-lighting") {
-            // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
-            // or its TLightMario override (0x80229610); pass the flag twice to cover both. The
-            // count bounds only how many relights are printed in full, never how many are read.
-            constexpr u64 DEFAULT_REPORTS = 8;
-            u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(
-                    stderr, "gmse01_boot: --read-lighting needs <hex-addr>[:<reports>], got '%s'\n",
-                    value);
-                return 1;
-            }
-            request.lighting_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-lighting report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return 1;
-                }
-                request.lighting_probe_reports = parsed;
-            }
-            request.lighting_probe_addresses.push_back(address);
-        } else if (name == "--j3d-sys") {
-            // The guest address of j3dSys, for a build whose globals sit elsewhere. Defaults to
-            // GMSE01's, which title-adapter derives from J3DShape::loadVtxArray's own reads.
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, request.shape_probe_system) || *end != '\0') {
-                std::fprintf(stderr, "gmse01_boot: --j3d-sys needs <hex-addr>, got '%s'\n", value);
-                return 1;
-            }
-        } else if (name == "--super-call") {
-            // <hex-addr>:<round-trips>:<instruction-budget>. All three are stated rather than
-            // defaulted: how many entries to route through the interpreter and how long the callee
-            // is allowed to be are properties of the function being called, and a wrong guess at
-            // either is a hard fault or an unmeasured run rather than a smaller answer.
-            SuperCall super;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, super.address) || *end != ':') {
-                std::fprintf(stderr,
-                             "gmse01_boot: --super-call needs "
-                             "<hex-addr>:<round-trips>:<instruction-budget>, got '%s'\n",
-                             value);
-                return 1;
-            }
-            const char* const round_trips_text = end + 1;
-            errno = 0;
-            const unsigned long long parsed_round_trips = std::strtoull(round_trips_text, &end, 0);
-            if (end == round_trips_text || *end != ':' || parsed_round_trips == 0 ||
-                errno == ERANGE) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --super-call round-trip count must be a positive "
-                             "integer, got '%s'\n",
-                             round_trips_text);
-                return 1;
-            }
-            super.max_round_trips = parsed_round_trips;
-            const char* const budget_text = end + 1;
-            errno = 0;
-            const unsigned long long parsed_budget = std::strtoull(budget_text, &end, 0);
-            if (end == budget_text || *end != '\0' || parsed_budget == 0 ||
-                parsed_budget > 0xffffffffull || errno == ERANGE) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --super-call instruction budget must be 1..2^32-1, "
-                             "got '%s'\n",
-                             budget_text);
-                return 1;
-            }
-            super.instruction_budget = static_cast<u32>(parsed_budget);
-            request.super_calls.push_back(super);
-        } else {
-            std::fprintf(stderr, "gmse01_boot: unknown option '%s'\n", argv[argument - 1]);
-            usage();
-            return 1;
-        }
-    }
-
     const DolImage image = LoadDolAsFlatImage(argv[1]);
 
     // Dolphin's BLR-return optimization installs a guard in the current CPU thread's own stack; a

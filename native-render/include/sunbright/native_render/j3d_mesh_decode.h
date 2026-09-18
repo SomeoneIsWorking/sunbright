@@ -12,6 +12,13 @@ namespace sb::native_render {
 constexpr std::uint32_t kJ3dAttributeCount = 21;
 constexpr std::uint32_t kJ3dTextureCoordinateSets = 4;
 
+// Indices into `J3dVertexLayout`'s per-attribute arrays. Named here because both runtime adapters
+// have to ask the same two questions of a shape -- does it carry normals, does it carry vertex
+// colour -- and the answers decide which material families the shape's material can belong to.
+constexpr std::uint32_t kJ3dPositionAttribute = 9;
+constexpr std::uint32_t kJ3dNormalAttribute = 10;
+constexpr std::uint32_t kJ3dColor0Attribute = 11;
+
 enum class J3dAttributeType : std::uint8_t { None = 0, Direct = 1, Index8 = 2, Index16 = 3 };
 
 struct J3dVertexLayout {

@@ -23,8 +23,6 @@
 
 namespace {
 
-constexpr std::uint32_t kColor0 = 11;
-constexpr std::uint32_t kNormal = 10;
 
 struct Stats {
     std::uint64_t considered = 0;
@@ -145,9 +143,9 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
     if (material == nullptr ||
         sb::capture_native_j3d_material(
             *material, materialPacket->mTexture,
-            layout.type[kColor0] !=
+            layout.type[sb::native_render::kJ3dColor0Attribute] !=
                 static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
-            layout.type[kNormal] !=
+            layout.type[sb::native_render::kJ3dNormalAttribute] !=
                 static_cast<std::uint8_t>(sb::native_render::J3dAttributeType::None),
             capturedMaterial, textureError) != sb::NativeJ3dMaterialResult::Success) {
         ++g_stats.materialFailures;

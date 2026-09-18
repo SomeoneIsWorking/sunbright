@@ -478,12 +478,36 @@ than merely counted. Of the six unrecognised pairs, `0700/*` and `0701/*` (8,540
 bit clear and are genuinely unlit; `068e/0700` (11,956) differs from the accepted `070e/0700` only
 in its attenuation function, which points at a specular family rather than a missing one.
 
-**The largest single actionable item is `missing normal` = 9,394**, which is not GMSE01's doing: it
-is this hook passing `hasNormal = false`. The decomp classifies per *shape*, at `J3DShape::draw`,
-taking both flags from the shape's own vertex layout and the material from `j3dSys.getMatPacket()`
-(`sms-boot/runtime/native_j3d_adapter.cpp`). The guest probe classifies at `J3DMatPacket::draw`,
-where no shape is in hand. Moving that composition to the shape seam -- which is where a `ModelDraw`
-has to be built anyway -- is the next step.
+**The largest single actionable item was `missing normal` = 9,394**, which was not GMSE01's doing:
+it was the material hook passing `hasNormal = false`, because `J3DMatPacket::draw` has no shape in
+hand. That composition now lives at the shape seam, in `tools/gcnport_boot/guest_model_probe.cpp`
+on `J3DShape::draw` (`0x802e0390`) -- the same seam the decomp uses
+(`sb_native_j3d_shape_submit`), taking both geometry flags from the shape's vertex layout and the
+material from `j3dSys.mMatPacket`. Measured on the real title, 0 Dolphin alerts:
+
+    51,124 shape draw(s), 51,124 composed with a material, 25,620 classified,
+      52 distinct (shape, material) pair(s)
+    0 unreadable shapes / material packets / materials; shape, material and texture-table
+      errors all `none`; texture decode results `none=64`
+    45,146 shapes carry normals, 16,204 carry vertex colour,
+      51,124 classified against a published stage light
+    classification: success=25620 unsupported_program=25504
+    families: lit_masked_toon=8540 lit_textured=9394 lit_tinted_layered_specular=3416
+              unlit_textured=1708 lit_specular_color=854 lit_dual_alpha_effect=854
+              lit_alpha_tint=854
+    64 distinct textures decoded, 3,797,760 bytes of RGBA
+    textures per classified draw: 0=854 1=11956 2=4270 4=8540
+
+**50.1% of GMSE01's shape draws now classify into a real material family**, with their textures
+decoded and the stage light in force, through the same shared classifiers the decomp path uses.
+`lit_textured = 9,394` is exactly the `missing normal = 9,394` the previous measurement predicted,
+which is what says the fix landed where it was aimed rather than somewhere else. The
+textures-per-draw histogram agrees independently with the families' own texture counts: 4 for the
+8,540 masked-toon draws, 2 for the 4,270 layered ones, 0 for the 854 `lit_specular_color`.
+
+Remaining: 25,504 draws are still `unsupported_program`. The material probe's channel histogram
+localises most of them -- 11,956 use `068e/0700`, one attenuation function away from the accepted
+`070e/0700`, and 8,540 have the lighting bit clear.
 
 Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
 textures are counted and discarded; no `ModelDraw` is built, no material classifies into a family

@@ -16,7 +16,9 @@ sunbright_add_gcnport()
 add_executable(sunbright_gcnport_boot
   gmse01_boot.cpp
   guest_report.cpp
-  guest_lighting_probe.cpp
+  boot_options.cpp
+    guest_lighting_probe.cpp
+    guest_model_probe.cpp
     guest_material_probe.cpp
   guest_shape_probe.cpp
   "${GCPORT_DOLPHIN_STUB_HOST}"

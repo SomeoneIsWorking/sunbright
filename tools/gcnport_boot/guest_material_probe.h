@@ -5,9 +5,7 @@
 #include <map>
 #include <set>
 
-#include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_material_family.h>
-#include <sunbright/native_render/j3d_unlit_material.h>
 
 #include <sunbright/title_adapter/guest_j3d_material.h>
 #include <sunbright/title_adapter/guest_j3d_texture.h>
@@ -49,6 +47,8 @@ namespace sunbright::gcnport_boot {
 // fetched for. A table that was never built, or a table read at the wrong address or the wrong
 // stride, answers zeroes or a neighbour's row -- all of which re-encode to the wrong id. That check
 // is what tells "the game's table says GX_NEVER" apart from "this read never reached the table".
+// It deliberately does not classify: `hasVertexColor` and `hasNormal` belong to the shape, and
+// there is no shape here. `GuestModelProbe`, on `J3DShape::draw`, owns that composition.
 // The material's textures are resolved and decoded too, through `native_render::decode_res_timg` --
 // the same decoder the decomp path has always used, reading the guest header directly. Decoding is
 // per distinct resource rather than per draw: a texture is the same bytes every time it is bound,
@@ -99,9 +99,6 @@ class GuestMaterialProbe {
                           const sb::native_render::J3dMaterialState& state,
                           const sb::title_adapter::GuestTextureTable& table,
                           std::uint8_t bindingCount);
-    void measure_refusals(const sb::native_render::J3dMaterialState& state);
-    void classify(gcnport::GuestContext& guest, const sb::native_render::J3dMaterialState& state,
-                  const sb::title_adapter::GuestTextureTable& table);
 
     std::uint64_t maxReports_ = 0;
     std::uint64_t entries_ = 0;
@@ -132,14 +129,6 @@ class GuestMaterialProbe {
     std::map<std::uint32_t, std::uint64_t> textureSizes_;
     std::uint64_t textureSizesUntracked_ = 0;
     std::map<sb::native_render::ResTimgDecodeError, std::uint64_t> decodeErrors_;
-    std::map<sb::native_render::J3dMaterialFamilyResult, std::uint64_t> classifyResults_;
-    std::map<sb::native_render::J3dMaterialFamily, std::uint64_t> families_;
-    std::uint64_t litMaterialsClassified_ = 0;
-    std::map<sb::native_render::J3dRasterPolicyResult, std::uint64_t> rasterResults_;
-    std::map<sb::native_render::J3dUnlitMaterialResult, std::uint64_t> unlitResults_;
-    std::map<sb::native_render::J3dUnlitTexturedResult, std::uint64_t> unlitTexturedResults_;
-    std::map<sb::native_render::J3dLitColorResult, std::uint64_t> litColorResults_;
-    std::map<sb::native_render::J3dLitTexturedResult, std::uint64_t> litTexturedResults_;
     std::map<sb::title_adapter::GuestMaterialError, std::uint64_t> materialErrors_;
     std::map<sb::title_adapter::GuestColorError, std::uint64_t> colorErrors_;
     std::map<sb::title_adapter::GuestTexGenError, std::uint64_t> texGenErrors_;

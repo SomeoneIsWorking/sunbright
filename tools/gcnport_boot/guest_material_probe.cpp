@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guest_material_probe.h"
 
-#include <sunbright/native_render/j3d_lit_material.h>
-#include <sunbright/native_render/j3d_stage_lighting.h>
-
 #include <array>
 #include <cstdio>
 #include <limits>
@@ -194,54 +191,6 @@ void GuestMaterialProbe::measure_bindings(gcnport::GuestContext& guest,
     }
 }
 
-// Why a material was refused, asked of the shipping classifiers themselves rather than re-derived.
-// A bare "unsupported program" count cannot be acted on: it says nothing about whether the gate is
-// the raster policy, the colour program, or an input this hook cannot see.
-void GuestMaterialProbe::measure_refusals(const sb::native_render::J3dMaterialState& state) {
-    sb::native_render::ModelRasterPolicy policy{};
-    rasterResults_[sb::native_render::classify_j3d_raster_policy(state, policy)] += 1;
-    sb::native_render::UnlitColorMaterial unlitColor{};
-    unlitResults_[sb::native_render::classify_j3d_unlit_material(state, unlitColor)] += 1;
-    const sb::native_render::PictureTexture placeholder{.resource = 1, .width = 1, .height = 1};
-    sb::native_render::UnlitTexturedMaterial unlitTextured{};
-    unlitTexturedResults_[sb::native_render::classify_j3d_unlit_textured_material(
-        state, placeholder, unlitTextured)] += 1;
-
-    // The two lit families the scene's materials are shaped like. Asked only when a light has been
-    // published, so a zero denominator here says "no relight had run yet" rather than "every lit
-    // family refused".
-    const sb::native_render::ModelLightingContext* const lighting =
-        sb::native_render::current_j3d_stage_lighting();
-    if (lighting == nullptr) {
-        return;
-    }
-    sb::native_render::LitColorMaterial litColor{};
-    litColorResults_[sb::native_render::classify_j3d_lit_color_material(state, *lighting,
-                                                                        litColor)] += 1;
-    sb::native_render::LitTexturedMaterial litTextured{};
-    litTexturedResults_[sb::native_render::classify_j3d_lit_textured_material(
-        state, placeholder, *lighting, litTextured)] += 1;
-}
-
-void GuestMaterialProbe::classify(gcnport::GuestContext& guest,
-                                  const sb::native_render::J3dMaterialState& state,
-                                  const sb::title_adapter::GuestTextureTable& table) {
-    TextureResolver resolver{.probe = this, .guest = &guest, .table = table};
-    sb::native_render::ClassifiedJ3dMaterial classified{};
-    // Whatever the stage-light hook last published, read back through the shipping accessor rather
-    // than kept here. Null until a relight has run, which is the honest answer for a material drawn
-    // before one: every lit family is then out of reach and says so, instead of being classified
-    // against an invented rig.
-    const sb::native_render::ModelLightingContext* const lighting =
-        sb::native_render::current_j3d_stage_lighting();
-    litMaterialsClassified_ += lighting != nullptr ? 1 : 0;
-    const sb::native_render::J3dMaterialFamilyResult result =
-        sb::native_render::classify_j3d_material(state, lighting,
-                                                 {resolve_texture_thunk, &resolver}, classified);
-    classifyResults_[result] += 1;
-    families_[classified.family] += 1;
-}
-
 gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest) {
     entries_ += 1;
 
@@ -307,9 +256,7 @@ gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest)
     sb::title_adapter::GuestTextureTable table{};
     if (read_texture_table(guest, memory, packet, table)) {
         measure_bindings(guest, state, table, read.tev.textureBindingCount);
-        classify(guest, state, table);
     }
-    measure_refusals(state);
 
     const sb::title_adapter::GuestPixelEngineBlock& block = read.pixelEngine;
     blocksRead_ += 1;
@@ -493,36 +440,6 @@ void GuestMaterialProbe::report() const {
         }
         std::printf("\n");
     }
-    print_errors("raster policy results", rasterResults_,
-                 sb::native_render::j3d_raster_policy_result_name);
-    print_errors("unlit colour results", unlitResults_,
-                 sb::native_render::j3d_unlit_material_result_name);
-    print_errors("unlit textured results", unlitTexturedResults_,
-                 sb::native_render::j3d_unlit_textured_result_name);
-    print_errors("lit colour results", litColorResults_,
-                 sb::native_render::j3d_lit_color_result_name);
-    print_errors("lit textured results", litTexturedResults_,
-                 sb::native_render::j3d_lit_textured_result_name);
-    std::printf("gmse01_boot:   %llu material(s) were classified with a published stage light\n",
-                static_cast<unsigned long long>(litMaterialsClassified_));
-    std::printf("gmse01_boot:   material classification:");
-    if (classifyResults_.empty()) {
-        std::printf(" none recorded -- no material reached the classifier");
-    }
-    for (const auto& [result, count] : classifyResults_) {
-        std::printf(" %s=%llu", sb::native_render::j3d_material_family_result_name(result),
-                    static_cast<unsigned long long>(count));
-    }
-    std::printf("\n");
-    std::printf("gmse01_boot:   material families:");
-    if (families_.empty()) {
-        std::printf(" none recorded -- no material reached the classifier");
-    }
-    for (const auto& [family, count] : families_) {
-        std::printf(" %s=%llu", sb::native_render::j3d_material_family_name(family),
-                    static_cast<unsigned long long>(count));
-    }
-    std::printf("\n");
     std::printf("gmse01_boot:   texture decode results:");
     if (decodeErrors_.empty()) {
         std::printf(" none recorded -- nothing was decoded");
