@@ -12,7 +12,12 @@ currently has no gameplay executable while its shared runtime executor is missin
 
 ## Current focus
 
-S003 is the current focus, and is now `partial` rather than `missing`: Sunbright installs its hooks
+S004, the PC-native renderer, is the next focus: the execution path underneath it now runs GMSE01's
+whole attract cycle unattended and faultlessly (S008 below has the retrace-timed trajectory), and
+the run presents no frame because it uses Dolphin's Null video backend. Nothing further about the
+title's behaviour can be seen without a renderer.
+
+S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
 -- 1,428 complete native -> original -> native round trips through `TApplication::drawDVDErr`, with
 the native caller reading the body's own return value each time. What remains is a native override
@@ -346,8 +351,32 @@ remain. Each pass must rebase, converge matching ownership units, then extend on
 
 ### S008 — representative gameplay conformance
 
-Missing capability: drive a bounded, interactive gameplay scenario through the real gameplay target
-with native renderer and native owners active. Compare guest PC/register state, relevant memory,
+The unattended half is measured. In one 4,000,000,558-block run (436.9 s wall, ~9.16M blocks/s,
+0 Dolphin alerts, 0 invalid guest accesses, 29,234 blocks compiled and 99.97% of executions served
+from the block cache), `--watch-guest 803e9700:8` recorded `gpApplication` walking GMSE01's entire
+attract cycle twice, with the transitions timed in guest retraces:
+
+| retrace | `mAppState` | `mMovie` | what the title is doing |
+| --- | --- | --- | --- |
+| 78 | 2 `BOOT` | 0 | first VI retrace delivered |
+| 84 | 3 `NLOGO` | 0 | `mDirector` constructed |
+| 295 | 4 `DONE` | 9 | `mNextArea.set(15, 0, 0)`, opening movie queued |
+| 6,214 | 5 `GAMEPLAY` | 9 | stage 15 (file-select) running |
+| 9,019 | 5 `GAMEPLAY` | 12 | demo movie queued |
+| 9,054 | 6 `MOVIE` | 12 | demo movie playing |
+| 11,480 | 5 `GAMEPLAY` | 12 | back to file-select |
+| 14,279 / 14,316 | 5 → 6 | 9 | opening movie again |
+| 20,232 | 5 `GAMEPLAY` | 9 | back to file-select |
+| 23,037 / 23,064 | 5 → 6 | 12 | demo movie again — cycle two |
+
+23,064 retraces is ~384 s of guest time, and the cycle lengths are the real ones: movie 9
+(`Entrance.thp`, 2,816 frames at 30 Hz) occupies 5,916 retraces against the 5,632 its frame count
+predicts, the rest being its fades. The title is not merely surviving; it is keeping console time.
+
+Missing capability: drive a bounded, *interactive* gameplay scenario through the real gameplay
+target with native renderer and native owners active. Nothing above involves input, a native
+renderer (the run uses Dolphin's Null video backend, so no frame is presented), or native subsystem
+owners. Compare guest PC/register state, relevant memory,
 timing/interrupt/service events, audio, input, and presented frames against an independent oracle;
 report JIT blocks, cache activity, invalidations, overrides, and denominators. Qualify correctness and
 frame-time behavior on every released host architecture.

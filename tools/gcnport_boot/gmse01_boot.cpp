@@ -225,6 +225,30 @@ struct GuestMemoryWindow {
     u32 words = 0;
 };
 
+// The SDK's own `retraceCount` (vi.c), incremented by __VIRetraceHandler and read back by
+// VIGetRetraceCount at 0x803504ec, whose single `lwz r3, -0x58f0(r13)` resolves it through SDA1 to
+// this address. It advances only when a VI interrupt is both raised by the hardware and dispatched
+// into the title's handler, so it measures end-to-end delivery rather than the instant of a sample.
+constexpr u32 GUEST_RETRACE_COUNT = 0x8040e8d0;
+
+// One --watch-guest request: a small guest window sampled as the run goes, reported only when its
+// contents change.
+//
+// --dump-guest answers "what does this look like when the run ends", which is the wrong question
+// for a state machine. A title that reached its title screen and one that reached it and fell back
+// look identical in a final dump, and a run long enough to be interesting produces far too many
+// samples to print unconditionally. So: print the first sample, print every change, and print
+// nothing in between. A window that never changes says so by producing exactly one line, which is a
+// real answer and a different one from a window that was never sampled.
+struct GuestWatch {
+    u32 address = 0;
+    u32 words = 0;
+
+    std::vector<u32> previous;
+    u64 samples = 0;
+    u64 changes = 0;
+};
+
 // One --count-calls request: a guest function whose every entry is counted by a native hook.
 //
 // A native implementation standing in for a guest function is the seam this whole port is built on,
@@ -475,7 +499,34 @@ struct BootRequest {
     std::vector<GuestMemoryWindow> dump_windows;
     std::vector<u32> counted_call_addresses;
     std::vector<SuperCall> super_calls;
+    std::vector<GuestWatch> guest_watches;
 };
+
+// Reads the watched window and reports it if this is the first sample or anything in it moved.
+// Returns nothing: a watch that sees no change is not an error and has nothing to say.
+void SampleGuestWatch(const Memory::MemoryManager& memory, GuestWatch& watch, u64 blocks_run,
+                      u32 retrace_count) {
+    std::vector<u32> current(watch.words);
+    for (u32 word = 0; word < watch.words; ++word) {
+        current[word] = memory.Read_U32(watch.address + word * 4);
+    }
+    watch.samples += 1;
+    if (current == watch.previous) {
+        return;
+    }
+    const bool first = watch.previous.empty();
+    if (!first) {
+        watch.changes += 1;
+    }
+    std::printf("gmse01_boot: watch 0x%08x %s at block %llu (retrace %u):", watch.address,
+                first ? "first sample" : "changed", static_cast<unsigned long long>(blocks_run),
+                retrace_count);
+    for (const u32 word : current) {
+        std::printf(" %08x", word);
+    }
+    std::printf("\n");
+    watch.previous = std::move(current);
+}
 
 void RunBoot(const DolImage& image, const BootRequest& request) {
     const std::string profile_path = File::CreateTempDir();
@@ -621,6 +672,12 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         requested.instruction_budget);
         }
 
+        std::vector<GuestWatch> guest_watches = request.guest_watches;
+        for (const GuestWatch& watch : guest_watches) {
+            std::printf("gmse01_boot: watching 0x%08x (%u word(s)) for changes\n", watch.address,
+                        watch.words);
+        }
+
         // Bounded: this is a diagnostic boot attempt, not a gameplay loop.
         //
         // GMSE01 now runs through OS bring-up without a single fault and stops at a precisely
@@ -632,15 +689,13 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         // and boot walks straight on through __OSInitAudioSystem, the RAM clear, and OSMemory's
         // protection setup.
         //
-        // Boot then stops in GMSE01's DVD error screen: the SDK strings "An error has occurred.
-        // Turn the power OFF ...", "The Disc could not be read." and "Reading Disc..." are rendered
-        // through the IPL font, which is what produces the run's "Trying to access Windows-1252
-        // fonts" notice and the stream of one-byte reads from addresses that are themselves ASCII
-        // codes. That is the correct and expected result: BootAuthenticatedImage places a flat DOL
-        // image in memory and deliberately exposes no DVD volume, so the title's first disc access
-        // fails and the SDK falls into its disc-error path. A disc device is the next adapter, and
-        // it is one Sunbright owns -- the game image must never reach gcnport (see
-        // docs/issues/0037).
+        // Boot used to stop in GMSE01's DVD error screen, because BootAuthenticatedImage placed a
+        // flat DOL image in memory and exposed no DVD volume, so the title's first disc access
+        // failed and the SDK fell into its disc-error path. --disc ended that: the title's own
+        // TApplication::drawDVDErr, measured through --super-call across 1,428 consecutive frames,
+        // returns 0 on 1,393 of them and 'em_3' ("Reading Disc...") on 35. Those 35 are frames the
+        // title spends drawing that message instead of updating itself while DVDGetDriveStatus()
+        // reports the drive busy -- transient, and what a real console does while the drive seeks.
         //
         // The budget has to clear System/Application.cpp's two OSProtectRange calls, which flush
         // 0x80000000 and 0x7d000000 bytes of address space. DCFlushRange walks those 32 bytes at a
@@ -657,11 +712,11 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         // and it is the difference between reaching the disc boundary in ~34 seconds and in over
         // twelve minutes. Running both paths in one invocation also keeps each of them exercised.
         //
-        // Throughput drops to ~40,000 blocks/second once boot is inside the disc-error screen. That
-        // is the guest spin-waiting on timers, not a runtime defect: its slices end at the next
-        // scheduled hardware event rather than at a block, and each font read it makes raises an
-        // invalid-access report. It is a property of the wait this tool currently ends in, and is
-        // expected to go once a disc device exists.
+        // Throughput used to drop to ~40,000 blocks/second once boot entered that error screen --
+        // the guest spin-waiting on timers, its slices ending at the next scheduled hardware event
+        // rather than at a block, with every font read raising an invalid-access report. With a
+        // disc mounted it no longer happens: a 600M-block run holds ~9,600,000 blocks/second from
+        // start to finish and reports no invalid guest accesses at all.
         constexpr u32 STEPPED_BLOCKS = 32;
         constexpr u64 BATCH_BLOCKS = 1000000;
         constexpr u64 DEFAULT_MAX_BLOCKS = 160000000;
@@ -696,6 +751,12 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             std::printf("gmse01_boot: %llu blocks, pc=0x%08x, %.1f s (%.0f blocks/s)\n",
                         static_cast<unsigned long long>(blocks_run), batch.guest_pc, elapsed,
                         elapsed > 0.0 ? blocks_run / elapsed : 0.0);
+            if (!guest_watches.empty()) {
+                const u32 retrace_count = system.GetMemory().Read_U32(GUEST_RETRACE_COUNT);
+                for (GuestWatch& watch : guest_watches) {
+                    SampleGuestWatch(system.GetMemory(), watch, blocks_run, retrace_count);
+                }
+            }
             if (batch.backend_fault || batch.blocks_executed == 0) {
                 std::printf("gmse01_boot: batch stopped at pc=0x%08x: %s\n", batch.guest_pc,
                             batch.detail.c_str());
@@ -712,18 +773,13 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             //
             // The repeated PC stays as the cheap trigger for taking a sample; what the sample is
             // CALLED comes from the one reading that separates the two cases, whether the title is
-            // still being handed VI retraces. GUEST_RETRACE_COUNT is the SDK's own `retraceCount`
-            // (vi.c), incremented by __VIRetraceHandler and read back by VIGetRetraceCount at
-            // 0x803504ec, whose single `lwz r3, -0x58f0(r13)` resolves it through SDA1 to
-            // 0x8040e8d0. It only advances when a VI interrupt is both raised by the hardware and
-            // dispatched into the title's handler, so it measures end-to-end delivery rather than
-            // the instant of the sample. A guest that retires a million blocks and takes retraces
+            // still being handed VI retraces (GUEST_RETRACE_COUNT, above).
+            // A guest that retires a million blocks and takes retraces
             // while doing it is progressing by definition; one that retires them and takes none is
             // either still in pre-VI boot or genuinely stuck, and only that case earns the state
             // dump below.
             if (batch.guest_pc == previous_sample_pc) {
                 const auto& memory = system.GetMemory();
-                constexpr u32 GUEST_RETRACE_COUNT = 0x8040e8d0;
                 const u64 ticks = system.GetCoreTiming().GetTicks();
                 const u32 retrace_count = memory.Read_U32(GUEST_RETRACE_COUNT);
                 const u32 retraces_delivered = retrace_count - previous_retrace_count;
@@ -869,6 +925,12 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                             SuperCall::MAX_DISTINCT_RETURN_VALUES);
             }
         }
+        for (const GuestWatch& watch : guest_watches) {
+            std::printf("gmse01_boot: watch 0x%08x sampled %llu time(s), changed %llu time(s)\n",
+                        watch.address, static_cast<unsigned long long>(watch.samples),
+                        static_cast<unsigned long long>(watch.changes));
+        }
+
         std::printf("gmse01_boot: synchronous_original_calls=%llu "
                     "synchronous_original_instructions=%llu\n",
                     static_cast<unsigned long long>(counters.synchronous_original_calls),
@@ -907,7 +969,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "usage: %s <path-to-extracted-main.dol> [--disc <disc-image>] "
                      "[--max-blocks <n>] [--raw-faults] [--dump-guest <hex-addr>[:<words>] ...] "
-                     "[--count-calls <hex-addr> ...] "
+                     "[--count-calls <hex-addr> ...] [--watch-guest <hex-addr>[:<words>] ...] "
                      "[--super-call <hex-addr>:<round-trips>:<instruction-budget> ...]\n",
                      argv[0]);
     };
@@ -988,6 +1050,45 @@ int main(int argc, char** argv) {
                 return 1;
             }
             request.counted_call_addresses.push_back(address);
+        } else if (name == "--watch-guest") {
+            // <hex-addr>[:<words>]. Kept small on purpose: this window is re-read and compared at
+            // every batch report, and a wide one turns a change report into a wall of text in which
+            // the word that actually moved is the hard part to find.
+            constexpr u32 DEFAULT_WATCH_WORDS = 4;
+            constexpr u32 MAX_WATCH_WORDS = 64;
+            GuestWatch watch;
+            char* end = nullptr;
+            if (!ParseGuestAddress(value, &end, watch.address) || (*end != '\0' && *end != ':')) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --watch-guest needs <hex-addr>[:<words>], got '%s'\n",
+                             value);
+                return 1;
+            }
+            watch.words = DEFAULT_WATCH_WORDS;
+            if (*end == ':') {
+                const char* const words_text = end + 1;
+                errno = 0;
+                const unsigned long long parsed_words = std::strtoull(words_text, &end, 0);
+                if (end == words_text || *end != '\0' || parsed_words == 0 ||
+                    parsed_words > MAX_WATCH_WORDS || errno == ERANGE) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --watch-guest word count must be 1..%u, got '%s'\n",
+                                 MAX_WATCH_WORDS, words_text);
+                    return 1;
+                }
+                watch.words = static_cast<u32>(parsed_words);
+            }
+            constexpr u32 GUEST_RAM_START = 0x80000000;
+            constexpr u32 GUEST_RAM_END = 0x81800000;
+            if (watch.address < GUEST_RAM_START || watch.address % 4 != 0 ||
+                watch.address + watch.words * 4 > GUEST_RAM_END) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --watch-guest 0x%08x is not a word-aligned guest RAM "
+                             "window of %u word(s)\n",
+                             watch.address, watch.words);
+                return 1;
+            }
+            request.guest_watches.push_back(watch);
         } else if (name == "--super-call") {
             // <hex-addr>:<round-trips>:<instruction-budget>. All three are stated rather than
             // defaulted: how many entries to route through the interpreter and how long the callee
