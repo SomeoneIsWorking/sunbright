@@ -163,6 +163,18 @@ struct DoubledTexturePairMaterial {
     ModelRasterPolicy raster{};
 };
 
+// Two texture layers summed, each scaled by its own authored colour constant: the console idiom
+// for a surface whose second image adds light rather than modulating it. Opacity is the two
+// images' alpha through one authored register value, which is why it is not a property of either
+// tint alone.
+struct TintedTextureSumMaterial {
+    PictureTexture firstTexture{};
+    PictureTexture secondTexture{};
+    Color firstTint{1.0F, 1.0F, 1.0F, 1.0F};
+    Color secondTint{};
+    ModelRasterPolicy raster{};
+};
+
 // A decoded texture used only as an opacity mask for one ordinary solid colour. Texture RGB is
 // deliberately ignored; alphaScale expresses authored mask amplification before the raster test.
 struct AlphaMaskedColorMaterial {
@@ -377,11 +389,11 @@ struct LitSpecularTexturedMaterial {
 
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, TexturedEffectMaterial,
-                 DoubledTexturePairMaterial, LitDualAlphaEffectMaterial, AlphaMaskedColorMaterial,
-                 LitColorMaterial, LitTexturedMaterial, LitTexturedAlphaMaskMaterial,
-                 LitAlphaTintMaterial, LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
-                 LitMaskedToonMaterial, LitMaskedSpecularMaterial, LitSpecularRampMaterial,
-                 LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
+                 DoubledTexturePairMaterial, TintedTextureSumMaterial, LitDualAlphaEffectMaterial,
+                 AlphaMaskedColorMaterial, LitColorMaterial, LitTexturedMaterial,
+                 LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial, LitLayeredTexturedMaterial,
+                 LitTintedLayeredSpecularMaterial, LitMaskedToonMaterial, LitMaskedSpecularMaterial,
+                 LitSpecularRampMaterial, LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 

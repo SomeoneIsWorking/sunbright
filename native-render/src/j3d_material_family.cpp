@@ -12,6 +12,7 @@
 #include <sunbright/native_render/j3d_masked_toon_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
 #include <sunbright/native_render/j3d_tinted_layered_material.h>
+#include <sunbright/native_render/j3d_tinted_texture_sum_material.h>
 #include <sunbright/native_render/j3d_unlit_effect_material.h>
 #include <sunbright/native_render/j3d_unlit_material.h>
 
@@ -93,6 +94,7 @@ struct TexturedMatches {
     bool maskedToon = false;
     bool maskedSpecular = false;
     bool doubledTexturePair = false;
+    bool tintedTextureSum = false;
     bool litTextured = false;
     bool unlitTextured = false;
     bool texturedEffect = false;
@@ -137,6 +139,9 @@ struct TexturedMatches {
         if (doubledTexturePair) {
             return J3dMaterialFamily::DoubledTexturePair;
         }
+        if (tintedTextureSum) {
+            return J3dMaterialFamily::TintedTextureSum;
+        }
         // Last, so that wiring it in cannot take a draw away from a family that already had one.
         // Its programs modulate a texture by an authored colour and never read the raster, which is
         // a shape several lit families would otherwise be asked about first.
@@ -156,7 +161,7 @@ struct TexturedMatches {
             return 4;
         }
         if (dualAlphaEffect || litAlphaMask || layered || tintedLayered || maskedSpecular ||
-            doubledTexturePair) {
+            doubledTexturePair || tintedTextureSum) {
             return 2;
         }
         return 1;
@@ -180,6 +185,10 @@ struct TexturedMatches {
                                               state, PLACEHOLDER, PLACEHOLDER, doubledTexturePair),
                                           j3d_doubled_texture_pair_result_name,
                                           J3dMaterialFamily::DoubledTexturePair, refusals);
+    TintedTextureSumMaterial tintedTextureSum{};
+    matches.tintedTextureSum = accepted(
+        classify_j3d_tinted_texture_sum_material(state, PLACEHOLDER, PLACEHOLDER, tintedTextureSum),
+        j3d_tinted_texture_sum_result_name, J3dMaterialFamily::TintedTextureSum, refusals);
     TexturedEffectMaterial unlitEffect{};
     matches.unlitEffect =
         accepted(classify_j3d_unlit_effect_material(state, PLACEHOLDER, unlitEffect),
@@ -284,6 +293,15 @@ void record_unasked_lit_families(const ModelLightingContext* lighting,
         DoubledTexturePairMaterial built{};
         if (classify_j3d_doubled_texture_pair_material(state, first, second, built) !=
             J3dDoubledTexturePairResult::Success) {
+            return false;
+        }
+        material = built;
+        return true;
+    }
+    case J3dMaterialFamily::TintedTextureSum: {
+        TintedTextureSumMaterial built{};
+        if (classify_j3d_tinted_texture_sum_material(state, first, second, built) !=
+            J3dTintedTextureSumResult::Success) {
             return false;
         }
         material = built;
@@ -469,6 +487,8 @@ const char* j3d_material_family_name(J3dMaterialFamily family) noexcept {
         return "unlit_textured_effect";
     case J3dMaterialFamily::DoubledTexturePair:
         return "doubled_texture_pair";
+    case J3dMaterialFamily::TintedTextureSum:
+        return "tinted_texture_sum";
     }
     return "unknown";
 }

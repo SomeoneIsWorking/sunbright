@@ -608,11 +608,21 @@ that asymmetry from both sides.
     doubled_texture_pair=1661 (854 + 807), every other family's count unchanged
     57,057 draws composed and submitted, 0 rejected by the sink, 0 dolphin alerts
 
-**The frontier is now 3 materials**, and `tools/re/tev_decode.py` reads each one's program:
+`0x80e8817c` followed: two texture layers, each scaled by its own authored colour constant, the
+second added to the first rather than modulating it. Each stage names its constant by selection, so
+the two layers read different constants rather than one fixed slot, and opacity comes from a colour
+register's alpha through both images -- it belongs to neither tint, which is why it is published on
+the first one's alpha channel and the second's is zero. Neither stage reads a rasterised channel, so
+this rule gates on the program alone.
+
+    classification: success=49653 unsupported_program=1661   (96.8% of 51,314)
+    tinted_texture_sum=854, every other family's count unchanged
+    58,193 draws composed and submitted, 0 rejected by the sink, 0 dolphin alerts
+
+**The frontier is now 2 materials**, and `tools/re/tev_decode.py` reads each one's program:
 
 | material | draws | what it draws |
 | --- | --- | --- |
-| `0x80e8817c` | 854 | `clamp(K0*tex0 + K1*tex1)`: two layers, each tinted by its own colour constant, summed |
 | `0x80ed7738` | 854 | `clamp(tex1*ras*2)`, with the first stage's colour discarded and only its alpha carried |
 | `0x80fa490c` | 807 | `clamp(K0.a + lerp(c0, c1, tex0))` then a halved detail add; two colour registers interpolated by a texture |
 
