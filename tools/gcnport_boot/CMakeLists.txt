@@ -15,7 +15,9 @@ sunbright_add_gcnport()
 # frontend-neutral StubHost.cpp, which gcnport points consumers at.
 add_executable(sunbright_gcnport_boot
   gmse01_boot.cpp
+  guest_report.cpp
+  guest_shape_probe.cpp
   "${GCPORT_DOLPHIN_STUB_HOST}"
 )
-target_link_libraries(sunbright_gcnport_boot PRIVATE gcnport::dolphin)
+target_link_libraries(sunbright_gcnport_boot PRIVATE gcnport::dolphin sunbright-title-adapter)
 gcnport_stage_dolphin_sys(sunbright_gcnport_boot "${GCPORT_DOLPHIN_SYS_DIR}")

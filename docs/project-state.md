@@ -314,10 +314,30 @@ lights, directional specular, linear fog, and standard particle billboards. Watc
 bounded title/stage audits recorded nonzero output; C077–C096 contain the detailed scopes and
 falsifiers.
 
-Gap: surviving adapters are native/decomp evidence and are not attached to the new `gcnport` product.
-Material families, non-billboard particles, image producers, screen effects, full-frame ordering, and
-visible presentation remain incomplete. The new JIT seam must preserve the same value-only contract;
-no old body or GX compatibility path may become a silent fallback after its semantic owner is proven.
+The first producer seam for the `gcnport` product exists. `title-adapter` reads GMSE01's own
+`J3DShape` objects out of guest memory and fills in exactly the `J3dMeshElementSource` that
+`native-render` has always been able to decode from an address (`ByteAddress::guest`, big-endian
+indexed arrays). Two of its offsets are confirmed against the shipping binary rather than only
+against `decomp/sms`: `J3DShape::loadVtxArray` at `0x802e0320` forms `j3dSys` (`0x804045dc`) and
+reads `0x10c`/`0x110`/`0x114` for `GX_VA_POS`/`NRM`/`CLR0`, and tests the NBT flag at `0x30`;
+`J3DShape::draw` at `0x802e0390` reads `0x28` (`mGDCommands`) and `0x08` (`mFlags`) from `this`.
+
+Measured on the real title through a diagnostic hook at `J3DShape::draw` (one 1,400,000,124-block
+run, 0 Dolphin alerts, every entry still calling the original so the title behaves unchanged):
+**51,915 shapes and 60,455 matrix groups read with a zero error rate**, 49,565,856 display-list
+bytes accounted for. The distributions are the ones the geometry predicts — 51,061 shapes with one
+matrix group and 854 with eleven (skinned), and vertex strides of 4/6/7/8/9/10/11 bytes against
+descriptor counts of 2/3/4/5/6, the 7-byte case being a one-byte direct `PNMTXIDX` plus three
+`Index16` attributes.
+
+Gap: nothing is decoded or drawn yet. The probe reads shapes and discards them; no semantic frame is
+produced under the dynarec, no material/texture/matrix state is read, and the run uses Dolphin's Null
+video backend so no frame is presented. The surviving decomp-side adapters
+(`sms-boot/runtime/native_j3d_adapter.cpp` and its peers) remain native/decomp evidence, attached to
+the decomp product rather than to `gcnport`. Material families, non-billboard particles, image
+producers, screen effects, and full-frame ordering remain incomplete. The new JIT seam must preserve
+the same value-only contract; no old body or GX compatibility path may become a silent fallback
+after its semantic owner is proven.
 
 ### S005 — decomp evidence adapters
 
