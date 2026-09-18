@@ -94,7 +94,27 @@ Two of this item's three remaining gaps from the previous session are now closed
    (video/audio backend selection, DSP, EXI device wiring) that deserve their own scoped
    investigation rather than a same-session follow-on patch.
 
-Still missing before this item is complete: (1) the `HW::Init()` MMIO gap above; (2) the
+**2026-09-18 (third continuation): the `HW::Init()` MMIO gap above is closed.** `shared/gcnport`
+gained a second, independent `BootAuthenticatedImage` option, `apply_gamecube_hardware_init` (commit
+`392f0e8`, Dolphin fork `fe8183e`, both pushed to origin and independently verified (full 1,367-test
+Dolphin suite, `tools/verify.py`) — see that repo's own
+`docs/dolphin-embedding-contract.md`), which calls Dolphin's own maintained `HW::Init`/`HW::Shutdown`
+(building the `MMIO::Mapping` handler table for every GameCube hardware register) while forcing
+`NullSound`, "no memory card", "no controller", and installing the fastmem SIGSEGV handler so no host
+video/audio/input backend or host-disk side effect is pulled in. `gmse01_boot.cpp` now passes this
+flag too. Result: the `ProcessorInterface` fault is gone; boot now reaches **106 real JIT blocks
+compiled and 7,524 total block executions (7,418 cache hits)**, up from 96/7,511, and progresses
+through two real hardware-register polling loops (`0x80003194`, `0x8000320c`) that now resolve
+instead of crashing. A **new, distinct** fault occurs deeper in boot: SIGSEGV inside
+`Jit64::SingleStep` with a live register holding effective address `0xCC00500A` (physical
+`0x0C00500A`, the DSP interface's own MMIO range) — its handler table entry already exists (`HW::Init`
+already registers it), so this is not a repeat of the missing-handler class of bug; it is consistent
+with GMSE01 reaching a DSP register access that needs `DSPEmulator::Initialize()` (deliberately not
+called by this option, matching the documented DSP LLE/HLE-thread-startup scope boundary) or a
+narrower native override before this point. See issue 37's third-continuation note for the full gdb
+evidence; not attempted this session.
+
+Still missing before this item is complete: (1) the DSP MMIO gap above; (2) the
 `0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone
 does not advance S008.
 
@@ -108,8 +128,10 @@ native→original→native "superCall" continuation S003 below needs), `Invalida
 `ExecutionCounters` (0/12 `tools/check_dolphin_contract.py` requirements absent; gcnport's own
 `docs/project-state.md` S003 now `verified`). This session also drove that public API against real
 `GMSE01` code for the first time (a standalone, uncommitted `tools/gcnport_boot/gmse01_boot.cpp`):
-3 real JIT blocks compiled and executed from the retail entry point before a fault. See S001's
-evidence for the exact fault and its cause (a genuine OS-init/apploader gap, not a gcnport defect).
+3 real JIT blocks compiled and executed from the retail entry point before a fault, since grown to
+106 blocks / 7,524 executions as gcnport's own OS-init and hardware-bring-up options closed
+successive real-mode and MMIO gaps. See S001's evidence for the current exact fault and its cause
+(a DSP-initialization gap, not a gcnport execution defect).
 
 Gap: gcnport owns no disc/apploader/BS2-equivalent OS-init pipeline (its boot adapter is deliberately
 scoped to a raw in-memory image, load address, and entry point), and Sunbright has no CMake build

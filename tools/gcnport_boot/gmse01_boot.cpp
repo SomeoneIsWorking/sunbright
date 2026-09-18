@@ -198,9 +198,18 @@ void RunBoot(const DolImage& image)
   // (decomp/sms's __init_registers, see src/dolphin/os/__start.c) load r1/r2/r13 from the DOL's own
   // linked _stack_addr/_SDA2_BASE_/_SDA_BASE_ immediates via lis/ori before any memory access, so a
   // manually guessed stack pointer here would be redundant at best and wrong at worst.
+  // apply_gamecube_hardware_init=true: also run Dolphin's own maintained HW::Init/HW::Shutdown,
+  // which is what actually builds the MMIO::Mapping handler table (MemoryManager::InitMMIO) every
+  // GameCube hardware register needs. Without it, GMSE01's own __init_hardware code faults through
+  // an uninitialized handler the first time it touches one (observed: SIGSEGV inside
+  // MMIO::WriteHandler<u32>::Write writing to physical 0x0C003004, GameCube ProcessorInterface's
+  // PI_INTERRUPT_MASK -- see shared/gcnport/docs/dolphin-embedding-contract.md, "GameCube hardware
+  // bring-up (MMIO handler table)"). This still boots no host video/audio/input backend and touches
+  // no host disk: the flag forces NullSound, "no memory card", and "no controller" before HW::Init
+  // runs.
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, image.flat, image.load_address, image.entry_point,
-      /*apply_gamecube_os_init=*/true);
+      /*apply_gamecube_os_init=*/true, /*apply_gamecube_hardware_init=*/true);
   if (!booted.ok)
   {
     std::fprintf(stderr, "gmse01_boot: BootAuthenticatedImage failed: %s\n", booted.detail.c_str());
@@ -216,11 +225,14 @@ void RunBoot(const DolImage& image)
     std::signal(SIGSEGV, ReportCountersOnFault);
 
     // Bounded: this is a diagnostic boot attempt, not a gameplay loop. GMSE01's own OS-init path
-    // will eventually touch an MMIO region or hardware state this minimal boot does not initialize
-    // (no disc/apploader pipeline, no HW::Init); the exact block count where that happens is the
-    // finding, not a target to reach. 4096 one-block dispatches is a generous bound for observing
-    // early boot code translate and execute before any such fault.
-    constexpr u32 MAX_BLOCKS = 4096;
+    // will eventually touch hardware state this minimal boot does not initialize (no disc/apploader
+    // pipeline, no DSP LLE/HLE thread startup); the exact block count where that happens is the
+    // finding, not a target to reach. With apply_gamecube_hardware_init=true the earlier
+    // ProcessorInterface MMIO fault is gone, but GMSE01 spends its first ~6000 block dispatches in
+    // two tight polling loops (0x80003194, 0x8000320c) before reaching a DSP MMIO access (physical
+    // 0x0C00500A) around block 6400; 16384 gives enough headroom to reach and stably reproduce that
+    // next fault instead of stopping mid-loop.
+    constexpr u32 MAX_BLOCKS = 16384;
     u32 blocks_run = 0;
     for (; blocks_run < MAX_BLOCKS; ++blocks_run)
     {

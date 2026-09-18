@@ -240,3 +240,60 @@ override for GMSE01's hardware bring-up path before this point. Not attempted th
 
 This resolves the first wiring discriminator only. Representative gameplay is S008 and must pass
 before S009 removes the old files.
+
+## Progress note (2026-09-18, third continuation)
+
+Closed the exact blocker the previous note left open (SIGSEGV inside `MMIO::WriteHandler<u32>::Write`
+writing to physical `0x0C003004`, GameCube `ProcessorInterface`, because `BootAuthenticatedImage`
+never called Dolphin's `HW::Init()`). Landed in `shared/gcnport` (commit `392f0e8`, Dolphin fork
+`fe8183e`, both pushed to origin — verified with the full 1,367-test Dolphin suite and
+`tools/verify.py`; see that repo's own `docs/dolphin-embedding-contract.md`, "GameCube hardware
+bring-up (MMIO handler table)" for the full investigation): `BootAuthenticatedImage` gained a second,
+independent option,
+`apply_gamecube_hardware_init`, which calls Dolphin's own maintained `HW::Init`/`HW::Shutdown`
+instead of this function's minimal `Memory`/`CoreTiming`/`CPU` bring-up. `HW::Init` builds the
+`MMIO::Mapping` handler table (`MemoryManager::InitMMIO`) for every GameCube hardware register, and
+constructs no host video/audio/input backend of its own; three real dependencies it does pull in
+(a `SoundStream` object for `AudioInterfaceManager::Init`, default EXI/SI device attachment, and
+fastmem's SIGSEGV-based MMU slow path for addresses with no backing page) are resolved by forcing
+Dolphin's own maintained `NullSound` backend, forcing `EXIDeviceType::None`/`SIDEVICE_NONE` on both
+EXI card slots and every SI channel, and installing `EMM::InstallExceptionHandler()` — all ordinary,
+real hardware/software states, not a workaround. Proven by two new `GcnPortRuntimeTest` cases,
+including an `EXPECT_DEATH` negative control that proves the exact same access crashes without the
+flag; full 1,367-test Dolphin suite passes unchanged.
+
+`gmse01_boot.cpp` now passes `apply_gamecube_hardware_init=true` alongside the existing
+`apply_gamecube_os_init=true`, and `extern/gcnport`'s pin is bumped to the pushed commit above.
+
+**Result: the ProcessorInterface fault is gone. Boot now reaches 106 real JIT blocks compiled and
+7,524 total block executions (7,418 cache hits), up from 3 then 96.** The bounded diagnostic dispatch
+loop (`MAX_BLOCKS`, raised from 4096 to 16384 to reach and stably reproduce the new fault instead of
+stopping mid-loop) shows GMSE01 spending its first ~6,000 one-block dispatches in two tight polling
+loops at `0x80003194` (24 instructions) and `0x8000320c` (5 instructions) — real hardware-register
+busy-waits that now resolve and exit on their own once `HW::Init`'s device state is present, rather
+than spinning forever or crashing — before reaching genuinely new code around `0x80343774`/
+`0x80341eec`.
+
+**A new, precisely diagnosed fault occurs there**: SIGSEGV inside `Jit64::SingleStep`
+(`Source/Core/Core/PowerPC/Jit64/Jit.cpp:810`, gdb backtrace captured) with a live register
+(`r14 = 0xcc00500a`) holding the exact GameCube uncached-MMIO effective address `0xCC00500A` —
+physical `0x0C00500A`, an offset into the DSP interface's own MMIO range (`DSPManager::RegisterMMIO`
+registers at physical base `0x0C005000`, see `Source/Core/Core/HW/DSP.cpp`). Unlike the
+`ProcessorInterface` fault, the DSP's MMIO handler table entry now exists (`HW::Init` already calls
+`system.GetDSP().Init(...)` and registers it); this is not a repeat of the same missing-handler class
+of bug. `dolphin-embedding-contract.md`'s own hardware-bring-up section already names DSP LLE/HLE
+thread startup (`DSPEmulator::Initialize()`, a separate call Dolphin's own `EmuThread` makes after
+`HW::Init`, deliberately not part of this option) as intentionally out of scope; the crash is
+consistent with GMSE01's DSP register access reaching a DSP emulator object that exists
+(`DSPManager::Init` constructs it) but was never `Initialize()`'d, unlike a from-scratch investigation
+this session did not have time to fully confirm against the interpreter frames above `SingleStep` in
+the backtrace (unresolved `??` frames, consistent with interpreted/JIT-generated code rather than a
+missing debug symbol issue).
+
+Not attempted this session: whether the correct fix is (a) extending `apply_gamecube_hardware_init`
+or a new sibling option to also call `DSPEmulator::Initialize()` in DSP-HLE mode (the same kind of
+scoped investigation `HW::Init` itself needed — DSP HLE's `Initialize()` may itself assume a
+`CoreTiming`/thread context this bare adapter does not fully match), or (b) a narrower native
+override for GMSE01's specific DSP register poll before this point. This is `gcnport`'s next scoped
+hardware-bring-up gap, tracked there rather than duplicated as a Sunbright-owned fix, matching how the
+`ProcessorInterface` gap was resolved.
