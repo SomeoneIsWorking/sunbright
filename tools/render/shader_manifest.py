@@ -87,6 +87,18 @@ SHADERS = (
         "native-render/shaders/model_tinted_texture_sum_frag_spv.h",
     ),
     Shader(
+        "native-render/shaders/model_masked_doubled_texture.frag.glsl",
+        "frag",
+        "kModelMaskedDoubledTextureFragSpv",
+        "native-render/shaders/model_masked_doubled_texture_frag_spv.h",
+    ),
+    Shader(
+        "native-render/shaders/model_interpolated_registers.frag.glsl",
+        "frag",
+        "kModelInterpolatedRegistersFragSpv",
+        "native-render/shaders/model_interpolated_registers_frag_spv.h",
+    ),
+    Shader(
         "native-render/shaders/model_layered_lit.frag.glsl",
         "frag",
         "kModelLayeredLitFragSpv",

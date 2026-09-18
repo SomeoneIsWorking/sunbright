@@ -619,12 +619,32 @@ this rule gates on the program alone.
     tinted_texture_sum=854, every other family's count unchanged
     58,193 draws composed and submitted, 0 rejected by the sink, 0 dolphin alerts
 
-**The frontier is now 2 materials**, and `tools/re/tev_decode.py` reads each one's program:
+The last two were ported together. `0x80ed7738` doubles its second image against the rasterised
+channel and overwrites the colour its first stage computed, keeping only that stage's alpha -- so
+the first image's colour is authored to be discarded, which is what separates it from the doubled
+pair, whose second stage multiplies what the first produced. `0x80fa490c` lets one image choose per
+channel between two authored colour registers, offsets the choice by a colour constant's alpha,
+then adds a five-eighths-weighted second image, biases by a half and halves the result; its alpha
+comes out scaled by one plus three eighths because the stage adds a fraction of what it already has
+rather than replacing it. Both fractions are read from their selections through
+`J3dKonstFraction`, so a different authored fraction is a different material rather than the same
+one with a transcribed constant.
 
-| material | draws | what it draws |
-| --- | --- | --- |
-| `0x80ed7738` | 854 | `clamp(tex1*ras*2)`, with the first stage's colour discarded and only its alpha carried |
-| `0x80fa490c` | 807 | `clamp(K0.a + lerp(c0, c1, tex0))` then a halved detail add; two colour registers interpolated by a texture |
+**Every material GMSE01 draws is now classified.** Measured on the real title, 0 Dolphin alerts:
+
+    classification: success=51236   (51,236 of 51,236; the refusal line is gone)
+    families: unlit_color=854 lit_specular_color=854 unlit_textured=2562 lit_textured=9394
+      lit_dual_alpha_effect=854 lit_alpha_tint=854 lit_tinted_layered_specular=3416
+      lit_masked_toon=8540 lit_masked_specular=8630 textured_effect=10248
+      unlit_textured_effect=854 doubled_texture_pair=1661 tinted_texture_sum=854
+      masked_doubled_texture=854 interpolated_registers=807
+    0 distinct material(s) no family accepted
+    59,776 draws composed and submitted, 11,421,498 vertices, 0 rejected by the sink
+
+This is coverage of the material *programs* the title runs, not proof that each one's output matches
+the console: nothing is rasterised yet, so every family's colour maths is checked against its
+decoded program and its unit controls rather than against pixels. Rasterising these draws and
+comparing them is the next scope, and it is what would falsify any of the fifteen families above.
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

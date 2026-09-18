@@ -4,10 +4,12 @@
 #include <sunbright/native_render/j3d_doubled_texture_pair_material.h>
 #include <sunbright/native_render/j3d_dual_alpha_effect_material.h>
 #include <sunbright/native_render/j3d_effect_material.h>
+#include <sunbright/native_render/j3d_interpolated_register_material.h>
 #include <sunbright/native_render/j3d_layered_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_tint_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
+#include <sunbright/native_render/j3d_masked_doubled_texture_material.h>
 #include <sunbright/native_render/j3d_masked_specular_material.h>
 #include <sunbright/native_render/j3d_masked_toon_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
@@ -95,6 +97,8 @@ struct TexturedMatches {
     bool maskedSpecular = false;
     bool doubledTexturePair = false;
     bool tintedTextureSum = false;
+    bool maskedDoubledTexture = false;
+    bool interpolatedRegisters = false;
     bool litTextured = false;
     bool unlitTextured = false;
     bool texturedEffect = false;
@@ -142,6 +146,12 @@ struct TexturedMatches {
         if (tintedTextureSum) {
             return J3dMaterialFamily::TintedTextureSum;
         }
+        if (maskedDoubledTexture) {
+            return J3dMaterialFamily::MaskedDoubledTexture;
+        }
+        if (interpolatedRegisters) {
+            return J3dMaterialFamily::InterpolatedRegisters;
+        }
         // Last, so that wiring it in cannot take a draw away from a family that already had one.
         // Its programs modulate a texture by an authored colour and never read the raster, which is
         // a shape several lit families would otherwise be asked about first.
@@ -161,7 +171,8 @@ struct TexturedMatches {
             return 4;
         }
         if (dualAlphaEffect || litAlphaMask || layered || tintedLayered || maskedSpecular ||
-            doubledTexturePair || tintedTextureSum) {
+            doubledTexturePair || tintedTextureSum || maskedDoubledTexture ||
+            interpolatedRegisters) {
             return 2;
         }
         return 1;
@@ -189,6 +200,16 @@ struct TexturedMatches {
     matches.tintedTextureSum = accepted(
         classify_j3d_tinted_texture_sum_material(state, PLACEHOLDER, PLACEHOLDER, tintedTextureSum),
         j3d_tinted_texture_sum_result_name, J3dMaterialFamily::TintedTextureSum, refusals);
+    MaskedDoubledTextureMaterial maskedDoubledTexture{};
+    matches.maskedDoubledTexture = accepted(
+        classify_j3d_masked_doubled_texture_material(state, PLACEHOLDER, PLACEHOLDER,
+                                                     maskedDoubledTexture),
+        j3d_masked_doubled_texture_result_name, J3dMaterialFamily::MaskedDoubledTexture, refusals);
+    InterpolatedRegisterMaterial interpolatedRegisters{};
+    matches.interpolatedRegisters = accepted(
+        classify_j3d_interpolated_register_material(state, PLACEHOLDER, PLACEHOLDER,
+                                                    interpolatedRegisters),
+        j3d_interpolated_register_result_name, J3dMaterialFamily::InterpolatedRegisters, refusals);
     TexturedEffectMaterial unlitEffect{};
     matches.unlitEffect =
         accepted(classify_j3d_unlit_effect_material(state, PLACEHOLDER, unlitEffect),
@@ -302,6 +323,24 @@ void record_unasked_lit_families(const ModelLightingContext* lighting,
         TintedTextureSumMaterial built{};
         if (classify_j3d_tinted_texture_sum_material(state, first, second, built) !=
             J3dTintedTextureSumResult::Success) {
+            return false;
+        }
+        material = built;
+        return true;
+    }
+    case J3dMaterialFamily::MaskedDoubledTexture: {
+        MaskedDoubledTextureMaterial built{};
+        if (classify_j3d_masked_doubled_texture_material(state, first, second, built) !=
+            J3dMaskedDoubledTextureResult::Success) {
+            return false;
+        }
+        material = built;
+        return true;
+    }
+    case J3dMaterialFamily::InterpolatedRegisters: {
+        InterpolatedRegisterMaterial built{};
+        if (classify_j3d_interpolated_register_material(state, first, second, built) !=
+            J3dInterpolatedRegisterResult::Success) {
             return false;
         }
         material = built;
@@ -489,6 +528,10 @@ const char* j3d_material_family_name(J3dMaterialFamily family) noexcept {
         return "doubled_texture_pair";
     case J3dMaterialFamily::TintedTextureSum:
         return "tinted_texture_sum";
+    case J3dMaterialFamily::MaskedDoubledTexture:
+        return "masked_doubled_texture";
+    case J3dMaterialFamily::InterpolatedRegisters:
+        return "interpolated_registers";
     }
     return "unknown";
 }

@@ -5,9 +5,11 @@ add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/
                                                  src/j3d_alpha_masked_material.cpp
                                                  src/j3d_lit_alpha_mask_material.cpp
                                                  src/j3d_lit_alpha_tint_material.cpp
+                                                 src/j3d_interpolated_register_material.cpp
                                                  src/j3d_layered_material.cpp
                                                  src/j3d_lit_material.cpp
                                                  src/j3d_material_family.cpp
+                                                 src/j3d_masked_doubled_texture_material.cpp
                                                  src/j3d_masked_specular_material.cpp
                                                  src/j3d_masked_toon_material.cpp
                                                  src/j3d_fog.cpp
@@ -139,6 +141,20 @@ target_link_libraries(native_render_j3d_tinted_texture_sum_material_test
                       PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_tinted_texture_sum_material
          COMMAND native_render_j3d_tinted_texture_sum_material_test)
+
+add_executable(native_render_j3d_interpolated_register_material_test
+               tests/j3d_interpolated_register_material_test.cpp)
+target_link_libraries(native_render_j3d_interpolated_register_material_test
+                      PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_interpolated_register_material
+         COMMAND native_render_j3d_interpolated_register_material_test)
+
+add_executable(native_render_j3d_masked_doubled_texture_material_test
+               tests/j3d_masked_doubled_texture_material_test.cpp)
+target_link_libraries(native_render_j3d_masked_doubled_texture_material_test
+                      PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_masked_doubled_texture_material
+         COMMAND native_render_j3d_masked_doubled_texture_material_test)
 
 add_executable(native_render_j3d_masked_specular_material_test
                tests/j3d_masked_specular_material_test.cpp)

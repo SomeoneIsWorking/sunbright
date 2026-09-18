@@ -175,6 +175,31 @@ struct TintedTextureSumMaterial {
     ModelRasterPolicy raster{};
 };
 
+// One texture doubled against an authored tint for colour, with a second texture contributing only
+// opacity. The stage that samples the opacity image also computes a colour, and the stage after it
+// overwrites that colour rather than combining with it -- so the first image's own colour is
+// authored to be discarded, and only its alpha reaches the output.
+struct MaskedDoubledTextureMaterial {
+    PictureTexture opacityTexture{};
+    PictureTexture colorTexture{};
+    Color tint{1.0F, 1.0F, 1.0F, 1.0F};
+    ModelRasterPolicy raster{};
+};
+
+// Two authored colour registers chosen between per channel by one image, offset by a constant,
+// then averaged with a weighted second image. The averaging and the half-offset are what the
+// authored program does, not a tone curve: the stage biases by a half and halves the result.
+struct InterpolatedRegisterMaterial {
+    PictureTexture blendTexture{};
+    PictureTexture detailTexture{};
+    Color lowerColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color upperColor{};
+    float colorOffset = 0.0F;
+    float detailWeight = 0.0F;
+    float alphaGain = 1.0F;
+    ModelRasterPolicy raster{};
+};
+
 // A decoded texture used only as an opacity mask for one ordinary solid colour. Texture RGB is
 // deliberately ignored; alphaScale expresses authored mask amplification before the raster test.
 struct AlphaMaskedColorMaterial {
@@ -389,11 +414,12 @@ struct LitSpecularTexturedMaterial {
 
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, TexturedEffectMaterial,
-                 DoubledTexturePairMaterial, TintedTextureSumMaterial, LitDualAlphaEffectMaterial,
-                 AlphaMaskedColorMaterial, LitColorMaterial, LitTexturedMaterial,
-                 LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial, LitLayeredTexturedMaterial,
-                 LitTintedLayeredSpecularMaterial, LitMaskedToonMaterial, LitMaskedSpecularMaterial,
-                 LitSpecularRampMaterial, LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
+                 DoubledTexturePairMaterial, TintedTextureSumMaterial, MaskedDoubledTextureMaterial,
+                 InterpolatedRegisterMaterial, LitDualAlphaEffectMaterial, AlphaMaskedColorMaterial,
+                 LitColorMaterial, LitTexturedMaterial, LitTexturedAlphaMaskMaterial,
+                 LitAlphaTintMaterial, LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
+                 LitMaskedToonMaterial, LitMaskedSpecularMaterial, LitSpecularRampMaterial,
+                 LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 
