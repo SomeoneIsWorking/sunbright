@@ -297,3 +297,60 @@ scoped investigation `HW::Init` itself needed — DSP HLE's `Initialize()` may i
 override for GMSE01's specific DSP register poll before this point. This is `gcnport`'s next scoped
 hardware-bring-up gap, tracked there rather than duplicated as a Sunbright-owned fix, matching how the
 `ProcessorInterface` gap was resolved.
+
+## Progress note (2026-09-18, fourth continuation)
+
+The previous note's suspected DSP bring-up gap in `gcnport` was investigated and **falsified**: there
+is no `gcnport` DSP MMIO gap, and no `shared/gcnport` change was needed or made this session.
+
+Root cause, found by reproducing the exact fault under gdb and reading Dolphin's own fault-handling
+source end to end (`Source/Core/Core/MemTools.cpp`, `Source/Core/Core/PowerPC/Jit64/Jit.cpp`): the
+crash was entirely a bug in this repository's own diagnostic tool,
+`tools/gcnport_boot/gmse01_boot.cpp` (uncommitted, maintainer-owned). `PowerPC::GcnPort::
+BootAuthenticatedImage`'s `apply_gamecube_hardware_init=true` path correctly calls Dolphin's
+`EMM::InstallExceptionHandler()`, which installs a `sigaction`-based SIGSEGV handler
+(`sigsegv_handler`) that is Dolphin's own normal, working mechanism for servicing an unbacked-fastmem
+hardware-register access: on fault it calls `JitInterface::HandleFault`, which backpatches the
+JIT-generated load/store into a slow C++ MMIO call and resumes; only a genuinely unhandled fault falls
+through to the previously-installed handler. `gmse01_boot.cpp`'s own diagnostic crash reporter was
+installed via a bare `std::signal(SIGSEGV, ReportCountersOnFault)` call issued *after*
+`BootAuthenticatedImage` returned. Because `signal()` and `sigaction()` share one per-process
+disposition slot, that call silently discarded Dolphin's already-installed `sigsegv_handler` outright
+— every subsequent SIGSEGV, including the ordinary, recoverable fastmem MMIO backpatch faults that
+had already served thousands of earlier `ProcessorInterface`/DSP-mailbox polling-loop accesses without
+incident, was instead delivered straight to the diagnostic reporter and treated as fatal. The first
+access this broke was the DSP_CONTROL register read at physical `0x0C00500A` (`Source/Core/Core/HW/
+DSP.cpp`'s `DSP_CONTROL = 0x500A`), simply because it happened to be the first previously-unexecuted
+code path to touch a not-yet-backpatched fastmem address after the handler was clobbered — not because
+`DSPManager`/`DSPHLE` state was actually missing (`HW::Init` already constructs a live `DSPEmulator`
+via `DSPManager::Init`; `DSPHLE::DSP_ReadControlRegister()` needs no separate `Initialize()` call to
+answer that read safely).
+
+Fix: reorder `gmse01_boot.cpp` to install its diagnostic `std::signal(SIGSEGV, ReportCountersOnFault)`
+handler *before* calling `BootAuthenticatedImage`, so `EMM::InstallExceptionHandler()` saves it as the
+chain-to fallback instead of overwriting it. Dolphin's own handler now correctly services every
+fastmem MMIO fault, including the DSP_CONTROL access, and the diagnostic reporter only fires for a
+truly unhandled fault (exactly its intended purpose). Verified: with the reorder, exact `GMSE01`
+boots to this tool's full 16,384-block bound with **zero crashes** — up from crashing at block ~6400 —
+compiling 276 unique JIT blocks and executing 17,485 total block dispatches (17,209 cache hits, 91
+fallback/interpreted-instruction events), vs. 106 compiled / 7,524 executions before. A second,
+temporary run raising the bound to 400,000 blocks (401,101 executions) confirmed this is a genuine
+steady state, not a slow crawl toward another crash: execution settles into one stable, unchanging
+busy-wait loop at guest PC `0x80343484` (9 PPC instructions) with no new blocks compiled and no faults.
+
+**This is the honestly-diagnosed next blocker**, and it is not a fault: GMSE01 is polling a hardware
+condition — most likely a DSP mailbox/interrupt handshake, an ARAM DMA completion flag, or VI
+retrace/vertical-blank timing — that a bare in-memory-image adapter boot can never satisfy, because it
+runs no DSP LLE/HLE thread, delivers no hardware interrupts, and drives no real frame timing.
+`shared/gcnport/docs/dolphin-embedding-contract.md` already scopes exactly these three mechanisms
+(DSP thread startup, a real video backend, interrupt delivery) as separate, later adapters outside
+`apply_gamecube_hardware_init`'s and `apply_gamecube_os_init`'s stated bring-up contract, so this is
+not a new finding about the boundary — it is confirmation that boot has now reached it cleanly, with
+no crash in between. `tools/gcnport_boot/gmse01_boot.cpp` remains uncommitted for operator review; no
+`shared/gcnport` file changed this session.
+
+Not attempted this session: identifying which specific hardware condition `0x80343484`'s loop is
+polling (would need disassembling that address's containing function against `decomp/sms`), and
+whether the correct next step is a `gcnport`-level interrupt/timer adapter or a narrower native
+override for GMSE01's specific wait. Sunbright's own `docs/project-state.md` S001/S002 items are
+updated with this same finding.

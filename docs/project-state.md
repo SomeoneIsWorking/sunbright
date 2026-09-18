@@ -114,9 +114,27 @@ called by this option, matching the documented DSP LLE/HLE-thread-startup scope 
 narrower native override before this point. See issue 37's third-continuation note for the full gdb
 evidence; not attempted this session.
 
-Still missing before this item is complete: (1) the DSP MMIO gap above; (2) the
-`0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone
-does not advance S008.
+**2026-09-18 (fourth continuation): the "DSP MMIO gap" above was a misdiagnosis, now falsified and
+fixed — no `shared/gcnport` change was needed.** The SIGSEGV at `0xCC00500A` was caused by this
+tool's own diagnostic crash reporter (`gmse01_boot.cpp`'s `std::signal(SIGSEGV,
+ReportCountersOnFault)`) being installed *after* `BootAuthenticatedImage`, which silently replaced
+Dolphin's own working `EMM::InstallExceptionHandler()` SIGSEGV handler (`signal()`/`sigaction()`
+share one per-process disposition) — so the ordinary, recoverable fastmem MMIO backpatch fault for
+DSP_CONTROL was fatally reported by the tool instead of serviced by Dolphin's normal mechanism.
+Reordering the tool to install its handler *before* `BootAuthenticatedImage` (so Dolphin's handler
+correctly chains back to it only on a genuinely unhandled fault) fixes it: exact `GMSE01` now boots
+to this tool's 16,384-block bound with **zero crashes** (276 compiled blocks, 17,485 executions, 91
+fallback events), up from crashing at block ~6400 with 106/7,524. A 400,000-block probe confirmed
+this is a genuine steady state, not a slow crawl to another fault: execution settles into one stable
+busy-wait loop at guest PC `0x80343484` polling a hardware condition (DSP mailbox/interrupt, ARAM DMA
+completion, or VI retrace) a bare adapter boot with no DSP thread, no interrupt delivery, and no real
+frame timing can ever satisfy — exactly the boundary `dolphin-embedding-contract.md` already scopes
+as a separate, later adapter. See issue 37's fourth-continuation note for the full analysis.
+
+Still missing before this item is complete: (1) an interrupt/timer/DSP-thread adapter (or a narrower
+native override) so boot can advance past the `0x80343484` busy-wait; (2) the `0x802e0390`
+`J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone does not
+advance S008.
 
 ### S002 — gcnport Dolphin executor
 

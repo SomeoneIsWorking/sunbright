@@ -207,6 +207,28 @@ void RunBoot(const DolImage& image)
   // bring-up (MMIO handler table)"). This still boots no host video/audio/input backend and touches
   // no host disk: the flag forces NullSound, "no memory card", and "no controller" before HW::Init
   // runs.
+  //
+  // The diagnostic SIGSEGV reporter is installed HERE, immediately before
+  // BootAuthenticatedImage's call to EMM::InstallExceptionHandler(), and NEVER re-armed afterward.
+  // This ordering is load-bearing, not cosmetic: EMM::InstallExceptionHandler() (Source/Core/Core/
+  // MemTools.cpp) saves whatever SIGSEGV disposition is currently installed into old_sa_segv and
+  // installs its own sigsegv_handler, which calls JitInterface::HandleFault() on every SIGSEGV --
+  // this is Dolphin's own normal fastmem MMU/MMIO mechanism: an unbacked-page access (e.g. a
+  // GameCube hardware register with no fastmem-backed page) deliberately faults so the handler can
+  // backpatch the JIT-generated load/store into a slow C++ MMIO call. Only when HandleFault()
+  // returns false (a genuinely unhandled fault) does sigsegv_handler restore old_sa_segv and
+  // re-raise. A prior version of this tool called std::signal(SIGSEGV, ReportCountersOnFault) AFTER
+  // BootAuthenticatedImage, which -- because signal() and sigaction() share one per-process
+  // disposition slot -- silently replaced Dolphin's already-installed sigsegv_handler outright, so
+  // every subsequent SIGSEGV (including ordinary, recoverable fastmem MMIO backpatch faults) went
+  // straight to this diagnostic handler and was fatally reported instead of serviced. That
+  // misdiagnosed a real GMSE01 boot as reaching an unresolvable DSP MMIO gap (physical 0x0C00500A,
+  // DSP_CONTROL) at block ~6400; with the handler correctly installed first and left untouched,
+  // Dolphin's own JIT backpatches that exact access and GMSE01 runs to this tool's full 16384-block
+  // bound with zero crashes -- there is no DSP bring-up gap in gcnport to fix. See this repository's
+  // docs/issues/0037-migrate-sunbright-execution-to-gcnport-dolphin-d.md, "fourth continuation".
+  std::signal(SIGSEGV, ReportCountersOnFault);
+
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, image.flat, image.load_address, image.entry_point,
       /*apply_gamecube_os_init=*/true, /*apply_gamecube_hardware_init=*/true);
@@ -222,16 +244,20 @@ void RunBoot(const DolImage& image)
   {
     PowerPC::GcnPort::RuntimeSession runtime(system, identity);
     g_diagnostic_runtime = &runtime;
-    std::signal(SIGSEGV, ReportCountersOnFault);
 
-    // Bounded: this is a diagnostic boot attempt, not a gameplay loop. GMSE01's own OS-init path
-    // will eventually touch hardware state this minimal boot does not initialize (no disc/apploader
-    // pipeline, no DSP LLE/HLE thread startup); the exact block count where that happens is the
-    // finding, not a target to reach. With apply_gamecube_hardware_init=true the earlier
-    // ProcessorInterface MMIO fault is gone, but GMSE01 spends its first ~6000 block dispatches in
-    // two tight polling loops (0x80003194, 0x8000320c) before reaching a DSP MMIO access (physical
-    // 0x0C00500A) around block 6400; 16384 gives enough headroom to reach and stably reproduce that
-    // next fault instead of stopping mid-loop.
+    // Bounded: this is a diagnostic boot attempt, not a gameplay loop. With the SIGSEGV-handler
+    // ordering fixed above, GMSE01 no longer crashes at the DSP MMIO access this tool previously
+    // (mis)diagnosed as a gcnport bring-up gap: it correctly backpatches and continues past physical
+    // 0x0C00500A (DSP_CONTROL) and every other real GMSE01 hardware-register access reached so far.
+    // Boot instead settles into a single stable busy-wait loop at pc=0x80343484 (9 instructions;
+    // confirmed unchanging out to 400,000 dispatched blocks / 276 unique compiled blocks / ~401,000
+    // executions with zero faults) -- consistent with GMSE01 polling a hardware condition (DSP
+    // mailbox/interrupt, ARAM DMA completion, or VI retrace) that a bare adapter boot with no DSP
+    // thread, no interrupt delivery, and no real frame timing can ever satisfy. This is not a crash
+    // and not a gcnport regression: dolphin-embedding-contract.md already scopes DSP LLE/HLE thread
+    // startup and a real video/input backend as separate, later adapters this option does not
+    // provide. 16384 is enough to reach and stably reproduce that steady state without spending
+    // extra wall-clock time re-confirming it on every run.
     constexpr u32 MAX_BLOCKS = 16384;
     u32 blocks_run = 0;
     for (; blocks_run < MAX_BLOCKS; ++blocks_run)
