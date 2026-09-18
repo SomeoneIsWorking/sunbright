@@ -526,6 +526,29 @@ largest single portable win is the ten single-stage lit materials at `0x80fa7bec
 `lit_layered_textured`, `lit_tinted_layered_specular` and `lit_masked_toon` each refuse *every*
 remaining draw on colour channels alone, so none of them is close; they are not the next port.
 
+`tools/re/tev_decode.py` decodes a stage program into the expression it computes, and is checked by
+`--selftest` against the programs the shipping families already accept. Run over the eleven
+`0706/0700` single-texture materials it says what they are:
+
+    c008fe8fc108e670  colour: prev = clamp(konst*tex.rgb)        alpha: prev = clamp(a0*tex.a)
+    c008f28fc138e670  colour: prev = clamp(c0.rgb*tex.rgb)       alpha: prev = clamp((a0*tex.a)/2)
+    c018f28fc108e670  colour: prev = clamp((c0.rgb*tex.rgb)*2)   alpha: prev = clamp(a0*tex.a)
+    c008fe8fc118e670  colour: prev = clamp(konst*tex.rgb)        alpha: prev = clamp((a0*tex.a)*2)
+    c008fecfc108e670  colour: prev = clamp(konst)                alpha: prev = clamp(a0*tex.a)
+    c008fffec108f0f0  colour: prev = clamp(konst + zero)         alpha: prev = clamp(tex.a*a0)
+    c008e28fc108e670  colour: prev = clamp(lerp(konst, c0.rgb, tex.rgb))
+    c008ec8fc108e670  colour: prev = clamp(lerp(konst, one, tex.rgb))
+
+**None of them reads `ras.rgb` or `ras.a`.** Their colour channel is authored as lit
+(`0x0706` selects the primary light), the channel is computed, and the stage then never selects it.
+So these draws are raster-independent: a family may render them without any lighting at all, and
+that is provable from the program rather than assumed. That is what makes them the next port --
+`tinted texture`, colour = tint x texture and alpha = tint alpha x texture alpha, with the tint
+taken from a constant or a TEV register colour, and the shift applied. Six of the eleven materials
+(5,124 draws) are exactly `konst|c0.rgb * tex.rgb` with `a0 * tex.a`; the `lerp` and
+`konst`-only variants are separate programs and stay refused until they are ported on their own
+evidence.
+
 Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
 textures are counted and discarded; no `ModelDraw` is built, no material classifies into a family
 (measured above), no stage lighting is published from the guest, no semantic frame is produced under
