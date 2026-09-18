@@ -368,10 +368,43 @@ position matrix is `j3dSys.mViewMtx` and the normal matrix stays indexed, and un
 reverse — though GMSE01 used neither in these runs (59,862 of 59,862 groups were `PNGP`), so that
 path has unit coverage and no title evidence yet.
 
-Gap: nothing is drawn yet, and nothing is published. The decoded vertices and poses are counted and
-discarded; no `ModelDraw` is built, no semantic frame is produced under the dynarec, no
-material/texture state is read, and the run uses Dolphin's Null video backend so no frame is
-presented. `native_render::ModelDraw` also has no place for the normal matrix, which under the CPU
+That geometry's material is now read too, into the same `native_render::J3dMaterialState` the
+decomp-side adapter fills -- deliberately the same struct, so the fifteen material classifiers, the
+fog contract and the raster policy stay one implementation that cannot tell which runtime filled
+their input. A material is four polymorphic blocks, so `title-adapter` reads each by its guest
+vtable: colour (`J3DColorBlockLightOff` `0x803e0d38`, `LightOn` `0x803e0cd4`), texture generation
+(`J3DTexGenBlockBasic` `0x803e0c84`), colour stages (`J3DTevBlock1/2/4/16` `0x803e0be8`,
+`0x803e0b4c`, `0x803e0ab0`, `0x803e0a14`) and pixel engine (`J3DPEBlockOpa` `0x803e0e64`,
+`TexEdge` `0x803e0e00`, `Xlu` `0x803e0d9c`, `Full` `0x803e0968`). Every address is derived at least
+twice from the shipping image -- each class's `countDLSize` and `load` overrides appear exactly once
+each, at the fixed offsets that class's own virtual list puts them at -- and the two families whose
+allocator is reachable are confirmed a third way, by the sizes it allocates: `0x18` and `0x44` for
+the two colour blocks, `4` and `0x14` for the pixel-engine blocks.
+
+Measured on the real title through a diagnostic hook at `J3DMatPacket::draw` (`0x802edc38`, where
+the title itself resolves the material its shape packets are drawn with), one 1,400,000,000-block
+run, 0 Dolphin alerts, every entry still calling the original:
+
+- **44,314 of 44,314 material packets read whole**, 52 distinct materials, and a zero error rate in
+  each of the four block readers independently.
+- The distributions are non-degenerate where the scene has variety and uniform where it does not:
+  tev blocks `TVB2`=29,796 / `TVB4`=5,978 / `TV16`=8,540 with stage counts 1/2/3/5, texture
+  coordinate counts 0/1/2/4, colour channel counts 1 and 2, cull modes 0 and 2. All 44,314 colour
+  blocks are `CLOF` and all 44,314 pixel-engine blocks are `PEFL`; both are properties of this
+  scene rather than of the reader, since the shipping image constructs the other colour class at
+  `0x802d6bd8` and the reader answers it in unit coverage.
+- **The lookup tables were genuinely read.** J3D stores no alpha-compare or depth-mode
+  configuration, only a packed id resolved through a table built at boot (`j3dAlphaCmpTable`
+  `0x80407150`, `j3dZModeTable` `0x80407450`, both in `.bss` and therefore zero in the image). The
+  encoding that produced each id is known, so every row fetched is re-encoded and compared with the
+  id it was fetched for: **44,314 checked, 0 disagreements**. A table never built, read at the wrong
+  address, or read at the wrong stride fails this; an all-zero answer from an unbuilt table is
+  otherwise indistinguishable from a material that authored `GX_NEVER`.
+
+Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses and materials are
+counted and discarded; no `ModelDraw` is built, no `ModelMaterial` is classified from the state that
+is now read, no texture is decoded from the guest texture table, no semantic frame is produced under
+the dynarec, and the run uses Dolphin's Null video backend so no frame is presented. `native_render::ModelDraw` also has no place for the normal matrix, which under the CPU
 pipelines genuinely differs from the position matrix; the adapter carries it as
 `GuestShapePose::normalViews` and the semantic boundary has yet to accept it. The surviving decomp-side adapters
 (`sms-boot/runtime/native_j3d_adapter.cpp` and its peers) remain native/decomp evidence, attached to

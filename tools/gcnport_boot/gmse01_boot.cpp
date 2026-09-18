@@ -56,6 +56,7 @@
 #include "Core/System.h"
 #include "UICommon/UICommon.h"
 #include "gcnport/dolphin_adapter.h"
+#include "guest_material_probe.h"
 #include "guest_report.h"
 #include "guest_shape_probe.h"
 
@@ -365,6 +366,8 @@ struct BootRequest {
     std::vector<u32> counted_call_addresses;
     std::vector<SuperCall> super_calls;
     std::vector<GuestWatch> guest_watches;
+    std::vector<u32> material_probe_addresses;
+    u64 material_probe_reports = 0;
     std::vector<u32> shape_probe_addresses;
     u64 shape_probe_reports = 0;
     u32 shape_probe_system = sb::title_adapter::GMSE01_J3D_SYS;
@@ -557,6 +560,24 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         "%llu reported in full)\n",
                         address, request.shape_probe_system,
                         static_cast<unsigned long long>(request.shape_probe_reports));
+        }
+
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMaterialProbe>> material_probes;
+        for (const u32 address : request.material_probe_addresses) {
+            material_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestMaterialProbe>(
+                request.material_probe_reports));
+            adapter.install_hook({.identity = adapter.identity(), .address = address},
+                                 std::ref(*material_probes.back()));
+            if (!runtime.HasNativeHook(address)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
+                             "materials it could not have read\n",
+                             address);
+                std::exit(1);
+            }
+            std::printf("gmse01_boot: reading guest J3D materials at 0x%08x (first %llu reported "
+                        "in full)\n",
+                        address, static_cast<unsigned long long>(request.material_probe_reports));
         }
 
         std::vector<GuestWatch> guest_watches = request.guest_watches;
@@ -815,6 +836,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         for (const auto& probe : shape_probes) {
             probe->report();
         }
+        for (const auto& probe : material_probes) {
+            probe->report();
+        }
 
         for (const GuestWatch& watch : guest_watches) {
             std::printf("gmse01_boot: watch 0x%08x sampled %llu time(s), changed %llu time(s)\n",
@@ -863,7 +887,8 @@ int main(int argc, char** argv) {
                      "[--max-blocks <n>] [--raw-faults] [--dump-guest <hex-addr>[:<words>] ...] "
                      "[--count-calls <hex-addr> ...] [--watch-guest <hex-addr>[:<words>] ...] "
                      "[--super-call <hex-addr>:<round-trips>:<instruction-budget> ...] "
-                     "[--read-shapes <hex-addr>[:<reports>]] [--j3d-sys <hex-addr>]\n",
+                     "[--read-shapes <hex-addr>[:<reports>]] [--j3d-sys <hex-addr>]\n"
+                     "[--read-materials <hex-addr>[:<reports>]]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -1009,6 +1034,35 @@ int main(int argc, char** argv) {
                 request.shape_probe_reports = parsed;
             }
             request.shape_probe_addresses.push_back(address);
+        } else if (name == "--read-materials") {
+            // <hex-addr>[:<reports>]. The address is J3DMatPacket::draw (0x802edc38 in GMSE01),
+            // which is where the title resolves the material its shape packets are drawn with. The
+            // count bounds only how many are printed in full, never how many are read.
+            constexpr u64 DEFAULT_REPORTS = 8;
+            u32 address = 0;
+            char* end = nullptr;
+            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
+                std::fprintf(
+                    stderr,
+                    "gmse01_boot: --read-materials needs <hex-addr>[:<reports>], got '%s'\n",
+                    value);
+                return 1;
+            }
+            request.material_probe_reports = DEFAULT_REPORTS;
+            if (*end == ':') {
+                const char* const reports_text = end + 1;
+                errno = 0;
+                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
+                if (end == reports_text || *end != '\0' || errno == ERANGE) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --read-materials report count must be an integer, "
+                                 "got '%s'\n",
+                                 reports_text);
+                    return 1;
+                }
+                request.material_probe_reports = parsed;
+            }
+            request.material_probe_addresses.push_back(address);
         } else if (name == "--j3d-sys") {
             // The guest address of j3dSys, for a build whose globals sit elsewhere. Defaults to
             // GMSE01's, which title-adapter derives from J3DShape::loadVtxArray's own reads.

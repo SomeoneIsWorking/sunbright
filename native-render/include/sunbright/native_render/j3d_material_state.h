@@ -93,6 +93,8 @@ struct J3dMaterialState {
     J3dFogState fog{};
     bool hasVertexColor = false;
     bool hasNormal = false;
+
+    bool operator==(const J3dMaterialState&) const = default;
 };
 
 // J3D's texture binding slots are independent of its active colour-stage count. A stage order
