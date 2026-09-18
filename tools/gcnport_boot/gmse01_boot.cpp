@@ -31,6 +31,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -248,6 +249,72 @@ struct CountedCall {
     }
 };
 
+// One --super-call request: the complete native -> original -> native round trip at a guest
+// function, on the real title.
+//
+// --count-calls proves a native hook is reached and hands the body back to the translated code.
+// That is the easy half. The half a native override actually needs is this one: run native code,
+// call the real guest function as a subroutine, get control back with its result still in the
+// register file, and only then decide what the caller sees. Nothing about that is provable from a
+// counter, because a counter never looks at what the body did.
+//
+// Bounded on purpose, in two directions. `max_round_trips` caps how many entries take the
+// synchronous path, because that path drives the interpreter through the whole callee and turning
+// a function entered a quarter of a million times into an interpreted one would measure the
+// diagnostic rather than the title; past the cap the hook goes back to handing the body to the JIT.
+// `instruction_budget` caps one call, and exceeding it is a hard fault in gcnport rather than a
+// truncated call -- a body that does not return within its budget means the budget or the address
+// is wrong, and half an executed function is not a result to carry on from.
+struct SuperCall {
+    u32 address = 0;
+    u64 max_round_trips = 0;
+    u32 instruction_budget = 0;
+
+    u64 entries = 0;
+    u64 round_trips = 0;
+    u64 original_instructions = 0;
+    // An average over several calls hides the shape of the answer: a function whose calls all cost
+    // the same and one that took a wildly different path on one of them produce the same mean, and
+    // only the second is telling you the address or the budget is wrong.
+    u32 shortest_original = 0;
+    u32 longest_original = 0;
+    // Every distinct value the body returned, with how often. The first return value alone answers
+    // "did the call work"; it cannot answer "does this function keep telling the title the same
+    // thing", which is the question a native override standing in for it has to get right.
+    std::map<u32, u64> return_values;
+    static constexpr std::size_t MAX_DISTINCT_RETURN_VALUES = 16;
+    u64 return_values_not_tracked = 0;
+
+    gcnport::HookResult operator()(gcnport::GuestContext& guest) {
+        entries += 1;
+        if (round_trips >= max_round_trips) {
+            return gcnport::HookResult::call_original_once();
+        }
+
+        const gcnport::InterpretedBlock block = guest.call_original(instruction_budget);
+        round_trips += 1;
+        original_instructions += block.instruction_count;
+        if (round_trips == 1 || block.instruction_count < shortest_original) {
+            shortest_original = block.instruction_count;
+        }
+        if (block.instruction_count > longest_original) {
+            longest_original = block.instruction_count;
+        }
+        // r3 is the PowerPC ABI's first return register, so this is the value the guest caller is
+        // about to act on -- read by native code, after the original ran, inside the same callback.
+        // That ordering is the whole point.
+        const u32 returned = guest.general_register(3);
+        if (return_values.size() < MAX_DISTINCT_RETURN_VALUES || return_values.contains(returned)) {
+            return_values[returned] += 1;
+        } else {
+            return_values_not_tracked += 1;
+        }
+        // The body has already run, and PC/NPC were restored around it, so returning to the caller
+        // is exactly what the function itself would have done next.
+        return gcnport::HookResult::return_to_caller();
+    }
+};
+
 // A guest address on the command line: 32-bit, hexadecimal, and refused rather than truncated.
 // strtoull saturates at ULLONG_MAX on overflow, so errno is the only thing that separates an
 // out-of-range argument from a legitimately large one.
@@ -407,6 +474,7 @@ struct BootRequest {
     bool report_counters_on_fault = true;
     std::vector<GuestMemoryWindow> dump_windows;
     std::vector<u32> counted_call_addresses;
+    std::vector<SuperCall> super_calls;
 };
 
 void RunBoot(const DolImage& image, const BootRequest& request) {
@@ -532,6 +600,25 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                 std::exit(1);
             }
             std::printf("gmse01_boot: counting entries to 0x%08x\n", address);
+        }
+
+        std::vector<std::unique_ptr<SuperCall>> super_calls;
+        for (const SuperCall& requested : request.super_calls) {
+            super_calls.push_back(std::make_unique<SuperCall>(requested));
+            adapter.install_hook({.identity = adapter.identity(), .address = requested.address},
+                                 std::ref(*super_calls.back()));
+            if (!runtime.HasNativeHook(requested.address)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
+                             "a round trip it could not have made\n",
+                             requested.address);
+                std::exit(1);
+            }
+            std::printf("gmse01_boot: calling the original at 0x%08x from native code for the "
+                        "first %llu entr(ies), budget %u instruction(s)\n",
+                        requested.address,
+                        static_cast<unsigned long long>(requested.max_round_trips),
+                        requested.instruction_budget);
         }
 
         // Bounded: this is a diagnostic boot attempt, not a gameplay loop.
@@ -758,6 +845,35 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         counted->entries == 0 ? "  -- installed, never dispatched" : "");
         }
 
+        for (const auto& super : super_calls) {
+            std::printf("gmse01_boot: super-call 0x%08x entered %llu time(s), %llu round trip(s) "
+                        "through the original body, %llu interpreted instruction(s)\n",
+                        super->address, static_cast<unsigned long long>(super->entries),
+                        static_cast<unsigned long long>(super->round_trips),
+                        static_cast<unsigned long long>(super->original_instructions));
+            if (super->round_trips == 0) {
+                std::printf("gmse01_boot:   no body was called and no return value was read\n");
+                continue;
+            }
+            std::printf("gmse01_boot:   shortest call %u instruction(s), longest %u\n",
+                        super->shortest_original, super->longest_original);
+            for (const auto& [value, count] : super->return_values) {
+                std::printf("gmse01_boot:     returned r3=0x%08x to its native caller %llu time(s)"
+                            "\n",
+                            value, static_cast<unsigned long long>(count));
+            }
+            if (super->return_values_not_tracked != 0) {
+                std::printf("gmse01_boot:     %llu further return(s) past %zu distinct values -- "
+                            "the list above is truncated, not complete\n",
+                            static_cast<unsigned long long>(super->return_values_not_tracked),
+                            SuperCall::MAX_DISTINCT_RETURN_VALUES);
+            }
+        }
+        std::printf("gmse01_boot: synchronous_original_calls=%llu "
+                    "synchronous_original_instructions=%llu\n",
+                    static_cast<unsigned long long>(counters.synchronous_original_calls),
+                    static_cast<unsigned long long>(counters.synchronous_original_instructions));
+
         std::printf("gmse01_boot: dolphin_alerts=%llu\n",
                     static_cast<unsigned long long>(g_alerts_reported.load()));
 
@@ -791,7 +907,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "usage: %s <path-to-extracted-main.dol> [--disc <disc-image>] "
                      "[--max-blocks <n>] [--raw-faults] [--dump-guest <hex-addr>[:<words>] ...] "
-                     "[--count-calls <hex-addr> ...]\n",
+                     "[--count-calls <hex-addr> ...] "
+                     "[--super-call <hex-addr>:<round-trips>:<instruction-budget> ...]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -871,6 +988,45 @@ int main(int argc, char** argv) {
                 return 1;
             }
             request.counted_call_addresses.push_back(address);
+        } else if (name == "--super-call") {
+            // <hex-addr>:<round-trips>:<instruction-budget>. All three are stated rather than
+            // defaulted: how many entries to route through the interpreter and how long the callee
+            // is allowed to be are properties of the function being called, and a wrong guess at
+            // either is a hard fault or an unmeasured run rather than a smaller answer.
+            SuperCall super;
+            char* end = nullptr;
+            if (!ParseGuestAddress(value, &end, super.address) || *end != ':') {
+                std::fprintf(stderr,
+                             "gmse01_boot: --super-call needs "
+                             "<hex-addr>:<round-trips>:<instruction-budget>, got '%s'\n",
+                             value);
+                return 1;
+            }
+            const char* const round_trips_text = end + 1;
+            errno = 0;
+            const unsigned long long parsed_round_trips = std::strtoull(round_trips_text, &end, 0);
+            if (end == round_trips_text || *end != ':' || parsed_round_trips == 0 ||
+                errno == ERANGE) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --super-call round-trip count must be a positive "
+                             "integer, got '%s'\n",
+                             round_trips_text);
+                return 1;
+            }
+            super.max_round_trips = parsed_round_trips;
+            const char* const budget_text = end + 1;
+            errno = 0;
+            const unsigned long long parsed_budget = std::strtoull(budget_text, &end, 0);
+            if (end == budget_text || *end != '\0' || parsed_budget == 0 ||
+                parsed_budget > 0xffffffffull || errno == ERANGE) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --super-call instruction budget must be 1..2^32-1, "
+                             "got '%s'\n",
+                             budget_text);
+                return 1;
+            }
+            super.instruction_budget = static_cast<u32>(parsed_budget);
+            request.super_calls.push_back(super);
         } else {
             std::fprintf(stderr, "gmse01_boot: unknown option '%s'\n", argv[argument - 1]);
             usage();

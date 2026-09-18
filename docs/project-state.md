@@ -12,10 +12,12 @@ currently has no gameplay executable while its shared runtime executor is missin
 
 ## Current focus
 
-S003 is the current focus. S001 is verified: exact `GMSE01` boots through `gcnport` and Dolphin's
-JIT and its `J3DShape::draw` hook at `0x802e0390` was entered 245,874 times, each one returning
-through the one-call original-body path. What remains is turning that one proven hook into the
-image-scoped override dispatch Sunbright's native code will actually be mounted on.
+S003 is the current focus, and is now `partial` rather than `missing`: Sunbright installs its hooks
+through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
+-- 1,428 complete native -> original -> native round trips through `TApplication::drawDVDErr`, with
+the native caller reading the body's own return value each time. What remains is a native override
+that replaces guest behaviour rather than observing it; every hook Sunbright installs today is
+diagnostic.
 
 ## Capability inventory
 
@@ -23,7 +25,7 @@ image-scoped override dispatch Sunbright's native code will actually be mounted 
 | --- | --- | --- | --- | --- |
 | S001 | Exact `GMSE01` boots under `gcnport`/Dolphin JIT and reaches the `J3DShape::draw` runtime hook at `0x802e0390` | verified | S002, S003 | G003, G004 |
 | S002 | `gcnport` supplies a title-neutral Dolphin dynarec executor with image identity, bounded exits, invalidation, and diagnostics | partial | — | G003 |
-| S003 | Sunbright native overrides and original calls use robust image-scoped runtime dispatch | missing | S002 | G003, G004 |
+| S003 | Sunbright native overrides and original calls use robust image-scoped runtime dispatch | partial | S002 | G003, G004 |
 | S004 | The PC-native semantic renderer covers the complete visible J3D/J2D/particle/effect stream | partial | S003 | G004 |
 | S005 | Native decomp adapters and recovered source provide independent semantic and behavior evidence | partial | — | G002, G004 |
 | S006 | Smooth presentation covers every eligible moving source and keeps native-rate modes separate | partial | S001, S004 | G001 |
@@ -272,11 +274,30 @@ static libraries to prove the API works, not through the product's own build).
 
 ### S003 — native override dispatch
 
-Missing capability: move Sunbright's useful native registrations onto the `gcnport` runtime table.
-The key must prevent stale address reuse; installs/removals must revoke direct links; nested guest
-calls must re-enter the dispatcher; and `superCall` must suppress only the current override for one
-ordinary JIT call. Positive and negative controls must cover cache miss/hit, chaining, invalidation,
-and a disabled override.
+Sunbright links `gcnport::dolphin` and installs every hook through `gcnport::DolphinRuntimeAdapter`,
+so nothing here names a Dolphin type or restates Dolphin's build requirements. The adapter's own
+test covers the mechanism against a synthetic image -- image/module-scoped keys, a mismatched
+generation refused, install and removal revoking the direct link, a single-use original-call ticket
+that never enters the callback, and the synchronous `call_original` path.
+
+Evidence on the real title, from one 600,000,573-block run with 0 Dolphin alerts: the first
+migrated run reproduced the raw-ABI numbers exactly (13,600 compiled blocks, 161,792 fallbacks,
+hook counts 0 and 1,428), proving the adapter changed who owns the boundary and nothing else.
+`--super-call` then drove the complete round trip at `TApplication::drawDVDErr` (`0x802a5b50`):
+1,428 entries, 1,428 synchronous calls into the original body, 1,977,923 interpreted instructions,
+and the native caller read r3 after every one -- `0` on 1,393 frames and `'em_3'` on 35. Both values
+are the decomp's own control flow (`src/System/Application.cpp`): `'em_3'` is the "now loading disc"
+frame the title draws instead of updating, while `DVDGetDriveStatus()` reports the drive busy, and
+it is transient rather than a stuck state. The same run shows the instruction bound is a real
+measurement and not a guess: `DVDGetDriveStatus` (`0x8034e144`) cost exactly 60 instructions on
+every call, and `drawDVDErr`'s calls ranged 67 to 54,064 -- the short path and the error-drawing
+path, exactly as its disassembly predicts.
+
+Gap: every hook Sunbright installs is diagnostic. No native override yet replaces guest behaviour,
+so the chaining and cache-invalidation controls that matter to a *replacing* override -- nested
+guest calls re-entering the dispatcher, and a disabled override -- are proven only at the adapter's
+own level, against a synthetic image, not against a title function Sunbright has taken ownership
+of.
 
 ### S004 — PC-native semantic rendering
 
