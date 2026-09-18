@@ -16,6 +16,7 @@ add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/
                                                  src/j3d_stage_lighting.cpp
                                                  src/j3d_mesh_vertices.cpp
                                                  src/j3d_projection.cpp
+                                                 src/j3d_unlit_effect_material.cpp
                                                  src/j3d_unlit_material.cpp
                                                  src/model.cpp src/model_context.cpp
                                                  src/particle_billboard.cpp
@@ -115,6 +116,13 @@ target_link_libraries(native_render_j3d_tinted_layered_material_test
                       PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_tinted_layered_material
          COMMAND native_render_j3d_tinted_layered_material_test)
+
+add_executable(native_render_j3d_unlit_effect_material_test
+               tests/j3d_unlit_effect_material_test.cpp)
+target_link_libraries(native_render_j3d_unlit_effect_material_test
+                      PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_unlit_effect_material
+         COMMAND native_render_j3d_unlit_effect_material_test)
 
 add_executable(native_render_j3d_masked_specular_material_test
                tests/j3d_masked_specular_material_test.cpp)

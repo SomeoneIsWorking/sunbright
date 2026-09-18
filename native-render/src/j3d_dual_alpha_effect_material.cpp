@@ -14,11 +14,6 @@ constexpr std::array<std::uint8_t, 8> kStage0{0xC0, 0x08, 0xFF, 0xF2, 0xC1, 0x08
 constexpr std::array<std::uint8_t, 8> kStage1{0xC2, 0x18, 0xF4, 0x0A, 0xC3, 0x10, 0xF0, 0x50};
 constexpr std::array<std::uint8_t, 8> kStage2{0xC4, 0x00, 0xFF, 0xF0, 0xC5, 0x00, 0xF4, 0x70};
 
-Color color_from_s10_rgb(const std::array<std::int16_t, 4>& color) noexcept {
-    constexpr float kScale = 1.0F / 255.0F;
-    return {color[0] * kScale, color[1] * kScale, color[2] * kScale, 1.0F};
-}
-
 } // namespace
 
 const char*

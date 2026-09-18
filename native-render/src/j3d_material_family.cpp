@@ -11,6 +11,7 @@
 #include <sunbright/native_render/j3d_masked_toon_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
 #include <sunbright/native_render/j3d_tinted_layered_material.h>
+#include <sunbright/native_render/j3d_unlit_effect_material.h>
 #include <sunbright/native_render/j3d_unlit_material.h>
 
 #include <algorithm>
@@ -93,6 +94,7 @@ struct TexturedMatches {
     bool litTextured = false;
     bool unlitTextured = false;
     bool texturedEffect = false;
+    bool unlitEffect = false;
 
     [[nodiscard]] J3dMaterialFamily family() const noexcept {
         if (dualAlphaEffect) {
@@ -134,6 +136,11 @@ struct TexturedMatches {
         if (texturedEffect) {
             return J3dMaterialFamily::TexturedEffect;
         }
+        // Last for the same reason, and for a second one: it admits a colour channel whose output
+        // its program never reads, which is exact but wide, so no other family is asked after it.
+        if (unlitEffect) {
+            return J3dMaterialFamily::UnlitTexturedEffect;
+        }
         return J3dMaterialFamily::None;
     }
 
@@ -160,6 +167,10 @@ struct TexturedMatches {
     matches.alphaMasked = accepted(
         classify_j3d_alpha_masked_material(state, PLACEHOLDER, alphaMasked),
         j3d_alpha_masked_material_result_name, J3dMaterialFamily::AlphaMaskedColor, refusals);
+    TexturedEffectMaterial unlitEffect{};
+    matches.unlitEffect =
+        accepted(classify_j3d_unlit_effect_material(state, PLACEHOLDER, unlitEffect),
+                 j3d_unlit_effect_result_name, J3dMaterialFamily::UnlitTexturedEffect, refusals);
     TexturedEffectMaterial texturedEffect{};
     matches.texturedEffect =
         accepted(classify_j3d_effect_material(state, PLACEHOLDER, texturedEffect),
@@ -259,6 +270,15 @@ void record_unasked_lit_families(const ModelLightingContext* lighting,
     case J3dMaterialFamily::TexturedEffect: {
         TexturedEffectMaterial built{};
         if (classify_j3d_effect_material(state, first, built) != J3dEffectMaterialResult::Success) {
+            return false;
+        }
+        material = built;
+        return true;
+    }
+    case J3dMaterialFamily::UnlitTexturedEffect: {
+        TexturedEffectMaterial built{};
+        if (classify_j3d_unlit_effect_material(state, first, built) !=
+            J3dUnlitEffectResult::Success) {
             return false;
         }
         material = built;
@@ -423,6 +443,8 @@ const char* j3d_material_family_name(J3dMaterialFamily family) noexcept {
         return "lit_masked_specular";
     case J3dMaterialFamily::TexturedEffect:
         return "textured_effect";
+    case J3dMaterialFamily::UnlitTexturedEffect:
+        return "unlit_textured_effect";
     }
     return "unknown";
 }

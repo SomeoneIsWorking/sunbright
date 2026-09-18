@@ -42,11 +42,6 @@ bool valid_lighting(const ModelLightingContext& lighting) noexcept {
     return lighting.pointLightCount != 0 && valid(lighting);
 }
 
-Color color_from_s10_rgb(const std::array<std::int16_t, 4>& color) noexcept {
-    constexpr float kScale = 1.0F / 255.0F;
-    return {color[0] * kScale, color[1] * kScale, color[2] * kScale, 1.0F};
-}
-
 } // namespace
 
 const char* j3d_specular_ramp_result_name(J3dSpecularRampResult result) noexcept {

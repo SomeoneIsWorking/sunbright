@@ -43,11 +43,6 @@ bool valid_texture(const PictureTexture& texture) noexcept {
     return texture.resource != 0 && texture.width != 0 && texture.height != 0;
 }
 
-Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept {
-    constexpr float kScale = 1.0F / 255.0F;
-    return {color[0] * kScale, color[1] * kScale, color[2] * kScale, color[3] * kScale};
-}
-
 } // namespace
 
 const char* j3d_masked_toon_material_result_name(J3dMaskedToonMaterialResult result) noexcept {

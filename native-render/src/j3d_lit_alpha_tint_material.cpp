@@ -13,11 +13,6 @@ constexpr std::uint8_t kColor0Alpha0 = 4;
 constexpr std::array<std::uint8_t, 8> kRasterTimesRegisterWithTextureAlpha{0xC0, 0x08, 0xF8, 0x2F,
                                                                            0xC1, 0x08, 0xF2, 0xF0};
 
-Color color_from_s10_rgb(const std::array<std::int16_t, 4>& color) noexcept {
-    constexpr float kScale = 1.0F / 255.0F;
-    return {color[0] * kScale, color[1] * kScale, color[2] * kScale, 1.0F};
-}
-
 bool valid_lighting(const ModelLightingContext& lighting) noexcept {
     return lighting.pointLightCount != 0 && lighting.pointLightCount <= lighting.pointLights.size();
 }

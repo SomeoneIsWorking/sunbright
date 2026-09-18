@@ -40,6 +40,15 @@ int main() {
     assert(material.usesVertexColor);
     assert(material.baseColor == Color(1, 1, 1, 1));
 
+    // GMSE01 writes this material two ways. 0x80e85db4 puts the channel colour straight into the
+    // working register instead of accumulating it into a colour register; the result is the same
+    // unlit colour, and the family used to refuse it on the spelling alone.
+    const std::array<std::uint8_t, 8> accumulated = state.tevStages[0].program;
+    state.tevStages[0].program = {0xC0, 0x08, 0xAF, 0xFF, 0xC1, 0x08, 0xBF, 0xF0};
+    assert(classify_j3d_unlit_material(state, material) == J3dUnlitMaterialResult::Success);
+    assert(material.usesVertexColor);
+    state.tevStages[0].program = accumulated;
+
     state.tevStages[0].program[2] = 0;
     assert(classify_j3d_unlit_material(state, material) ==
            J3dUnlitMaterialResult::UnsupportedColorProgram);

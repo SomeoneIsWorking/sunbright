@@ -20,6 +20,17 @@ Color color_from_rgba8(std::uint32_t rgba) noexcept {
             static_cast<float>(rgba & 0xffU) * kScale};
 }
 
+Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept {
+    constexpr float kScale = 1.0F / 255.0F;
+    return {color[0] * kScale, color[1] * kScale, color[2] * kScale, color[3] * kScale};
+}
+
+Color color_from_s10_rgb(const std::array<std::int16_t, 4>& color) noexcept {
+    Color result = color_from_s10(color);
+    result.a = 1.0F;
+    return result;
+}
+
 bool valid(const Canvas& canvas) noexcept {
     return finite(canvas.origin) && finite(canvas.extent) && canvas.extent.x > 0.0f &&
            canvas.extent.y > 0.0f && canvas.viewport.width != 0 && canvas.viewport.height != 0;

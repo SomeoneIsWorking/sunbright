@@ -6,6 +6,11 @@ namespace {
 constexpr std::uint8_t kColor0Alpha0 = 4;
 constexpr std::array<std::uint8_t, 8> kRasterColorPassThrough{0xC0, 0x40, 0xAF, 0xF0,
                                                               0xC1, 0x08, 0xBF, 0x80};
+// The same material written the direct way: the channel colour straight into the working register,
+// clamped, rather than accumulated into a colour register. GMSE01 authors both spellings, and a
+// family that knows only one refuses the other for a difference its output does not have.
+constexpr std::array<std::uint8_t, 8> kRasterColorToWorkingRegister{0xC0, 0x08, 0xAF, 0xFF,
+                                                                    0xC1, 0x08, 0xBF, 0xF0};
 constexpr std::array<std::uint8_t, 8> kTextureTimesRaster{0xC0, 0x08, 0xF8, 0xAF,
                                                           0xC1, 0x08, 0xF2, 0xF0};
 constexpr std::uint32_t kPixelEngineOpaque = 0x50454F50U;      // 'PEOP'
@@ -216,7 +221,8 @@ J3dUnlitMaterialFeatures inspect_j3d_unlit_material(const J3dMaterialState& stat
         .supportedTevBlock = state.supportedTevBlock,
         .singleTevStage = state.tevStageCount == 1,
         .rasterColorPassThrough = state.tevStages[0].colorChannel == kColor0Alpha0 &&
-                                  state.tevStages[0].program == kRasterColorPassThrough,
+                                  (state.tevStages[0].program == kRasterColorPassThrough ||
+                                   state.tevStages[0].program == kRasterColorToWorkingRegister),
         .requiredVertexColorPresent = !vertexColor || state.hasVertexColor,
     };
 }

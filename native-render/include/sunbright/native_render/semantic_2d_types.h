@@ -21,6 +21,13 @@ struct Color {
 
 [[nodiscard]] Color color_from_rgba8(std::uint32_t rgba) noexcept;
 
+// The colour registers J3D materials store as signed 10-bit components, scaled the way the console
+// reads them. Six material families each kept a private copy of this, three of them in a variant
+// that discards alpha; a seventh copy was about to be written, so it lives here once instead.
+[[nodiscard]] Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept;
+// The same colour with alpha taken as fully opaque, for families whose programs never read it.
+[[nodiscard]] Color color_from_s10_rgb(const std::array<std::int16_t, 4>& color) noexcept;
+
 enum class ClipCoordinateSpace : std::uint8_t { Canvas, TargetPixels };
 
 struct ClipRect {

@@ -553,14 +553,33 @@ That took classification to **45,730 of 51,614 (88.6%)**. `unlit_textured` gaine
 draws of `0x80e85660`; `lit_masked_specular` gained draws too, because every family asks the same
 policy classifier. No family lost a draw, and 54,270 draws now reach the sink, all accepted.
 
-**The frontier is now 7 materials**, and `tools/re/tev_decode.py` reads each one's program:
+Two single-stage unlit materials followed, taking classification to **46,322 of 51,352 (90.2%)**.
+`0x80d3a7e8` takes its colour from a register and its alpha from the raster, which is the same
+semantic material the lit effect family publishes -- a texture times an authored colour -- reached
+through authored state that shares none of that family's gates, so it is a separate rule publishing
+the same type. `0x80e85db4` writes the channel colour straight into the working register instead of
+accumulating it into a colour register; the unlit colour family knew only the second spelling.
+
+    classification: success=46322 unsupported_program=5030   (90.2% of 51,352)
+    unlit_textured_effect=854, every other family's count unchanged
+    54,862 draws composed and submitted, 9,790,794 vertices, 0 rejected
+
+Six copies of the colour-register conversion had accumulated across the material families, three of
+them in a variant that discards alpha. It lives once beside `color_from_rgba8` now; the seventh copy
+was what prompted looking.
+
+The refusal set is indexed by family, and appending a family past the enumerator its size is
+derived from writes one slot beyond it. That happened here, on the first family added after the
+check for it was written -- and the check failed the build, naming the family that no longer fit.
+The measurement was retaken with the corrected array rather than reported from the run that had it.
+
+**The frontier is now 6 materials**, and `tools/re/tev_decode.py` reads each one's program:
 
 | materials | draws | nearest gate |
 | --- | --- | --- |
 | `0x80fa490c`, `0x80fa4c00` | 1,614 | lit, `0706/0700`, **two** stages; `lit_textured` refuses on stage count |
 | `0x80e85ac0`, `0x80ed7738`, `0x80e8817c` | 2,562 | unlit, two stages; `unlit_textured` refuses on multiple active colour stages |
-| `0x80d3a7e8` | 854 | unlit; its stage reads a colour register where `unlit_textured` expects the raster |
-| `0x80e85db4` | 854 | unlit, untextured raster pass-through; `unlit_color` refuses on colour program |
+| `0x80e85db4` | 854 | its program is accepted now; its policy blends against an inverse source colour, which `ModelBlendMode` has no value for |
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

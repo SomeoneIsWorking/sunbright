@@ -44,11 +44,6 @@ float constant_ramp_scale(std::uint8_t selection) noexcept {
     return selection <= 7 ? static_cast<float>(8U - selection) / 8.0F : 1.0F;
 }
 
-Color color_from_s10(const std::array<std::int16_t, 4>& color) noexcept {
-    constexpr float kScale = 1.0F / 255.0F;
-    return {color[0] * kScale, color[1] * kScale, color[2] * kScale, color[3] * kScale};
-}
-
 } // namespace
 
 bool is_j3d_effect_material_program(const J3dTevStageState& stage) noexcept {
