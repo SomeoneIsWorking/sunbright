@@ -338,19 +338,88 @@ temporary run raising the bound to 400,000 blocks (401,101 executions) confirmed
 steady state, not a slow crawl toward another crash: execution settles into one stable, unchanging
 busy-wait loop at guest PC `0x80343484` (9 PPC instructions) with no new blocks compiled and no faults.
 
-**This is the honestly-diagnosed next blocker**, and it is not a fault: GMSE01 is polling a hardware
-condition — most likely a DSP mailbox/interrupt handshake, an ARAM DMA completion flag, or VI
-retrace/vertical-blank timing — that a bare in-memory-image adapter boot can never satisfy, because it
-runs no DSP LLE/HLE thread, delivers no hardware interrupts, and drives no real frame timing.
-`shared/gcnport/docs/dolphin-embedding-contract.md` already scopes exactly these three mechanisms
-(DSP thread startup, a real video backend, interrupt delivery) as separate, later adapters outside
-`apply_gamecube_hardware_init`'s and `apply_gamecube_os_init`'s stated bring-up contract, so this is
-not a new finding about the boundary — it is confirmation that boot has now reached it cleanly, with
-no crash in between. `tools/gcnport_boot/gmse01_boot.cpp` remains uncommitted for operator review; no
-`shared/gcnport` file changed this session.
+That was read at the time as the honestly-diagnosed next blocker — GMSE01 polling a hardware
+condition (DSP mailbox/interrupt, ARAM DMA completion, or VI retrace) that a bare in-memory-image
+adapter boot could never satisfy, since it runs no DSP LLE/HLE thread, delivers no hardware
+interrupts, and drives no real frame timing. **The fifth-continuation note below falsifies that
+reading.** The loop was waiting on an ARAM DMA completion interrupt that `gcnport` had scheduled
+correctly and then made unreachable by freezing `CoreTiming`'s global timer; it clears as soon as the
+timer advances. The lesson is recorded rather than the conclusion: "the run settles into an unchanging
+steady state" was taken as evidence about the *title's* requirements when it was evidence about our
+*own* timekeeping, and the cheap falsifier — reading the global timer across dispatches — had not been
+run.
 
-Not attempted this session: identifying which specific hardware condition `0x80343484`'s loop is
-polling (would need disassembling that address's containing function against `decomp/sms`), and
-whether the correct next step is a `gcnport`-level interrupt/timer adapter or a narrower native
-override for GMSE01's specific wait. Sunbright's own `docs/project-state.md` S001/S002 items are
-updated with this same finding.
+## Fifth continuation (2026-09-18): CoreTiming freeze fixed; boot reaches the DVD boundary
+
+`RuntimeSession::ExecuteJitBlock` forced `ppc_state.downcount = 1` before each dispatch, on the
+assumption that this was what bounded a call to a single block. `CoreTiming::Advance()` — which
+Dolphin's own generated dispatcher calls on entry — derives elapsed guest time from exactly that
+field:
+
+    cyclesExecuted = slice_length - DowncountToCycles(downcount)
+
+so on entry `downcount` must still be the previous slice's natural remainder. Once a
+one-block-at-a-time caller settled into `slice_length == 1`, the forced sentinel made this
+`1 - 1 == 0` and the global timer stopped advancing for good: **measured stuck at 30,891 ticks across
+16,384 consecutive dispatches**, with the invariant `ticks + downcount == 30,888` holding throughout.
+No scheduled `CoreTiming` event could ever come due, so the ARAM DMA completion interrupt
+(`INT_ARAM`, `DSP_CONTROL` bit `0x20`) that `DSPManager::Do_ARAM_DMA` had scheduled just 246 ticks
+ahead was never raised, and `__OSInitAudioSystem`'s poll — `decomp/sms/src/dolphin/os/OSAudioSystem.c`
+spins on `while (!(__DSPRegs[5] & 0x20))` — could never exit. The sentinel never bounded anything
+either: `Advance()` reassigns `downcount` from the event queue before the first block runs.
+
+Fix (Dolphin fork `914365a`, `gcnport` `0975e62`, both pushed): bound the **slice**, which is the
+field `CoreTiming` actually sizes a dispatch by. A no-op event kept permanently one cycle in the
+future makes `Advance()`'s own `slice_length = min(next_event.time - global_timer, ...)` cap every
+slice at one block. `MAIN_ENABLE_DEBUGGING` was tried and rejected: it also produces a per-block
+dispatcher exit, but additionally drives `analyzer.SetDebuggingEnabled`, forcing single-instruction
+blocks (224 blocks over 16,384 dispatches) and destroying the block granularity this API exposes.
+Follow-on: `SerialInterfaceManager`'s periodic poll — only reachable now that the timer advances —
+calls `g_controller_interface.UpdateInput()` unconditionally, before and independently of asking any
+SI channel for data, and asserts on `m_is_init`; forcing every channel to `SIDEVICE_NONE` does not
+prevent the poll, because an SI poll with nothing plugged in is what real hardware does. A headless
+`ControllerInterface::Initialize(WindowSystemInfo{})` gives that poll a real owner.
+
+Two required regressions were added, each assertion an independent discriminator: the global timer
+must strictly advance per dispatch (fails if `downcount` is overwritten); a block must hold more than
+one instruction (fails under `MAIN_ENABLE_DEBUGGING`); and retired work must stay in the guest loop's
+fixed ratio to block size, which pins "exactly one block ran" **without** hard-coding an analyzer
+decision — the first version of that assertion hard-coded a 4-instruction block and failed when the
+analyzer folded three iterations into a 12-instruction one. They were first written, compiled and
+registered but **never executed**, because `tools/verify.py` runs an explicit `--gtest_filter`
+inventory they were not in; a gate that does not run is not a gate. Verified after adding them:
+`tools/verify.py --runtime`, linux/x64, 26 required tests. The timer regression was validated against
+the defect by planting the removed `downcount = 1` write back into `ExecuteJitBlock`, where it fails
+from dispatch 1 onward.
+
+**Result: exact GMSE01 runs through OS bring-up with zero faults and stops at a correct, precisely
+identified boundary — its DVD error screen.** Boot clears `__OSInitAudioSystem`, the RAM clear
+(`0x80003194` → `0x81800000`), and `System/Application.cpp`'s two `OSProtectRange` calls. Those two
+are worth recording, because they were briefly mistaken for a bogus 64 MB flush on a 24 MB console:
+`OSProtectRange(0, nullptr, 0x80000000, 0)` and `OSProtectRange(1, (void*)0x83000000, 0x7d000000, 0)`
+are deliberate whole-address-space protection setup, and `DCFlushRange` walks them 32 bytes at a time,
+so they alone retire **131,334,144 iterations** of a single four-instruction block — measured within
+1% of that figure. The registers that looked like a garbage length (`r3=0x40`, `r4=0x04000000`,
+`ctr=0x03fffffe`) were the loop-advanced pointer and the post-`srwi` iteration count sampled two
+iterations in, not the call's arguments. `CBoot::SetupGCMemory` (the BS2 low-memory OS globals
+`gcnport` does not write) was the leading hypothesis and was **not** the cause; it remains unwritten
+and is a separate question.
+
+Boot then renders the SDK's disc-error path: the strings `"An error has occurred. Turn the power OFF
+..."`, `"The Disc could not be read."` and `"Reading Disc..."` (all present in the DOL at `0x3a103c`),
+drawn through the IPL font. That is what produces the run's "Trying to access Windows-1252 fonts"
+notice and the stream of one-byte reads from addresses that are themselves ASCII codes (`0x21` `!`,
+`0x4E` `N`, `0x45` `E`, `0x52` `R`, `0x4F` `O`, `0x48` `H`, `0x41` `A`, `0x53` `S`). This is the
+expected result, not a defect: `BootAuthenticatedImage` places a flat DOL image in memory and
+deliberately exposes no DVD volume, so the title's first disc access fails into the SDK's error path.
+The previous 16,384-block bound could never have reached this, which is exactly why it read as a
+permanent stall.
+
+`tools/gcnport_boot/gmse01_boot.cpp` now takes an optional `[max-blocks]` argument (refusing a
+malformed or zero value rather than silently substituting the default) and reports elapsed time and
+block rate, with a default budget large enough to clear the 131.3M-iteration protection flush.
+
+Next, in order: (1) a **disc/DVD device adapter**, which Sunbright owns because the game image must
+never reach `gcnport`; (2) a **batched execution entry point** — one block per host call measures
+~180,000 blocks/second, i.e. ~740,000 guest instructions/second, far under GameCube speed, which is
+why this boot takes minutes; (3) the `0x802e0390` `J3DShape::draw` runtime override, blocked on (1).

@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <limits>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -169,7 +171,7 @@ DolImage LoadDolAsFlatImage(const std::string& path)
   return image;
 }
 
-void RunBoot(const DolImage& image)
+void RunBoot(const DolImage& image, u32 block_budget)
 {
   const std::string profile_path = File::CreateTempDir();
   if (profile_path.empty())
@@ -245,25 +247,41 @@ void RunBoot(const DolImage& image)
     PowerPC::GcnPort::RuntimeSession runtime(system, identity);
     g_diagnostic_runtime = &runtime;
 
-    // Bounded: this is a diagnostic boot attempt, not a gameplay loop. With the SIGSEGV-handler
-    // ordering fixed above, GMSE01 no longer crashes at the DSP MMIO access this tool previously
-    // (mis)diagnosed as a gcnport bring-up gap: it correctly backpatches and continues past physical
-    // 0x0C00500A (DSP_CONTROL) and every other real GMSE01 hardware-register access reached so far.
-    // Boot instead settles into a single stable busy-wait loop at pc=0x80343484 (9 instructions;
-    // confirmed unchanging out to 400,000 dispatched blocks / 276 unique compiled blocks / ~401,000
-    // executions with zero faults) -- consistent with GMSE01 polling a hardware condition (DSP
-    // mailbox/interrupt, ARAM DMA completion, or VI retrace) that a bare adapter boot with no DSP
-    // thread, no interrupt delivery, and no real frame timing can ever satisfy. This is not a crash
-    // and not a gcnport regression: dolphin-embedding-contract.md already scopes DSP LLE/HLE thread
-    // startup and a real video/input backend as separate, later adapters this option does not
-    // provide. 16384 is enough to reach and stably reproduce that steady state without spending
-    // extra wall-clock time re-confirming it on every run.
-    constexpr u32 MAX_BLOCKS = 16384;
+    // Bounded: this is a diagnostic boot attempt, not a gameplay loop.
+    //
+    // GMSE01 now runs through OS bring-up without a single fault and stops at a precisely
+    // identified boundary. The earlier reading of this tool's output -- a permanent busy-wait at
+    // pc=0x80343484 caused by a hardware condition no adapter boot could satisfy -- was wrong on
+    // both counts, and was an artefact of a gcnport defect that froze CoreTiming's global timer
+    // (fixed in extern/gcnport; see its ExecuteJitBlock regression). With the timer advancing, the
+    // ARAM DMA completion interrupt that loop waits on is raised normally and boot walks straight
+    // on through __OSInitAudioSystem, the RAM clear, and OSMemory's protection setup.
+    //
+    // Boot then stops in GMSE01's DVD error screen: the SDK strings "An error has occurred. Turn
+    // the power OFF ...", "The Disc could not be read." and "Reading Disc..." are rendered through
+    // the IPL font, which is what produces the run's "Trying to access Windows-1252 fonts" notice
+    // and the stream of one-byte reads from addresses that are themselves ASCII codes. That is the
+    // correct and expected result: BootAuthenticatedImage places a flat DOL image in memory and
+    // deliberately exposes no DVD volume, so the title's first disc access fails and the SDK falls
+    // into its disc-error path. A disc device is the next adapter, and it is one Sunbright owns --
+    // the game image must never reach gcnport (see docs/issues/0037).
+    //
+    // The budget has to clear System/Application.cpp's two OSProtectRange calls, which flush
+    // 0x80000000 and 0x7d000000 bytes of address space. DCFlushRange walks those 32 bytes at a
+    // time, so they alone retire 131,334,144 iterations of a single four-instruction block --
+    // measured to land within 1% of that figure, at ~180,000 blocks/second. Anything below that
+    // cannot reach the disc boundary at all, which is exactly why a 16,384-block bound previously
+    // read as a permanent stall. One block per host call is correct for a diagnostic but is also
+    // why this takes minutes: it is ~740,000 guest instructions/second, far under GameCube speed,
+    // and a batched execution entry point is tracked as separate work.
+    constexpr u32 DEFAULT_MAX_BLOCKS = 160000000u;
+    const u32 max_blocks = block_budget != 0 ? block_budget : DEFAULT_MAX_BLOCKS;
     u32 blocks_run = 0;
-    for (; blocks_run < MAX_BLOCKS; ++blocks_run)
+    const auto started_at = std::chrono::steady_clock::now();
+    for (; blocks_run < max_blocks; ++blocks_run)
     {
       const auto outcome = runtime.ExecuteJitBlock();
-      if (blocks_run < 32 || blocks_run % 256 == 0)
+      if (blocks_run < 32 || blocks_run % 5000000 == 0)
       {
         std::printf("gmse01_boot: block %u kind=%d pc=0x%08x instructions=%u\n", blocks_run,
                     static_cast<int>(outcome.kind), outcome.guest_pc, outcome.instruction_count);
@@ -278,7 +296,10 @@ void RunBoot(const DolImage& image)
     }
 
     const auto counters = runtime.GetExecutionCounters();
-    std::printf("gmse01_boot: dispatched %u one-block calls\n", blocks_run);
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started_at).count();
+    std::printf("gmse01_boot: dispatched %u one-block calls in %.1f s (%.0f blocks/s)\n",
+                blocks_run, seconds, seconds > 0.0 ? blocks_run / seconds : 0.0);
     std::printf("gmse01_boot: jit_blocks_compiled=%llu jit_block_executions=%llu "
                 "cold_block_executions=%llu cache_hit_block_executions=%llu "
                 "fallback_events=%llu\n",
@@ -300,10 +321,28 @@ void RunBoot(const DolImage& image)
 int main(int argc, char** argv)
 {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  if (argc != 2)
+  if (argc < 2 || argc > 3)
   {
-    std::fprintf(stderr, "usage: %s <path-to-extracted-main.dol>\n", argv[0]);
+    std::fprintf(stderr, "usage: %s <path-to-extracted-main.dol> [max-blocks]\n", argv[0]);
     return 1;
+  }
+
+  // Optional override for the block budget documented in RunBoot. Refuse a malformed or zero value
+  // rather than silently falling back to the default: a run that quietly used a different budget
+  // than the one asked for would be indistinguishable from one that reached a different boundary.
+  u32 block_budget = 0;
+  if (argc == 3)
+  {
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(argv[2], &end, 0);
+    if (end == argv[2] || *end != '\0' || parsed == 0 ||
+        parsed > std::numeric_limits<u32>::max())
+    {
+      std::fprintf(stderr, "gmse01_boot: max-blocks must be a positive 32-bit value, got '%s'\n",
+                  argv[2]);
+      return 1;
+    }
+    block_budget = static_cast<u32>(parsed);
   }
 
   const DolImage image = LoadDolAsFlatImage(argv[1]);
@@ -311,7 +350,7 @@ int main(int argc, char** argv)
   // Dolphin's BLR-return optimization installs a guard in the current CPU thread's own stack; a
   // dedicated thread gives this tool the same fully mapped stack contract Dolphin's shipping CPU
   // thread has (matching gcnport's own GcnPortRuntimeTest.cpp convention).
-  std::thread cpu_thread(RunBoot, image);
+  std::thread cpu_thread(RunBoot, image, block_budget);
   cpu_thread.join();
   return 0;
 }

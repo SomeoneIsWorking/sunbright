@@ -124,17 +124,58 @@ DSP_CONTROL was fatally reported by the tool instead of serviced by Dolphin's no
 Reordering the tool to install its handler *before* `BootAuthenticatedImage` (so Dolphin's handler
 correctly chains back to it only on a genuinely unhandled fault) fixes it: exact `GMSE01` now boots
 to this tool's 16,384-block bound with **zero crashes** (276 compiled blocks, 17,485 executions, 91
-fallback events), up from crashing at block ~6400 with 106/7,524. A 400,000-block probe confirmed
-this is a genuine steady state, not a slow crawl to another fault: execution settles into one stable
-busy-wait loop at guest PC `0x80343484` polling a hardware condition (DSP mailbox/interrupt, ARAM DMA
-completion, or VI retrace) a bare adapter boot with no DSP thread, no interrupt delivery, and no real
-frame timing can ever satisfy — exactly the boundary `dolphin-embedding-contract.md` already scopes
-as a separate, later adapter. See issue 37's fourth-continuation note for the full analysis.
+fallback events), up from crashing at block ~6400 with 106/7,524. A 400,000-block probe found
+execution settling into one stable busy-wait loop at guest PC `0x80343484`. That was read at the time
+as a permanent hardware-condition wait no adapter boot could satisfy; the fifth-continuation note
+below falsifies that reading — the loop was waiting on an ARAM DMA completion interrupt that a
+`gcnport` timekeeping defect prevented from ever being raised, and it clears once the defect is
+fixed. See issue 37's fourth- and fifth-continuation notes.
 
-Still missing before this item is complete: (1) an interrupt/timer/DSP-thread adapter (or a narrower
-native override) so boot can advance past the `0x80343484` busy-wait; (2) the `0x802e0390`
-`J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone does not
-advance S008.
+**2026-09-18 (fifth continuation): the `0x80343484` "unsatisfiable hardware wait" was a `gcnport`
+timekeeping defect, now fixed; boot clears OS bring-up entirely and stops at the DVD boundary.**
+`RuntimeSession::ExecuteJitBlock` forced `ppc_state.downcount` to 1 before each dispatch, believing
+that was what bounded a call to one block. `CoreTiming::Advance()` derives elapsed guest time from
+exactly that field (`slice_length - DowncountToCycles(downcount)`), so once a one-block-at-a-time
+caller settled into a one-cycle slice the sentinel made this `1 - 1 == 0` and the global timer stopped
+advancing permanently — measured stuck at 30,891 ticks across 16,384 consecutive dispatches. No
+scheduled `CoreTiming` event could come due, so the ARAM DMA completion interrupt
+`DSPManager::Do_ARAM_DMA` had scheduled 246 ticks ahead was never raised and `__OSInitAudioSystem`'s
+poll at `0x80343484` spun forever. The sentinel never bounded anything either: `Advance()` reassigns
+`downcount` from the event queue before the first block runs. Fixed in the Dolphin fork (`914365a`)
+by bounding the *slice* instead — a no-op event kept permanently one cycle in the future, so
+`Advance()`'s own `slice_length = min(next_event.time - global_timer, ...)` caps every slice at one
+block. `MAIN_ENABLE_DEBUGGING` was rejected as the bounding mechanism: it also exits per block, but
+additionally drives the analyzer into single-instruction blocks, destroying the block granularity
+this API exists to expose. The same revision brings up a headless `ControllerInterface` for
+hardware-init boots, because `SerialInterfaceManager`'s periodic poll — only reachable once the timer
+advances — calls `g_controller_interface.UpdateInput()` unconditionally and asserts on `m_is_init`.
+Landed as `gcnport` `0975e62` with two new required regressions (the timer must strictly advance per
+dispatch; a block must hold more than one instruction; retired work and block size must stay in the
+guest loop's fixed ratio, which pins "exactly one block ran" without hard-coding an analyzer
+decision), both added to the verifier's `--gtest_filter` inventory after the first attempt compiled
+and registered them but never ran them. Verified: `tools/verify.py --runtime`, linux/x64, 26 required
+tests; the timer regression was validated against the defect by planting the removed `downcount = 1`
+write back, where it fails from dispatch 1.
+
+With the timer advancing, exact `GMSE01` runs through OS bring-up **without a single fault** and stops
+at a precisely identified, correct boundary. Boot clears `__OSInitAudioSystem`, the RAM clear, and
+`System/Application.cpp`'s two `OSProtectRange` calls — which flush `0x80000000` and `0x7d000000`
+bytes of address space, retiring 131,334,144 iterations of one four-instruction `DCFlushRange` block,
+measured within 1% of that figure — and then renders GMSE01's **DVD error screen**: the SDK strings
+`"An error has occurred. Turn the power OFF ..."`, `"The Disc could not be read."` and
+`"Reading Disc..."`, drawn through the IPL font (which is what produces the run's "Trying to access
+Windows-1252 fonts" notice and the stream of one-byte reads from addresses that are themselves ASCII
+codes). This is the expected result, not a defect: `BootAuthenticatedImage` places a flat DOL image in
+memory and deliberately exposes no DVD volume, so the title's first disc access fails into the SDK's
+disc-error path. The earlier 16,384-block bound could never have reached this, which is exactly why it
+read as a permanent stall.
+
+Still missing before this item is complete: (1) a **disc/DVD device adapter** so the title's file
+reads succeed — Sunbright owns this, because the game image must never reach `gcnport`; (2) a
+**batched execution entry point**, because one block per host call measures ~180,000 blocks/second
+(~740,000 guest instructions/second, far under GameCube speed) and makes even this boot take minutes;
+(3) the `0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot
+alone does not advance S008.
 
 ### S002 — gcnport Dolphin executor
 
