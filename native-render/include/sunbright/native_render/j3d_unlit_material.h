@@ -11,6 +11,7 @@ enum class J3dRasterPolicyResult : std::uint8_t {
     Success,
     UnsupportedCullMode,
     UnsupportedPixelEngineBlock,
+    UnsupportedDepthComparison,
 };
 
 enum class J3dUnlitMaterialResult : std::uint8_t {

@@ -22,7 +22,6 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
     constexpr std::uint8_t kAlphaOr = 1;
     constexpr std::uint8_t kAlphaXnor = 3;
     constexpr std::uint8_t kAlways = 7;
-    constexpr std::uint8_t kDepthLessOrEqual = 3;
     const bool twoAlwaysComparisons = alphaCompare0 == kAlways && alphaCompare1 == kAlways;
     const bool alphaPolicyMatches =
         state.alphaCompare0 == alphaCompare0 && state.alphaCompare1 == alphaCompare1 &&
@@ -39,8 +38,7 @@ bool full_policy_matches(const J3dMaterialState& state, std::uint8_t alphaCompar
     return state.hasExplicitPixelPolicy && alphaPolicyMatches && state.blendMode == blendMode &&
            state.blendSourceFactor == blendSource &&
            state.blendDestinationFactor == blendDestination && state.depthTest == depthTest &&
-           state.depthCompare == kDepthLessOrEqual && state.depthWrite == depthWrite &&
-           fogHasSemanticOwner;
+           state.depthWrite == depthWrite && fogHasSemanticOwner;
 }
 
 } // namespace
@@ -53,6 +51,8 @@ const char* j3d_raster_policy_result_name(J3dRasterPolicyResult result) noexcept
         return "unsupported cull mode";
     case J3dRasterPolicyResult::UnsupportedPixelEngineBlock:
         return "unsupported pixel-engine block";
+    case J3dRasterPolicyResult::UnsupportedDepthComparison:
+        return "unsupported depth comparison";
     }
     return "unknown";
 }
@@ -167,6 +167,12 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
             result.depthWrite = false;
             result.blend = ModelBlendMode::PremultipliedAlpha;
         } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kSourceAlpha, kOne,
+                                       false, true)) {
+            // Additive compositing that still tests depth: the glow is occluded by nearer geometry
+            // but leaves the depth buffer alone for what follows it.
+            result.depthWrite = false;
+            result.blend = ModelBlendMode::Additive;
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kSourceAlpha, kOne,
                                        false, false)) {
             // Authored source-alpha plus destination-one compositing is additive glow, not
             // ordinary alpha compositing. Preserve the distinct destination factor in the
@@ -183,6 +189,14 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
         } else {
             return J3dRasterPolicyResult::UnsupportedPixelEngineBlock;
         }
+        // The explicit policy carries its own depth comparison, and the semantic policy has always
+        // had somewhere to put it -- the pipeline key and the depth state both read it. Pinning the
+        // combinations above to one comparison refused a material for a value they could carry, so
+        // the comparison is read here as data rather than treated as part of the combination.
+        if (state.depthCompare > static_cast<std::uint8_t>(ModelDepthCompare::Always)) {
+            return J3dRasterPolicyResult::UnsupportedDepthComparison;
+        }
+        result.depthCompare = static_cast<ModelDepthCompare>(state.depthCompare);
     } else {
         return J3dRasterPolicyResult::UnsupportedPixelEngineBlock;
     }

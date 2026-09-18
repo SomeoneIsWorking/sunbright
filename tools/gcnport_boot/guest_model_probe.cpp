@@ -113,7 +113,8 @@ void GuestModelProbe::record_refusals(const sb::native_render::J3dFamilyRefusals
     if (existing != refusedMaterials_.end()) {
         existing->second.draws += 1;
     } else if (refusedMaterials_.size() < MAX_DISTINCT_DRAWS) {
-        refusedMaterials_.emplace(material, RefusedMaterial{.draws = 1, .state = state});
+        refusedMaterials_.emplace(
+            material, RefusedMaterial{.draws = 1, .state = state, .refusals = refusals});
     } else {
         refusedMaterialsUntracked_ += 1;
     }
@@ -269,6 +270,17 @@ void GuestModelProbe::report_refused_materials() const {
             state.lightingEnabled ? 1 : 0, state.colorChannelControl, state.alphaChannelControl,
             state.colorChannelControl1, state.alphaChannelControl1, state.tevStageCount,
             state.textureCoordinateCount, state.hasNormal ? 1 : 0, state.hasVertexColor ? 1 : 0);
+        // The pixel policy is matched against an enumeration of exact authored combinations, so a
+        // material refused for its raster policy can only be ported once these values are read.
+        std::printf("gmse01_boot:       pixel engine block=%08x explicit=%d cull=%u "
+                    "alpha=%u:%02x %u %u:%02x blend=%u src=%u dst=%u logic=%u "
+                    "depth=%d cmp=%u write=%d\n",
+                    state.pixelEngineBlockType, state.hasExplicitPixelPolicy ? 1 : 0,
+                    state.cullMode, state.alphaCompare0, state.alphaReference0,
+                    state.alphaOperation, state.alphaCompare1, state.alphaReference1,
+                    state.blendMode, state.blendSourceFactor, state.blendDestinationFactor,
+                    state.blendLogicOperation, state.depthTest ? 1 : 0, state.depthCompare,
+                    state.depthWrite ? 1 : 0);
         for (std::uint8_t stage = 0;
              stage < state.tevStageCount && stage < sb::native_render::kMaxJ3dTevStages; ++stage) {
             const sb::native_render::J3dTevStageState& tev = state.tevStages[stage];
@@ -279,6 +291,17 @@ void GuestModelProbe::report_refused_materials() const {
                 std::printf("%02x", byte);
             }
             std::printf("\n");
+        }
+        for (std::size_t family = 0; family < sb::native_render::kJ3dMaterialFamilyCount;
+             ++family) {
+            const char* const reason = refused.refusals.reason[family];
+            if (reason == nullptr) {
+                continue;
+            }
+            std::printf("gmse01_boot:       %s: %s\n",
+                        sb::native_render::j3d_material_family_name(
+                            static_cast<sb::native_render::J3dMaterialFamily>(family)),
+                        reason);
         }
     }
 }

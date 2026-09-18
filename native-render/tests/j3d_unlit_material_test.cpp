@@ -116,6 +116,42 @@ int main() {
     assert(!texturedMaterial.raster.depthWrite);
     assert(texturedMaterial.raster.blend == ModelBlendMode::Replace);
     state.depthWrite = true;
+    // The authored depth comparison is carried, not assumed. GMSE01 authors a material at
+    // 0x80e85660 that compares with LESS; every combination here used to require LESS-OR-EQUAL, so
+    // that material was refused for a value the semantic policy has a field for and the pipeline
+    // already reads.
+    state.depthCompare = static_cast<std::uint8_t>(ModelDepthCompare::Less);
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.depthCompare == ModelDepthCompare::Less);
+    state.depthCompare = static_cast<std::uint8_t>(ModelDepthCompare::Always) + 1;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::UnsupportedRasterPolicy);
+    state.depthCompare = static_cast<std::uint8_t>(ModelDepthCompare::LessOrEqual);
+
+    // Source-alpha against a destination factor of one is additive. The title authors it both with
+    // and without depth testing; only the depth-less form was admitted before.
+    state.blendMode = 1;
+    state.blendSourceFactor = 4;
+    state.blendDestinationFactor = 1;
+    state.depthWrite = false;
+    state.depthTest = true;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.blend == ModelBlendMode::Additive);
+    assert(texturedMaterial.raster.depthTest);
+    assert(!texturedMaterial.raster.depthWrite);
+    state.depthTest = false;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.blend == ModelBlendMode::Additive);
+    assert(!texturedMaterial.raster.depthTest);
+    state.blendMode = 0;
+    state.blendSourceFactor = 1;
+    state.blendDestinationFactor = 0;
+    state.depthTest = true;
+    state.depthWrite = true;
+
     // Combining two always-true comparisons with AND, OR, or XNOR has the same pass-all meaning.
     // Normalize that meaning instead of requiring one incidental console encoding.
     state.alphaOperation = 1;

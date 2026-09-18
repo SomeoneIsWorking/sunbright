@@ -539,12 +539,28 @@ Every other family's count is unchanged across the port, so the new one took no 
 that already had it. The two-texture bucket rose by exactly 8,644 -- the new family's own count,
 from a histogram computed independently of it.
 
-**The frontier is now 8 materials**, and `tools/re/tev_decode.py` reads each one's program:
+Reading each refused material's own refusal set -- which family stops it, and at which gate -- is
+what the probe now prints, and it named a gate that was not a material question at all. The pixel
+policy is matched against an enumeration of exact authored combinations, and every one of them
+required a less-or-equal depth comparison. `ModelRasterPolicy` has carried a full `depthCompare`
+since it was written, and `semantic_3d_pass` reads it into both the pipeline key and the depth
+state; only the classifier declined to fill it. GMSE01's material at `0x80e85660` compares with
+LESS, so it was refused for a value the boundary already had somewhere to put. The comparison is
+now read as data, and the title's additive combination that still tests depth is admitted beside
+the one that does not.
 
-| materials | draws | shape |
+That took classification to **45,730 of 51,614 (88.6%)**. `unlit_textured` gained exactly the 854
+draws of `0x80e85660`; `lit_masked_specular` gained draws too, because every family asks the same
+policy classifier. No family lost a draw, and 54,270 draws now reach the sink, all accepted.
+
+**The frontier is now 7 materials**, and `tools/re/tev_decode.py` reads each one's program:
+
+| materials | draws | nearest gate |
 | --- | --- | --- |
-| `0x80fa490c`, `0x80fa4c00` | 1,614 | `0706/0700` but **two** stages, so the single-stage effect family refuses them on stage count |
-| six materials | 5,124 | genuinely unlit (`0700/0700`, `0700/0701`, `0701/0700`, `0701/0701`), 1--2 stages |
+| `0x80fa490c`, `0x80fa4c00` | 1,614 | lit, `0706/0700`, **two** stages; `lit_textured` refuses on stage count |
+| `0x80e85ac0`, `0x80ed7738`, `0x80e8817c` | 2,562 | unlit, two stages; `unlit_textured` refuses on multiple active colour stages |
+| `0x80d3a7e8` | 854 | unlit; its stage reads a colour register where `unlit_textured` expects the raster |
+| `0x80e85db4` | 854 | unlit, untextured raster pass-through; `unlit_color` refuses on colour program |
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

@@ -108,6 +108,10 @@ class GuestModelProbe {
     struct RefusedMaterial {
         std::uint64_t draws = 0;
         sb::native_render::J3dMaterialState state{};
+        // Kept per material, not only in aggregate: the aggregate says how many draws each family
+        // turned away and for what, but not which gate a particular material fails in each family,
+        // which is the question a port asks.
+        sb::native_render::J3dFamilyRefusals refusals{};
     };
 
     // What the draws no family accepted are actually authored as. The refusal names say which
