@@ -240,6 +240,21 @@ int main() {
     mesh.vertices = triangle;
     assert(valid(mesh));
 
+    // Every blend mode the enumeration names is a mode a draw may carry. A hand-written bound that
+    // stopped at the previous last mode made GMSE01's inverse-source-colour draws fail validation
+    // and be refused by the renderer's own sink, having already been composed.
+    for (std::uint8_t mode = 0;
+         mode <= static_cast<std::uint8_t>(ModelBlendMode::InverseSourceColor); ++mode) {
+        ModelDraw blended = draw;
+        std::get<UnlitColorMaterial>(blended.material).raster.blend =
+            static_cast<ModelBlendMode>(mode);
+        assert(valid(blended));
+    }
+    ModelDraw beyondBlend = draw;
+    std::get<UnlitColorMaterial>(beyondBlend.material).raster.blend = static_cast<ModelBlendMode>(
+        static_cast<std::uint8_t>(ModelBlendMode::InverseSourceColor) + 1);
+    assert(!valid(beyondBlend));
+
     ModelDraw invalid = draw;
     invalid.mesh.vertexCount = 4;
     assert(!valid(invalid));

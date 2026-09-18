@@ -52,6 +52,34 @@ enum class ModelShaderKind : std::uint8_t {
     MaskedSpecular,
 };
 
+struct BlendFactors {
+    SDL_GPUBlendFactor source = SDL_GPU_BLENDFACTOR_ONE;
+    SDL_GPUBlendFactor destination = SDL_GPU_BLENDFACTOR_ZERO;
+};
+
+// What each semantic blend mode multiplies its two sides by. A switch rather than the chain of
+// tests this replaced: that chain ended in ordinary source-alpha compositing, so a mode added to
+// the enumeration would have inherited someone else's factors silently.
+BlendFactors blend_factors(ModelBlendMode blend) noexcept {
+    switch (blend) {
+    case ModelBlendMode::Replace:
+        return {SDL_GPU_BLENDFACTOR_ONE, SDL_GPU_BLENDFACTOR_ZERO};
+    case ModelBlendMode::SourceAlpha:
+        return {SDL_GPU_BLENDFACTOR_SRC_ALPHA, SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA};
+    case ModelBlendMode::PremultipliedAlpha:
+        return {SDL_GPU_BLENDFACTOR_ONE, SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA};
+    case ModelBlendMode::Additive:
+        return {SDL_GPU_BLENDFACTOR_SRC_ALPHA, SDL_GPU_BLENDFACTOR_ONE};
+    case ModelBlendMode::SourceAlphaSourceColor:
+        return {SDL_GPU_BLENDFACTOR_SRC_ALPHA, SDL_GPU_BLENDFACTOR_SRC_COLOR};
+    case ModelBlendMode::DestinationAlpha:
+        return {SDL_GPU_BLENDFACTOR_DST_ALPHA, SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA};
+    case ModelBlendMode::InverseSourceColor:
+        return {SDL_GPU_BLENDFACTOR_ONE, SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR};
+    }
+    return {SDL_GPU_BLENDFACTOR_ONE, SDL_GPU_BLENDFACTOR_ZERO};
+}
+
 template <typename> inline constexpr bool kNoShaderNamed = false;
 
 // Which program draws this material. A visit over every alternative rather than a chain of tests,
@@ -372,23 +400,11 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
         colorTarget.blend_state.enable_blend = true;
         colorTarget.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
         colorTarget.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-        const bool destinationAlpha = key.raster.blend == ModelBlendMode::DestinationAlpha;
-        const bool sourceAlpha = key.raster.blend == ModelBlendMode::SourceAlpha ||
-                                 key.raster.blend == ModelBlendMode::Additive ||
-                                 key.raster.blend == ModelBlendMode::SourceAlphaSourceColor;
-        const SDL_GPUBlendFactor source = destinationAlpha ? SDL_GPU_BLENDFACTOR_DST_ALPHA
-                                          : sourceAlpha    ? SDL_GPU_BLENDFACTOR_SRC_ALPHA
-                                                           : SDL_GPU_BLENDFACTOR_ONE;
-        const SDL_GPUBlendFactor destination =
-            destinationAlpha                               ? SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA
-            : key.raster.blend == ModelBlendMode::Additive ? SDL_GPU_BLENDFACTOR_ONE
-            : key.raster.blend == ModelBlendMode::SourceAlphaSourceColor
-                ? SDL_GPU_BLENDFACTOR_SRC_COLOR
-                : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        colorTarget.blend_state.src_color_blendfactor = source;
-        colorTarget.blend_state.dst_color_blendfactor = destination;
-        colorTarget.blend_state.src_alpha_blendfactor = source;
-        colorTarget.blend_state.dst_alpha_blendfactor = destination;
+        const BlendFactors factors = blend_factors(key.raster.blend);
+        colorTarget.blend_state.src_color_blendfactor = factors.source;
+        colorTarget.blend_state.dst_color_blendfactor = factors.destination;
+        colorTarget.blend_state.src_alpha_blendfactor = factors.source;
+        colorTarget.blend_state.dst_alpha_blendfactor = factors.destination;
     }
     SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(impl.device, &info);
     if (pipeline == nullptr) {

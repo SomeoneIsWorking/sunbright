@@ -245,7 +245,7 @@ bool valid(const MeshResourceView& mesh) noexcept {
 bool valid(const ModelRasterPolicy& raster) noexcept {
     return raster.cull <= ModelCullMode::All && raster.depthCompare <= ModelDepthCompare::Always &&
            raster.alphaTest <= ModelAlphaTest::GreaterThan64 &&
-           raster.blend <= ModelBlendMode::DestinationAlpha;
+           raster.blend <= ModelBlendMode::InverseSourceColor;
 }
 
 bool valid(const ModelFog& fog) noexcept {

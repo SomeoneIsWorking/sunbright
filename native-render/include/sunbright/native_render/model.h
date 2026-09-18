@@ -82,6 +82,9 @@ enum class ModelBlendMode : std::uint8_t {
     Additive,
     SourceAlphaSourceColor,
     DestinationAlpha,
+    // The source kept whole against one minus its own colour, which is what GMSE01 authors for a
+    // material whose brightness decides how much of what is behind it survives.
+    InverseSourceColor,
 };
 enum class ModelTextureCoordinates : std::uint8_t { Primary, Secondary };
 enum class ModelTextureAlphaMode : std::uint8_t { MultiplyTexture, ReplaceTexture };

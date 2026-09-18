@@ -145,6 +145,63 @@ def miscounted_material_family(header: str) -> str | None:
     )
 
 
+ENUM_DEFINITION = re.compile(r"enum class (\w+)\s*:[^{;]*\{([^}]*)\}\s*;", re.DOTALL)
+ENUM_UPPER_BOUND = re.compile(r"<=\s*(\w+)::(\w+)")
+COMMENT_OR_LITERAL = re.compile(
+    r"""(//[^\n]*)|(/\*.*?\*/)|("(?:[^"\\\n]|\\.)*")|('(?:[^'\\\n]|\\.)*')""",
+    re.DOTALL,
+)
+
+
+def without_comments(source: str) -> str:
+    """The source with its comments blanked out, leaving string and character literals alone.
+
+    A prose comma inside an enumeration's comment would otherwise read as an enumerator separator,
+    which is exactly how the first draft of the bound rule below lost the member it was written to
+    find. Newlines are preserved so nothing downstream sees lines merge.
+    """
+
+    def blank(match: re.Match[str]) -> str:
+        comment = match.group(1) or match.group(2)
+        if comment is None:
+            return match.group(0)
+        return "".join("\n" if character == "\n" else " " for character in comment)
+
+    return COMMENT_OR_LITERAL.sub(blank, source)
+
+
+def enum_orders(sources: dict[str, str]) -> dict[str, list[str]]:
+    """Every scoped enumeration and its enumerators, in declaration order."""
+    orders: dict[str, list[str]] = {}
+    for source in sources.values():
+        for name, body in ENUM_DEFINITION.findall(without_comments(source)):
+            members = [member.split("=")[0].strip() for member in body.split(",")]
+            named = [member for member in members if re.fullmatch(r"\w+", member)]
+            if named:
+                orders[name] = named
+    return orders
+
+
+def stale_enum_bounds(sources: dict[str, str]) -> list[tuple[str, str, str, str]]:
+    """Range checks written as `value <= Enum::Member` where Member is no longer the last one.
+
+    Twice in one session a value was appended to an enumeration and a hand-written bound naming the
+    previous last member silently excluded it: once for the material-family refusal array, once for
+    ModelBlendMode, where the new mode made every draw using it fail validation and be refused by
+    the renderer's own sink. A bound of this shape is a range check, so it has to name the final
+    member; if a check genuinely means "one of the first few", it cannot be written this way.
+    """
+    orders = enum_orders(sources)
+    stale = []
+    for path, source in sorted(sources.items()):
+        for enum, member in ENUM_UPPER_BOUND.findall(without_comments(source)):
+            members = orders.get(enum)
+            if members is None or member not in members or member == members[-1]:
+                continue
+            stale.append((path, enum, member, members[-1]))
+    return stale
+
+
 def load_sources(directory: Path) -> dict[str, str]:
     if not directory.is_dir():
         return {}
@@ -188,6 +245,12 @@ def check() -> int:
     miscount = miscounted_material_family(header_path.read_text())
     if miscount is not None:
         print(f"structure: {MATERIAL_FAMILY_HEADER}: {miscount}")
+    native_render = load_sources(REPO / "native-render")
+    stale_bounds = stale_enum_bounds(native_render)
+    for path, enum, member, last in stale_bounds:
+        print(
+            f"structure: {path}: bound <= {enum}::{member} stops short of {enum}::{last}"
+        )
     for path, lines, limit in bad_sizes:
         print(f"structure: {path}: {lines} lines, limit {limit}")
     for path, label in [*boundary_bad, *product_bad]:
@@ -198,6 +261,7 @@ def check() -> int:
         + len(product_bad)
         + len(orphans)
         + (1 if miscount is not None else 0)
+        + len(stale_bounds)
     )
     print(f"structure: measured {len(measured)} source files; {total_bad} violation(s)")
     return 1 if total_bad else 0
@@ -273,6 +337,35 @@ constexpr std::size_t kJ3dMaterialFamilyCount =
     assert miscounted_material_family(
         counted_header.split("constexpr")[0]
     ).startswith("REFUSES:")
+    bound_fixture = {
+        "a.h": "enum class Mode : std::uint8_t { First, Second, Third };",
+        "b.cpp": "return value <= Mode::Second;",
+    }
+    assert stale_enum_bounds(bound_fixture) == [("b.cpp", "Mode", "Second", "Third")]
+    assert stale_enum_bounds(
+        {**bound_fixture, "b.cpp": "return value <= Mode::Third;"}
+    ) == []
+    # A prose comma in an enumeration's comment is not an enumerator separator.
+    commented = {
+        "a.h": (
+            "enum class Mode : std::uint8_t {\n"
+            "    First,\n"
+            "    // Second, and what follows it, are separated by prose commas here.\n"
+            "    Second,\n"
+            "    Third,\n"
+            "};"
+        ),
+        "b.cpp": "return value <= Mode::Second;  // Third is the real end",
+    }
+    assert enum_orders(commented)["Mode"] == ["First", "Second", "Third"]
+    assert stale_enum_bounds(commented) == [("b.cpp", "Mode", "Second", "Third")]
+    # An enumeration this tree does not declare is not this rule's business.
+    assert stale_enum_bounds({"b.cpp": "return value <= Elsewhere::Second;"}) == []
+    real_bounds = stale_enum_bounds(load_sources(REPO / "native-render"))
+    if real_bounds:
+        print(f"FAIL: the shipping tree has a bound stopping short: {real_bounds}")
+        return 1
+
     # And it must hold on the shipping header, not only on the fixtures.
     real_miscount = miscounted_material_family((REPO / MATERIAL_FAMILY_HEADER).read_text())
     if real_miscount is not None:
@@ -290,8 +383,8 @@ constexpr std::size_t kJ3dMaterialFamilyCount =
         print("FAIL: real-tree discovery measured no files")
         return 1
     print(
-        "PASS: source limits, dependency/config/log controls, and the material family\n"
-        "roster check each distinguish both answers"
+        "PASS: source limits, dependency/config/log controls, the material family roster,\n"
+        "and enumeration range bounds each distinguish both answers"
     )
     return 0
 

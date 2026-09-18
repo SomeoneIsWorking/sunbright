@@ -155,6 +155,19 @@ int main() {
            J3dUnlitTexturedResult::Success);
     assert(texturedMaterial.raster.blend == ModelBlendMode::Additive);
     assert(!texturedMaterial.raster.depthTest);
+    // GMSE01's material at 0x80e85db4 keeps the source whole and takes from the destination in
+    // proportion to the source's own colour. No blend mode stood for that, so the material was
+    // refused after its program was already accepted.
+    state.blendMode = 1;
+    state.blendSourceFactor = 1;
+    state.blendDestinationFactor = 3;
+    state.depthTest = true;
+    state.depthWrite = false;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(texturedMaterial.raster.blend == ModelBlendMode::InverseSourceColor);
+    assert(!texturedMaterial.raster.depthWrite);
+
     state.blendMode = 0;
     state.blendSourceFactor = 1;
     state.blendDestinationFactor = 0;

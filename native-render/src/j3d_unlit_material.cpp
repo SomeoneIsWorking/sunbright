@@ -142,6 +142,7 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
         constexpr std::uint8_t kOne = 1;
         constexpr std::uint8_t kSourceAlpha = 4;
         constexpr std::uint8_t kSourceColor = 2;
+        constexpr std::uint8_t kInverseSourceColor = 3;
         constexpr std::uint8_t kInverseSourceAlpha = 5;
         if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlendNone, kOne, kZero, true)) {
             // Exact expanded form of J3DPEBlockOpa.
@@ -171,6 +172,12 @@ J3dRasterPolicyResult classify_j3d_raster_policy(const J3dMaterialState& state,
                                        kInverseSourceAlpha, false)) {
             result.depthWrite = false;
             result.blend = ModelBlendMode::PremultipliedAlpha;
+        } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kOne,
+                                       kInverseSourceColor, false)) {
+            // The source survives whole and takes from the destination in proportion to its own
+            // brightness, so a bright fragment hides what is behind it and a dark one does not.
+            result.depthWrite = false;
+            result.blend = ModelBlendMode::InverseSourceColor;
         } else if (full_policy_matches(state, kAlways, 0, kAlways, 0, kBlend, kSourceAlpha, kOne,
                                        false, true)) {
             // Additive compositing that still tests depth: the glow is occluded by nearer geometry

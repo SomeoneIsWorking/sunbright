@@ -573,13 +573,32 @@ derived from writes one slot beyond it. That happened here, on the first family 
 check for it was written -- and the check failed the build, naming the family that no longer fit.
 The measurement was retaken with the corrected array rather than reported from the run that had it.
 
-**The frontier is now 6 materials**, and `tools/re/tev_decode.py` reads each one's program:
+`0x80e85db4`'s program was accepted after that, but its policy blends the source whole against one
+minus its own colour, and `ModelBlendMode` had no value for that combination. It has one now, and
+`semantic_3d_pass` maps every mode through one exhaustive switch rather than a ternary chain that
+had to be extended in step. Classification reached **47,042 of 51,218 (91.8%)** and `unlit_color`
+appeared for the first time -- but the publisher then reported **854 draws refused by the sink**,
+one for each draw of that material.
+
+The cause was a hand-written range check, `raster.blend <= ModelBlendMode::DestinationAlpha`, which
+named the enumerator that had been last until this change. It is the same defect as the family-count
+array two commits earlier, in a different file, so the check for it is now general: `structure_check`
+reads every scoped enumeration in `native-render` and fails any `<= Enum::Member` bound whose member
+is not that enumeration's final one. It found the blend bound immediately, and the first draft of
+the rule found nothing because a prose comma inside an enumeration's comment read as an enumerator
+separator -- so it strips comments now, and its selftest asserts exactly that shape. `model_test`
+carries a control that walks every blend mode through `valid`, and fails on the old bound.
+
+    classification: success=47460 unsupported_program=4176   (91.9% of 51,636)
+    56,000 matrix group(s), 56,000 composed, 56,000 submitted, 11,372,298 vertex(es)
+    0 rejected by the sink, 0 dolphin alerts
+
+**The frontier is now 5 materials**, and `tools/re/tev_decode.py` reads each one's program:
 
 | materials | draws | nearest gate |
 | --- | --- | --- |
 | `0x80fa490c`, `0x80fa4c00` | 1,614 | lit, `0706/0700`, **two** stages; `lit_textured` refuses on stage count |
 | `0x80e85ac0`, `0x80ed7738`, `0x80e8817c` | 2,562 | unlit, two stages; `unlit_textured` refuses on multiple active colour stages |
-| `0x80e85db4` | 854 | its program is accepted now; its policy blends against an inverse source colour, which `ModelBlendMode` has no value for |
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed
