@@ -170,12 +170,25 @@ memory and deliberately exposes no DVD volume, so the title's first disc access 
 disc-error path. The earlier 16,384-block bound could never have reached this, which is exactly why it
 read as a permanent stall.
 
+The batched execution entry point that boundary called for has since landed
+(`gcnport` `c8d4e93`, Dolphin fork `82087cb`): `RuntimeSession::ExecuteJitBlocks` lifts gcnport's
+one-block slice cap so the dispatcher chains direct-linked blocks natively, removing the bounding
+event outright rather than rescheduling it, so a batch runs on exactly the slice lengths ordinary
+Dolphin execution uses and scheduled hardware events still bound every slice. Per-block accounting is
+emitted from inside the generated code, so the counter ledger is unchanged by batching, and the gated
+regression asserts the counters advance by precisely the number of blocks a batch claims and that the
+one-block cap is restored afterwards. Measured against exact `GMSE01`: **~9,900,000 blocks/second
+batched against ~180,000 stepped through the same flush loop, reaching the disc boundary in ~34
+seconds instead of over twelve minutes.** `gmse01_boot.cpp` now steps the first 32 blocks for
+block-by-block legibility and batches the remainder, exercising both paths in one invocation.
+Throughput falls to ~40,000 blocks/second once boot is inside the disc-error screen; that is the guest
+spin-waiting on timers (slices end at the next scheduled hardware event, and each font read raises an
+invalid-access report), not a runtime defect, and is expected to go once a disc device exists.
+
 Still missing before this item is complete: (1) a **disc/DVD device adapter** so the title's file
-reads succeed — Sunbright owns this, because the game image must never reach `gcnport`; (2) a
-**batched execution entry point**, because one block per host call measures ~180,000 blocks/second
-(~740,000 guest instructions/second, far under GameCube speed) and makes even this boot take minutes;
-(3) the `0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot
-alone does not advance S008.
+reads succeed — Sunbright owns this, because the game image must never reach `gcnport`; (2) the
+`0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone
+does not advance S008.
 
 ### S002 — gcnport Dolphin executor
 

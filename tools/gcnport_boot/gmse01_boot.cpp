@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <limits>
 #include <csignal>
@@ -171,7 +172,7 @@ DolImage LoadDolAsFlatImage(const std::string& path)
   return image;
 }
 
-void RunBoot(const DolImage& image, u32 block_budget)
+void RunBoot(const DolImage& image, u64 block_budget)
 {
   const std::string profile_path = File::CreateTempDir();
   if (profile_path.empty())
@@ -269,28 +270,57 @@ void RunBoot(const DolImage& image, u32 block_budget)
     // The budget has to clear System/Application.cpp's two OSProtectRange calls, which flush
     // 0x80000000 and 0x7d000000 bytes of address space. DCFlushRange walks those 32 bytes at a
     // time, so they alone retire 131,334,144 iterations of a single four-instruction block --
-    // measured to land within 1% of that figure, at ~180,000 blocks/second. Anything below that
-    // cannot reach the disc boundary at all, which is exactly why a 16,384-block bound previously
-    // read as a permanent stall. One block per host call is correct for a diagnostic but is also
-    // why this takes minutes: it is ~740,000 guest instructions/second, far under GameCube speed,
-    // and a batched execution entry point is tracked as separate work.
-    constexpr u32 DEFAULT_MAX_BLOCKS = 160000000u;
-    const u32 max_blocks = block_budget != 0 ? block_budget : DEFAULT_MAX_BLOCKS;
-    u32 blocks_run = 0;
+    // measured to land within 1% of that figure. Anything below that cannot reach the disc boundary
+    // at all, which is exactly why a 16,384-block bound previously read as a permanent stall.
+    //
+    // Dispatch is therefore split. The first blocks go one at a time so early boot stays legible
+    // block by block, which is what this tool exists for; the rest go through ExecuteJitBlocks, which
+    // lets the dispatcher chain direct-linked blocks natively. One block per host call costs a host
+    // round trip per block: that path measured ~180,000 blocks/second here, against ~9,900,000
+    // blocks/second batched through the same flush loop, and it is the difference between reaching
+    // the disc boundary in ~34 seconds and in over twelve minutes. Running both paths in one
+    // invocation also keeps each of them exercised.
+    //
+    // Throughput drops to ~40,000 blocks/second once boot is inside the disc-error screen. That is
+    // the guest spin-waiting on timers, not a runtime defect: its slices end at the next scheduled
+    // hardware event rather than at a block, and each font read it makes raises an invalid-access
+    // report. It is a property of the wait this tool currently ends in, and is expected to go once a
+    // disc device exists.
+    constexpr u32 STEPPED_BLOCKS = 32;
+    constexpr u64 BATCH_BLOCKS = 1000000;
+    constexpr u64 DEFAULT_MAX_BLOCKS = 160000000;
+    const u64 max_blocks = block_budget != 0 ? block_budget : DEFAULT_MAX_BLOCKS;
+    u64 blocks_run = 0;
     const auto started_at = std::chrono::steady_clock::now();
-    for (; blocks_run < max_blocks; ++blocks_run)
+
+    for (; blocks_run < std::min<u64>(STEPPED_BLOCKS, max_blocks); ++blocks_run)
     {
       const auto outcome = runtime.ExecuteJitBlock();
-      if (blocks_run < 32 || blocks_run % 5000000 == 0)
-      {
-        std::printf("gmse01_boot: block %u kind=%d pc=0x%08x instructions=%u\n", blocks_run,
-                    static_cast<int>(outcome.kind), outcome.guest_pc, outcome.instruction_count);
-        std::fflush(stdout);
-      }
+      std::printf("gmse01_boot: block %llu kind=%d pc=0x%08x instructions=%u\n",
+                  static_cast<unsigned long long>(blocks_run), static_cast<int>(outcome.kind),
+                  outcome.guest_pc, outcome.instruction_count);
       if (outcome.kind == PowerPC::GcnPort::JitBlockKind::BackendFault)
       {
-        std::printf("gmse01_boot: backend fault at block %u, pc=0x%08x: %s\n", blocks_run,
-                    outcome.guest_pc, outcome.detail.c_str());
+        std::printf("gmse01_boot: backend fault at block %llu, pc=0x%08x: %s\n",
+                    static_cast<unsigned long long>(blocks_run), outcome.guest_pc,
+                    outcome.detail.c_str());
+        break;
+      }
+    }
+
+    while (blocks_run < max_blocks)
+    {
+      const auto batch = runtime.ExecuteJitBlocks(std::min<u64>(BATCH_BLOCKS, max_blocks - blocks_run));
+      blocks_run += batch.blocks_executed;
+      const double elapsed =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - started_at).count();
+      std::printf("gmse01_boot: %llu blocks, pc=0x%08x, %.1f s (%.0f blocks/s)\n",
+                  static_cast<unsigned long long>(blocks_run), batch.guest_pc, elapsed,
+                  elapsed > 0.0 ? blocks_run / elapsed : 0.0);
+      if (batch.backend_fault || batch.blocks_executed == 0)
+      {
+        std::printf("gmse01_boot: batch stopped at pc=0x%08x: %s\n", batch.guest_pc,
+                    batch.detail.c_str());
         break;
       }
     }
@@ -298,8 +328,9 @@ void RunBoot(const DolImage& image, u32 block_budget)
     const auto counters = runtime.GetExecutionCounters();
     const double seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started_at).count();
-    std::printf("gmse01_boot: dispatched %u one-block calls in %.1f s (%.0f blocks/s)\n",
-                blocks_run, seconds, seconds > 0.0 ? blocks_run / seconds : 0.0);
+    std::printf("gmse01_boot: retired %llu blocks in %.1f s (%.0f blocks/s)\n",
+                static_cast<unsigned long long>(blocks_run), seconds,
+                seconds > 0.0 ? blocks_run / seconds : 0.0);
     std::printf("gmse01_boot: jit_blocks_compiled=%llu jit_block_executions=%llu "
                 "cold_block_executions=%llu cache_hit_block_executions=%llu "
                 "fallback_events=%llu\n",
@@ -330,19 +361,21 @@ int main(int argc, char** argv)
   // Optional override for the block budget documented in RunBoot. Refuse a malformed or zero value
   // rather than silently falling back to the default: a run that quietly used a different budget
   // than the one asked for would be indistinguishable from one that reached a different boundary.
-  u32 block_budget = 0;
+  u64 block_budget = 0;
   if (argc == 3)
   {
     char* end = nullptr;
+    errno = 0;
     const unsigned long long parsed = std::strtoull(argv[2], &end, 0);
-    if (end == argv[2] || *end != '\0' || parsed == 0 ||
-        parsed > std::numeric_limits<u32>::max())
+    // strtoull saturates at ULLONG_MAX on overflow, so an out-of-range argument would otherwise be
+    // accepted as a huge budget rather than refused; errno is the only way to tell the two apart.
+    if (end == argv[2] || *end != '\0' || parsed == 0 || errno == ERANGE)
     {
-      std::fprintf(stderr, "gmse01_boot: max-blocks must be a positive 32-bit value, got '%s'\n",
+      std::fprintf(stderr, "gmse01_boot: max-blocks must be a positive value, got '%s'\n",
                   argv[2]);
       return 1;
     }
-    block_budget = static_cast<u32>(parsed);
+    block_budget = parsed;
   }
 
   const DolImage image = LoadDolAsFlatImage(argv[1]);

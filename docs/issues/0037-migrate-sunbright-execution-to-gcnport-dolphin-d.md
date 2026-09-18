@@ -419,7 +419,30 @@ permanent stall.
 malformed or zero value rather than silently substituting the default) and reports elapsed time and
 block rate, with a default budget large enough to clear the 131.3M-iteration protection flush.
 
+The batched execution entry point this called for landed in the same session
+(`gcnport` `c8d4e93`, Dolphin fork `82087cb`). `RuntimeSession::ExecuteJitBlocks(minimum_blocks)`
+lifts the one-block slice cap so the dispatcher chains direct-linked blocks natively. The cap is
+**removed** for the batch rather than rescheduled further out: `CoreTiming` already sizes a slice from
+the next genuinely scheduled event and caps it at its own `MAX_SLICE_LENGTH`, so with our event gone a
+batch runs on exactly the slice lengths ordinary Dolphin execution uses, and picking some larger
+interval would have invented a second, competing slice policy. Hardware events still bound every
+slice, so hardware timing is unaffected. Speed is bought without going dark: blocks report themselves
+from inside the generated code (`RecordJitBlockExecutionFromJit`), so the `ExecutionCounters` ledger is
+exactly as complete batched as stepped, and the gated regression asserts the counters advance by
+precisely the number of blocks the batch claims. It refuses a zero-block request and refuses to run
+while a one-shot original ticket is armed — those are consumed by the per-dispatch driver loop, and a
+batch has no per-dispatch boundary at which to consume one — and a slice that retires no block stops
+the batch with a reported reason instead of spinning. An RAII scope restores the cap on every exit
+path, which the test pins by requiring a following `ExecuteJitBlock` to advance the ledger by exactly
+one.
+
+Measured against exact `GMSE01`: **~9,900,000 blocks/second batched versus ~180,000 stepped through
+the same `DCFlushRange` loop, reaching the disc boundary in ~34 seconds instead of over twelve
+minutes.** `gmse01_boot.cpp` now steps the first 32 blocks for block-by-block legibility and batches
+the remainder, keeping both paths exercised in one invocation. Throughput falls to ~40,000
+blocks/second once boot is inside the disc-error screen — the guest spin-waiting on timers, since its
+slices end at the next scheduled hardware event rather than at a block and each font read raises an
+invalid-access report — which is a property of that wait, not of the runtime.
+
 Next, in order: (1) a **disc/DVD device adapter**, which Sunbright owns because the game image must
-never reach `gcnport`; (2) a **batched execution entry point** — one block per host call measures
-~180,000 blocks/second, i.e. ~740,000 guest instructions/second, far under GameCube speed, which is
-why this boot takes minutes; (3) the `0x802e0390` `J3DShape::draw` runtime override, blocked on (1).
+never reach `gcnport`; (2) the `0x802e0390` `J3DShape::draw` runtime override, blocked on (1).
