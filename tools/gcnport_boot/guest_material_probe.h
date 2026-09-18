@@ -133,6 +133,7 @@ class GuestMaterialProbe {
     std::map<sb::native_render::ResTimgDecodeError, std::uint64_t> decodeErrors_;
     std::map<sb::native_render::J3dMaterialFamilyResult, std::uint64_t> classifyResults_;
     std::map<sb::native_render::J3dMaterialFamily, std::uint64_t> families_;
+    std::uint64_t litMaterialsClassified_ = 0;
     std::map<sb::native_render::J3dRasterPolicyResult, std::uint64_t> rasterResults_;
     std::map<sb::native_render::J3dUnlitMaterialResult, std::uint64_t> unlitResults_;
     std::map<sb::native_render::J3dUnlitTexturedResult, std::uint64_t> unlitTexturedResults_;

@@ -56,6 +56,7 @@
 #include "Core/System.h"
 #include "UICommon/UICommon.h"
 #include "gcnport/dolphin_adapter.h"
+#include "guest_lighting_probe.h"
 #include "guest_material_probe.h"
 #include "guest_report.h"
 #include "guest_shape_probe.h"
@@ -368,6 +369,8 @@ struct BootRequest {
     std::vector<GuestWatch> guest_watches;
     std::vector<u32> material_probe_addresses;
     u64 material_probe_reports = 0;
+    std::vector<u32> lighting_probe_addresses;
+    u64 lighting_probe_reports = 0;
     std::vector<u32> shape_probe_addresses;
     u64 shape_probe_reports = 0;
     u32 shape_probe_system = sb::title_adapter::GMSE01_J3D_SYS;
@@ -560,6 +563,24 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         "%llu reported in full)\n",
                         address, request.shape_probe_system,
                         static_cast<unsigned long long>(request.shape_probe_reports));
+        }
+
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestLightingProbe>> lighting_probes;
+        for (const u32 address : request.lighting_probe_addresses) {
+            lighting_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestLightingProbe>(
+                request.lighting_probe_reports));
+            adapter.install_hook({.identity = adapter.identity(), .address = address},
+                                 std::ref(*lighting_probes.back()));
+            if (!runtime.HasNativeHook(address)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
+                             "stage lighting it could not have read\n",
+                             address);
+                std::exit(1);
+            }
+            std::printf("gmse01_boot: reading guest stage lighting at 0x%08x (first %llu reported "
+                        "in full)\n",
+                        address, static_cast<unsigned long long>(request.lighting_probe_reports));
         }
 
         std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMaterialProbe>> material_probes;
@@ -836,6 +857,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         for (const auto& probe : shape_probes) {
             probe->report();
         }
+        for (const auto& probe : lighting_probes) {
+            probe->report();
+        }
         for (const auto& probe : material_probes) {
             probe->report();
         }
@@ -888,7 +912,8 @@ int main(int argc, char** argv) {
                      "[--count-calls <hex-addr> ...] [--watch-guest <hex-addr>[:<words>] ...] "
                      "[--super-call <hex-addr>:<round-trips>:<instruction-budget> ...] "
                      "[--read-shapes <hex-addr>[:<reports>]] [--j3d-sys <hex-addr>]\n"
-                     "[--read-materials <hex-addr>[:<reports>]]\n",
+                     "[--read-materials <hex-addr>[:<reports>]] "
+                     "[--read-lighting <hex-addr>[:<reports>] ...]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -1063,6 +1088,34 @@ int main(int argc, char** argv) {
                 request.material_probe_reports = parsed;
             }
             request.material_probe_addresses.push_back(address);
+        } else if (name == "--read-lighting") {
+            // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
+            // or its TLightMario override (0x80229610); pass the flag twice to cover both. The
+            // count bounds only how many relights are printed in full, never how many are read.
+            constexpr u64 DEFAULT_REPORTS = 8;
+            u32 address = 0;
+            char* end = nullptr;
+            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
+                std::fprintf(
+                    stderr, "gmse01_boot: --read-lighting needs <hex-addr>[:<reports>], got '%s'\n",
+                    value);
+                return 1;
+            }
+            request.lighting_probe_reports = DEFAULT_REPORTS;
+            if (*end == ':') {
+                const char* const reports_text = end + 1;
+                errno = 0;
+                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
+                if (end == reports_text || *end != '\0' || errno == ERANGE) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --read-lighting report count must be an integer, "
+                                 "got '%s'\n",
+                                 reports_text);
+                    return 1;
+                }
+                request.lighting_probe_reports = parsed;
+            }
+            request.lighting_probe_addresses.push_back(address);
         } else if (name == "--j3d-sys") {
             // The guest address of j3dSys, for a build whose globals sit elsewhere. Defaults to
             // GMSE01's, which title-adapter derives from J3DShape::loadVtxArray's own reads.

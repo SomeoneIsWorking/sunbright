@@ -436,11 +436,31 @@ the shipping classifiers name why:
                            missing vertex colour=1708 unsupported raster policy=854
 
 **37,482 of 44,314 -- 84.6% -- are refused for one reason: `lighting`.** GMSE01's materials enable
-their colour channel's lighting, and every lit family needs a `ModelLightingContext` that nothing
-publishes from the guest yet. That is one missing input rather than a long tail, and it is what the
-next guest reader has to supply. Of the rest, 1,708 `missing vertex colour` are an artefact of this
-hook: `hasVertexColor` and `hasNormal` describe the shape, not the material, and `J3DMatPacket::draw`
-cannot see one.
+their colour channel's lighting, and every lit family needs a `ModelLightingContext`. Of the rest,
+1,708 `missing vertex colour` are an artefact of this hook: `hasVertexColor` and `hasNormal`
+describe the shape, not the material, and `J3DMatPacket::draw` cannot see one.
+
+That lighting context is now read from the guest.
+`title-adapter/src/guest_stage_lighting.cpp` reads GMSE01's stage-light owner at
+`TLightCommon::setLight` (`0x80229a30`) and its byte-identical `TLightMario` override
+(`0x80229610`), at entry, from `this`, the `JDrama::TGraphics*` and the light index. The offsets
+were recovered from the shipping image rather than taken from the decomp headers, and in one place
+the two disagree: `getAmbColor` (`0x80229cec`) scales the ambient alpha by the f32 at `this + 0x18`
+while `getLightColor` (`0x80229d78`) scales the light alpha by the one at `this + 0x1c`. The decomp
+declares a single `mAlphaScale` at `0x1c` and uses it for both, so its ambient alpha is scaled by
+the wrong field. Other addresses derived here: the view matrix inline at `graphics + 0xb4`,
+`gpTLightCommonLightAry` `0x8040e0ac` (entries `+0x10`, count `+0x14`, `0x6c`-byte entries with the
+position at `+0x10` and the packed colour at `+0x30`), `gpTLightCommonAmbAry` `0x8040e0a8`
+(`0x18`-byte entries, colour at `+0x14`), and `gpLightManager` `0x8040e0b4`.
+
+Measured on the real title in the same run: **15,372 relights, 15,372 published, zero errors**. The
+scene's light group holds 15 entries and its ambient group 6; every relight took the group path with
+no local override and no effect light; slots 0/2/5/7 and ambient slots 0/1/2/3 are used; two
+distinct rigs are published -- white light over mid-grey ambient (9,394) and a dimmer
+`0x505050`/`0x282828` pair (4,270); the sun sits at `(200000, 500000, 200000)` with shininess
+`50.0`, which is the value the decomp's own RE note predicts. All 44,314 materials are now
+classified against a published light, and all 44,314 are still refused: lighting was a necessary
+input, not the only missing one. The lit families' own refusal reasons are the next measurement.
 
 Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
 textures are counted and discarded; no `ModelDraw` is built, no material classifies into a family

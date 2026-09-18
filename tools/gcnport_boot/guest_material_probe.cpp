@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guest_material_probe.h"
 
+#include <sunbright/native_render/j3d_stage_lighting.h>
+
 #include <array>
 #include <cstdio>
 #include <limits>
@@ -210,12 +212,15 @@ void GuestMaterialProbe::classify(gcnport::GuestContext& guest,
                                   const sb::title_adapter::GuestTextureTable& table) {
     TextureResolver resolver{.probe = this, .guest = &guest, .table = table};
     sb::native_render::ClassifiedJ3dMaterial classified{};
-    // No stage lighting is published from the guest yet, so every lit family is out of reach by
-    // construction and this measures how far the unlit half alone gets. That is the honest
-    // denominator for the lighting reader that has to come next, not a limitation of the
-    // classifier: the same call answers the lit families the moment a context is passed here.
+    // Whatever the stage-light hook last published, read back through the shipping accessor rather
+    // than kept here. Null until a relight has run, which is the honest answer for a material drawn
+    // before one: every lit family is then out of reach and says so, instead of being classified
+    // against an invented rig.
+    const sb::native_render::ModelLightingContext* const lighting =
+        sb::native_render::current_j3d_stage_lighting();
+    litMaterialsClassified_ += lighting != nullptr ? 1 : 0;
     const sb::native_render::J3dMaterialFamilyResult result =
-        sb::native_render::classify_j3d_material(state, /*lighting=*/nullptr,
+        sb::native_render::classify_j3d_material(state, lighting,
                                                  {resolve_texture_thunk, &resolver}, classified);
     classifyResults_[result] += 1;
     families_[classified.family] += 1;
@@ -458,6 +463,8 @@ void GuestMaterialProbe::report() const {
                  sb::native_render::j3d_unlit_material_result_name);
     print_errors("unlit textured results", unlitTexturedResults_,
                  sb::native_render::j3d_unlit_textured_result_name);
+    std::printf("gmse01_boot:   %llu material(s) were classified with a published stage light\n",
+                static_cast<unsigned long long>(litMaterialsClassified_));
     std::printf("gmse01_boot:   material classification:");
     if (classifyResults_.empty()) {
         std::printf(" none recorded -- no material reached the classifier");
