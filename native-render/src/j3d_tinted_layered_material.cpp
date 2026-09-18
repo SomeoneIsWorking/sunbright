@@ -14,8 +14,6 @@ constexpr std::uint16_t kDirectionalSpecular = 0x0212;
 constexpr std::uint16_t kUnlitSecondaryAlpha = 0x0400;
 constexpr std::uint8_t kColor0Alpha0 = 4;
 constexpr std::uint8_t kColor1Alpha1 = 5;
-constexpr std::uint8_t kFiveEighths = 0x03;
-constexpr std::uint8_t kHalf = 0x04;
 constexpr std::array<std::uint8_t, 8> kTintDetailDiffuseStage{0xC0, 0x0A, 0x8A, 0xE2,
                                                               0xC1, 0x08, 0xFF, 0xD0};
 constexpr std::array<std::uint8_t, 8> kBaseLayerSpecularStage{0xC2, 0x0A, 0x0A, 0xE8,
@@ -96,8 +94,8 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
     }
     if (state.tevStages[0].program != kTintDetailDiffuseStage ||
         state.tevStages[1].program != kBaseLayerSpecularStage ||
-        state.tevStages[0].konstColorSelection != kFiveEighths ||
-        state.tevStages[1].konstColorSelection != kHalf) {
+        !selects(state.tevStages[0].konstColorSelection, J3dKonstFraction::FiveEighths) ||
+        !selects(state.tevStages[1].konstColorSelection, J3dKonstFraction::Half)) {
         return J3dTintedLayeredMaterialResult::UnsupportedColorProgram;
     }
     if (!state.hasNormal)
@@ -116,8 +114,10 @@ J3dTintedLayeredMaterialResult classify_j3d_tinted_layered_material(
     material.effectColor = color_from_s10(state.tevColorsS10[0]);
     material.lighting = lighting;
     tint_directional_specular(material.lighting, color_from_rgba8(state.materialColor1Rgba8));
-    material.detailWeight = 3.0F / 8.0F;
-    material.layerWeight = 0.5F;
+    // Both stages lerp toward the raster colour by their selected constant, so each layer
+    // keeps the remainder. The second selects one half, where the two sides are equal.
+    material.detailWeight = 1.0F - value_of(J3dKonstFraction::FiveEighths);
+    material.layerWeight = 1.0F - value_of(J3dKonstFraction::Half);
     material.usesVertexRgb = usesVertexRgb;
     material.raster = raster;
     return J3dTintedLayeredMaterialResult::Success;

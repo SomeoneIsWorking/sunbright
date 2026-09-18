@@ -64,9 +64,12 @@ enum class J3dMaterialFamily : std::uint8_t {
     TexturedEffect,
 };
 
-// Every family, including `None`, so a refusal set can be indexed by the family that refused.
+// Every family, including `None`, so a refusal set can be indexed by the family that refused. The
+// enumerator named here must stay the last one: appending a family after it leaves the refusal set
+// one slot short, and the new family's refusal writes past the end. `tools/structure_check.py`
+// checks that this names the final enumerator so the mistake cannot be made silently again.
 constexpr std::size_t kJ3dMaterialFamilyCount =
-    static_cast<std::size_t>(J3dMaterialFamily::LitMaskedToon) + 1;
+    static_cast<std::size_t>(J3dMaterialFamily::TexturedEffect) + 1;
 
 // Why each family turned a state down, indexed by `J3dMaterialFamily`. A null entry means the
 // family accepted the program, and the `None` slot is always null. The strings are the families'

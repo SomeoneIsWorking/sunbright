@@ -11,7 +11,6 @@ constexpr std::uint16_t kSignedPrimaryDiffuse = 0x0686;
 constexpr std::uint16_t kPrimaryLitMaterialAlpha = 0x0706;
 constexpr std::uint8_t kColor0Alpha0 = 4;
 constexpr std::uint8_t kColorNull = 0xFF;
-constexpr std::uint8_t kFiveEighths = 0x03;
 constexpr std::array<std::uint8_t, 8> kBlendDetailAndLitColor{0xC0, 0x08, 0x8A, 0xEF,
                                                               0xC1, 0x08, 0xFF, 0xD0};
 constexpr std::array<std::uint8_t, 8> kMultiplyBaseTexture{0xC2, 0x08, 0xF0, 0x8F,
@@ -88,7 +87,7 @@ classify_j3d_layered_material(const J3dMaterialState& state, const PictureTextur
     }
     if (state.tevStages[0].program != kBlendDetailAndLitColor ||
         state.tevStages[1].program != kMultiplyBaseTexture ||
-        state.tevStages[0].konstColorSelection != kFiveEighths) {
+        !selects(state.tevStages[0].konstColorSelection, J3dKonstFraction::FiveEighths)) {
         return J3dLayeredMaterialResult::UnsupportedColorProgram;
     }
     if (!state.hasNormal)
@@ -106,7 +105,9 @@ classify_j3d_layered_material(const J3dMaterialState& state, const PictureTextur
                                                       : lighting.ambientColor;
     material.lighting = lighting;
     material.lighting.pointLightCount = 1;
-    material.detailWeight = 3.0F / 8.0F;
+    // The stage lerps from the detail texture toward the lit colour by the selected constant,
+    // so the detail keeps what the constant leaves: three eighths of a five-eighths selection.
+    material.detailWeight = 1.0F - value_of(J3dKonstFraction::FiveEighths);
     material.diffuseMode = ModelDiffuseMode::Signed;
     material.raster = raster;
     return J3dLayeredMaterialResult::Success;

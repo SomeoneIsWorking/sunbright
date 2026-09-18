@@ -111,6 +111,40 @@ def unreached_material_families(headers: dict[str, str], roster: str) -> list[st
     return sorted(declared - called)
 
 
+MATERIAL_FAMILY_HEADER = "native-render/include/sunbright/native_render/j3d_material_family.h"
+MATERIAL_FAMILY_ENUM = re.compile(
+    r"enum class J3dMaterialFamily\s*:[^{]*\{(.*?)\}\s*;", re.DOTALL
+)
+MATERIAL_FAMILY_COUNT = re.compile(
+    r"kJ3dMaterialFamilyCount\s*=\s*static_cast<std::size_t>\(\s*J3dMaterialFamily::(\w+)\s*\)"
+)
+
+
+def miscounted_material_family(header: str) -> str | None:
+    """The family the refusal set cannot hold, or None when the count covers every family.
+
+    The refusal set is an array sized from one named enumerator. `TexturedEffect` was appended after
+    that enumerator, so the count stayed one short and a `TexturedEffect` refusal wrote past the end
+    of the array - silently, in a real measurement run. The count has to name the final enumerator,
+    and nothing in the language enforces that, so it is enforced here.
+    """
+    enum = MATERIAL_FAMILY_ENUM.search(header)
+    if enum is None:
+        return "REFUSES: no J3dMaterialFamily enumeration to measure"
+    names = re.findall(r"^\s*(\w+)\s*,", enum.group(1), re.MULTILINE)
+    if not names:
+        return "REFUSES: the J3dMaterialFamily enumeration named no families"
+    counted = MATERIAL_FAMILY_COUNT.search(header)
+    if counted is None:
+        return "REFUSES: no kJ3dMaterialFamilyCount derived from a named family"
+    if counted.group(1) == names[-1]:
+        return None
+    return (
+        f"kJ3dMaterialFamilyCount counts up to {counted.group(1)}, "
+        f"but {names[-1]} is the last family"
+    )
+
+
 def load_sources(directory: Path) -> dict[str, str]:
     if not directory.is_dir():
         return {}
@@ -147,11 +181,24 @@ def check() -> int:
     )
     for name in orphans:
         print(f"structure: {name} is declared but never called by {MATERIAL_FAMILY_ROSTER}")
+    header_path = REPO / MATERIAL_FAMILY_HEADER
+    if not header_path.is_file():
+        print(f"structure: REFUSES: the material family header {MATERIAL_FAMILY_HEADER} is missing")
+        return 1
+    miscount = miscounted_material_family(header_path.read_text())
+    if miscount is not None:
+        print(f"structure: {MATERIAL_FAMILY_HEADER}: {miscount}")
     for path, lines, limit in bad_sizes:
         print(f"structure: {path}: {lines} lines, limit {limit}")
     for path, label in [*boundary_bad, *product_bad]:
         print(f"structure: {path}: forbidden {label}")
-    total_bad = len(bad_sizes) + len(boundary_bad) + len(product_bad) + len(orphans)
+    total_bad = (
+        len(bad_sizes)
+        + len(boundary_bad)
+        + len(product_bad)
+        + len(orphans)
+        + (1 if miscount is not None else 0)
+    )
     print(f"structure: measured {len(measured)} source files; {total_bad} violation(s)")
     return 1 if total_bad else 0
 
@@ -207,6 +254,30 @@ def selftest() -> int:
         )
         == []
     )
+    counted_header = """
+enum class J3dMaterialFamily : std::uint8_t {
+    None,
+    UnlitColor,
+    LitMaskedToon,
+};
+constexpr std::size_t kJ3dMaterialFamilyCount =
+    static_cast<std::size_t>(J3dMaterialFamily::LitMaskedToon) + 1;
+"""
+    assert miscounted_material_family(counted_header) is None
+    # The exact mistake that shipped: a family appended after the one the count names.
+    appended = counted_header.replace("    LitMaskedToon,\n", "    LitMaskedToon,\n    Effect,\n")
+    assert miscounted_material_family(appended) == (
+        "kJ3dMaterialFamilyCount counts up to LitMaskedToon, but Effect is the last family"
+    )
+    assert miscounted_material_family("struct Nothing {};").startswith("REFUSES:")
+    assert miscounted_material_family(
+        counted_header.split("constexpr")[0]
+    ).startswith("REFUSES:")
+    # And it must hold on the shipping header, not only on the fixtures.
+    real_miscount = miscounted_material_family((REPO / MATERIAL_FAMILY_HEADER).read_text())
+    if real_miscount is not None:
+        print(f"FAIL: the shipping material family header {real_miscount}")
+        return 1
     # The rule has to hold on the real tree, not only on fixtures: this is the check that would
     # have caught the orphaned effect family, so it must pass against the shipping roster.
     if unreached_material_families(

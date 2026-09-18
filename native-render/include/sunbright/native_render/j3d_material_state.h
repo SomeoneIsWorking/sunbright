@@ -38,6 +38,43 @@ j3d_texture_binding(std::uint16_t textureNumber) noexcept {
     return {.textureNumber = textureNumber};
 }
 
+// The eight authored constants a colour-stage konst selection can name, counting down in eighths.
+// Selections above these name a register colour or one of its components, which is a different
+// input entirely and is never one of these values.
+enum class J3dKonstFraction : std::uint8_t {
+    EightEighths,
+    SevenEighths,
+    ThreeQuarters,
+    FiveEighths,
+    Half,
+    ThreeEighths,
+    Quarter,
+    Eighth,
+};
+
+// What the selection is worth. Derived from the selection rather than written beside it, because
+// two families transcribed selection 0x03 by hand and published 3/8 for the 5/8 the material
+// authors -- a colour error in every draw they accepted, invisible because both numbers looked
+// plausible. There is now one number here, and the name is checked against it below.
+[[nodiscard]] constexpr float value_of(J3dKonstFraction fraction) noexcept {
+    constexpr float kEighths = 8.0F;
+    return (kEighths - static_cast<float>(static_cast<std::uint8_t>(fraction))) / kEighths;
+}
+
+// The names have to mean what they say: a reordered enumerator would otherwise silently re-point
+// every family that selects by name.
+static_assert(value_of(J3dKonstFraction::EightEighths) == 1.0F);
+static_assert(value_of(J3dKonstFraction::ThreeQuarters) == 0.75F);
+static_assert(value_of(J3dKonstFraction::FiveEighths) == 0.625F);
+static_assert(value_of(J3dKonstFraction::Half) == 0.5F);
+static_assert(value_of(J3dKonstFraction::ThreeEighths) == 0.375F);
+static_assert(value_of(J3dKonstFraction::Eighth) == 0.125F);
+
+[[nodiscard]] constexpr bool selects(std::uint8_t konstSelection,
+                                     J3dKonstFraction fraction) noexcept {
+    return konstSelection == static_cast<std::uint8_t>(fraction);
+}
+
 [[nodiscard]] constexpr J3dTevStageState
 j3d_tev_stage(std::uint8_t textureCoordinate, std::uint8_t textureMap, std::uint8_t colorChannel,
               std::array<std::uint8_t, 8> program, std::uint8_t konstColorSelection = 0,
