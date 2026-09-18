@@ -211,12 +211,32 @@ PE, CP all unmasked) and `pi_cause=0x00010000` — no hardware interrupt pending
 advances ~12 billion ticks per report, roughly 8,700 VI frames in total. The title has enabled
 interrupts and waited minutes of console time without one arriving.
 
-Still missing before this item is complete: (1) **headless video and DSP bring-up**, so periodic VI
-retrace and DSP interrupts exist for the scheduler to wake on — Dolphin's own `EmuThread` calls
-`g_video_backend->Initialize` and `DSPEmulator::Initialize` around `HW::Init`, and neither is called
-here; the Null video backend takes a `WindowSystemInfo` exactly as the `ControllerInterface` fix does;
-(2) the `0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot
-alone does not advance S008.
+The idle loop turned out not to be an interrupt-delivery failure. The SDK's own `retraceCount`
+(0x8040e8d0, reached by `VIGetRetraceCount` at 0x803504ec) advances by 1,480 per report interval,
+exactly matching the ~12 billion guest ticks each interval covers, so VI interrupts are raised and
+dispatched into the title's handler end to end. Walking `__OSActiveThreadQueue` and each thread's
+saved stack named the real blocker: the main thread sits in
+`TApplication::mountStageArchive` → `THPPlayerDrawDone` → `GXDrawDone` → `OSSleepThread`, waiting for
+a PixelEngine finish interrupt that cannot be raised while nothing consumes the GP FIFO. The other
+five waiting threads are JKernel service threads idle on their own queues.
+
+`gcnport` `6547c1c` (Dolphin fork `2a69de5`) adds `GameCubeBootOptions::apply_media_init`, which
+brings up the two consumers Dolphin's `EmuThread` initializes around `HW::Init` — the headless Null
+video backend and the DSP emulator, whose ucode `DSPManager::Init` constructs but never boots —
+followed by `Fifo::Prepare`, pinned to single core so guest execution stays observable on the calling
+thread.
+
+With media init enabled, the main thread leaves the idle loop and runs on into
+`MSound::startSoundSet` → `JAIBasic::initInterface` → `JAIData::initData`, confirming the missing
+FIFO consumer was the exact wait that had stopped it. The next blocker is the skipped **apploader**:
+`DVDReadDiscID` reads only the 0x20-byte disc header, while the FST and its low-memory pointers are
+published by the apploader (`CBoot::EmulatedBS2_GC` ends in `CBoot::RunApploader`, which gcnport does
+not call). `DVDConvertPathToEntrynum` therefore walks a null FST, every file lookup fails, and the
+title proceeds on garbage pointers.
+
+Still missing before this item is complete: (1) disc file-system provisioning, so `DVDConvertPath
+ToEntrynum` has an FST to walk; (2) the `0x802e0390` `J3DShape::draw` runtime override and one-call
+suppression. Boot alone does not advance S008.
 
 ### S002 — gcnport Dolphin executor
 

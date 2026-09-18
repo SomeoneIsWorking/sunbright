@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <limits>
@@ -36,6 +37,7 @@
 #include <mbedtls/sha256.h>
 
 #include "Common/CommonTypes.h"
+#include "Common/MsgHandler.h"
 #include "Common/FileUtil.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/GcnPortRuntime.h"
@@ -176,6 +178,147 @@ DolImage LoadDolAsFlatImage(const std::string& path)
   return image;
 }
 
+// Answers Dolphin's alerts without a human, and counts them.
+//
+// Dolphin's default handler prompts on stdin ("Ignore and continue?"), which in a headless
+// diagnostic is not a prompt but a hang: a run that should have produced a measurement instead waits
+// forever for an answer nobody is there to give. Measured: an MMIO assertion stopped a 250M-block
+// run dead. Silencing them outright would be worse, because an assertion is exactly the kind of
+// finding this tool exists to surface, so each one is printed once with its text and tallied, and
+// the run continues as if "Ignore" had been chosen.
+std::atomic<u64> g_alerts_reported{0};
+
+bool ReportAlertWithoutPrompting(const char* caption, const char* text, bool /*yes_no*/,
+                                 Common::MsgType /*style*/)
+{
+  const u64 index = g_alerts_reported.fetch_add(1);
+  constexpr u64 MAX_DISTINCT_ALERTS_PRINTED = 20;
+  if (index < MAX_DISTINCT_ALERTS_PRINTED)
+  {
+    std::printf("gmse01_boot: dolphin alert #%llu [%s] %s\n",
+                static_cast<unsigned long long>(index + 1), caption, text);
+    std::fflush(stdout);
+  }
+  return true;
+}
+
+// Walks a guest PowerPC stack from a saved stack pointer and prints the return addresses.
+//
+// A blocked thread's wait queue is an address, and for a queue that is a field inside some object
+// there is no global to resolve it against -- tools/re/dataref.py confirms no instruction in the
+// image forms those addresses directly. The call path is the readable answer instead: PowerPC's ABI
+// makes the word at r1 the caller's stack pointer and the word at offset 4 of THAT frame the return
+// address into the caller, so following the chain names every function between the thread's entry
+// point and the wait it is sitting in. tools/re/addr2sym.py turns the printed addresses into names.
+//
+// Each step is bounded and each way of stopping is reported, because a truncated backtrace that
+// looks complete is worse than none: the chain must stay inside RAM, stay word-aligned, and move
+// strictly upward, which is what distinguishes a finished walk from a corrupt or circular one.
+void ReportGuestBacktrace(const Memory::MemoryManager& memory, u32 stack_pointer)
+{
+  constexpr u32 FRAME_RETURN_ADDRESS = 4;
+  constexpr u32 GUEST_RAM_START = 0x80000000;
+  constexpr u32 GUEST_RAM_END = 0x81800000;
+  constexpr u32 MAX_FRAMES = 12;
+
+  u32 frame = stack_pointer;
+  for (u32 depth = 0; depth < MAX_FRAMES; ++depth)
+  {
+    if (frame < GUEST_RAM_START || frame >= GUEST_RAM_END || (frame & 3) != 0)
+    {
+      std::printf("gmse01_boot:     stack ends at 0x%08x after %u frame(s)\n", frame, depth);
+      return;
+    }
+    const u32 caller = memory.Read_U32(frame);
+    if (caller == 0)
+    {
+      std::printf("gmse01_boot:     stack base reached after %u frame(s)\n", depth);
+      return;
+    }
+    if (caller <= frame)
+    {
+      std::printf("gmse01_boot:     back-chain does not grow at 0x%08x; stopping\n", frame);
+      return;
+    }
+    std::printf("gmse01_boot:     #%u lr=0x%08x\n", depth,
+                memory.Read_U32(caller + FRAME_RETURN_ADDRESS));
+    frame = caller;
+  }
+  std::printf("gmse01_boot:     stopped after %u frames; the stack is deeper\n", MAX_FRAMES);
+}
+
+// Walks the SDK's active-thread queue and reports where every thread is parked.
+//
+// "Every thread is blocked" is the state the idle loop reports, but it does not say what they are
+// blocked ON, and that is the only question worth asking once VI interrupts are confirmed to be
+// arriving. The OS keeps the list at OS_BASE_CACHED|0x00DC (`__OSActiveThreadQueue` in os.h); each
+// OSThread carries its saved context at offset 0, so context.srr0 (OS_CONTEXT_SRR0 = 408) is the
+// address the thread will resume at and context.lr (OS_CONTEXT_LR = 132) names its caller. Those
+// two resolve against reference/sms_gmse01_funcs.txt into the exact SDK or game routine each
+// thread is waiting in.
+//
+// The queue is walked with a hard cap and an explicit report of what was found, including the
+// "found nothing" cases: an empty queue and a queue whose links leave RAM are different failures
+// from a queue full of legitimately waiting threads, and a silent return could not tell them apart.
+void ReportActiveThreads(const Memory::MemoryManager& memory)
+{
+  constexpr u32 GUEST_ACTIVE_THREAD_QUEUE = 0x800000dc;
+  constexpr u32 THREAD_CONTEXT_R1 = 4;
+  constexpr u32 THREAD_CONTEXT_LR = 132;
+  constexpr u32 THREAD_CONTEXT_SRR0 = 408;
+  // state and attr are adjacent u16 fields, so the big-endian word at 0x2C8 holds state in its high
+  // half and attr in its low half. Reading the word and masking the low half yields attr, not state,
+  // and attr's values (0 and OS_THREAD_ATTR_DETACHED) are plausible-looking state numbers -- which
+  // is exactly how the first version of this walker reported five threads as READY while the
+  // scheduler idled, a contradiction that was the instrument's, not the guest's.
+  constexpr u32 THREAD_STATE_AND_ATTR = 0x2c8;
+  constexpr u32 THREAD_SUSPEND = 0x2cc;
+  constexpr u32 THREAD_PRIORITY = 0x2d0;
+  constexpr u32 THREAD_QUEUE = 0x2dc;
+  constexpr u32 THREAD_MUTEX = 0x2f0;
+  constexpr u32 THREAD_LINK_ACTIVE_NEXT = 0x2fc;
+  constexpr u32 GUEST_RAM_START = 0x80000000;
+  constexpr u32 GUEST_RAM_END = 0x81800000;
+  constexpr u32 MAX_THREADS = 32;
+
+  u32 thread = memory.Read_U32(GUEST_ACTIVE_THREAD_QUEUE);
+  if (thread == 0)
+  {
+    std::printf("gmse01_boot:   active thread queue is empty\n");
+    return;
+  }
+
+  u32 reported = 0;
+  for (; thread != 0 && reported < MAX_THREADS; ++reported)
+  {
+    if (thread < GUEST_RAM_START || thread >= GUEST_RAM_END)
+    {
+      std::printf("gmse01_boot:   thread link leaves RAM at 0x%08x after %u thread(s)\n", thread,
+                  reported);
+      return;
+    }
+    // state is a bitmask: 1 READY, 2 RUNNING, 4 WAITING, 8 MORIBUND. For a WAITING thread the queue
+    // pointer is the whole answer -- it identifies the object being waited on, and resolving that
+    // address names the subsystem that owes the wake-up.
+    const u32 state_and_attr = memory.Read_U32(thread + THREAD_STATE_AND_ATTR);
+    std::printf("gmse01_boot:   thread 0x%08x state=%u attr=%u suspend=%d prio=%u queue=0x%08x "
+                "mutex=0x%08x srr0=0x%08x lr=0x%08x\n",
+                thread, state_and_attr >> 16, state_and_attr & 0xffff,
+                static_cast<int>(memory.Read_U32(thread + THREAD_SUSPEND)),
+                memory.Read_U32(thread + THREAD_PRIORITY),
+                memory.Read_U32(thread + THREAD_QUEUE), memory.Read_U32(thread + THREAD_MUTEX),
+                memory.Read_U32(thread + THREAD_CONTEXT_SRR0),
+                memory.Read_U32(thread + THREAD_CONTEXT_LR));
+    ReportGuestBacktrace(memory, memory.Read_U32(thread + THREAD_CONTEXT_R1));
+    thread = memory.Read_U32(thread + THREAD_LINK_ACTIVE_NEXT);
+  }
+  if (thread != 0)
+  {
+    std::printf("gmse01_boot:   stopped after %u threads; the queue is longer or circular\n",
+                reported);
+  }
+}
+
 void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_image_path)
 {
   const std::string profile_path = File::CreateTempDir();
@@ -185,6 +328,7 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
     std::exit(1);
   }
   UICommon::SetUserDirectory(profile_path);
+  Common::RegisterMsgAlertHandler(ReportAlertWithoutPrompting);
 
   PowerPC::GcnPort::ExecutionIdentity identity;
   // A real content digest of the exact booted bytes, matching the "caller-computed digest" contract
@@ -240,7 +384,8 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
       system, identity, image.flat, image.load_address, image.entry_point,
       PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
                                             .apply_hardware_init = true,
-                                            .disc_image_path = disc_image_path});
+                                            .disc_image_path = disc_image_path,
+                                            .apply_media_init = true});
   if (!booted.ok)
   {
     std::fprintf(stderr, "gmse01_boot: BootAuthenticatedImage failed: %s\n", booted.detail.c_str());
@@ -299,6 +444,7 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
     u64 blocks_run = 0;
     u32 previous_stall_pc = 0;
     u64 previous_stall_ticks = 0;
+    u32 previous_retrace_count = 0;
     const auto started_at = std::chrono::steady_clock::now();
 
     for (; blocks_run < std::min<u64>(STEPPED_BLOCKS, max_blocks); ++blocks_run)
@@ -347,22 +493,38 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
       {
         const auto& ppc_state = system.GetPPCState();
         const auto& processor_interface = system.GetProcessorInterface();
+        const auto& memory = system.GetMemory();
         // pi_cause and exceptions are instantaneous samples, and a handler that has already run
         // leaves both at zero -- so on their own they cannot tell "no interrupt was ever raised"
-        // from "every interrupt was raised, handled and cleared". The guest tick count is what
-        // makes them readable: a GameCube VI retrace is one interrupt per 486MHz/60 ~= 8.1 million
-        // ticks, so the ticks elapsed since the last report say how many retraces this interval
-        // should have contained, and therefore whether a quiet cause means quiet or means missed.
+        // from "every interrupt was raised, handled and cleared". Two cumulative readings make
+        // them legible. The guest tick count says how much console time an interval covered: a
+        // GameCube VI retrace is one interrupt per 486MHz/60 ~= 8.1 million ticks, so the ticks
+        // elapsed give the number of retraces the interval should have contained. GUEST_RETRACE_
+        // COUNT is the SDK's own `retraceCount` (vi.c), incremented by __VIRetraceHandler and read
+        // back by VIGetRetraceCount at 0x803504ec, whose single `lwz r3, -0x58f0(r13)` resolves it
+        // through SDA1 to 0x8040e8d0. It only advances when a VI interrupt is both raised by the
+        // hardware and dispatched into the title's handler, so it measures end-to-end delivery
+        // rather than the instant of the sample. GUEST_CURRENT_THREAD is the OS global the
+        // scheduler clears before idling; NULL there confirms the stop is SelectThread's idle loop
+        // and not a crash loop that happens to sit at one address.
+        constexpr u32 GUEST_RETRACE_COUNT = 0x8040e8d0;
+        constexpr u32 GUEST_CURRENT_THREAD = 0x800000e4;
         const u64 ticks = system.GetCoreTiming().GetTicks();
+        const u32 retrace_count = memory.Read_U32(GUEST_RETRACE_COUNT);
+        const u32 current_thread = memory.Read_U32(GUEST_CURRENT_THREAD);
         std::printf("gmse01_boot: stalled at pc=0x%08x msr=0x%08x (ee=%u) exceptions=0x%08x "
-                    "pi_cause=0x%08x pi_mask=0x%08x disc_inside=%d ticks=%llu (+%llu)\n",
+                    "pi_cause=0x%08x pi_mask=0x%08x disc_inside=%d cur_thread=0x%08x "
+                    "retraces=%u (+%u) ticks=%llu (+%llu)\n",
                     batch.guest_pc, ppc_state.msr.Hex, static_cast<u32>(ppc_state.msr.EE),
                     ppc_state.Exceptions, processor_interface.GetCause(),
                     processor_interface.GetMask(),
-                    static_cast<int>(system.GetDVDInterface().IsDiscInside()),
+                    static_cast<int>(system.GetDVDInterface().IsDiscInside()), current_thread,
+                    retrace_count, retrace_count - previous_retrace_count,
                     static_cast<unsigned long long>(ticks),
                     static_cast<unsigned long long>(ticks - previous_stall_ticks));
+        ReportActiveThreads(memory);
         previous_stall_ticks = ticks;
+        previous_retrace_count = retrace_count;
       }
       previous_stall_pc = batch.guest_pc;
     }
@@ -381,6 +543,8 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
                 static_cast<unsigned long long>(counters.cold_block_executions),
                 static_cast<unsigned long long>(counters.cache_hit_block_executions),
                 static_cast<unsigned long long>(counters.fallback_events));
+    std::printf("gmse01_boot: dolphin_alerts=%llu\n",
+                static_cast<unsigned long long>(g_alerts_reported.load()));
 
     std::signal(SIGSEGV, SIG_DFL);
     g_diagnostic_runtime = nullptr;

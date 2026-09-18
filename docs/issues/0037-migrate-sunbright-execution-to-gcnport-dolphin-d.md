@@ -485,3 +485,68 @@ Tooling note: the first version of this stall reporter read the MMIO addresses t
 CopyFromEmu" and a zero — indistinguishable from a genuinely quiet interrupt controller. It now reads
 the owning device objects, and reports the cumulative tick count alongside the instantaneous cause,
 because a handler that has already run leaves cause and exceptions at zero too.
+
+**2026-09-18 (seventh continuation): the idle loop was a missing FIFO consumer, not a missing
+interrupt.** The sixth-continuation reading above -- "no hardware interrupt is ever raised" -- was
+wrong, and wrong in a way worth recording: `pi_cause` and `Exceptions` are instantaneous samples, so
+an interrupt that was raised, handled and cleared leaves both at zero and is indistinguishable from
+one that never happened. The falsifier was a cumulative guest-side counter. `VIGetRetraceCount`
+(0x803504ec) is a single `lwz r3, -0x58f0(r13)`, which resolves through SDA1 to the SDK's own
+`retraceCount` at 0x8040e8d0; it only advances when a VI interrupt is raised AND dispatched into the
+title's handler. It advances by 1,480 per report interval -- exactly the number predicted by the
+~12,000,000,000 guest ticks each interval covers at 486MHz/60. VI delivery works end to end.
+
+Walking `__OSActiveThreadQueue` (0x800000DC) and each thread's saved stack named the real blocker.
+Six threads are WAITING and one is MORIBUND; the main thread's back-chain resolves to:
+
+    OSSleepThread <- GXDrawDone <- THPPlayerDrawDone <- TApplication::mountStageArchive
+
+`GXDrawDone` writes a draw-done token and sleeps until the PixelEngine finish interrupt reports the
+GPU has drained past it. Nothing was consuming the GP FIFO, so no such interrupt could ever be
+raised. The other five threads (`JKRAram::run`, `JKRAramStream::run`, `JKRDecomp::run`,
+`JUTException::run`) are JKernel service threads idling on their own work queues, which is normal.
+
+The fix is `gcnport` `6547c1c` (Dolphin fork `2a69de5`): `GameCubeBootOptions::apply_media_init`
+brings up the two consumers Dolphin's own `EmuThread` initializes around `HW::Init` -- the video
+backend, pinned to Dolphin's maintained headless Null backend, and the DSP emulator, whose ucode
+`DSPManager::Init` constructs but never boots -- followed by `Fifo::Prepare`. It pins single core,
+declaring the calling thread as the GPU thread, because `ExecuteJitBlock`'s "exactly one observable
+block on the calling thread" contract cannot hold if a separate GPU or DSP thread retires
+guest-visible work.
+
+Two instrument defects were found and fixed while getting there, both of the silent-success shape.
+The first version of the thread walker read `state` as the low half of the big-endian word at 0x2C8,
+which is `attr`, and so reported five threads as READY while the scheduler idled -- a contradiction
+that belonged to the instrument, not the guest. And `tools/re/dataref.py` is new: it names the code
+that references a guest DATA address (the inverse of `addr2sym.py`) by scanning for the `lis` plus
+displacement pairs that form it. It was validated against a known positive -- `__OSCurrentThread` at
+0x800000e4, which it finds in exactly the six SDK functions that touch it -- before its zero answers
+for the wait-queue addresses were trusted; those queues are fields inside objects, not globals.
+
+**Result of enabling `apply_media_init` against exact GMSE01: boot leaves the idle loop and the next
+blocker is the skipped apploader.** The main thread is no longer asleep in `GXDrawDone`; it is
+RUNNING, and its stack resolves to
+
+    TApplication::mountStageArchive -> MSound::startSoundSet -> JAIBasic::initInterface
+      -> JAIBasic::initInterfaceMain -> JAIBasic::initAllocParameter -> JAIData::initData
+
+which is direct confirmation that the missing FIFO consumer was the exact wait that had stopped it.
+
+What it runs into next is `DVDConvertPathToEntrynum+0x2b0` reading from address 0x00000008 -- a null
+file system table. `CBoot::DVDReadDiscID` reads only the 0x20-byte disc header; the FST is loaded by
+the **apploader**, which also publishes its low-memory pointers, and a `BootAuthenticatedImage` boot
+of a pre-extracted DOL never runs one (`CBoot::EmulatedBS2_GC` ends in `CBoot::RunApploader`, which
+gcnport does not call). Every file lookup therefore fails, `JKRArchive::findDirectory` and
+`findFsResource` dereference null archives, and the title proceeds on garbage pointers -- which is
+what scribbles over the `OSThread` objects and over PI_INTMR, both of which read as float-shaped junk
+in later samples. Those are consequences of the null FST, not separate defects.
+
+Next: load the disc's file system the way a console does, so `DVDConvertPathToEntrynum` has an FST to
+walk. The apploader is guest code on the user's own disc and Dolphin already drives it through
+`CBoot::RunApploader`, so exposing it is the faithful route rather than hand-publishing FST pointers.
+
+Tooling landed with this: the boot tool now registers a non-interactive `MsgAlertHandler`. Dolphin's
+default handler prompts on stdin, so an MMIO assertion turned a 250M-block run into a silent hang
+waiting for an answer nobody was there to give. Alerts are now printed once each, counted, and
+reported in the summary as `dolphin_alerts=N`, because an assertion is exactly the kind of finding
+this tool exists to surface and silencing it would be worse than the hang.
