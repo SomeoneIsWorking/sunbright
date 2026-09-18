@@ -174,6 +174,8 @@ struct BootRequest {
     // rendering them: the process frame bridge takes the sink, and each entry here seals what the
     // title submitted and encodes it through the shipping passes.
     std::vector<u32> frame_seam_addresses;
+    std::string frame_image_path;
+    u64 frame_image_index = 0;
     u32 shape_probe_system = sb::title_adapter::GMSE01_J3D_SYS;
 };
 

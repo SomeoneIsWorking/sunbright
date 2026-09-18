@@ -426,6 +426,71 @@ int main() {
     assert(!bridge.active() && !client.ready());
     assert(sharedPlatform.shutdown(platformError));
 
+    // A sample observer receives the frame's own pixels, not a copy of the measurement taken from
+    // them: a consumer that writes the image out has to be able to reproduce the client's own
+    // non-clear count from the bytes it was handed, or the two describe different frames.
+    assert(sharedPlatform.initialize_device({}, platformError));
+    struct Observed {
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint64_t frameIndex = 0;
+        std::size_t reportedNonClear = 0;
+        std::size_t countedNonClear = 0;
+        std::size_t bytes = 0;
+        std::size_t calls = 0;
+        bool refuse = false;
+    } observed;
+    const auto observe = [](const sb::native_render::SemanticFrameSample& sample, void* context,
+                            std::string& sampleError) {
+        auto& seen = *static_cast<Observed*>(context);
+        seen.calls += 1;
+        seen.width = sample.width;
+        seen.height = sample.height;
+        seen.frameIndex = sample.frameIndex;
+        seen.reportedNonClear = sample.nonClearPixels;
+        seen.bytes = sample.rgba8.size();
+        seen.countedNonClear = 0;
+        for (std::size_t offset = 0; offset + 3 < sample.rgba8.size(); offset += 4) {
+            if (sample.rgba8[offset] != 0 || sample.rgba8[offset + 1] != 0 ||
+                sample.rgba8[offset + 2] != 0 || sample.rgba8[offset + 3] != 255) {
+                seen.countedNonClear += 1;
+            }
+        }
+        if (seen.refuse) {
+            sampleError = "the sample observer refused this frame";
+            return false;
+        }
+        return true;
+    };
+    assert(client.initialize(sharedPlatform, bridge,
+                             {.width = 16,
+                              .height = 16,
+                              .readback = sb::native_render::SemanticReadbackMode::EveryFrame,
+                              .onSample = observe,
+                              .onSampleContext = &observed},
+                             platformError));
+    assert(bridge.begin());
+    assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    assert(observed.calls == 1 && observed.width == 16 && observed.height == 16);
+    assert(observed.bytes == 16U * 16U * 4U && observed.frameIndex == 1);
+    assert(observed.countedNonClear != 0);
+    assert(observed.countedNonClear == observed.reportedNonClear);
+    assert(observed.countedNonClear == client.stats().lastSampleNonClearPixels);
+
+    // A refusing observer fails the encode rather than losing the frame quietly. Without this the
+    // only evidence a consumer's write failed would be a file it never looks at again.
+    observed.refuse = true;
+    assert(bridge.begin());
+    assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+    assert(bridge.seal());
+    assert(!client.encode_last_sealed(platformError));
+    assert(platformError.find("observer refused") != std::string::npos);
+    assert(observed.calls == 2);
+    assert(client.shutdown(platformError));
+    assert(sharedPlatform.shutdown(platformError));
+
     // Preview startup refuses a hidden/headless window instead of running a plausible-looking
     // present loop that can never display anything.
     assert(sharedPlatform.initialize_device({}, platformError));

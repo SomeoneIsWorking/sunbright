@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guest_frame_renderer.h"
 
+#include "frame_image_file.h"
+
 #include <cstdio>
 #include <string>
 
@@ -28,7 +30,27 @@ GuestFrameRenderer::~GuestFrameRenderer() {
     }
 }
 
-bool GuestFrameRenderer::start(std::string& error) {
+bool GuestFrameRenderer::observe_sample(const sb::native_render::SemanticFrameSample& sample,
+                                        void* context, std::string& error) {
+    auto& renderer = *static_cast<GuestFrameRenderer*>(context);
+    if (renderer.imagePath_.empty() || renderer.imageWritten_) {
+        return true;
+    }
+    // With no frame named, the readback mode has already decided this: it samples nothing after the
+    // first non-clear frame. With one named, every frame is sampled and this is the choice.
+    if (renderer.imageFrameWanted_ != 0 && sample.frameIndex != renderer.imageFrameWanted_) {
+        return true;
+    }
+    if (!write_ppm(renderer.imagePath_, sample.width, sample.height, sample.rgba8, error)) {
+        return false;
+    }
+    renderer.imageWritten_ = true;
+    renderer.imageFrame_ = sample.frameIndex;
+    return true;
+}
+
+bool GuestFrameRenderer::start(const std::string& imagePath, std::uint64_t imageFrame,
+                               std::string& error) {
     if (started_) {
         error = "the frame renderer was already started";
         return false;
@@ -56,11 +78,15 @@ bool GuestFrameRenderer::start(std::string& error) {
     // "already active" refusal from inside `initialize` means.
     auto& client = sb::native_render::sdl_semantic_frame_client();
     auto& bridge = sb::native_render::semantic_frame_bridge();
-    if (!client.initialize(platform, bridge,
-                           {.width = FRAMEBUFFER_WIDTH,
-                            .height = FRAMEBUFFER_HEIGHT,
-                            .readback = sb::native_render::SemanticReadbackMode::UntilNonClear},
-                           detail)) {
+    if (!client.initialize(
+            platform, bridge,
+            {.width = FRAMEBUFFER_WIDTH,
+             .height = FRAMEBUFFER_HEIGHT,
+             .readback = imageFrame != 0 ? sb::native_render::SemanticReadbackMode::EveryFrame
+                                         : sb::native_render::SemanticReadbackMode::UntilNonClear,
+             .onSample = observe_sample,
+             .onSampleContext = this},
+            detail)) {
         const bool failed = refuse("the semantic frame client did not initialize", detail.c_str());
         static_cast<void>(platform.shutdown(detail));
         SDL_Quit();
@@ -73,6 +99,8 @@ bool GuestFrameRenderer::start(std::string& error) {
         SDL_Quit();
         return failed;
     }
+    imagePath_ = imagePath;
+    imageFrameWanted_ = imageFrame;
     started_ = true;
     collecting_ = true;
     return true;
@@ -154,6 +182,24 @@ void GuestFrameRenderer::report() const {
     } else {
         std::printf("gmse01_boot:   REFUSES: the client did not validate its output: %s\n",
                     error.c_str());
+    }
+    if (!imagePath_.empty()) {
+        // An image that was asked for and not written is a failure, and prints as one. A run that
+        // reached no non-clear frame writes nothing, which is the same silence as a writer that
+        // never fired -- so the two are told apart here rather than left to be inferred.
+        if (imageWritten_) {
+            std::printf("gmse01_boot:   wrote frame %llu to %s\n",
+                        static_cast<unsigned long long>(imageFrame_), imagePath_.c_str());
+        } else if (imageFrameWanted_ != 0) {
+            std::printf("gmse01_boot:   REFUSES: no frame was written to %s; the run sealed %llu "
+                        "frame(s) and never reached frame %llu\n",
+                        imagePath_.c_str(), static_cast<unsigned long long>(seams_),
+                        static_cast<unsigned long long>(imageFrameWanted_));
+        } else {
+            std::printf("gmse01_boot:   REFUSES: no frame was written to %s; nothing distinct from "
+                        "the clear was ever sampled\n",
+                        imagePath_.c_str());
+        }
     }
     std::printf("gmse01_boot:   %llu seal failure(s), %llu encode failure(s), %llu begin "
                 "failure(s); first error: %s\n",

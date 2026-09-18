@@ -11,16 +11,37 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 
 namespace sb::native_render {
 
 enum class SemanticReadbackMode : std::uint8_t { None, UntilNonClear, EveryFrame };
 
+// One sampled frame's pixels, offered to a consumer that wants to keep the image rather than only
+// the measurement taken from it. RGBA8, tightly packed, top row first, already in the target's sRGB
+// encoding. `rgba8` is the mapped readback buffer and is valid only for the duration of the call.
+struct SemanticFrameSample {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    // Which frame this is, in the same numbering `SdlSemanticFrameStats::firstNonClearFrame` uses.
+    std::uint64_t frameIndex = 0;
+    std::size_t nonClearPixels = 0;
+    std::span<const std::uint8_t> rgba8{};
+};
+
+// Answers false to refuse the sample, which fails the encode rather than losing it quietly: a
+// consumer that could not write the image it asked for has not observed the frame.
+using SemanticSampleObserver = bool (*)(const SemanticFrameSample& sample, void* context,
+                                        std::string& error);
+
 struct SdlSemanticFrameClientConfig {
     std::uint32_t width = 640;
     std::uint32_t height = 480;
     SemanticReadbackMode readback = SemanticReadbackMode::UntilNonClear;
+    // Null measures each sample and discards its pixels, which is what an audit run wants.
+    SemanticSampleObserver onSample = nullptr;
+    void* onSampleContext = nullptr;
     // A non-null window selects the deliberately incomplete visible semantic preview. Null keeps
     // the semantic target offscreen for audit while Aurora presents its retained GX reference.
     SDL_Window* presentationWindow = nullptr;

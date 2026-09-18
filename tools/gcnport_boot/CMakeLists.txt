@@ -21,6 +21,7 @@ add_executable(sunbright_gcnport_boot
     guest_projection_probe.cpp
     guest_draw_publisher.cpp
     guest_frame_renderer.cpp
+    frame_image_file.cpp
     guest_model_probe.cpp
     guest_material_probe.cpp
   guest_shape_probe.cpp

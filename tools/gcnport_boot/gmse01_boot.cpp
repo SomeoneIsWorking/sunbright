@@ -460,7 +460,7 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         std::vector<std::unique_ptr<sunbright::gcnport_boot::FrameSeamHook>> frame_seams;
         if (!request.frame_seam_addresses.empty()) {
             std::string error;
-            if (!frame_renderer.start(error)) {
+            if (!frame_renderer.start(request.frame_image_path, request.frame_image_index, error)) {
                 std::fprintf(stderr,
                              "gmse01_boot: --render-frames could not start the renderer: %s\n",
                              error.c_str());

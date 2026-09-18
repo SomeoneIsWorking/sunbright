@@ -364,8 +364,17 @@ bool SdlSemanticFrameClient::measure_readback(const SemanticFrame& frame,
         stats_.firstNonClearFrame = stats_.submittedFrames;
         stats_.firstNonClearPixels = nonClear;
     }
+    bool observed = true;
+    if (config_.onSample != nullptr) {
+        const SemanticFrameSample sample{.width = frame.targetWidth,
+                                         .height = frame.targetHeight,
+                                         .frameIndex = stats_.submittedFrames,
+                                         .nonClearPixels = nonClear,
+                                         .rgba8 = std::span(pixels, pixelCount * 4U)};
+        observed = config_.onSample(sample, config_.onSampleContext, error);
+    }
     SDL_UnmapGPUTransferBuffer(platform_->device(), readback_);
-    return true;
+    return observed;
 }
 
 void SdlSemanticFrameClient::release_resources() noexcept {

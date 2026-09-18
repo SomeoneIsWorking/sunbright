@@ -30,7 +30,8 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-lighting <hex-addr>[:<reports>] ...] "
                      "[--read-models <hex-addr>[:<reports>]] "
                      "[--read-projections <hex-addr>[:<reports>]] "
-                     "[--render-frames <hex-addr>]\n",
+                     "[--render-frames <hex-addr>] [--dump-frame <path>] "
+                     "[--dump-frame-index <n>]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -232,6 +233,25 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 request.model_probe_reports = parsed;
             }
             request.model_probe_addresses.push_back(address);
+        } else if (name == "--dump-frame") {
+            // Where to write the one sampled frame, as a P6 PPM. Useless without --render-frames,
+            // and refused rather than ignored: a run that was asked for an image and silently took
+            // no picture is indistinguishable from one whose renderer drew nothing.
+            request.frame_image_path = value;
+        } else if (name == "--dump-frame-index") {
+            // Which sealed frame --dump-frame writes. Omitted, the first frame with any content is
+            // written and only that one is ever downloaded; named, every frame up to it is.
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(value, &end, 0);
+            if (end == value || *end != '\0' || errno == ERANGE || parsed == 0) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --dump-frame-index needs a frame number from 1, got "
+                             "'%s'\n",
+                             value);
+                return false;
+            }
+            request.frame_image_index = parsed;
         } else if (name == "--render-frames") {
             // <hex-addr>. The address is the title's frame seam -- GMSE01 reaches one in
             // JDrama::TVideo::waitForRetrace (0x802fc9a4). Unlike the probes, this takes no report
@@ -355,6 +375,18 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
         }
     }
 
+    if (request.frame_image_index != 0 && request.frame_image_path.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --dump-frame-index chooses which frame --dump-frame writes, and "
+                     "no path was given\n");
+        return false;
+    }
+    if (!request.frame_image_path.empty() && request.frame_seam_addresses.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --dump-frame names where to write a rendered frame, but nothing "
+                     "renders without --render-frames\n");
+        return false;
+    }
     return true;
 }
 

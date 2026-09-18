@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 
+#include <sunbright/native_render/sdl_semantic_frame_client.h>
+
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"
 
@@ -33,7 +35,15 @@ class GuestFrameRenderer {
     static constexpr std::uint32_t FRAMEBUFFER_WIDTH = 640;
     static constexpr std::uint32_t FRAMEBUFFER_HEIGHT = 448;
 
-    [[nodiscard]] bool start(std::string& error);
+    // `imagePath` non-empty writes one frame there as a P6 PPM.
+    //
+    // `imageFrame` 0 writes the first frame whose pixels differ from the clear, and the readback
+    // stops once it has one: which frame that is, is a property of the title rather than of when
+    // the run happened to look. A non-zero `imageFrame` names a sealed frame instead, which costs a
+    // readback of every frame up to it -- the client cannot know a frame is the one wanted without
+    // downloading it.
+    [[nodiscard]] bool start(const std::string& imagePath, std::uint64_t imageFrame,
+                             std::string& error);
 
     // One guest frame seam: seal what the title submitted, encode it, and open the next frame. A
     // failure here is recorded rather than thrown, because the run must still reach its reported
@@ -46,6 +56,14 @@ class GuestFrameRenderer {
     [[nodiscard]] bool started() const noexcept { return started_; }
 
   private:
+    // Called by the frame client with the sampled frame's pixels still mapped.
+    static bool observe_sample(const sb::native_render::SemanticFrameSample& sample, void* context,
+                               std::string& error);
+
+    std::string imagePath_;
+    std::uint64_t imageFrameWanted_ = 0;
+    std::uint64_t imageFrame_ = 0;
+    bool imageWritten_ = false;
     bool started_ = false;
     bool collecting_ = false;
     std::uint64_t seams_ = 0;

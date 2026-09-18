@@ -702,10 +702,36 @@ models through the passes, and the client **refused** to validate -- *"semantic 
 observed pixels distinct from the controlled clear"*. The same binary, the same flag, the other
 answer.
 
-What this does not yet show is any pixel. The client's readback is measured (non-clear count, hash)
-and then discarded, so the run proves the title's draws reach the passes, survive pipeline creation
-on a real driver, and put geometry on the target -- not that what they put there matches the
-console. Writing the sampled frame out and diffing it against a Dolphin capture is the next scope.
+**The frames can now be looked at.** `SdlSemanticFrameClient` takes an optional sample observer --
+it is handed the sampled frame's own pixels while the readback is still mapped, and answers whether
+it kept them; a refusal fails the encode rather than losing the frame quietly. The boot tool's
+`--dump-frame <path>` writes one frame as a P6 PPM, the format this repository's own comparison
+tools (`tools/render/ab_diff.py`, `tools/render/sb_oracle_diff.py`) already read, so a rendered
+frame can be diffed against a Dolphin capture with no converter in between. Without
+`--dump-frame-index`, the frame written is the first one whose pixels differ from the clear and only
+that one is ever downloaded; with it, a named sealed frame is written and every frame up to it is
+downloaded, because the client cannot know a frame is the one wanted without reading it back.
+
+The observer is controlled on a device in `semantic_2d_pass_gpu_test`: it must be able to reproduce
+the client's own non-clear count from the bytes it was handed (otherwise the two describe different
+frames), and a refusing observer must fail the encode. Replacing the client's `return observed` with
+`return true` fails the second by name.
+
+Two frames of the title's attract cycle, from 1,400,000,000-block runs, 0 Dolphin alerts:
+
+- **Frame 3152**, the first with any content, written by the default path. Its hash is the same
+  `10633304561967121689` two independent runs reported, so the render is reproducible rather than
+  timing dependent.
+- **Frame 3800**, named explicitly, 4,004 frames sampled to reach it.
+
+Both show recognisable GMSE01 geometry -- the sky dome, its cloud billboards and Delfino's seagulls
+in the correct places -- and both are **grossly over-bright**: most of the scene's surfaces come out
+white, and the island geometry that should sit under the sky is not distinguishable from it. So the
+title's draws reach the passes, compile on a real driver, and put its own geometry on the target in
+the right shape, while their shading does not yet match the console. Establishing where that
+brightness enters -- the material families' colour maths, the lighting accumulation, or the sRGB
+handling at the target -- is the next scope, and it is now a question that can be asked of an image
+rather than of a counter.
 
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
