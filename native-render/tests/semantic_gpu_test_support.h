@@ -10,6 +10,11 @@
 
 namespace sb::native_render::test {
 
+// The frame targets are sRGB, so a control that predicts a pixel from linear shader arithmetic
+// has to convert at the same boundary the hardware does. One owner for both passes' tests.
+[[nodiscard]] float srgb_to_linear(float value);
+[[nodiscard]] float linear_to_srgb(float value);
+
 [[nodiscard]] Color pixel(const SemanticFramePixels& frame, std::uint32_t x, std::uint32_t y);
 [[nodiscard]] bool near(float actual, float expected, float tolerance = 2.0F / 255.0F);
 void require_color(Color actual, Color expected);

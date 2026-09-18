@@ -218,3 +218,9 @@ add_executable(native_render_semantic_2d_gpu_test
                tests/semantic_gpu_test_support.cpp)
 target_link_libraries(native_render_semantic_2d_gpu_test PRIVATE sunbright-native-render-sdl3)
 sunbright_deploy_runtime_dependencies(native_render_semantic_2d_gpu_test SDL3::SDL3)
+
+add_executable(native_render_semantic_3d_gpu_test
+               tests/semantic_3d_pass_gpu_test.cpp
+               tests/semantic_gpu_test_support.cpp)
+target_link_libraries(native_render_semantic_3d_gpu_test PRIVATE sunbright-native-render-sdl3)
+sunbright_deploy_runtime_dependencies(native_render_semantic_3d_gpu_test SDL3::SDL3)

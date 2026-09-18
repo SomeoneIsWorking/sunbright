@@ -642,9 +642,34 @@ one with a transcribed constant.
     59,776 draws composed and submitted, 11,421,498 vertices, 0 rejected by the sink
 
 This is coverage of the material *programs* the title runs, not proof that each one's output matches
-the console: nothing is rasterised yet, so every family's colour maths is checked against its
-decoded program and its unit controls rather than against pixels. Rasterising these draws and
-comparing them is the next scope, and it is what would falsify any of the fifteen families above.
+the console: GMSE01's own draws are not rasterised yet, so each family's colour maths is checked
+against its decoded program, its unit controls, and the GPU controls below rather than against the
+console's pixels.
+
+The five families added here had never been drawn on a device -- their shaders had never been
+compiled by a driver. The 3D GPU controls lived inside `semantic_2d_pass_gpu_test.cpp`, a 1,049-line
+file named for the other pass, so they were extracted to `semantic_3d_pass_gpu_test.cpp` before
+being extended, and the sRGB conversions both files predict pixels through were given one owner in
+`semantic_gpu_test_support`. Each new family now renders offscreen and is read back:
+
+- **Doubled texture pair** -- a mid-grey base under a white detail comes out at twice the base;
+  darkening the detail to the same grey halves it again, so the second image provably reaches the
+  product. Its two opacity answers are checked separately: the doubled product keeps both images'
+  half alpha, the constant spelling publishes the tint's own and ignores the images.
+- **Tinted texture sum** -- red and green tints over white images sum to yellow; blanking the second
+  image leaves red alone, which no single-layer program would do.
+- **Masked doubled texture** -- turning the first image blue changes nothing (its colour is authored
+  to be discarded) while changing its alpha changes the output. Both halves of that claim are
+  checked, since only one of them is what the shader would get wrong.
+- **Interpolated registers** -- a black chooser gives the lower register's half-biased half and a
+  white one the upper register's, the two ends where the choice is exact whatever the colour space.
+- **Inverse source colour** -- over mid grey, a red source leaves red at full and grey's own half in
+  the other two channels, which ordinary alpha compositing cannot produce.
+
+The controls are live: replacing the doubled pair's `* 2.0` with `* 1.0` in its shader fails the
+first of them by name. They run under `tools/render/gpu_watch.py` and stay outside unguarded ctest.
+
+Rasterising GMSE01's own draws and comparing them against the console is the next scope.
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

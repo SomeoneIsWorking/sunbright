@@ -1,5 +1,7 @@
 #include "semantic_gpu_test_support.h"
 
+#include <cmath>
+
 #include <SDL3/SDL.h>
 
 #include <cassert>
@@ -89,6 +91,14 @@ bool finish_readback(Pass& pass, const SemanticFrame& frame, SDL_GPUDevice* devi
 }
 
 } // namespace
+
+float srgb_to_linear(float value) {
+    return value <= 0.04045F ? value / 12.92F : std::pow((value + 0.055F) / 1.055F, 2.4F);
+}
+
+float linear_to_srgb(float value) {
+    return value <= 0.0031308F ? value * 12.92F : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
+}
 
 Color pixel(const SemanticFramePixels& frame, std::uint32_t x, std::uint32_t y) {
     const std::size_t offset = (static_cast<std::size_t>(y) * frame.width + x) * 4;
