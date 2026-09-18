@@ -234,9 +234,19 @@ published by the apploader (`CBoot::EmulatedBS2_GC` ends in `CBoot::RunApploader
 not call). `DVDConvertPathToEntrynum` therefore walks a null FST, every file lookup fails, and the
 title proceeds on garbage pointers.
 
-Still missing before this item is complete: (1) disc file-system provisioning, so `DVDConvertPath
-ToEntrynum` has an FST to walk; (2) the `0x802e0390` `J3DShape::draw` runtime override and one-call
-suppression. Boot alone does not advance S008.
+Disc file-system provisioning landed as `gcnport` `b084c70` (Dolphin fork `fbdda46`):
+`GameCubeBootOptions::run_apploader` runs the mounted disc's own apploader, the code a console runs
+between reading the disc header and entering a title, which loads the FST and publishes its
+low-memory pointers. A second defect surfaced behind it — Dolphin resolves its IPL font substitutes
+and DSP ROM through `File::GetSysDirectory()`, which nothing had pointed at the checkout's `Data/Sys`.
+Together they take GMSE01 from **335,405,984 invalid guest accesses to zero** over the same 250M-block
+budget (apploader alone: 19, all in the SDK's font path).
+
+Still missing before this item is complete: (1) a host fault inside Dolphin's Jit64 register
+allocator (`RegCache::Realize`), deterministic at guest tick 935,443,084 and only with the apploader
+enabled — a fault during block compilation, not guest execution, with no invalid guest accesses left;
+(2) the `0x802e0390` `J3DShape::draw` runtime override and one-call suppression. Boot alone does not
+advance S008.
 
 ### S002 — gcnport Dolphin executor
 

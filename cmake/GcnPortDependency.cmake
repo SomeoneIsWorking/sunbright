@@ -65,5 +65,20 @@ function(sunbright_add_gcnport_dolphin_runtime)
   # silently start compiling the whole Dolphin fork. Only an explicit
   # `cmake --build build --target sunbright_gcnport_boot` (or a target that depends on it) pulls
   # `core`/`common`/`uicommon` in.
+  # Dolphin resolves its own data files -- the GameCube IPL font substitutes and the DSP ROM and
+  # coefficient tables -- through File::GetSysDirectory(). On Linux that is a bare relative "sys/"
+  # unless LINUX_LOCAL_DEV is set, in which case it is a Sys directory beside the executable, which
+  # is how Dolphin's own from-source development builds work. Left unresolved, a title's
+  # OSGetFontTexture path reads through null font pointers and Dolphin reports "Trying to access
+  # Windows-1252 fonts but they are not loaded". Common is where that path is compiled, so the
+  # option has to be set before Dolphin's own CMakeLists is processed.
+  if(UNIX AND NOT APPLE)
+    set(LINUX_LOCAL_DEV ON CACHE BOOL "" FORCE)
+  endif()
+
   add_subdirectory("${dolphin_dir}" "${CMAKE_BINARY_DIR}/gcnport_dolphin" EXCLUDE_FROM_ALL)
+
+  # The checkout actually being built against, so a consumer never guesses the path and it is never
+  # a literal in a tracked file.
+  set(SUNBRIGHT_GCNPORT_DOLPHIN_SYS_DIR "${dolphin_dir}/Data/Sys" PARENT_SCOPE)
 endfunction()

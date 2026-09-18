@@ -550,3 +550,39 @@ default handler prompts on stdin, so an MMIO assertion turned a 250M-block run i
 waiting for an answer nobody was there to give. Alerts are now printed once each, counted, and
 reported in the summary as `dolphin_alerts=N`, because an assertion is exactly the kind of finding
 this tool exists to surface and silencing it would be worse than the hang.
+
+**2026-09-18 (eighth continuation): apploader + Dolphin Sys data take GMSE01 from 335,405,984 invalid
+guest accesses to zero.** `gcnport` `b084c70` (Dolphin fork `fbdda46`) adds
+`GameCubeBootOptions::run_apploader`, which runs the mounted disc's own apploader -- the code a real
+console runs between reading the disc header and entering a title, and the thing that loads the file
+system table and publishes its low-memory pointers. The disc-loading tail of `CBoot::EmulatedBS2_GC`
+became `CBoot::LoadGameCubeDiscViaApploader`, which that function now calls rather than duplicating.
+
+Second defect, found once the FST was right: Dolphin resolves the GameCube IPL font substitutes and
+the DSP ROM/coefficient tables through `File::GetSysDirectory()`, which on Linux is a bare relative
+`sys/` unless `LINUX_LOCAL_DEV` is set. Nothing had set it, so the title's `OSGetFontTexture` path
+read through null font pointers -- 19 reads from addresses 0x10..0x45 inside the SDK's font code --
+while Dolphin said so only in a warning easy to miss. `LINUX_LOCAL_DEV` is now on for the Dolphin
+subbuild and the checkout's `Data/Sys` is symlinked beside the tool, which is where
+`GetSysDirectory()` looks. The tool refuses at startup if the font data is not there, rather than
+booting into null pointers again. `SetSysDirectory` is not the answer: it is Android-only.
+
+Measured progression of invalid guest accesses across the three configurations, same 250M-block
+budget and same disc:
+
+| configuration | invalid accesses |
+|---|---|
+| media init only (null FST) | 335,405,984 |
+| + apploader | 19 |
+| + Dolphin Sys data | 0 |
+
+**Open: a host fault inside the JIT.** Both apploader runs die at the same guest tick (935,443,084,
+~133.6M block executions), deterministically, with the guest in `TApplication::mountStageArchive`'s
+`OSProtectRange` flush loop. The core's CPU thread is in `RegCache::Realize` -- Dolphin's Jit64
+register allocator -- so this is a fault during block COMPILATION, not during guest execution, and
+not a guest memory error: there are no invalid guest accesses left at all. It does not reproduce
+without the apploader, so something the apploader establishes (the loaded disc sections, the FST at
+the top of memory, or the arena bounds it publishes) is what reaches the compile path that faults.
+Next: a `--raw-faults` mode so the tool's own counter-reporting SIGSEGV handler can be taken out of
+the way and the fatal fault caught directly under a debugger, since the fastmem traps EMM handles
+normally make the fatal one hard to isolate.

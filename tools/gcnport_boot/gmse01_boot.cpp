@@ -327,6 +327,21 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
     std::fprintf(stderr, "gmse01_boot: failed to create an isolated Dolphin user directory\n");
     std::exit(1);
   }
+  // Dolphin resolves the GameCube IPL font substitutes and the DSP ROM and coefficient tables
+  // through File::GetSysDirectory(). Refuse rather than boot without them: left unresolved, a
+  // title's OSGetFontTexture path reads through null font pointers -- measured as reads from
+  // addresses 0x10..0x45 inside the SDK's font code -- and Dolphin says so only in a warning that
+  // is easy to miss among a title's own output. The build links the checkout's Sys directory beside
+  // this executable, which is where GetSysDirectory looks.
+  const std::string font_path = File::GetSysDirectory() + "GC/font_western.bin";
+  if (!File::Exists(font_path))
+  {
+    std::fprintf(stderr,
+                 "gmse01_boot: no GameCube IPL font data at '%s'; a booted title's font path would "
+                 "read through null pointers\n",
+                 font_path.c_str());
+    std::exit(1);
+  }
   UICommon::SetUserDirectory(profile_path);
   Common::RegisterMsgAlertHandler(ReportAlertWithoutPrompting);
 
@@ -385,7 +400,8 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
       PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
                                             .apply_hardware_init = true,
                                             .disc_image_path = disc_image_path,
-                                            .apply_media_init = true});
+                                            .apply_media_init = true,
+                                            .run_apploader = !disc_image_path.empty()});
   if (!booted.ok)
   {
     std::fprintf(stderr, "gmse01_boot: BootAuthenticatedImage failed: %s\n", booted.detail.c_str());

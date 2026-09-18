@@ -19,6 +19,20 @@ add_executable(sunbright_gcnport_boot
   "${CMAKE_SOURCE_DIR}/extern/gcnport/extern/dolphin/Source/UnitTests/StubHost.cpp"
 )
 target_link_libraries(sunbright_gcnport_boot PRIVATE core uicommon)
+if(NOT EXISTS "${SUNBRIGHT_GCNPORT_DOLPHIN_SYS_DIR}/GC/font_western.bin")
+  message(FATAL_ERROR
+    "sunbright_gcnport_boot: no Dolphin Sys data at '${SUNBRIGHT_GCNPORT_DOLPHIN_SYS_DIR}'. Without "
+    "it a booted title's font and DSP paths read through null pointers. Check out the gcnport "
+    "submodule and its own extern/dolphin submodule.")
+endif()
+# File::GetSysDirectory() resolves to a Sys directory beside the executable under LINUX_LOCAL_DEV,
+# so link the checkout's data there rather than copying it: the link tracks the submodule, and a
+# stale copy of the DSP ROM or font tables would be invisible.
+add_custom_command(TARGET sunbright_gcnport_boot POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E create_symlink
+          "${SUNBRIGHT_GCNPORT_DOLPHIN_SYS_DIR}"
+          "$<TARGET_FILE_DIR:sunbright_gcnport_boot>/Sys"
+  VERBATIM)
 # Dolphin's own CMakeLists.txt exposes "Common/CommonTypes.h"-style includes through legacy
 # directory-scoped include_directories() calls (both the source tree's Source/Core and its own
 # generated-header binary dir), not as a usage requirement on the `core`/`common`/`uicommon`
