@@ -106,6 +106,30 @@ bool GuestModelProbe::resolve_texture_thunk(std::uint16_t number,
     return resolver.probe->resolve_texture(*resolver.guest, resolver.table, number, texture, error);
 }
 
+void GuestModelProbe::record_refusals(const sb::native_render::J3dFamilyRefusals& refusals,
+                                      const sb::native_render::J3dMaterialState& state,
+                                      sb::title_adapter::GuestAddress material) {
+    const auto existing = refusedMaterials_.find(material);
+    if (existing != refusedMaterials_.end()) {
+        existing->second.draws += 1;
+    } else if (refusedMaterials_.size() < MAX_DISTINCT_DRAWS) {
+        refusedMaterials_.emplace(material, RefusedMaterial{.draws = 1, .state = state});
+    } else {
+        refusedMaterialsUntracked_ += 1;
+    }
+    record(refusedChannels_, refusedChannelsUntracked_,
+           (static_cast<std::uint32_t>(state.colorChannelControl) << 16U) |
+               state.alphaChannelControl);
+    record(refusedStageCounts_, refusedStageCountsUntracked_, state.tevStageCount);
+    for (std::size_t index = 1; index < sb::native_render::kJ3dMaterialFamilyCount; ++index) {
+        const char* const reason = refusals.reason[index];
+        if (reason == nullptr) {
+            continue;
+        }
+        refusals_[static_cast<sb::native_render::J3dMaterialFamily>(index)][reason] += 1;
+    }
+}
+
 gcnport::HookResult GuestModelProbe::operator()(gcnport::GuestContext& guest) {
     entries_ += 1;
 
@@ -182,12 +206,14 @@ gcnport::HookResult GuestModelProbe::operator()(gcnport::GuestContext& guest) {
 
     TextureResolver resolver{.probe = this, .guest = &guest, .table = table};
     sb::native_render::ClassifiedJ3dMaterial classified{};
+    sb::native_render::J3dFamilyRefusals refusals{};
     const sb::native_render::J3dMaterialFamilyResult result =
-        sb::native_render::classify_j3d_material(state, lighting,
-                                                 {resolve_texture_thunk, &resolver}, classified);
+        sb::native_render::classify_j3d_material(
+            state, lighting, {resolve_texture_thunk, &resolver}, classified, &refusals);
     results_[result] += 1;
     families_[classified.family] += 1;
     if (result != sb::native_render::J3dMaterialFamilyResult::Success) {
+        record_refusals(refusals, state, material);
         return gcnport::HookResult::call_original_once();
     }
     classified_ += 1;
@@ -202,6 +228,58 @@ gcnport::HookResult GuestModelProbe::operator()(gcnport::GuestContext& guest) {
                     hasNormal ? 1 : 0, hasVertexColor ? 1 : 0, classified.textureCount);
     }
     return gcnport::HookResult::call_original_once();
+}
+
+// Prints one histogram of refused authored values. `paired` splits the key into the colour and
+// alpha channel controls it was packed from.
+void print_refused_values(const char* label, const std::map<std::uint32_t, std::uint64_t>& values,
+                          std::uint64_t untracked, bool paired) {
+    if (values.empty()) {
+        std::printf("gmse01_boot:   %s: none (nothing was refused)\n", label);
+        return;
+    }
+    std::printf("gmse01_boot:   %s:", label);
+    for (const auto& [value, count] : values) {
+        if (paired) {
+            std::printf(" %04x/%04x=%llu", value >> 16U, value & 0xFFFFU,
+                        static_cast<unsigned long long>(count));
+        } else {
+            std::printf(" %u=%llu", value, static_cast<unsigned long long>(count));
+        }
+    }
+    if (untracked != 0) {
+        std::printf(" (+%llu past the tracked distinct values)",
+                    static_cast<unsigned long long>(untracked));
+    }
+    std::printf("\n");
+}
+
+void GuestModelProbe::report_refused_materials() const {
+    std::printf("gmse01_boot:   %llu distinct material(s) no family accepted%s\n",
+                static_cast<unsigned long long>(refusedMaterials_.size()),
+                refusedMaterialsUntracked_ != 0 ? " (a floor: more were refused than recorded)"
+                                                : "");
+    for (const auto& [address, refused] : refusedMaterials_) {
+        const sb::native_render::J3dMaterialState& state = refused.state;
+        std::printf(
+            "gmse01_boot:     0x%08x x%llu chans=%u lit=%d %04x/%04x %04x/%04x "
+            "stages=%u texcoords=%u normal=%d vcolor=%d\n",
+            address, static_cast<unsigned long long>(refused.draws), state.colorChannelCount,
+            state.lightingEnabled ? 1 : 0, state.colorChannelControl, state.alphaChannelControl,
+            state.colorChannelControl1, state.alphaChannelControl1, state.tevStageCount,
+            state.textureCoordinateCount, state.hasNormal ? 1 : 0, state.hasVertexColor ? 1 : 0);
+        for (std::uint8_t stage = 0;
+             stage < state.tevStageCount && stage < sb::native_render::kMaxJ3dTevStages; ++stage) {
+            const sb::native_render::J3dTevStageState& tev = state.tevStages[stage];
+            std::printf("gmse01_boot:       stage %u coord=%u map=%u chan=%u konst=%u/%u prog=",
+                        stage, tev.textureCoordinate, tev.textureMap, tev.colorChannel,
+                        tev.konstColorSelection, tev.konstAlphaSelection);
+            for (const std::uint8_t byte : tev.program) {
+                std::printf("%02x", byte);
+            }
+            std::printf("\n");
+        }
+    }
 }
 
 void GuestModelProbe::report() const {
@@ -232,6 +310,22 @@ void GuestModelProbe::report() const {
                     sb::native_render::res_timg_decode_error_name);
     print_histogram("classification", results_, sb::native_render::j3d_material_family_result_name);
     print_histogram("families", families_, sb::native_render::j3d_material_family_name);
+    if (refusals_.empty()) {
+        std::printf("gmse01_boot:   no family refused a draw\n");
+    }
+    for (const auto& [family, reasons] : refusals_) {
+        std::printf("gmse01_boot:   %s refused:",
+                    sb::native_render::j3d_material_family_name(family));
+        for (const auto& [reason, count] : reasons) {
+            std::printf(" %s=%llu", reason.c_str(), static_cast<unsigned long long>(count));
+        }
+        std::printf("\n");
+    }
+    report_refused_materials();
+    print_refused_values("refused colour/alpha channels", refusedChannels_,
+                         refusedChannelsUntracked_, true);
+    print_refused_values("refused colour-stage counts", refusedStageCounts_,
+                         refusedStageCountsUntracked_, false);
     std::printf("gmse01_boot:   %llu distinct texture(s) decoded, %llu byte(s) of RGBA\n",
                 static_cast<unsigned long long>(texturesDecoded_),
                 static_cast<unsigned long long>(textureBytes_));

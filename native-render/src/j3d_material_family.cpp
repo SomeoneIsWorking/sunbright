@@ -21,12 +21,29 @@ namespace {
 // which family matched.
 constexpr PictureTexture PLACEHOLDER{.resource = 1, .width = 1, .height = 1};
 
+// Asks one family and records why it said no. Each family reports through its own result enum
+// and its own name function, so this keeps the refusal vocabulary theirs rather than inventing a
+// shared one here that would drift from the gates it claims to name.
+template <typename Result>
+[[nodiscard]] bool accepted(Result result, const char* (*name)(Result) noexcept,
+                            J3dMaterialFamily family, J3dFamilyRefusals* refusals) noexcept {
+    if (result == Result::Success) {
+        return true;
+    }
+    if (refusals != nullptr) {
+        refusals->reason[static_cast<std::size_t>(family)] = name(result);
+    }
+    return false;
+}
+
 // The untextured families, in the order the renderer resolves them.
 [[nodiscard]] J3dMaterialFamily classify_untextured(const J3dMaterialState& state,
                                                     const ModelLightingContext* lighting,
-                                                    ModelMaterial& material) noexcept {
+                                                    ModelMaterial& material,
+                                                    J3dFamilyRefusals* refusals) noexcept {
     UnlitColorMaterial unlitColor{};
-    if (classify_j3d_unlit_material(state, unlitColor) == J3dUnlitMaterialResult::Success) {
+    if (accepted(classify_j3d_unlit_material(state, unlitColor), j3d_unlit_material_result_name,
+                 J3dMaterialFamily::UnlitColor, refusals)) {
         material = unlitColor;
         return J3dMaterialFamily::UnlitColor;
     }
@@ -34,19 +51,20 @@ constexpr PictureTexture PLACEHOLDER{.resource = 1, .width = 1, .height = 1};
         return J3dMaterialFamily::None;
     }
     LitColorMaterial litColor{};
-    if (classify_j3d_lit_color_material(state, *lighting, litColor) == J3dLitColorResult::Success) {
+    if (accepted(classify_j3d_lit_color_material(state, *lighting, litColor),
+                 j3d_lit_color_result_name, J3dMaterialFamily::LitColor, refusals)) {
         material = litColor;
         return J3dMaterialFamily::LitColor;
     }
     LitSpecularRampMaterial specularRamp{};
-    if (classify_j3d_specular_ramp_material(state, *lighting, specularRamp) ==
-        J3dSpecularRampResult::Success) {
+    if (accepted(classify_j3d_specular_ramp_material(state, *lighting, specularRamp),
+                 j3d_specular_ramp_result_name, J3dMaterialFamily::LitSpecularRamp, refusals)) {
         material = specularRamp;
         return J3dMaterialFamily::LitSpecularRamp;
     }
     LitSpecularColorMaterial specularColor{};
-    if (classify_j3d_specular_color_material(state, *lighting, specularColor) ==
-        J3dSpecularColorResult::Success) {
+    if (accepted(classify_j3d_specular_color_material(state, *lighting, specularColor),
+                 j3d_specular_color_result_name, J3dMaterialFamily::LitSpecularColor, refusals)) {
         material = specularColor;
         return J3dMaterialFamily::LitSpecularColor;
     }
@@ -117,50 +135,74 @@ struct TexturedMatches {
 };
 
 [[nodiscard]] TexturedMatches match_textured(const J3dMaterialState& state,
-                                             const ModelLightingContext* lighting) noexcept {
+                                             const ModelLightingContext* lighting,
+                                             J3dFamilyRefusals* refusals) noexcept {
     TexturedMatches matches{};
     UnlitTexturedMaterial unlitTextured{};
     matches.unlitTextured =
-        classify_j3d_unlit_textured_material(state, PLACEHOLDER, unlitTextured) ==
-        J3dUnlitTexturedResult::Success;
+        accepted(classify_j3d_unlit_textured_material(state, PLACEHOLDER, unlitTextured),
+                 j3d_unlit_textured_result_name, J3dMaterialFamily::UnlitTextured, refusals);
     AlphaMaskedColorMaterial alphaMasked{};
-    matches.alphaMasked = classify_j3d_alpha_masked_material(state, PLACEHOLDER, alphaMasked) ==
-                          J3dAlphaMaskedMaterialResult::Success;
+    matches.alphaMasked = accepted(
+        classify_j3d_alpha_masked_material(state, PLACEHOLDER, alphaMasked),
+        j3d_alpha_masked_material_result_name, J3dMaterialFamily::AlphaMaskedColor, refusals);
     if (lighting == nullptr) {
         return matches;
     }
     LitDualAlphaEffectMaterial dualAlphaEffect{};
-    matches.dualAlphaEffect = classify_j3d_dual_alpha_effect_material(
-                                  state, PLACEHOLDER, PLACEHOLDER, *lighting, dualAlphaEffect) ==
-                              J3dDualAlphaEffectMaterialResult::Success;
+    matches.dualAlphaEffect =
+        accepted(classify_j3d_dual_alpha_effect_material(state, PLACEHOLDER, PLACEHOLDER, *lighting,
+                                                         dualAlphaEffect),
+                 j3d_dual_alpha_effect_material_result_name, J3dMaterialFamily::LitDualAlphaEffect,
+                 refusals);
     LitSpecularTexturedMaterial specularTextured{};
-    matches.specularTextured =
-        classify_j3d_specular_textured_material(state, PLACEHOLDER, *lighting, specularTextured) ==
-        J3dSpecularTexturedResult::Success;
+    matches.specularTextured = accepted(
+        classify_j3d_specular_textured_material(state, PLACEHOLDER, *lighting, specularTextured),
+        j3d_specular_textured_result_name, J3dMaterialFamily::LitSpecularTextured, refusals);
     LitTexturedAlphaMaskMaterial litAlphaMask{};
     matches.litAlphaMask =
-        classify_j3d_lit_alpha_mask_material(state, PLACEHOLDER, PLACEHOLDER, *lighting,
-                                             litAlphaMask) == J3dLitAlphaMaskResult::Success;
+        accepted(classify_j3d_lit_alpha_mask_material(state, PLACEHOLDER, PLACEHOLDER, *lighting,
+                                                      litAlphaMask),
+                 j3d_lit_alpha_mask_result_name, J3dMaterialFamily::LitTexturedAlphaMask, refusals);
     LitAlphaTintMaterial litAlphaTint{};
     matches.litAlphaTint =
-        classify_j3d_lit_alpha_tint_material(state, PLACEHOLDER, *lighting, litAlphaTint) ==
-        J3dLitAlphaTintResult::Success;
+        accepted(classify_j3d_lit_alpha_tint_material(state, PLACEHOLDER, *lighting, litAlphaTint),
+                 j3d_lit_alpha_tint_result_name, J3dMaterialFamily::LitAlphaTint, refusals);
     LitLayeredTexturedMaterial layered{};
-    matches.layered = classify_j3d_layered_material(state, PLACEHOLDER, PLACEHOLDER, *lighting,
-                                                    layered) == J3dLayeredMaterialResult::Success;
+    matches.layered =
+        accepted(classify_j3d_layered_material(state, PLACEHOLDER, PLACEHOLDER, *lighting, layered),
+                 j3d_layered_material_result_name, J3dMaterialFamily::LitLayeredTextured, refusals);
     LitTintedLayeredSpecularMaterial tintedLayered{};
-    matches.tintedLayered = classify_j3d_tinted_layered_material(state, PLACEHOLDER, PLACEHOLDER,
-                                                                 *lighting, tintedLayered) ==
-                            J3dTintedLayeredMaterialResult::Success;
+    matches.tintedLayered = accepted(classify_j3d_tinted_layered_material(
+                                         state, PLACEHOLDER, PLACEHOLDER, *lighting, tintedLayered),
+                                     j3d_tinted_layered_material_result_name,
+                                     J3dMaterialFamily::LitTintedLayeredSpecular, refusals);
     LitMaskedToonMaterial maskedToon{};
-    matches.maskedToon = classify_j3d_masked_toon_material(
-                             state, PLACEHOLDER, PLACEHOLDER, PLACEHOLDER, PLACEHOLDER, *lighting,
-                             maskedToon) == J3dMaskedToonMaterialResult::Success;
+    matches.maskedToon =
+        accepted(classify_j3d_masked_toon_material(state, PLACEHOLDER, PLACEHOLDER, PLACEHOLDER,
+                                                   PLACEHOLDER, *lighting, maskedToon),
+                 j3d_masked_toon_material_result_name, J3dMaterialFamily::LitMaskedToon, refusals);
     LitTexturedMaterial litTextured{};
     matches.litTextured =
-        classify_j3d_lit_textured_material(state, PLACEHOLDER, *lighting, litTextured) ==
-        J3dLitTexturedResult::Success;
+        accepted(classify_j3d_lit_textured_material(state, PLACEHOLDER, *lighting, litTextured),
+                 j3d_lit_textured_result_name, J3dMaterialFamily::LitTextured, refusals);
     return matches;
+}
+
+// Marks the lit families that were skipped outright. The reason is taken from a lit family's own
+// enum rather than written here, so this module still introduces no refusal vocabulary of its own.
+void record_unasked_lit_families(const ModelLightingContext* lighting,
+                                 J3dFamilyRefusals* refusals) noexcept {
+    if (lighting != nullptr || refusals == nullptr) {
+        return;
+    }
+    const char* const unasked =
+        j3d_lit_color_result_name(J3dLitColorResult::MissingLightingContext);
+    for (std::size_t family = 1; family < kJ3dMaterialFamilyCount; ++family) {
+        if (refusals->reason[family] == nullptr) {
+            refusals->reason[family] = unasked;
+        }
+    }
 }
 
 // Re-runs the selected family's classifier against the decoded textures. The placeholder pass
@@ -328,22 +370,31 @@ const char* j3d_material_family_name(J3dMaterialFamily family) noexcept {
 J3dMaterialFamilyResult classify_j3d_material(const J3dMaterialState& state,
                                               const ModelLightingContext* lighting,
                                               const J3dTextureSource& textures,
-                                              ClassifiedJ3dMaterial& out) noexcept {
+                                              ClassifiedJ3dMaterial& out,
+                                              J3dFamilyRefusals* refusals) noexcept {
+    if (refusals != nullptr) {
+        *refusals = {};
+    }
     ClassifiedJ3dMaterial result{};
     if (!build_model_fog(state.fog, result.fog)) {
         return J3dMaterialFamilyResult::UnsupportedFog;
     }
 
-    const J3dMaterialFamily untextured = classify_untextured(state, lighting, result.material);
+    const J3dMaterialFamily untextured =
+        classify_untextured(state, lighting, result.material, refusals);
     if (untextured != J3dMaterialFamily::None) {
         result.family = untextured;
         out = std::move(result);
         return J3dMaterialFamilyResult::Success;
     }
 
-    const TexturedMatches matches = match_textured(state, lighting);
+    const TexturedMatches matches = match_textured(state, lighting, refusals);
     const J3dMaterialFamily family = matches.family();
     if (family == J3dMaterialFamily::None) {
+        // No family accepted, so every slot still empty belongs to a lit family that was never
+        // asked because no stage light was published. Saying so beats leaving those slots blank,
+        // which would read as "that family had no objection".
+        record_unasked_lit_families(lighting, refusals);
         return J3dMaterialFamilyResult::UnsupportedProgram;
     }
     if (textures.resolve == nullptr) {

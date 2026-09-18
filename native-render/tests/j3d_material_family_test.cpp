@@ -1,3 +1,4 @@
+#include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_material_family.h>
 
 #include <sunbright/native_render/j3d_stage_lighting.h>
@@ -136,7 +137,7 @@ void names_every_result_and_family() {
 void untextured_needs_no_texture() {
     RecordingTextures textures{};
     ClassifiedJ3dMaterial classified{};
-    assert(classify_j3d_material(unlit_color_state(), nullptr, {}, classified) ==
+    assert(classify_j3d_material(unlit_color_state(), nullptr, {}, classified, nullptr) ==
            J3dMaterialFamilyResult::Success);
     assert(classified.family == J3dMaterialFamily::UnlitColor);
     assert(classified.textureCount == 0);
@@ -144,8 +145,8 @@ void untextured_needs_no_texture() {
 
     ClassifiedJ3dMaterial withSource{};
     assert(classify_j3d_material(unlit_color_state(), nullptr,
-                                 {RecordingTextures::resolve, &textures},
-                                 withSource) == J3dMaterialFamilyResult::Success);
+                                 {RecordingTextures::resolve, &textures}, withSource,
+                                 nullptr) == J3dMaterialFamilyResult::Success);
     assert(textures.requested.empty());
 }
 
@@ -153,8 +154,8 @@ void textured_decodes_the_bound_texture() {
     RecordingTextures textures{};
     ClassifiedJ3dMaterial classified{};
     assert(classify_j3d_material(unlit_textured_state(), nullptr,
-                                 {RecordingTextures::resolve, &textures},
-                                 classified) == J3dMaterialFamilyResult::Success);
+                                 {RecordingTextures::resolve, &textures}, classified,
+                                 nullptr) == J3dMaterialFamilyResult::Success);
     assert(classified.family == J3dMaterialFamily::UnlitTextured);
     assert(classified.textureCount == 1);
     // Named through the stage's texture map (slot 1), not through binding slot 0, which this
@@ -170,18 +171,18 @@ void textured_decodes_the_bound_texture() {
 // number, and the bytes would not decode.
 void names_each_texture_failure() {
     ClassifiedJ3dMaterial classified{};
-    assert(classify_j3d_material(unlit_textured_state(), nullptr, {}, classified) ==
+    assert(classify_j3d_material(unlit_textured_state(), nullptr, {}, classified, nullptr) ==
            J3dMaterialFamilyResult::NoTextureSource);
 
     RecordingTextures refusing{.refuse = 7};
     assert(classify_j3d_material(unlit_textured_state(), nullptr,
-                                 {RecordingTextures::resolve, &refusing},
-                                 classified) == J3dMaterialFamilyResult::MissingTexture);
+                                 {RecordingTextures::resolve, &refusing}, classified,
+                                 nullptr) == J3dMaterialFamilyResult::MissingTexture);
 
     RecordingTextures failing{.failWith = ResTimgDecodeError::UnsupportedFormat};
     assert(classify_j3d_material(unlit_textured_state(), nullptr,
-                                 {RecordingTextures::resolve, &failing},
-                                 classified) == J3dMaterialFamilyResult::TextureDecodeFailure);
+                                 {RecordingTextures::resolve, &failing}, classified,
+                                 nullptr) == J3dMaterialFamilyResult::TextureDecodeFailure);
 }
 
 // Without a published stage lighting no lit family may match. The same state must classify as a
@@ -191,16 +192,17 @@ void lighting_gates_the_lit_families() {
     RecordingTextures textures{};
     ClassifiedJ3dMaterial lit{};
     assert(classify_j3d_material(lit_textured_state(), &lighting,
-                                 {RecordingTextures::resolve, &textures},
-                                 lit) == J3dMaterialFamilyResult::Success);
+                                 {RecordingTextures::resolve, &textures}, lit,
+                                 nullptr) == J3dMaterialFamilyResult::Success);
     assert(lit.family == J3dMaterialFamily::LitTextured);
     assert(lit.textureCount == 1);
     assert(textures.requested.size() == 1 && textures.requested[0] == 3);
 
     RecordingTextures unlitTextures{};
     ClassifiedJ3dMaterial unlit{};
-    const J3dMaterialFamilyResult result = classify_j3d_material(
-        lit_textured_state(), nullptr, {RecordingTextures::resolve, &unlitTextures}, unlit);
+    const J3dMaterialFamilyResult result =
+        classify_j3d_material(lit_textured_state(), nullptr,
+                              {RecordingTextures::resolve, &unlitTextures}, unlit, nullptr);
     assert(result != J3dMaterialFamilyResult::Success ||
            unlit.family == J3dMaterialFamily::UnlitColor ||
            unlit.family == J3dMaterialFamily::UnlitTextured ||
@@ -215,10 +217,45 @@ void unsupported_fog_refuses_before_classifying() {
     ClassifiedJ3dMaterial classified{};
     ModelFog probe{};
     if (!build_model_fog(state.fog, probe)) {
-        assert(classify_j3d_material(state, nullptr, {}, classified) ==
+        assert(classify_j3d_material(state, nullptr, {}, classified, nullptr) ==
                J3dMaterialFamilyResult::UnsupportedFog);
         assert(classified.family == J3dMaterialFamily::None);
     }
+}
+
+// A refusal set must name a reason for every family when nothing matched. A set that came back
+// mostly empty would read as "those families had no objection", which is the opposite of true:
+// they were asked and said no, or were never asked at all. Both have to be visible.
+void every_family_says_why_it_refused() {
+    J3dMaterialState state{};
+    state.supportedColorBlock = false;
+    ClassifiedJ3dMaterial classified{};
+    J3dFamilyRefusals refusals{};
+    assert(classify_j3d_material(state, nullptr, {}, classified, &refusals) ==
+           J3dMaterialFamilyResult::UnsupportedProgram);
+    assert(refusals.reason[static_cast<std::size_t>(J3dMaterialFamily::None)] == nullptr);
+    for (std::size_t family = 1; family < kJ3dMaterialFamilyCount; ++family) {
+        assert(refusals.reason[family] != nullptr);
+    }
+    // The lit families were never asked, and say that rather than borrowing an unlit gate's reason.
+    const char* const unasked =
+        j3d_lit_color_result_name(J3dLitColorResult::MissingLightingContext);
+    assert(refusals.reason[static_cast<std::size_t>(J3dMaterialFamily::LitMaskedToon)] == unasked);
+    assert(refusals.reason[static_cast<std::size_t>(J3dMaterialFamily::UnlitColor)] != unasked);
+
+    // With lighting published, the lit families are asked for real and answer with their own gates.
+    const ModelLightingContext lighting = stage_lighting();
+    J3dFamilyRefusals lit{};
+    assert(classify_j3d_material(state, &lighting, {}, classified, &lit) ==
+           J3dMaterialFamilyResult::UnsupportedProgram);
+    assert(lit.reason[static_cast<std::size_t>(J3dMaterialFamily::LitMaskedToon)] != nullptr);
+    assert(lit.reason[static_cast<std::size_t>(J3dMaterialFamily::LitMaskedToon)] != unasked);
+
+    // A family that accepts leaves its own slot empty, so a refusal set never blames a winner.
+    J3dFamilyRefusals accepted{};
+    assert(classify_j3d_material(unlit_color_state(), nullptr, {}, classified, &accepted) ==
+           J3dMaterialFamilyResult::Success);
+    assert(accepted.reason[static_cast<std::size_t>(J3dMaterialFamily::UnlitColor)] == nullptr);
 }
 
 } // namespace
@@ -230,5 +267,6 @@ int main() {
     names_each_texture_failure();
     lighting_gates_the_lit_families();
     unsupported_fog_refuses_before_classifying();
+    every_family_says_why_it_refused();
     return 0;
 }

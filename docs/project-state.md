@@ -505,9 +505,26 @@ which is what says the fix landed where it was aimed rather than somewhere else.
 textures-per-draw histogram agrees independently with the families' own texture counts: 4 for the
 8,540 masked-toon draws, 2 for the 4,270 layered ones, 0 for the 854 `lit_specular_color`.
 
-Remaining: 25,504 draws are still `unsupported_program`. The material probe's channel histogram
-localises most of them -- 11,956 use `068e/0700`, one attenuation function away from the accepted
-`070e/0700`, and 8,540 have the lighting bit clear.
+Remaining: ~25,100 draws are still `unsupported_program`, and they are now enumerated rather than
+counted. `classify_j3d_material` reports a `J3dFamilyRefusals` set -- why *each* of the fifteen
+families turned a state down, in that family's own words -- and the probe records every distinct
+material no family accepted. **The whole remaining frontier is 22 materials**, because the scene
+holds only tens of distinct materials and each is redrawn once per frame:
+
+| authored channels | distinct materials | draws | shape |
+| --- | --- | --- | --- |
+| `0706/0700` | 14 | 11,862 | lit, 1 texture; ten of them are one stage and differ from the accepted `lit_textured` family *only* in their TEV program bytes |
+| `0686/0706` | 2 | 8,804 | two colour channels with a **lit alpha channel**, 2 stages, vertex colour; no family accepts a lit alpha today |
+| `0700/0700`, `0700/0701`, `0701/0700`, `0701/0701` | 6 | 5,124 | genuinely unlit, 1--2 stages |
+
+The gates partition exactly: of the refusals, `lit_color` turns down every one for texture binding
+(9,394), colour channels (14,100) or stage count (2,468), and those three sum to the total. The
+largest single portable win is the ten single-stage lit materials at `0x80fa7bec`--`0x80fa8f9c`,
+8,540 draws, whose channels the `lit_textured` family already accepts.
+
+`lit_specular_ramp`, `alpha_masked_color`, `lit_specular_textured`, `lit_textured_alpha_mask`,
+`lit_layered_textured`, `lit_tinted_layered_specular` and `lit_masked_toon` each refuse *every*
+remaining draw on colour channels alone, so none of them is close; they are not the next port.
 
 Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
 textures are counted and discarded; no `ModelDraw` is built, no material classifies into a family

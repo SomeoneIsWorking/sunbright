@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <string>
 
 #include <sunbright/native_render/j3d_material_family.h>
 
@@ -24,7 +25,7 @@ namespace sunbright::gcnport_boot {
 // whole point of it. Two of the inputs the shared classifiers take, `hasVertexColor` and
 // `hasNormal`, are properties of the geometry and not of the material: they come from the shape's
 // own vertex layout. At the material packet there is no shape in hand, and passing them as false
-// refused 9,314 material packets for `missing normal` alone -- a refusal the probe caused rather
+// refused 9,394 material packets for `missing normal` alone -- a refusal the probe caused rather
 // than measured. This is also where the decomp runtime composes its draw
 // (`sb_native_j3d_shape_submit`), so the two runtimes reach the shared classifier the same way.
 //
@@ -48,6 +49,10 @@ class GuestModelProbe {
 
     void record(std::map<std::uint32_t, std::uint64_t>& histogram, std::uint64_t& untracked,
                 std::uint32_t value);
+    void record_refusals(const sb::native_render::J3dFamilyRefusals& refusals,
+                         const sb::native_render::J3dMaterialState& state,
+                         sb::title_adapter::GuestAddress material);
+    void report_refused_materials() const;
 
     // Resolves a texture number through the material packet's own table, decoding once per distinct
     // resource. The classifier is handed this and cannot tell it is reading a guest.
@@ -91,6 +96,27 @@ class GuestModelProbe {
     std::map<sb::native_render::ResTimgDecodeError, std::uint64_t> decodeErrors_;
     std::map<sb::native_render::J3dMaterialFamilyResult, std::uint64_t> results_;
     std::map<sb::native_render::J3dMaterialFamily, std::uint64_t> families_;
+    // Why each family turned down a draw that no family accepted, keyed by the family and then by
+    // that family's own refusal name. This is the measurement that names the next material port:
+    // a count of successes alone cannot say what the failures are waiting on.
+    std::map<sb::native_render::J3dMaterialFamily, std::map<std::string, std::uint64_t>> refusals_;
+    // One record per distinct material that no family accepted. The scene holds only tens of
+    // distinct materials, so every refused one fits -- and a full record of each says what a new
+    // family would have to accept, which neither a gate name nor a value histogram can.
+    struct RefusedMaterial {
+        std::uint64_t draws = 0;
+        sb::native_render::J3dMaterialState state{};
+    };
+
+    // What the draws no family accepted are actually authored as. The refusal names say which
+    // gate they fail; these say what value fails it, which is what a new family would be written
+    // against. Both are needed: a gate name without its values cannot be ported from.
+    std::map<sb::title_adapter::GuestAddress, RefusedMaterial> refusedMaterials_;
+    std::uint64_t refusedMaterialsUntracked_ = 0;
+    std::map<std::uint32_t, std::uint64_t> refusedChannels_;
+    std::uint64_t refusedChannelsUntracked_ = 0;
+    std::map<std::uint32_t, std::uint64_t> refusedStageCounts_;
+    std::uint64_t refusedStageCountsUntracked_ = 0;
     std::map<std::uint32_t, std::uint64_t> textureCounts_;
     std::uint64_t textureCountsUntracked_ = 0;
 };

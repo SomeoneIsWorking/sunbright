@@ -263,9 +263,9 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
 
     NativeTextureSource source{.table = textureTable};
     native_render::ClassifiedJ3dMaterial classified{};
-    const native_render::J3dMaterialFamilyResult result =
-        native_render::classify_j3d_material(state, native_render::current_j3d_stage_lighting(),
-                                             {NativeTextureSource::resolve, &source}, classified);
+    const native_render::J3dMaterialFamilyResult result = native_render::classify_j3d_material(
+        state, native_render::current_j3d_stage_lighting(), {NativeTextureSource::resolve, &source},
+        classified, nullptr);
     textureError = source.error;
     switch (result) {
     case native_render::J3dMaterialFamilyResult::Success:

@@ -61,6 +61,20 @@ enum class J3dMaterialFamily : std::uint8_t {
     LitMaskedToon,
 };
 
+// Every family, including `None`, so a refusal set can be indexed by the family that refused.
+constexpr std::size_t kJ3dMaterialFamilyCount =
+    static_cast<std::size_t>(J3dMaterialFamily::LitMaskedToon) + 1;
+
+// Why each family turned a state down, indexed by `J3dMaterialFamily`. A null entry means the
+// family accepted the program, and the `None` slot is always null. The strings are the families'
+// own result names, so there is no second vocabulary to keep in step with theirs.
+//
+// A refusal set is how the runtimes answer "what would this material need in order to render",
+// which is a different question from "does it render" and is the one that names the next port.
+struct J3dFamilyRefusals {
+    std::array<const char*, kJ3dMaterialFamilyCount> reason{};
+};
+
 // At most four textures: the masked-toon family binds the largest set.
 constexpr std::size_t kMaxClassifiedTextures = 4;
 
@@ -81,6 +95,7 @@ struct ClassifiedJ3dMaterial {
 [[nodiscard]] J3dMaterialFamilyResult classify_j3d_material(const J3dMaterialState& state,
                                                             const ModelLightingContext* lighting,
                                                             const J3dTextureSource& textures,
-                                                            ClassifiedJ3dMaterial& out) noexcept;
+                                                            ClassifiedJ3dMaterial& out,
+                                                            J3dFamilyRefusals* refusals) noexcept;
 
 } // namespace sb::native_render
