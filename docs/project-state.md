@@ -501,3 +501,33 @@ deployment on Windows, not merely the portable metadata fixtures.
 Gap: Android remains missing until its real application and executor boundaries exist. Gameplay,
 JIT host qualification, and performance remain missing under S017 on every host; these successful
 asset-free component jobs do not supply game-conformance evidence.
+
+**2026-09-18 (ninth continuation, S001): GMSE01 boots to its opening movie with zero invalid guest
+accesses.** Two owner gaps closed in `shared/gcnport` (gcnport `e0b7e1e`, Dolphin fork `a514f624`).
+
+First, gcnport never called `Common::Log::LogManager::Init()`. Dolphin reaches that singleton
+through an unchecked raw pointer, and `FileMonitor::FileLogger::Log` -- which
+`DVDThread::ProcessReadRequest` calls on every disc FILE read -- dereferenced it, faulting the DVD
+thread at guest tick 935,443,084 the first time a read went through the file system rather than the
+raw disc header. The boot now owns the log manager, over an empty Base config layer because
+`LogManager`'s constructor writes its settings there.
+
+Second, and the reason the title then crashed on its first frame: **the disc's region was never
+published to `SConfig`**, so `CBoot::SetupGCMemory` wrote a PAL video format at 0x800000CC for a US
+disc. The title built a PAL render mode (`xfbHeight` 530) against its NTSC-sized framebuffer
+allocation (0xa5000 = 640x528x2), so its display copy ran two lines past that `JKRExpHeap` block and
+zeroed the `JDrama::TDisplay` immediately after it; `TApplication::gameLoop` then branched through
+the resulting null vtable. gcnport now takes the region from the volume, as
+`SConfig::SetPathsAndGameMetadata` does, and applies Dolphin's shipped `Sys/GameSettings` layer for
+the title at the same point -- global layer only, never the user's own per-title INI.
+
+Measured on the pinned tree, retail disc, 400M blocks: 0 invalid guest accesses, 1,496 VI retraces
+delivered, 13,595 JIT blocks compiled (7,823 before), a 640x448 NTSC render mode, and the guest
+executing `__THPHuffDecodeDCTCompY` -- decoding its opening movie. `tools/verify.py --runtime` in
+gcnport passes 30 required tests, including the new
+`GcnPortRuntime.DiscRegionAndShippedSettingsConfigureTheConsole`, which boots two synthetic
+asset-free disc headers differing only in country code.
+
+Remaining under S001: interpreter fallbacks rose from 141 to 79,952 events over the same budget once
+the THP decoder was reached, which needs reporting by reason with denominators before it can be
+called understood; and the `J3DShape::draw` runtime override at `0x802e0390` is still not reached.

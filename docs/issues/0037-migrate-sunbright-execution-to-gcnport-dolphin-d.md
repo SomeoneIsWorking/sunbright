@@ -576,13 +576,63 @@ budget and same disc:
 | + apploader | 19 |
 | + Dolphin Sys data | 0 |
 
-**Open: a host fault inside the JIT.** Both apploader runs die at the same guest tick (935,443,084,
-~133.6M block executions), deterministically, with the guest in `TApplication::mountStageArchive`'s
-`OSProtectRange` flush loop. The core's CPU thread is in `RegCache::Realize` -- Dolphin's Jit64
-register allocator -- so this is a fault during block COMPILATION, not during guest execution, and
-not a guest memory error: there are no invalid guest accesses left at all. It does not reproduce
-without the apploader, so something the apploader establishes (the loaded disc sections, the FST at
-the top of memory, or the arena bounds it publishes) is what reaches the compile path that faults.
-Next: a `--raw-faults` mode so the tool's own counter-reporting SIGSEGV handler can be taken out of
-the way and the fatal fault caught directly under a debugger, since the fastmem traps EMM handles
-normally make the fatal one hard to isolate.
+**2026-09-18 (ninth continuation): the fault was a null log manager, and the disc now configures the
+console -- GMSE01 reaches its opening movie with zero invalid guest accesses.**
+
+The deterministic fault at guest tick 935,443,084 was not in block compilation. It was
+`Common::Log::LogManager::IsEnabled` with `this` at null, reached from
+`FileMonitor::FileLogger::Log` on Dolphin's **DVD thread**, which
+`DVDThread::ProcessReadRequest` calls on every disc FILE read -- the first read that went through
+the file system rather than the raw header, which only became reachable once the apploader published
+the FST. gcnport never called `LogManager::Init()`; a frontend does it in `UICommon::Init`. Dolphin
+reaches that singleton through an unchecked raw pointer in several places, so the boot now owns it,
+with an empty Base config layer beneath it because `LogManager`'s constructor writes its settings
+there and `Config::Init()` creates only CurrentRun.
+`ConfigLoaders::GenerateBaseConfigLoader()` is deliberately not used: it reads and writes the user's
+`Dolphin.ini` and pulls in the derived user paths, and asserted inside IOS's host file system on an
+empty NAND root.
+
+Then the title crashed on its first frame, branching through a null vtable in `TApplication::
+gameLoop` (US 0x802a5f5c; the US symbol table has a gap here, and JP function sizes identify it).
+`gpApplication->mDisplay` pointed at a `JDrama::TDisplay` that was constructed correctly and then
+zeroed. Bisecting the block budget put the wipe between 136,878,783 and 136,878,906 blocks, and the
+guest heap explained the rest: the title's framebuffer block runs 0x804c8d80..0x8056dd80 (0xa5000 =
+640x528x2) and `TDisplay` sits at 0x8056dd90, in the very next `JKRExpHeap` block. The render mode
+in that object read `xfbHeight = 530` -- a PAL value, on a US disc.
+
+Root cause: **the disc's region was never published.** `CBoot::SetupGCMemory` writes the guest video
+format at 0x800000CC from `SConfig`'s region, `EmulatedBS2_GC` reads the same field for the IPL font
+encoding and the BS2 region settings, and `SConfig` leaves it `Unknown`, which `DiscIO::IsNTSC`
+reads as PAL. The title built a PAL render mode against an NTSC-sized allocation, so its display
+copy ran two lines past the end of the block and over the live object after it.
+`SConfig::SetPathsAndGameMetadata` is where a frontend takes this from the volume; gcnport now takes
+it from the same place. Dolphin's shipped `Sys/GameSettings` layer is applied at the same point --
+shipped Dolphin data, like the IPL fonts and DSP ROM this boot already resolves -- and only the
+global layer, never the user's own per-title INI. Both have to be in place before the video backend
+comes up, because `Config::AddLayer`'s notification reaches VideoCommon through
+`CPUThreadConfigCallback`, which a frontend's CPU thread pumps and this adapter's caller-driven
+dispatch does not; the disc is therefore opened before any global state is touched, while
+`DVDReadDiscID`, the mount and the apploader stay where they were.
+
+Measured on the pinned tree, same disc, 400M blocks: **0 invalid guest accesses** (was 2 before the
+region fix, and the boot no longer ends in `JUTException`), `TDisplay` intact, a 640x448 NTSC render
+mode, 1,496 VI retraces delivered, 13,595 JIT blocks compiled (7,823 before -- far more of the title
+is now reached), and the guest executing `__THPHuffDecodeDCTCompY`: **it is decoding its opening
+movie.**
+
+The instruments this took are in the tool: the live thread's LR and back-chain in the stall report
+(a batch that keeps ending in a soft-divide or cache-flush leaf says which routine is hot, never
+which called it); a guest register dump inside Dolphin's invalid-access alert; and `--dump-guest
+<hex-addr>[:<words>]`, which prints a window of guest RAM after the run and follows one level of
+pointers out of it. The register dump proved to be only partly trustworthy -- Dolphin's JIT keeps
+guest registers in host registers and writes back only what an access needs, so the file disagreed
+with the faulting effective address the alert itself reported. Guest RAM is the reliable one, and
+`--dump-guest` is what actually settled this.
+
+**Open: 79,952 interpreter fallback events** over the 400M-block run, against 141 before. The THP
+decoder is paired-single-heavy, so the likely cause is a paired-single opcode the JIT declines;
+`ClassifyFallbackReason` already names reasons, so the next step is to report them by reason with
+denominators rather than as one total.
+
+**Superseded:** the earlier reading of this fault as a host fault inside `RegCache::Realize` (Jit64
+block compilation) was a mis-symbolised frame on the wrong thread.
