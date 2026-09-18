@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guest_draw_publisher.h"
 
+#include "family_color_map.h"
+
 #include <sunbright/native_render/j3d_mesh_vertices.h>
 #include <sunbright/native_render/j3d_projection.h>
 
@@ -173,20 +175,96 @@ GuestDrawPublisher::publish(gcnport::GuestContext& guest,
         draw.projection = *projection;
         draw.material = classified.material;
         draw.fog = classified.fog;
+        // A flat family colour binds no texture, so that mode submits no images; the opaque mode
+        // keeps the material and its textures and changes only how the result is combined.
+        std::span<const sb::native_render::DecodedImageView> submittedImages = images;
+        if (mode_ == DrawDiagnosticMode::FamilyMap) {
+            draw.material = family_map_material(
+                classified.family, sb::native_render::raster_policy(classified.material));
+            submittedImages = {};
+        } else if (mode_ == DrawDiagnosticMode::Opaque) {
+            draw.material = opaque_material(classified.material);
+        }
+        // Counted against the frame's budget only once the draw is complete, so a bound of N
+        // means the first N draws the title would have rendered rather than the first N it tried.
+        if (budget_ != nullptr && !budget_->take()) {
+            withheldByBudget_ += 1;
+            continue;
+        }
         const sb::native_render::MeshResourceView mesh{resource, revision, vertices_};
-        if (!sb::native_render::submit_model(draw, mesh, images)) {
+        if (!sb::native_render::submit_model(draw, mesh, submittedImages)) {
             rejectedBySink_ += 1;
-            diagnose(draw, mesh, images);
+            diagnose(draw, mesh, submittedImages);
             continue;
         }
         submitted_ += 1;
+        const sb::native_render::ModelRasterPolicy& policy =
+            sb::native_render::raster_policy(classified.material);
+        policies_[{.family = classified.family,
+                   .blend = policy.blend,
+                   .alphaTest = policy.alphaTest,
+                   .depthWrite = policy.depthWrite}] += 1;
         verticesSubmitted_ += vertices_.size();
         published += 1;
     }
     return published;
 }
 
+bool parse_draw_diagnostic_mode(std::string_view name, DrawDiagnosticMode& mode) {
+    if (name == "normal") {
+        mode = DrawDiagnosticMode::Normal;
+        return true;
+    }
+    if (name == "family-map") {
+        mode = DrawDiagnosticMode::FamilyMap;
+        return true;
+    }
+    if (name == "opaque") {
+        mode = DrawDiagnosticMode::Opaque;
+        return true;
+    }
+    return false;
+}
+
+const char* draw_diagnostic_mode_name(DrawDiagnosticMode mode) noexcept {
+    switch (mode) {
+    case DrawDiagnosticMode::Normal:
+        return "normal";
+    case DrawDiagnosticMode::FamilyMap:
+        return "family-map";
+    case DrawDiagnosticMode::Opaque:
+        return "opaque";
+    }
+    return "unknown";
+}
+
 void GuestDrawPublisher::report() const {
+    if (budget_ != nullptr && budget_->bounded()) {
+        std::printf("gmse01_boot:   DRAW BUDGET: at most %llu draw(s) per frame reached the sink, "
+                    "%llu withheld across %llu frame(s); this run's image is a prefix of each "
+                    "frame, not a rendering result\n",
+                    static_cast<unsigned long long>(budget_->limit()),
+                    static_cast<unsigned long long>(withheldByBudget_),
+                    static_cast<unsigned long long>(budget_->frames()));
+    }
+    if (mode_ == DrawDiagnosticMode::Opaque) {
+        std::printf("gmse01_boot:   OPAQUE MODE: every draw was submitted with blending and the "
+                    "alpha test off, so this run's image is not a rendering result\n");
+    }
+    if (mode_ == DrawDiagnosticMode::FamilyMap) {
+        std::printf("gmse01_boot:   FAMILY MAP: every draw was flat-shaded by family, so this run's"
+                    " image attributes coverage and is not a rendering result. Legend:");
+        for (std::size_t family = 0; family < sb::native_render::kJ3dMaterialFamilyCount;
+             ++family) {
+            const auto value = static_cast<sb::native_render::J3dMaterialFamily>(family);
+            const sb::native_render::Color color = family_map_color(value);
+            std::printf(" %s=%02x%02x%02x", sb::native_render::j3d_material_family_name(value),
+                        static_cast<unsigned>(color.r * 255.0F + 0.5F),
+                        static_cast<unsigned>(color.g * 255.0F + 0.5F),
+                        static_cast<unsigned>(color.b * 255.0F + 0.5F));
+        }
+        std::printf("\n");
+    }
     std::printf("gmse01_boot: guest draw publisher: %llu matrix group(s), %llu composed, %llu "
                 "submitted, %llu vertex(es)\n",
                 static_cast<unsigned long long>(groups_),
@@ -219,6 +297,14 @@ void GuestDrawPublisher::report() const {
                 static_cast<unsigned long long>(rejectedBySink_),
                 static_cast<unsigned long long>(withoutProjection_),
                 static_cast<unsigned long long>(unmappedMatrixSlots_));
+    std::printf("gmse01_boot:   policy by family (family/blend/alpha-test/depth-write):");
+    for (const auto& [key, count] : policies_) {
+        std::printf(" %s/%s/%s/%d=%llu", sb::native_render::j3d_material_family_name(key.family),
+                    sb::native_render::model_blend_mode_name(key.blend),
+                    sb::native_render::model_alpha_test_name(key.alphaTest),
+                    static_cast<int>(key.depthWrite), static_cast<unsigned long long>(count));
+    }
+    std::printf("\n");
     std::printf("gmse01_boot:   element errors:");
     for (const auto& [error, count] : elementErrors_) {
         std::printf(" %s=%llu", sb::title_adapter::guest_shape_error_name(error),

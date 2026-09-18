@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <sunbright/native_render/j3d_material_family.h>
@@ -11,6 +12,7 @@
 #include <sunbright/native_render/semantic_sink.h>
 #include <sunbright/title_adapter/guest_shape_geometry.h>
 
+#include "frame_draw_budget.h"
 #include "gcnport/guest_context.h"
 
 namespace sunbright::gcnport_boot {
@@ -26,10 +28,30 @@ namespace sunbright::gcnport_boot {
 // are different jobs with different failure modes -- a material can classify perfectly and still
 // belong to a shape whose pose could not be read -- and keeping the counts apart is what lets a
 // refusal be attributed to the right half.
+// What the publisher does to each draw's material before submitting it. Each mode answers one
+// question about a rendered frame that the frame itself cannot: `Normal` renders, and the other two
+// are deliberately not renderings.
+enum class DrawDiagnosticMode : std::uint8_t {
+    // The classified material, as the title authored it.
+    Normal,
+    // A flat colour naming the material family, drawn opaque: which family covers which part of the
+    // image. See `family_color_map.h`.
+    FamilyMap,
+    // The classified material with blending and the alpha test off: whether a defect in the image
+    // comes from what a surface computes or from how it is combined with what is behind it. These
+    // are different repairs, and a rendered frame cannot tell them apart.
+    Opaque,
+};
+
+[[nodiscard]] bool parse_draw_diagnostic_mode(std::string_view name, DrawDiagnosticMode& mode);
+[[nodiscard]] const char* draw_diagnostic_mode_name(DrawDiagnosticMode mode) noexcept;
+
 class GuestDrawPublisher {
   public:
-    explicit GuestDrawPublisher(sb::title_adapter::GuestAddress system) noexcept
-        : system_(system) {}
+    // `budget` may be null, which is an unbounded run; it is not owned here.
+    GuestDrawPublisher(sb::title_adapter::GuestAddress system, DrawDiagnosticMode mode,
+                       FrameDrawBudget* budget) noexcept
+        : system_(system), mode_(mode), budget_(budget) {}
 
     // Returns how many draws this shape submitted. `shape` must already have been read.
     std::uint32_t publish(gcnport::GuestContext& guest, const sb::title_adapter::GuestShape& shape,
@@ -71,6 +93,9 @@ class GuestDrawPublisher {
                   std::span<const sb::native_render::DecodedImageView> images);
 
     sb::title_adapter::GuestAddress system_ = 0;
+    DrawDiagnosticMode mode_ = DrawDiagnosticMode::Normal;
+    FrameDrawBudget* budget_ = nullptr;
+    std::uint64_t withheldByBudget_ = 0;
     sb::title_adapter::GuestMatrixRegisters registers_{};
     std::vector<sb::native_render::J3dDecodedVertex> triangles_;
     std::vector<sb::native_render::MeshVertex> vertices_;
@@ -96,6 +121,17 @@ class GuestDrawPublisher {
     // claiming a second, which would fail and leave every draw unoffered.
     bool borrowedSink_ = false;
     sb::native_render::SemanticSinkLease lease_{};
+    // Which policy each family's draws carry. A rendered frame can show that surfaces are being
+    // combined wrongly without saying which combination is at fault; this names the candidates and
+    // their sizes, and a family that turns out to use only one blend mode is one this cannot be.
+    struct PolicyKey {
+        sb::native_render::J3dMaterialFamily family = sb::native_render::J3dMaterialFamily::None;
+        sb::native_render::ModelBlendMode blend = sb::native_render::ModelBlendMode::Replace;
+        sb::native_render::ModelAlphaTest alphaTest = sb::native_render::ModelAlphaTest::PassAll;
+        bool depthWrite = true;
+        auto operator<=>(const PolicyKey&) const = default;
+    };
+    std::map<PolicyKey, std::uint64_t> policies_;
     std::map<sb::title_adapter::GuestShapeError, std::uint64_t> elementErrors_;
     std::map<sb::native_render::J3dMeshDecodeError, std::uint64_t> meshErrors_;
     std::map<sb::title_adapter::GuestPoseError, std::uint64_t> poseErrors_;

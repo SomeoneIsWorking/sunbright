@@ -31,7 +31,8 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-models <hex-addr>[:<reports>]] "
                      "[--read-projections <hex-addr>[:<reports>]] "
                      "[--render-frames <hex-addr>] [--dump-frame <path>] "
-                     "[--dump-frame-index <n>]\n",
+                     "[--dump-frame-index <n>] [--draw-mode normal|family-map|opaque] "
+                     "[--draw-limit <n>]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -50,6 +51,7 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             request.report_counters_on_fault = false;
             continue;
         }
+
         if (argument + 1 >= argc) {
             std::fprintf(stderr, "gmse01_boot: %s needs a value\n", argv[argument]);
             return false;
@@ -238,6 +240,30 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             // and refused rather than ignored: a run that was asked for an image and silently took
             // no picture is indistinguishable from one whose renderer drew nothing.
             request.frame_image_path = value;
+        } else if (name == "--draw-limit") {
+            // How many of each frame's draws reach the sink. Bounding it and moving the bound is
+            // how a defect somewhere in a stack of blended draws is attributed to one of them.
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(value, &end, 0);
+            if (end == value || *end != '\0' || errno == ERANGE || parsed == 0) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --draw-limit needs a draw count from 1, got '%s'\n",
+                             value);
+                return false;
+            }
+            request.draw_limit = parsed;
+        } else if (name == "--draw-mode") {
+            // What the publisher does to each draw's material. The two diagnostic modes change what
+            // is drawn, so a run using one says so in its report rather than producing an image
+            // that could be mistaken for a rendering.
+            if (!parse_draw_diagnostic_mode(value, request.draw_mode)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --draw-mode takes normal, family-map or opaque, got "
+                             "'%s'\n",
+                             value);
+                return false;
+            }
         } else if (name == "--dump-frame-index") {
             // Which sealed frame --dump-frame writes. Omitted, the first frame with any content is
             // written and only that one is ever downloaded; named, every frame up to it is.
@@ -375,6 +401,19 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
         }
     }
 
+    if (request.draw_limit != 0 && request.frame_seam_addresses.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --draw-limit bounds each frame's draws, and there are no frames "
+                     "without --render-frames\n");
+        return false;
+    }
+    if (request.draw_mode != DrawDiagnosticMode::Normal && request.frame_seam_addresses.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --draw-mode %s changes what is drawn, and nothing renders "
+                     "without --render-frames\n",
+                     draw_diagnostic_mode_name(request.draw_mode));
+        return false;
+    }
     if (request.frame_image_index != 0 && request.frame_image_path.empty()) {
         std::fprintf(stderr,
                      "gmse01_boot: --dump-frame-index chooses which frame --dump-frame writes, and "

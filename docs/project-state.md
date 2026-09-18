@@ -725,13 +725,58 @@ Two frames of the title's attract cycle, from 1,400,000,000-block runs, 0 Dolphi
 - **Frame 3800**, named explicitly, 4,004 frames sampled to reach it.
 
 Both show recognisable GMSE01 geometry -- the sky dome, its cloud billboards and Delfino's seagulls
-in the correct places -- and both are **grossly over-bright**: most of the scene's surfaces come out
-white, and the island geometry that should sit under the sky is not distinguishable from it. So the
-title's draws reach the passes, compile on a real driver, and put its own geometry on the target in
-the right shape, while their shading does not yet match the console. Establishing where that
-brightness enters -- the material families' colour maths, the lighting accumulation, or the sRGB
-handling at the target -- is the next scope, and it is now a question that can be asked of an image
-rather than of a counter.
+in the correct places -- and both are **grossly over-bright**: 43.7% of frame 3800 is pure white, and
+the island geometry that should sit under the sky cannot be told from it. So the title's draws reach
+the passes, compile on a real driver, and put its own geometry on the target in the right shape,
+while their shading does not yet match the console.
+
+**Two diagnostic draw modes narrow where that brightness enters**, because a rendered frame cannot
+answer it alone. `--draw-mode family-map` replaces every material with a flat colour naming its
+family, drawn opaque, which attributes coverage; `--draw-mode opaque` keeps each material and its
+textures and turns blending and the alpha test off, which separates a surface that computes the
+wrong colour from one whose colour is right and is combined wrongly. Both say in their own report
+that they are not rendering results. Measured on frame 3800:
+
+- **Coverage is five families**, and the attribution is clean -- the opaque map holds exactly five
+  colours, all of them legend entries: `unlit_color` 129,628 px (45.2%), `textured_effect` 101,357
+  (35.4%), `interpolated_registers` 40,036 (14.0%), `doubled_texture_pair` 15,270 (5.3%) and
+  `lit_masked_specular` 429 (0.1%, the seagulls).
+- **No family owns the white.** The saturated pixels fall across all four large families in similar
+  proportion -- 51%, 37%, 45% and 29% of each one's own area -- so it is not one family's colour
+  maths.
+- **Turning blending off removes it.** With `--draw-mode opaque` the pure white falls from 43.7% to
+  86 pixels (0.03%), and the frame becomes legible: sky, cloud billboards, a light shaft, a seagull.
+  The over-brightness is therefore in how the title's draws are combined, not in what any one
+  surface computes. (This mode shows only the last draw at each pixel, so it attributes the visible
+  colour, not the whole stack that produced it.)
+
+The publisher now reports the policy each family's draws carry, which names the combinations that
+could be at fault and their sizes. Over one 1,400,000,000-block run, 854 frames, ~70 draws per frame:
+
+    unlit_color/inverse_source_color/pass_all/0=854   lit_specular_color/premultiplied_alpha/pass_all/0=854
+    unlit_textured: replace/pass_all/1=854  premultiplied_alpha/pass_all/0=854  additive/pass_all/0=854
+    lit_textured: replace/pass_all/1=8540  replace/greater_or_equal_half/1=854
+    lit_dual_alpha_effect/source_alpha_source_color/pass_all/1=854
+    lit_alpha_tint/source_alpha/pass_all/0=854   lit_tinted_layered_specular/source_alpha/pass_all/1=3416
+    lit_masked_toon/source_alpha/pass_all/1=17080
+    lit_masked_specular: replace/greater_or_equal_half/1=4271  source_alpha/pass_all/1=4271
+    textured_effect: source_alpha/pass_all/0=854  additive/pass_all/0=8540  additive/greater_than_64/0=854
+    unlit_textured_effect/replace/pass_all/1=854   doubled_texture_pair/additive/pass_all/0=1661
+    tinted_texture_sum/additive/pass_all/0=854    masked_doubled_texture/additive/pass_all/0=854
+    interpolated_registers/additive/pass_all/0=807
+
+**About sixteen of each frame's seventy draws blend additively**, and additive layers are what
+saturate. Each of those policies is read from the title's own pixel-engine block rather than chosen,
+so the next question is not whether the blend is right but what alpha and colour the shaders hand
+it: an additive source whose alpha should be small and is 1 blows out exactly like this.
+
+**`--draw-limit <n>` bounds how many of each frame's draws reach the sink**, which is what
+attributes a defect inside a stack of blended draws to the draw that introduces it -- the finished
+frame cannot, because every draw contributed to the pixel. The renderer owns when a frame begins and
+the publisher owns what a draw is, so the count they share is its own object rather than a field one
+reaches into. First measurement: at `--draw-limit 35`, frame 3800 is **43.7% pure white -- the same
+as the unbounded frame**, so the whole defect is introduced within the first thirty-five of that
+frame's seventy draws. Bisecting that range is the next scope.
 
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every

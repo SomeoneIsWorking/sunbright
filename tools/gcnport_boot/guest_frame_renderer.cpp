@@ -92,6 +92,9 @@ bool GuestFrameRenderer::start(const std::string& imagePath, std::uint64_t image
         SDL_Quit();
         return failed;
     }
+    if (budget_ != nullptr) {
+        budget_->begin_frame();
+    }
     if (!bridge.begin()) {
         const bool failed = refuse("the first frame did not open", bridge.last_error());
         static_cast<void>(client.shutdown(detail));
@@ -121,6 +124,9 @@ void GuestFrameRenderer::seal_frame() {
     if (!sb::native_render::sdl_semantic_frame_client().encode_last_sealed(error)) {
         encodeFailures_ += 1;
         record(firstError_, error);
+    }
+    if (budget_ != nullptr) {
+        budget_->begin_frame();
     }
     if (!bridge.begin()) {
         beginFailures_ += 1;

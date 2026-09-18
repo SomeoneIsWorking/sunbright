@@ -11,6 +11,8 @@
 
 #include <sunbright/title_adapter/guest_j3d_shape.h>
 
+#include "guest_draw_publisher.h"
+
 // What one invocation of the GMSE01 boot diagnostic asks for, and the parser that produces it.
 //
 // This is a separate owner from the run itself because the two answer different questions. The run
@@ -176,6 +178,8 @@ struct BootRequest {
     std::vector<u32> frame_seam_addresses;
     std::string frame_image_path;
     u64 frame_image_index = 0;
+    DrawDiagnosticMode draw_mode = DrawDiagnosticMode::Normal;
+    u64 draw_limit = 0;
     u32 shape_probe_system = sb::title_adapter::GMSE01_J3D_SYS;
 };
 

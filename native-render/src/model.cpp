@@ -255,9 +255,45 @@ bool valid(const ModelFog& fog) noexcept {
            fog.start < fog.end && valid(fog.color);
 }
 
+const char* model_blend_mode_name(ModelBlendMode blend) noexcept {
+    switch (blend) {
+    case ModelBlendMode::Replace:
+        return "replace";
+    case ModelBlendMode::SourceAlpha:
+        return "source_alpha";
+    case ModelBlendMode::PremultipliedAlpha:
+        return "premultiplied_alpha";
+    case ModelBlendMode::Additive:
+        return "additive";
+    case ModelBlendMode::SourceAlphaSourceColor:
+        return "source_alpha_source_color";
+    case ModelBlendMode::DestinationAlpha:
+        return "destination_alpha";
+    case ModelBlendMode::InverseSourceColor:
+        return "inverse_source_color";
+    }
+    return "unknown";
+}
+
+const char* model_alpha_test_name(ModelAlphaTest test) noexcept {
+    switch (test) {
+    case ModelAlphaTest::PassAll:
+        return "pass_all";
+    case ModelAlphaTest::GreaterOrEqualHalf:
+        return "greater_or_equal_half";
+    case ModelAlphaTest::GreaterThan64:
+        return "greater_than_64";
+    }
+    return "unknown";
+}
+
 const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept {
     return std::visit([](const auto& value) -> const ModelRasterPolicy& { return value.raster; },
                       material);
+}
+
+ModelRasterPolicy& raster_policy(ModelMaterial& material) noexcept {
+    return std::visit([](auto& value) -> ModelRasterPolicy& { return value.raster; }, material);
 }
 
 std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {

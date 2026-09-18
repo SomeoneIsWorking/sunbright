@@ -6,6 +6,8 @@
 
 #include <sunbright/native_render/sdl_semantic_frame_client.h>
 
+#include "frame_draw_budget.h"
+
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"
 
@@ -24,7 +26,9 @@ namespace sunbright::gcnport_boot {
 
 class GuestFrameRenderer {
   public:
-    GuestFrameRenderer() = default;
+    // `budget` may be null; it is not owned here. The renderer is the only owner that knows when a
+    // frame begins, so it is what tells the budget.
+    explicit GuestFrameRenderer(FrameDrawBudget* budget = nullptr) noexcept : budget_(budget) {}
     ~GuestFrameRenderer();
 
     GuestFrameRenderer(const GuestFrameRenderer&) = delete;
@@ -60,6 +64,7 @@ class GuestFrameRenderer {
     static bool observe_sample(const sb::native_render::SemanticFrameSample& sample, void* context,
                                std::string& error);
 
+    FrameDrawBudget* budget_ = nullptr;
     std::string imagePath_;
     std::uint64_t imageFrameWanted_ = 0;
     std::uint64_t imageFrame_ = 0;

@@ -479,7 +479,16 @@ struct ClipVertex {
 [[nodiscard]] ModelPoseBuildResult
 build_model_pose(std::span<const ModelMatrixBinding> bindings, ModelPose& pose,
                  std::span<std::uint8_t> sourceToCompact) noexcept;
+// Names for the policy a draw carries. A histogram of blend modes over a title's own draws is how
+// a runtime finds the one it maps wrongly, and a numeric enumerator in that histogram is a value
+// the reader has to translate against this header by hand.
+[[nodiscard]] const char* model_blend_mode_name(ModelBlendMode blend) noexcept;
+[[nodiscard]] const char* model_alpha_test_name(ModelAlphaTest test) noexcept;
+
 [[nodiscard]] const ModelRasterPolicy& raster_policy(const ModelMaterial& material) noexcept;
+// Every material carries its own policy, so changing one without knowing which material it is means
+// visiting the variant. That visit has one owner rather than a copy per caller that wanted to.
+[[nodiscard]] ModelRasterPolicy& raster_policy(ModelMaterial& material) noexcept;
 [[nodiscard]] std::uint8_t material_texture_count(const ModelMaterial& material) noexcept;
 [[nodiscard]] const PictureTexture* material_texture(const ModelMaterial& material,
                                                      std::uint8_t index = 0) noexcept;
