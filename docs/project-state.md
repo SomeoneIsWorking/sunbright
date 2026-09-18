@@ -185,6 +185,18 @@ Throughput falls to ~40,000 blocks/second once boot is inside the disc-error scr
 spin-waiting on timers (slices end at the next scheduled hardware event, and each font read raises an
 invalid-access report), not a runtime defect, and is expected to go once a disc device exists.
 
+`gcnport` `0a48184` (Dolphin fork `d24aef4`) additionally closed a quieter OS-init gap found while
+investigating the above: `apply_gamecube_os_init` installed BS2's MSR/HID/BAT registers but not the
+low-memory globals `CBoot::EmulatedBS2_GC` writes immediately afterwards. Those are read back by fixed
+address — GMSE01's own decomp declares `__OSPhysicalMemSize AT_ADDRESS(0x80000028)` and
+`__OSBusClock` at `0x800000F8`, and defines `OS_TIMER_CLOCK` as `__OSBusClock / 4`, so a zero bus
+clock silently corrupts every tick and time conversion rather than failing. It now reuses Dolphin's
+own `CBoot::SetupGCMemory`. The negative control earned its keep: the pre-existing
+`if (apply_gamecube_os_init)` had no braces, so the added call ran unconditionally and the
+defaults-off test caught it as "Unable to resolve write address 80000028". Re-measured against exact
+`GMSE01`: **5,250 compiled blocks over 140,000,000 executions with zero faults**, stopping at the same
+disc boundary — as expected, since correct OS globals do not conjure a disc.
+
 Still missing before this item is complete: (1) a **disc/DVD device adapter** so the title's file
 reads succeed — Sunbright owns this, because the game image must never reach `gcnport`; (2) the
 `0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone
