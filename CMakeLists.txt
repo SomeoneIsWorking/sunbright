@@ -19,6 +19,7 @@ find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
 # exists. Keep the independently reusable,
 # renderer-neutral library buildable while the shared Dolphin-JIT executor is built.
 add_subdirectory(native-render)
+add_subdirectory(title-adapter)
 
 # tools/gcnport_boot is a standalone maintainer diagnostic against the pinned extern/gcnport
 # submodule (see docs/issues/0037...); it is not the gameplay product target and is excluded from

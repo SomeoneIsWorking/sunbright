@@ -23,6 +23,7 @@ BUILD_DIRECTORIES = (REPO / "build",)
 CPP_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 EXCLUDED_PREFIXES = (
+    ".venv/",
     "build/",
     "build-",
     "decomp/",
@@ -30,6 +31,22 @@ EXCLUDED_PREFIXES = (
     "scratch/",
 )
 GENERATED_SUFFIXES = ("_spv.h",)
+# Legacy debt, named so its absence from --all-built is visible in the tool rather than being an
+# accident of which directory the walk below happened to be pointed at. `sms-boot` is the decomp-side
+# product: 132 first-party files, none of which has ever been through this gate, and much of it is
+# shaped to stay diffable against `decomp/sms`. Reformatting it wholesale is a migration with its own
+# decisions to make, not a side effect of adding a module. This tuple only shrinks.
+UNFORMATTED_LEGACY_PREFIXES = ("sms-boot/",)
+# Maintainer programs with no CMake target, named exactly rather than by prefix so a new unbuilt
+# translation unit under tools/ still fails the compile-database check below. count_getenv.c is an
+# LD_PRELOAD interposer and is built by the `gcc -shared -fPIC` line in tools/perf/README.md;
+# dol_extract.c is built on demand as tools/re/port_dossier.py documents. Both are still formatted;
+# only the requirement to appear in a compile database is waived, because neither is ever compiled
+# by this project's build.
+STANDALONE_TOOL_SOURCES = (
+    "tools/perf/count_getenv.c",
+    "tools/re/dol_extract.c",
+)
 CLANG_FORMAT = os.environ.get("CLANG_FORMAT", "clang-format")
 CLANG_TIDY = os.environ.get("CLANG_TIDY", "clang-tidy")
 
@@ -59,11 +76,24 @@ def changed_files() -> list[str]:
     )
 
 
-def built_native_renderer_files() -> list[str]:
+def built_first_party_files() -> list[str]:
+    """Every first-party C++ file in the checkout, not a named list of directories.
+
+    This walked `native-render` alone until `title-adapter` was added and silently received no
+    formatting or lint coverage at all: the file and translation-unit counts this tool prints did
+    not move, which is exactly the shape of failure a hardcoded root list produces. `is_first_party_cpp`
+    already answers the question by exclusion (build, decomp, extern, scratch, generated), so ask it
+    about the whole tree and a module added tomorrow is covered the day it lands.
+    """
     return sorted(
-        path.relative_to(REPO).as_posix()
-        for path in (REPO / "native-render").rglob("*")
-        if path.is_file() and is_first_party_cpp(path.relative_to(REPO).as_posix())
+        relative
+        for relative in (
+            path.relative_to(REPO).as_posix()
+            for path in REPO.rglob("*")
+            if path.is_file()
+        )
+        if is_first_party_cpp(relative)
+        and not relative.startswith(UNFORMATTED_LEGACY_PREFIXES)
     )
 
 
@@ -132,7 +162,11 @@ def check(paths: list[str]) -> int:
         )
         return formatted.returncode
 
-    sources = [path for path in paths if Path(path).suffix in SOURCE_SUFFIXES]
+    sources = [
+        path
+        for path in paths
+        if Path(path).suffix in SOURCE_SUFFIXES and path not in STANDALONE_TOOL_SOURCES
+    ]
     if not sources:
         print(
             f"cpp-quality: clang-format passed for {len(paths)} file(s); no translation units"
@@ -237,7 +271,7 @@ def main() -> int:
     if args.selftest:
         return selftest()
     if args.all_built:
-        paths = built_native_renderer_files()
+        paths = built_first_party_files()
     elif args.paths:
         paths = []
         for path in args.paths:

@@ -8,7 +8,16 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SOURCE_ROOTS = ("native-render", "sms-boot", "src")
+# Every first-party source root the size limit applies to. `title-adapter` was added to this list
+# the same day the module landed, because a root that is absent here is not measured at all -- the
+# reported file count simply stays where it was, which reads like nothing changed.
+SOURCE_ROOTS = (
+    "native-render",
+    "sms-boot",
+    "src",
+    "title-adapter",
+    "tools/gcnport_boot",
+)
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
 DEFAULT_LIMIT = 1200
 FILE_LIMITS = {
