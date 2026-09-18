@@ -91,6 +91,10 @@ class GuestDrawPublisher {
     std::uint64_t mismatchedImages_ = 0;
     std::uint64_t rejectedForNoNamedReason_ = 0;
     bool sinkFailed_ = false;
+    // Set when another owner in this process already holds the one semantic sink -- the frame
+    // bridge, when the run was asked to render. The publisher then submits into theirs rather than
+    // claiming a second, which would fail and leave every draw unoffered.
+    bool borrowedSink_ = false;
     sb::native_render::SemanticSinkLease lease_{};
     std::map<sb::title_adapter::GuestShapeError, std::uint64_t> elementErrors_;
     std::map<sb::native_render::J3dMeshDecodeError, std::uint64_t> meshErrors_;

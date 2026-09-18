@@ -87,7 +87,7 @@ void GuestDrawPublisher::diagnose(const sb::native_render::ModelDraw& draw,
 }
 
 bool GuestDrawPublisher::ensure_sink() {
-    if (lease_) {
+    if (lease_ || borrowedSink_) {
         return true;
     }
     if (nonModelDraws_ != 0) {
@@ -96,6 +96,13 @@ bool GuestDrawPublisher::ensure_sink() {
     }
     if (sinkFailed_) {
         return false;
+    }
+    // The process has exactly one semantic sink. When the run renders, the frame bridge holds it
+    // for the frame's lifetime and these draws must reach it; claiming a second would fail and
+    // would read as "the sink could not be claimed" rather than "someone else is drawing these".
+    if (sb::native_render::has_semantic_sink()) {
+        borrowedSink_ = true;
+        return true;
     }
     const sb::native_render::SemanticSink sink{
         .submit = refuse_non_model, .submitModel = accept, .context = this};
@@ -186,6 +193,13 @@ void GuestDrawPublisher::report() const {
                 static_cast<unsigned long long>(composed_),
                 static_cast<unsigned long long>(submitted_),
                 static_cast<unsigned long long>(verticesSubmitted_));
+    if (borrowedSink_) {
+        // `acceptedBySink_` counts what this object's own counting sink saw, and it never
+        // installed one. Saying so is the difference between a renderer that took the draws and a
+        // sink that refused every one of them, which print identically as a zero.
+        std::printf("gmse01_boot:   another owner in this process holds the semantic sink; the "
+                    "submitted count above is what reached it\n");
+    }
     std::printf("gmse01_boot:   %llu reached the sink; of those rejected: %llu invalid draw, %llu "
                 "invalid mesh, %llu mismatched mesh, %llu unindexable pose, %llu mismatched "
                 "images, %llu for no reason this knows\n",

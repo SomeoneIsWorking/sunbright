@@ -20,10 +20,16 @@ add_executable(sunbright_gcnport_boot
     guest_lighting_probe.cpp
     guest_projection_probe.cpp
     guest_draw_publisher.cpp
+    guest_frame_renderer.cpp
     guest_model_probe.cpp
     guest_material_probe.cpp
   guest_shape_probe.cpp
   "${GCPORT_DOLPHIN_STUB_HOST}"
 )
-target_link_libraries(sunbright_gcnport_boot PRIVATE gcnport::dolphin sunbright-title-adapter)
+# `sunbright-native-render-sdl3` is here for --render-frames: the diagnostic draws the title's own
+# shapes through the shipping passes rather than a second renderer written for it. It brings SDL3
+# with it, which the run only initializes when that flag is given -- a run without it opens no
+# device and stays exactly as headless as it was.
+target_link_libraries(sunbright_gcnport_boot PRIVATE gcnport::dolphin sunbright-title-adapter
+                                                     sunbright-native-render-sdl3)
 gcnport_stage_dolphin_sys(sunbright_gcnport_boot "${GCPORT_DOLPHIN_SYS_DIR}")

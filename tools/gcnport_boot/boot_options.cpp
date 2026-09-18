@@ -29,7 +29,8 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-materials <hex-addr>[:<reports>]] "
                      "[--read-lighting <hex-addr>[:<reports>] ...] "
                      "[--read-models <hex-addr>[:<reports>]] "
-                     "[--read-projections <hex-addr>[:<reports>]]\n",
+                     "[--read-projections <hex-addr>[:<reports>]] "
+                     "[--render-frames <hex-addr>]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -231,6 +232,18 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 request.model_probe_reports = parsed;
             }
             request.model_probe_addresses.push_back(address);
+        } else if (name == "--render-frames") {
+            // <hex-addr>. The address is the title's frame seam -- GMSE01 reaches one in
+            // JDrama::TVideo::waitForRetrace (0x802fc9a4). Unlike the probes, this takes no report
+            // count: it does not print per frame, it renders every one of them.
+            u32 address = 0;
+            char* end = nullptr;
+            if (!ParseGuestAddress(value, &end, address) || *end != '\0') {
+                std::fprintf(stderr, "gmse01_boot: --render-frames needs <hex-addr>, got '%s'\n",
+                             value);
+                return false;
+            }
+            request.frame_seam_addresses.push_back(address);
         } else if (name == "--read-projections") {
             // <hex-addr>[:<reports>]. The address is GXSetProjection (0x80362c34 in GMSE01), which
             // takes the matrix in r3 and the projection type in r4. The count bounds only how many

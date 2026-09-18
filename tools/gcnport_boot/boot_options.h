@@ -170,6 +170,10 @@ struct BootRequest {
     u64 model_probe_reports = 0;
     std::vector<u32> shape_probe_addresses;
     u64 shape_probe_reports = 0;
+    // Where the title finishes a frame. Supplying one turns the run from counting its draws into
+    // rendering them: the process frame bridge takes the sink, and each entry here seals what the
+    // title submitted and encodes it through the shipping passes.
+    std::vector<u32> frame_seam_addresses;
     u32 shape_probe_system = sb::title_adapter::GMSE01_J3D_SYS;
 };
 

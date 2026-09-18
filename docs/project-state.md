@@ -13,11 +13,12 @@ currently has no gameplay executable while its shared runtime executor is missin
 ## Current focus
 
 S004, the PC-native renderer, is the next focus: the execution path underneath it now runs GMSE01's
-whole attract cycle unattended and faultlessly (S008 below has the retrace-timed trajectory), and
-the run presents no frame because it uses Dolphin's Null video backend. Nothing further about the
-title's behaviour can be seen without a renderer. Its producer seam now reads, decodes and poses the
-title's own geometry with the two halves proven to agree; what remains is publishing a `ModelDraw`,
-which needs the material and texture state that has not been read yet.
+whole attract cycle unattended and faultlessly (S008 below has the retrace-timed trajectory). Its
+producer seam reads, decodes and poses the title's own geometry, classifies every material it draws,
+and now rasterises those draws through the shipping passes on a real device -- 4,004 of the title's
+own frames, 59,864 models, on an offscreen 640x448 target. What remains is comparing what the passes
+produced against the console: the run measures its readback and discards the pixels, so no image has
+been diffed yet.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -669,7 +670,43 @@ being extended, and the sRGB conversions both files predict pixels through were 
 The controls are live: replacing the doubled pair's `* 2.0` with `* 1.0` in its shader fails the
 first of them by name. They run under `tools/render/gpu_watch.py` and stay outside unguarded ctest.
 
-Rasterising GMSE01's own draws and comparing them against the console is the next scope.
+**GMSE01's own draws are now rasterised.** `--render-frames <hex-addr>` turns the diagnostic run
+from counting the title's draws into drawing them: `tools/gcnport_boot/guest_frame_renderer.cpp`
+opens an offscreen SDL GPU device, hands the process frame bridge to `SdlSemanticFrameClient` at
+GMSE01's own external-framebuffer size (640x448), and a hook at the title's frame seam
+(`JDrama::TVideo::waitForRetrace`, `0x802fc9a4`) seals each frame and encodes it through the
+shipping `Semantic3dPass`/`Semantic2dPass` before opening the next. Nothing about the composition
+changed: the publisher submits the same `ModelDraw` through the same `submit_model`, and the only
+edit it needed was to stop claiming the process's one semantic sink when the bridge already holds it
+-- it says so in its report rather than printing the zero its own counting sink would now record.
+
+Measured on the real title, one 1,400,001,968-block run, 0 Dolphin alerts:
+
+    4,004 frame seam(s) entered, 4,004 submitted, 4,004 completed, 853 non-empty
+    59,864 model(s), 52,792 mesh(es), 10,329,555 vertex(es), 78,288 image(s) reached the passes
+    1 frame(s) sampled; first non-clear frame 3152 with 286,720 non-clear pixel(s)
+    0 seal failure(s), 0 encode failure(s), 0 begin failure(s)
+    the client validated its own output
+
+Three of those numbers are cross-checks rather than restatements. **286,720 is 640 x 448** -- the
+sampled frame's every pixel differs from the controlled black clear, which is what a scene whose
+background is itself drawn geometry produces and an empty frame cannot. The publisher submitted
+59,934 draws and 59,864 reached the passes: the 70 missing are the ones submitted into the final
+frame, which the run ended before the title sealed. And 52,792 meshes against 59,934 models is the
+collector coalescing identical geometry, which only agrees if the resource identity and revision the
+publisher derives are stable across draws.
+
+The negative is a reading from the same instrument rather than an argument. At 300,000,000 blocks
+the title has not begun drawing J3D geometry: that run sealed 560 frames, all of them empty, put 0
+models through the passes, and the client **refused** to validate -- *"semantic output never
+observed pixels distinct from the controlled clear"*. The same binary, the same flag, the other
+answer.
+
+What this does not yet show is any pixel. The client's readback is measured (non-clear count, hash)
+and then discarded, so the run proves the title's draws reach the passes, survive pipeline creation
+on a real driver, and put geometry on the target -- not that what they put there matches the
+console. Writing the sampled frame out and diffing it against a Dolphin capture is the next scope.
+
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

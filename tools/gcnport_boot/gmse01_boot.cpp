@@ -57,6 +57,7 @@
 #include "UICommon/UICommon.h"
 #include "boot_options.h"
 #include "gcnport/dolphin_adapter.h"
+#include "guest_frame_renderer.h"
 #include "guest_lighting_probe.h"
 #include "guest_material_probe.h"
 #include "guest_model_probe.h"
@@ -452,6 +453,39 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         address, static_cast<unsigned long long>(request.projection_probe_reports));
         }
 
+        // Installed before the model probes on purpose: the publisher claims a counting sink the
+        // first time it publishes, and the process has one sink. Activating the bridge first is
+        // what makes the draws land in a frame instead of in a counter.
+        sunbright::gcnport_boot::GuestFrameRenderer frame_renderer;
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::FrameSeamHook>> frame_seams;
+        if (!request.frame_seam_addresses.empty()) {
+            std::string error;
+            if (!frame_renderer.start(error)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --render-frames could not start the renderer: %s\n",
+                             error.c_str());
+                std::exit(1);
+            }
+            for (const u32 address : request.frame_seam_addresses) {
+                frame_seams.push_back(std::make_unique<sunbright::gcnport_boot::FrameSeamHook>(
+                    sunbright::gcnport_boot::FrameSeamHook{.renderer = &frame_renderer,
+                                                           .address = address}));
+                adapter.install_hook({.identity = adapter.identity(), .address = address},
+                                     std::ref(*frame_seams.back()));
+                if (!runtime.HasNativeHook(address)) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: the hook at 0x%08x did not install; refusing to "
+                                 "render frames it could never have sealed\n",
+                                 address);
+                    std::exit(1);
+                }
+                std::printf("gmse01_boot: rendering guest frames sealed at 0x%08x into a %ux%u "
+                            "offscreen target\n",
+                            address, sunbright::gcnport_boot::GuestFrameRenderer::FRAMEBUFFER_WIDTH,
+                            sunbright::gcnport_boot::GuestFrameRenderer::FRAMEBUFFER_HEIGHT);
+            }
+        }
+
         std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestModelProbe>> model_probes;
         for (const u32 address : request.model_probe_addresses) {
             model_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestModelProbe>(
@@ -756,6 +790,19 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         }
         for (const auto& probe : model_probes) {
             probe->report();
+        }
+        for (const auto& seam : frame_seams) {
+            std::printf("gmse01_boot: frame seam 0x%08x entered %llu time(s)%s\n", seam->address,
+                        static_cast<unsigned long long>(seam->entries),
+                        seam->entries == 0 ? "  -- installed, never dispatched" : "");
+        }
+        if (frame_renderer.started()) {
+            frame_renderer.report();
+            std::string error;
+            if (!frame_renderer.finish(error)) {
+                std::printf("gmse01_boot: the frame renderer did not shut down cleanly: %s\n",
+                            error.c_str());
+            }
         }
 
         for (const GuestWatch& watch : guest_watches) {
