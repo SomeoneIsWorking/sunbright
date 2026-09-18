@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -53,6 +54,7 @@
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 #include "UICommon/UICommon.h"
+#include "gcnport/dolphin_adapter.h"
 
 namespace {
 // Diagnostic-only: guest code this tool boots may fault on a host page the minimal (non-disc,
@@ -232,15 +234,19 @@ struct GuestMemoryWindow {
 // hook never fired" and "the hook was never installed" are different failures, and a silent counter
 // cannot tell them apart, so installation is verified at install time and a zero afterwards means
 // the address genuinely was never dispatched.
+//
+// Installed through gcnport::DolphinRuntimeAdapter rather than Dolphin's raw hook ABI, so the real
+// title exercises the same adapter a native override will be mounted on -- the adapter's own test
+// drives a synthetic image, and this is the only thing that drives it against GMSE01.
 struct CountedCall {
     u32 address = 0;
     u64 entries = 0;
-};
 
-PowerPC::GcnPort::HookResult CountCallEntry(void* context, PowerPC::PowerPCState&) noexcept {
-    static_cast<CountedCall*>(context)->entries += 1;
-    return PowerPC::GcnPort::HookResult::RunOriginalOnce();
-}
+    gcnport::HookResult operator()(gcnport::GuestContext&) {
+        entries += 1;
+        return gcnport::HookResult::call_original_once();
+    }
+};
 
 // A guest address on the command line: 32-bit, hexadecimal, and refused rather than truncated.
 // strtoull saturates at ULLONG_MAX on overflow, so errno is the only thing that separates an
@@ -512,12 +518,12 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         // dispatch and keep a stable address, because the runtime holds the raw pointer as the
         // callback's context -- hence the indirection rather than a vector of values that would
         // rehome its elements on the next push_back.
+        gcnport::DolphinRuntimeAdapter adapter(system, runtime);
         std::vector<std::unique_ptr<CountedCall>> counted_calls;
         for (const u32 address : request.counted_call_addresses) {
             counted_calls.push_back(std::make_unique<CountedCall>(CountedCall{.address = address}));
-            runtime.InstallNativeHook(
-                {.identity = runtime.GetExecutionIdentity(), .address = address},
-                {.context = counted_calls.back().get(), .function = &CountCallEntry});
+            adapter.install_hook({.identity = adapter.identity(), .address = address},
+                                 std::ref(*counted_calls.back()));
             if (!runtime.HasNativeHook(address)) {
                 std::fprintf(stderr,
                              "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
