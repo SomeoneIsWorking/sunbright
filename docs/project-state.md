@@ -528,6 +528,21 @@ is unchanged across the wiring.
 | `0x80fa490c`, `0x80fa4c00` | 1,614 | `0706/0700` but **two** stages, so the single-stage effect family refuses them on stage count |
 | six materials | 5,124 | genuinely unlit (`0700/0700`, `0700/0701`, `0701/0700`, `0701/0701`), 1--2 stages |
 
+A `ModelDraw` also carries a projection, and nothing supplied one.
+`title-adapter/src/guest_projection.cpp` reads the matrix GMSE01 hands to `GXSetProjection`
+(`0x80362c34`, matrix in r3, type in r4) and publishes it through
+`native_render::publish_j3d_projection`. The entry point keeps only six of the sixteen values and
+takes its offsets from column 2 for a perspective projection and column 3 for an orthographic one,
+so the reader checks the ten the hardware discards against what it would have supplied and refuses a
+matrix that disagrees rather than carrying values the console never used.
+
+Measured on the real title: **19,283 projection sets, zero errors**, 6,835 perspective and 12,448
+orthographic, 9 distinct. Every matrix the title authored is canonical, which is the evidence that
+the column rule was read correctly -- a wrong reading would have refused one of the two types
+wholesale. The orthographic scales are an independent check of the same thing: `0.003125` is exactly
+`2/640` and `-0.00446429` exactly `-2/448`, the console's own framebuffer, and the reader was not
+told either number.
+
 `tools/re/tev_decode.py` decodes a stage program into the expression it computes, and is checked by
 `--selftest` against the programs the shipping families already accept. Run over the eleven
 `0706/0700` single-texture materials it says what they are:

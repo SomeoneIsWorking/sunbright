@@ -28,7 +28,8 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-shapes <hex-addr>[:<reports>]] [--j3d-sys <hex-addr>]\n"
                      "[--read-materials <hex-addr>[:<reports>]] "
                      "[--read-lighting <hex-addr>[:<reports>] ...] "
-                     "[--read-models <hex-addr>[:<reports>]]\n",
+                     "[--read-models <hex-addr>[:<reports>]] "
+                     "[--read-projections <hex-addr>[:<reports>]]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -230,6 +231,35 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 request.model_probe_reports = parsed;
             }
             request.model_probe_addresses.push_back(address);
+        } else if (name == "--read-projections") {
+            // <hex-addr>[:<reports>]. The address is GXSetProjection (0x80362c34 in GMSE01), which
+            // takes the matrix in r3 and the projection type in r4. The count bounds only how many
+            // distinct projections are printed, never how many are read or published.
+            constexpr u64 DEFAULT_REPORTS = 8;
+            u32 address = 0;
+            char* end = nullptr;
+            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
+                std::fprintf(
+                    stderr,
+                    "gmse01_boot: --read-projections needs <hex-addr>[:<reports>], got '%s'\n",
+                    value);
+                return false;
+            }
+            request.projection_probe_reports = DEFAULT_REPORTS;
+            if (*end == ':') {
+                const char* const reports_text = end + 1;
+                errno = 0;
+                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
+                if (end == reports_text || *end != '\0' || errno == ERANGE) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --read-projections report count must be an integer, "
+                                 "got '%s'\n",
+                                 reports_text);
+                    return false;
+                }
+                request.projection_probe_reports = parsed;
+            }
+            request.projection_probe_addresses.push_back(address);
         } else if (name == "--read-lighting") {
             // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
             // or its TLightMario override (0x80229610); pass the flag twice to cover both. The

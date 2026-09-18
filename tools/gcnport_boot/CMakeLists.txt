@@ -18,6 +18,7 @@ add_executable(sunbright_gcnport_boot
   guest_report.cpp
   boot_options.cpp
     guest_lighting_probe.cpp
+    guest_projection_probe.cpp
     guest_model_probe.cpp
     guest_material_probe.cpp
   guest_shape_probe.cpp

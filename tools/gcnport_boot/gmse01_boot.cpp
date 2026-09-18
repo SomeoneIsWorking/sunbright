@@ -60,6 +60,7 @@
 #include "guest_lighting_probe.h"
 #include "guest_material_probe.h"
 #include "guest_model_probe.h"
+#include "guest_projection_probe.h"
 #include "guest_report.h"
 #include "guest_shape_probe.h"
 
@@ -431,6 +432,26 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         address, static_cast<unsigned long long>(request.lighting_probe_reports));
         }
 
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestProjectionProbe>>
+            projection_probes;
+        for (const u32 address : request.projection_probe_addresses) {
+            projection_probes.push_back(
+                std::make_unique<sunbright::gcnport_boot::GuestProjectionProbe>(
+                    request.projection_probe_reports));
+            adapter.install_hook({.identity = adapter.identity(), .address = address},
+                                 std::ref(*projection_probes.back()));
+            if (!runtime.HasNativeHook(address)) {
+                std::fprintf(stderr,
+                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
+                             "projections it could not have read\n",
+                             address);
+                std::exit(1);
+            }
+            std::printf("gmse01_boot: reading guest projections at 0x%08x (first %llu reported in "
+                        "full)\n",
+                        address, static_cast<unsigned long long>(request.projection_probe_reports));
+        }
+
         std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestModelProbe>> model_probes;
         for (const u32 address : request.model_probe_addresses) {
             model_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestModelProbe>(
@@ -725,6 +746,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             probe->report();
         }
         for (const auto& probe : lighting_probes) {
+            probe->report();
+        }
+        for (const auto& probe : projection_probes) {
             probe->report();
         }
         for (const auto& probe : material_probes) {

@@ -13,6 +13,7 @@ add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/
                                                  src/j3d_specular_material.cpp
                                                  src/j3d_tinted_layered_material.cpp
                                                  src/j3d_stage_lighting.cpp
+                                                 src/j3d_projection.cpp
                                                  src/j3d_unlit_material.cpp
                                                  src/model.cpp src/model_context.cpp
                                                  src/particle_billboard.cpp

@@ -164,6 +164,8 @@ struct BootRequest {
     u64 material_probe_reports = 0;
     std::vector<u32> lighting_probe_addresses;
     u64 lighting_probe_reports = 0;
+    std::vector<u32> projection_probe_addresses;
+    u64 projection_probe_reports = 0;
     std::vector<u32> model_probe_addresses;
     u64 model_probe_reports = 0;
     std::vector<u32> shape_probe_addresses;
