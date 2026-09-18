@@ -7,14 +7,17 @@
 // embed a copyrighted game asset, so the GMSE01 image bytes are read from disk here and passed
 // across gcnport's public API boundary as an in-memory span, exactly like a title consumer would.
 //
-// This does not attempt disc/apploader emulation. gcnport's BootAuthenticatedImage is deliberately
-// scoped to a raw in-memory image plus an explicit load address and entry point (see
-// shared/gcnport/docs/dolphin-embedding-contract.md); it owns no DVD/volume/apploader pipeline.
-// This tool therefore boots GMSE01's already-extracted main.dol directly: it parses the DOL header,
-// assembles one contiguous flat image spanning the DOL's lowest to highest loaded address (gaps
-// zero-filled, matching how the loader would place each section), and boots at the DOL's own
-// entry point. This exercises real GMSE01 code without the disc/apploader/OS-init pipeline gcnport
-// does not yet implement; it does not claim to reach gameplay.
+// gcnport's BootAuthenticatedImage is scoped to a raw in-memory image plus an explicit load address
+// and entry point (see shared/gcnport/docs/dolphin-embedding-contract.md), so this tool boots
+// GMSE01's already-extracted main.dol directly: it parses the DOL header, assembles one contiguous
+// flat image spanning the DOL's lowest to highest loaded address (gaps zero-filled, matching how the
+// loader would place each section), and boots at the DOL's own entry point.
+//
+// --disc additionally hands gcnport a path to the retail disc image, which mounts the real volume
+// behind the title's DVD reads and lets gcnport configure the console from it (region, and
+// Dolphin's shipped per-game settings). The title's own asset loads then resolve against the real
+// filesystem rather than failing, so this reaches the opening movie and the attract loop beyond it.
+// The disc path is a string across gcnport's public API; no game bytes enter gcnport's repository.
 
 #include <algorithm>
 #include <array>
@@ -22,16 +25,17 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #include <mbedtls/sha256.h>
@@ -179,7 +183,7 @@ bool ReportAlertWithoutPrompting(const char* caption, const char* text, bool /*y
     constexpr u64 MAX_DISTINCT_ALERTS_PRINTED = 20;
     if (index < MAX_DISTINCT_ALERTS_PRINTED) {
         std::printf("gmse01_boot: dolphin alert #%llu [%s] %s\n",
-                    static_cast<unsigned long long>(index + 1), caption, text);
+                    static_cast<unsigned long long>(index) + 1, caption, text);
         // Dolphin's invalid-access alert names the faulting PC and the address it could not
         // translate, and neither says which object was wrong. This handler runs on the CPU thread
         // inside the failing access, so the register file still holds the pointers the instruction
@@ -505,8 +509,8 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
         constexpr u64 DEFAULT_MAX_BLOCKS = 160000000;
         const u64 max_blocks = block_budget != 0 ? block_budget : DEFAULT_MAX_BLOCKS;
         u64 blocks_run = 0;
-        u32 previous_stall_pc = 0;
-        u64 previous_stall_ticks = 0;
+        u32 previous_sample_pc = 0;
+        u64 previous_sample_ticks = 0;
         u32 previous_retrace_count = 0;
         const auto started_at = std::chrono::steady_clock::now();
 
@@ -539,68 +543,88 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
                 break;
             }
 
-            // A batch that retires its blocks but never leaves one PC is the shape every stall in
-            // this tool has taken so far, and "it is still at the same address" on its own has
-            // never been enough to tell which of them it is. Report the state that distinguishes
-            // them, so a negative result is a reading rather than a silence: whether the guest can
-            // take an interrupt at all (MSR.EE and any pending exception), what the interrupt
-            // controller is asserting and allowing (ProcessorInterface's cause and mask), and
-            // whether a disc is actually mounted. A title idling in SelectThread with no runnable
-            // thread looks identical to a crash loop without them.
+            // A batch that retires its blocks but never leaves one PC was the shape of every stall
+            // this tool saw while the boot could not get past its first seconds, and this report
+            // used to be named for that conclusion. It is not a stall discriminator. Once the title
+            // reaches its main loop a million-block batch ends inside a hot leaf -- a cache-flush
+            // or soft-divide loop -- often enough that consecutive batches share a PC while the
+            // guest advances normally: a four-billion-block run printed 204 "stalled" reports, with
+            // a full thread walk under each, while its VI retrace count climbed past 20,000.
             //
-            // These come from the owning device objects, not from a memory read of the MMIO
-            // addresses: Memory::Read_U32 does not serve MMIO and answered every one of these with
-            // "Invalid range in CopyFromEmu" and a zero, which reads exactly like a quiet interrupt
-            // controller.
-            if (batch.guest_pc == previous_stall_pc) {
-                const auto& ppc_state = system.GetPPCState();
-                const auto& processor_interface = system.GetProcessorInterface();
+            // The repeated PC stays as the cheap trigger for taking a sample; what the sample is
+            // CALLED comes from the one reading that separates the two cases, whether the title is
+            // still being handed VI retraces. GUEST_RETRACE_COUNT is the SDK's own `retraceCount`
+            // (vi.c), incremented by __VIRetraceHandler and read back by VIGetRetraceCount at
+            // 0x803504ec, whose single `lwz r3, -0x58f0(r13)` resolves it through SDA1 to
+            // 0x8040e8d0. It only advances when a VI interrupt is both raised by the hardware and
+            // dispatched into the title's handler, so it measures end-to-end delivery rather than
+            // the instant of the sample. A guest that retires a million blocks and takes retraces
+            // while doing it is progressing by definition; one that retires them and takes none is
+            // either still in pre-VI boot or genuinely stuck, and only that case earns the state
+            // dump below.
+            if (batch.guest_pc == previous_sample_pc) {
                 const auto& memory = system.GetMemory();
-                // pi_cause and exceptions are instantaneous samples, and a handler that has already
-                // run leaves both at zero -- so on their own they cannot tell "no interrupt was
-                // ever raised" from "every interrupt was raised, handled and cleared". Two
-                // cumulative readings make them legible. The guest tick count says how much console
-                // time an interval covered: a GameCube VI retrace is one interrupt per 486MHz/60
-                // ~= 8.1 million ticks, so the ticks elapsed give the number of retraces the
-                // interval should have contained. GUEST_RETRACE_ COUNT is the SDK's own
-                // `retraceCount` (vi.c), incremented by __VIRetraceHandler and read back by
-                // VIGetRetraceCount at 0x803504ec, whose single `lwz r3, -0x58f0(r13)` resolves it
-                // through SDA1 to 0x8040e8d0. It only advances when a VI interrupt is both raised
-                // by the hardware and dispatched into the title's handler, so it measures
-                // end-to-end delivery rather than the instant of the sample. GUEST_CURRENT_THREAD
-                // is the OS global the scheduler clears before idling; NULL there confirms the stop
-                // is SelectThread's idle loop and not a crash loop that happens to sit at one
-                // address.
                 constexpr u32 GUEST_RETRACE_COUNT = 0x8040e8d0;
-                constexpr u32 GUEST_CURRENT_THREAD = 0x800000e4;
                 const u64 ticks = system.GetCoreTiming().GetTicks();
                 const u32 retrace_count = memory.Read_U32(GUEST_RETRACE_COUNT);
-                const u32 current_thread = memory.Read_U32(GUEST_CURRENT_THREAD);
-                std::printf(
-                    "gmse01_boot: stalled at pc=0x%08x msr=0x%08x (ee=%u) exceptions=0x%08x "
-                    "pi_cause=0x%08x pi_mask=0x%08x disc_inside=%d cur_thread=0x%08x "
-                    "retraces=%u (+%u) ticks=%llu (+%llu)\n",
-                    batch.guest_pc, ppc_state.msr.Hex, static_cast<u32>(ppc_state.msr.EE),
-                    ppc_state.Exceptions, processor_interface.GetCause(),
-                    processor_interface.GetMask(),
-                    static_cast<int>(system.GetDVDInterface().IsDiscInside()), current_thread,
-                    retrace_count, retrace_count - previous_retrace_count,
-                    static_cast<unsigned long long>(ticks),
-                    static_cast<unsigned long long>(ticks - previous_stall_ticks));
-                // The running thread has no saved OSThread context to walk -- ReportActiveThreads
-                // below reads each queued thread's saved SRR0/LR, and the one actually executing is
-                // the one whose saved copy is stale. Its live link register and stack pointer are
-                // in the PPC state, and the caller is what identifies a hot leaf helper: a batch
-                // that keeps ending inside a soft-divide or cache-flush loop says which routine is
-                // hot, never which routine called it.
-                std::printf("gmse01_boot:   running lr=0x%08x r1=0x%08x\n", ppc_state.spr[SPR_LR],
-                            ppc_state.gpr[1]);
-                ReportGuestBacktrace(memory, ppc_state.gpr[1]);
-                ReportActiveThreads(memory);
-                previous_stall_ticks = ticks;
+                const u32 retraces_delivered = retrace_count - previous_retrace_count;
+                if (retraces_delivered != 0) {
+                    std::printf("gmse01_boot: progressing at pc=0x%08x retraces=%u (+%u) "
+                                "ticks=%llu (+%llu)\n",
+                                batch.guest_pc, retrace_count, retraces_delivered,
+                                static_cast<unsigned long long>(ticks),
+                                static_cast<unsigned long long>(ticks - previous_sample_ticks));
+                } else {
+                    // Report the state that tells the remaining cases apart, so a negative result
+                    // is a reading rather than a silence: whether the guest can take an interrupt
+                    // at all (MSR.EE and any pending exception), what the interrupt controller is
+                    // asserting and allowing (ProcessorInterface's cause and mask), and whether a
+                    // disc is actually mounted. A title idling in SelectThread with no runnable
+                    // thread looks identical to a crash loop without them.
+                    //
+                    // These come from the owning device objects, not from a memory read of the MMIO
+                    // addresses: Memory::Read_U32 does not serve MMIO and answered every one of
+                    // these with "Invalid range in CopyFromEmu" and a zero, which reads exactly
+                    // like a quiet interrupt controller.
+                    //
+                    // pi_cause and exceptions are instantaneous samples, and a handler that has
+                    // already run leaves both at zero -- so on their own they cannot tell "no
+                    // interrupt was ever raised" from "every interrupt was raised, handled and
+                    // cleared". The cumulative tick reading makes them legible: a GameCube VI
+                    // retrace is one interrupt per 486MHz/60 ~= 8.1 million ticks, so the ticks
+                    // elapsed give the number of retraces the interval should have contained.
+                    // GUEST_CURRENT_THREAD is the OS global the scheduler clears before idling;
+                    // NULL there confirms the stop is SelectThread's idle loop and not a crash loop
+                    // that happens to sit at one address.
+                    constexpr u32 GUEST_CURRENT_THREAD = 0x800000e4;
+                    const auto& ppc_state = system.GetPPCState();
+                    const auto& processor_interface = system.GetProcessorInterface();
+                    const u32 current_thread = memory.Read_U32(GUEST_CURRENT_THREAD);
+                    std::printf(
+                        "gmse01_boot: no retrace delivered at pc=0x%08x msr=0x%08x (ee=%u) "
+                        "exceptions=0x%08x pi_cause=0x%08x pi_mask=0x%08x disc_inside=%d "
+                        "cur_thread=0x%08x retraces=%u ticks=%llu (+%llu)\n",
+                        batch.guest_pc, ppc_state.msr.Hex, static_cast<u32>(ppc_state.msr.EE),
+                        ppc_state.Exceptions, processor_interface.GetCause(),
+                        processor_interface.GetMask(),
+                        static_cast<int>(system.GetDVDInterface().IsDiscInside()), current_thread,
+                        retrace_count, static_cast<unsigned long long>(ticks),
+                        static_cast<unsigned long long>(ticks - previous_sample_ticks));
+                    // The running thread has no saved OSThread context to walk --
+                    // ReportActiveThreads below reads each queued thread's saved SRR0/LR, and the
+                    // one actually executing is the one whose saved copy is stale. Its live link
+                    // register and stack pointer are in the PPC state, and the caller is what
+                    // identifies a hot leaf helper: a batch that keeps ending inside a soft-divide
+                    // or cache-flush loop says which routine is hot, never which routine called it.
+                    std::printf("gmse01_boot:   running lr=0x%08x r1=0x%08x\n",
+                                ppc_state.spr[SPR_LR], ppc_state.gpr[1]);
+                    ReportGuestBacktrace(memory, ppc_state.gpr[1]);
+                    ReportActiveThreads(memory);
+                }
+                previous_sample_ticks = ticks;
                 previous_retrace_count = retrace_count;
             }
-            previous_stall_pc = batch.guest_pc;
+            previous_sample_pc = batch.guest_pc;
         }
 
         const auto counters = runtime.GetExecutionCounters();
@@ -617,6 +641,45 @@ void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_im
                     static_cast<unsigned long long>(counters.cold_block_executions),
                     static_cast<unsigned long long>(counters.cache_hit_block_executions),
                     static_cast<unsigned long long>(counters.fallback_events));
+        // Fallbacks by reason, with denominators. A single total cannot distinguish "the JIT met
+        // one opcode it does not implement, in a hot loop" from "the runtime refused to fetch
+        // blocks", and those want opposite work. Every reason is printed, including the ones that
+        // did not occur: a reason missing from the output would be indistinguishable from a
+        // reason this build never classifies.
+        for (std::size_t reason = 0; reason < PowerPC::GcnPort::kJitRefusalReasonCount; ++reason) {
+            const u64 events = counters.fallback_events_by_reason[reason];
+            std::printf(
+                "gmse01_boot:   fallback %-24s %12llu (%.4f%% of %llu blocks executed)\n",
+                PowerPC::GcnPort::ToString(static_cast<PowerPC::GcnPort::JitRefusalReason>(reason)),
+                static_cast<unsigned long long>(events),
+                counters.jit_block_executions > 0
+                    ? 100.0 * static_cast<double>(events) /
+                          static_cast<double>(counters.jit_block_executions)
+                    : 0.0,
+                static_cast<unsigned long long>(counters.jit_block_executions));
+        }
+
+        // Which guest addresses produced them. All-one-reason totals above say the class of
+        // refusal; only an address says which routine, and a truncated list would otherwise be
+        // indistinguishable from a complete one -- so the session's own untracked count is
+        // reported whether or not it is zero.
+        const auto& fallback_sites = runtime.GetFallbackSites();
+        std::printf("gmse01_boot:   fallback sites tracked=%zu untracked_events=%llu\n",
+                    fallback_sites.size(),
+                    static_cast<unsigned long long>(counters.fallback_sites_not_tracked));
+        std::vector<std::pair<u32, PowerPC::GcnPort::FallbackSite>> ranked(fallback_sites.begin(),
+                                                                           fallback_sites.end());
+        std::ranges::sort(ranked, [](const auto& left, const auto& right) {
+            return left.second.events > right.second.events;
+        });
+        constexpr std::size_t MOST_FREQUENT_SITES_PRINTED = 12;
+        for (std::size_t rank = 0; rank < ranked.size() && rank < MOST_FREQUENT_SITES_PRINTED;
+             ++rank) {
+            std::printf("gmse01_boot:     0x%08x %12llu  %s\n", ranked[rank].first,
+                        static_cast<unsigned long long>(ranked[rank].second.events),
+                        PowerPC::GcnPort::ToString(ranked[rank].second.reason));
+        }
+
         std::printf("gmse01_boot: dolphin_alerts=%llu\n",
                     static_cast<unsigned long long>(g_alerts_reported.load()));
 
