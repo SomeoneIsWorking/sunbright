@@ -144,6 +144,25 @@ struct TexturedEffectMaterial {
     ModelRasterPolicy raster{};
 };
 
+// Where a doubled texture pair's opacity comes from. The pair's two stages either carry the
+// textures' own alpha through, doubled with the colour, or leave alpha entirely to authored
+// constants -- two different materials, not one with a spare field.
+enum class ModelPairAlphaMode : std::uint8_t { DoubledTextureProduct, Constant };
+
+// Two decoded textures multiplied together, tinted by one authored colour, and doubled: the
+// console idiom for a surface lit by a baked light map. GMSE01 authors the tint as a material
+// colour register in one spelling and as a colour constant in another, and the alpha alongside it
+// either from the textures or from constants alone; both resolve to this one material.
+struct DoubledTexturePairMaterial {
+    PictureTexture baseTexture{};
+    PictureTexture detailTexture{};
+    Color tint{1.0F, 1.0F, 1.0F, 1.0F};
+    bool tintRgbFromVertexColor = false;
+    bool tintAlphaFromVertexColor = false;
+    ModelPairAlphaMode alphaMode = ModelPairAlphaMode::DoubledTextureProduct;
+    ModelRasterPolicy raster{};
+};
+
 // A decoded texture used only as an opacity mask for one ordinary solid colour. Texture RGB is
 // deliberately ignored; alphaScale expresses authored mask amplification before the raster test.
 struct AlphaMaskedColorMaterial {
@@ -358,9 +377,9 @@ struct LitSpecularTexturedMaterial {
 
 using ModelMaterial =
     std::variant<UnlitColorMaterial, UnlitTexturedMaterial, TexturedEffectMaterial,
-                 LitDualAlphaEffectMaterial, AlphaMaskedColorMaterial, LitColorMaterial,
-                 LitTexturedMaterial, LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial,
-                 LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
+                 DoubledTexturePairMaterial, LitDualAlphaEffectMaterial, AlphaMaskedColorMaterial,
+                 LitColorMaterial, LitTexturedMaterial, LitTexturedAlphaMaskMaterial,
+                 LitAlphaTintMaterial, LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
                  LitMaskedToonMaterial, LitMaskedSpecularMaterial, LitSpecularRampMaterial,
                  LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 

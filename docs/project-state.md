@@ -593,12 +593,28 @@ carries a control that walks every blend mode through `valid`, and fails on the 
     56,000 matrix group(s), 56,000 composed, 56,000 submitted, 11,372,298 vertex(es)
     0 rejected by the sink, 0 dolphin alerts
 
-**The frontier is now 5 materials**, and `tools/re/tev_decode.py` reads each one's program:
+Two of the five then turned out to be one material. `0x80e85ac0` and `0x80fa4c00` both multiply two
+textures together, tint the product by one authored colour and double it -- the console idiom for a
+surface carrying a baked light map -- and they differ only in where the tint comes from and what
+decides opacity. `0x80e85ac0` rasterises a channel for the tint, taking its colour from the material
+register and its alpha from the vertex, and carries both textures' alpha through doubled;
+`0x80fa4c00` takes the tint from a colour constant its stages name by selection, and its opacity
+from that constant's alpha times a colour register's. No stage of the second reads a raster input at
+all, which is why its lit channel can be admitted: nothing consumes the channel's output. The first
+spelling's channel *is* consumed, so lighting it is refused rather than ignored, and a test asserts
+that asymmetry from both sides.
 
-| materials | draws | nearest gate |
+    classification: success=48517 unsupported_program=2515   (95.1% of 51,032)
+    doubled_texture_pair=1661 (854 + 807), every other family's count unchanged
+    57,057 draws composed and submitted, 0 rejected by the sink, 0 dolphin alerts
+
+**The frontier is now 3 materials**, and `tools/re/tev_decode.py` reads each one's program:
+
+| material | draws | what it draws |
 | --- | --- | --- |
-| `0x80fa490c`, `0x80fa4c00` | 1,614 | lit, `0706/0700`, **two** stages; `lit_textured` refuses on stage count |
-| `0x80e85ac0`, `0x80ed7738`, `0x80e8817c` | 2,562 | unlit, two stages; `unlit_textured` refuses on multiple active colour stages |
+| `0x80e8817c` | 854 | `clamp(K0*tex0 + K1*tex1)`: two layers, each tinted by its own colour constant, summed |
+| `0x80ed7738` | 854 | `clamp(tex1*ras*2)`, with the first stage's colour discarded and only its alpha carried |
+| `0x80fa490c` | 807 | `clamp(K0.a + lerp(c0, c1, tex0))` then a halved detail add; two colour registers interpolated by a texture |
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

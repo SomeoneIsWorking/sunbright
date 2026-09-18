@@ -268,7 +268,8 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
                           std::is_same_v<Material, LitTexturedAlphaMaskMaterial> ||
                           std::is_same_v<Material, LitLayeredTexturedMaterial> ||
                           std::is_same_v<Material, LitTintedLayeredSpecularMaterial> ||
-                          std::is_same_v<Material, LitMaskedSpecularMaterial>)
+                          std::is_same_v<Material, LitMaskedSpecularMaterial> ||
+                          std::is_same_v<Material, DoubledTexturePairMaterial>)
                 return 2;
             if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>)
                 return 4;
@@ -305,6 +306,10 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
             } else if constexpr (std::is_same_v<Material, LitMaskedSpecularMaterial>) {
                 if (index == 0)
                     return &value.maskTexture;
+                return index == 1 ? &value.detailTexture : nullptr;
+            } else if constexpr (std::is_same_v<Material, DoubledTexturePairMaterial>) {
+                if (index == 0)
+                    return &value.baseTexture;
                 return index == 1 ? &value.detailTexture : nullptr;
             } else if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>) {
                 constexpr std::array<const PictureTexture LitMaskedToonMaterial::*, 4> textures{
@@ -413,6 +418,12 @@ bool valid(const ModelDraw& draw) noexcept {
                        material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
                        finite(material.layerWeight) && material.layerWeight >= 0.0F &&
                        material.layerWeight <= 1.0F;
+            } else if constexpr (std::is_same_v<Material, DoubledTexturePairMaterial>) {
+                const auto validTexture = [](const PictureTexture& texture) {
+                    return texture.resource != 0 && texture.width != 0 && texture.height != 0;
+                };
+                return validTexture(material.baseTexture) && validTexture(material.detailTexture) &&
+                       valid(material.tint) && material.alphaMode <= ModelPairAlphaMode::Constant;
             } else if constexpr (std::is_same_v<Material, LitMaskedSpecularMaterial>) {
                 const auto validTexture = [](const PictureTexture& texture) {
                     return texture.resource != 0 && texture.width != 0 && texture.height != 0;
@@ -543,6 +554,20 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
             } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
                 return VertexColors{.multiplicative = material.modulation,
                                     .additive = material.additive};
+            } else if constexpr (std::is_same_v<Material, DoubledTexturePairMaterial>) {
+                const Color tintRgb =
+                    material.tintRgbFromVertexColor ? vertex.color : material.tint;
+                const float tintAlpha =
+                    material.tintAlphaFromVertexColor ? vertex.color.a : material.tint.a;
+                // The additive slot's alpha says whether the textures' own alpha reaches the
+                // output, so the two authored spellings share one program instead of one of them
+                // reaching a near-copy of it.
+                const float texturedAlpha =
+                    material.alphaMode == ModelPairAlphaMode::DoubledTextureProduct ? 1.0F : 0.0F;
+                return VertexColors{
+                    .multiplicative = {tintRgb.r, tintRgb.g, tintRgb.b, tintAlpha},
+                    .additive = {0.0F, 0.0F, 0.0F, texturedAlpha},
+                };
             } else if constexpr (std::is_same_v<Material, LitDualAlphaEffectMaterial>) {
                 const Color lit = diffuse_lighting(material.baseColor, material.ambientColor,
                                                    material.lighting, eyePosition, normal);

@@ -1,6 +1,7 @@
 #include <sunbright/native_render/semantic_3d_pass.h>
 
 #include "../shaders/model_color_frag_spv.h"
+#include "../shaders/model_doubled_texture_pair_frag_spv.h"
 #include "../shaders/model_dual_alpha_effect_frag_spv.h"
 #include "../shaders/model_layered_lit_frag_spv.h"
 #include "../shaders/model_lit_alpha_mask_frag_spv.h"
@@ -50,6 +51,7 @@ enum class ModelShaderKind : std::uint8_t {
     TintedLayered,
     MaskedToon,
     MaskedSpecular,
+    DoubledTexturePair,
 };
 
 struct BlendFactors {
@@ -104,6 +106,8 @@ ModelShaderKind model_shader_kind(const ModelMaterial& material) noexcept {
                 return ModelShaderKind::MaskedToon;
             } else if constexpr (std::is_same_v<Material, LitMaskedSpecularMaterial>) {
                 return ModelShaderKind::MaskedSpecular;
+            } else if constexpr (std::is_same_v<Material, DoubledTexturePairMaterial>) {
+                return ModelShaderKind::DoubledTexturePair;
             } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
                 return value.alphaMode == ModelTextureAlphaMode::ReplaceTexture
                            ? ModelShaderKind::TextureConstantAlpha
@@ -274,6 +278,7 @@ struct Semantic3dPassImpl {
     SDL_GPUShader* tintedLayeredFragmentShader = nullptr;
     SDL_GPUShader* maskedToonFragmentShader = nullptr;
     SDL_GPUShader* maskedSpecularFragmentShader = nullptr;
+    SDL_GPUShader* doubledTexturePairFragmentShader = nullptr;
     std::unordered_map<PipelineKey, SDL_GPUGraphicsPipeline*, PipelineKeyHash> pipelines{};
     VertexStorage vertices{};
     std::vector<VertexStorage> retiredStorage{};
@@ -378,6 +383,9 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
     case ModelShaderKind::MaskedSpecular:
         info.fragment_shader = impl.maskedSpecularFragmentShader;
         break;
+    case ModelShaderKind::DoubledTexturePair:
+        info.fragment_shader = impl.doubledTexturePairFragmentShader;
+        break;
     }
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.vertex_input_state.vertex_buffer_descriptions = &vertexBuffer;
@@ -448,6 +456,8 @@ Semantic3dPass::~Semantic3dPass() {
             SDL_ReleaseGPUShader(impl_->device, impl_->maskedToonFragmentShader);
         if (impl_->maskedSpecularFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->maskedSpecularFragmentShader);
+        if (impl_->doubledTexturePairFragmentShader != nullptr)
+            SDL_ReleaseGPUShader(impl_->device, impl_->doubledTexturePairFragmentShader);
         if (impl_->colorFragmentShader != nullptr)
             SDL_ReleaseGPUShader(impl_->device, impl_->colorFragmentShader);
         if (impl_->vertexShader != nullptr)
@@ -471,7 +481,8 @@ bool Semantic3dPass::initialize(std::string& error) {
         impl_->layeredLitFragmentShader != nullptr &&
         impl_->tintedLayeredFragmentShader != nullptr &&
         impl_->maskedToonFragmentShader != nullptr &&
-        impl_->maskedSpecularFragmentShader != nullptr)
+        impl_->maskedSpecularFragmentShader != nullptr &&
+        impl_->doubledTexturePairFragmentShader != nullptr)
         return true;
     impl_->vertexShader = make_shader(impl_->device, kModelVertSpv, sizeof(kModelVertSpv),
                                       SDL_GPU_SHADERSTAGE_VERTEX);
@@ -505,6 +516,9 @@ bool Semantic3dPass::initialize(std::string& error) {
     impl_->maskedSpecularFragmentShader =
         make_shader(impl_->device, kModelMaskedSpecularFragSpv, sizeof(kModelMaskedSpecularFragSpv),
                     SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
+    impl_->doubledTexturePairFragmentShader =
+        make_shader(impl_->device, kModelDoubledTexturePairFragSpv,
+                    sizeof(kModelDoubledTexturePairFragSpv), SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     if (impl_->vertexShader == nullptr || impl_->colorFragmentShader == nullptr ||
         impl_->textureFragmentShader == nullptr ||
         impl_->textureConstantAlphaFragmentShader == nullptr ||
@@ -514,7 +528,8 @@ bool Semantic3dPass::initialize(std::string& error) {
         impl_->layeredLitFragmentShader == nullptr ||
         impl_->tintedLayeredFragmentShader == nullptr ||
         impl_->maskedToonFragmentShader == nullptr ||
-        impl_->maskedSpecularFragmentShader == nullptr) {
+        impl_->maskedSpecularFragmentShader == nullptr ||
+        impl_->doubledTexturePairFragmentShader == nullptr) {
         error = std::string("semantic 3D shader creation failed: ") + SDL_GetError();
         return false;
     }
