@@ -59,6 +59,7 @@ enum class J3dMaterialFamily : std::uint8_t {
     LitLayeredTextured,
     LitTintedLayeredSpecular,
     LitMaskedToon,
+    TexturedEffect,
 };
 
 // Every family, including `None`, so a refusal set can be indexed by the family that refused.

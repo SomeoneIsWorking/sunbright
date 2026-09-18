@@ -505,26 +505,28 @@ which is what says the fix landed where it was aimed rather than somewhere else.
 textures-per-draw histogram agrees independently with the families' own texture counts: 4 for the
 8,540 masked-toon draws, 2 for the 4,270 layered ones, 0 for the 854 `lit_specular_color`.
 
-Remaining: ~25,100 draws are still `unsupported_program`, and they are now enumerated rather than
-counted. `classify_j3d_material` reports a `J3dFamilyRefusals` set -- why *each* of the fifteen
-families turned a state down, in that family's own words -- and the probe records every distinct
-material no family accepted. **The whole remaining frontier is 22 materials**, because the scene
-holds only tens of distinct materials and each is redrawn once per frame:
+Wiring in the `textured_effect` family took classification from 25,650 draws to **35,868 of 51,314
+(69.9%)**. That family -- a texture modulated by an authored constant or register colour -- was
+already implemented, already tested and already drawn by the renderer, and was reached by no
+runtime: nothing called `classify_j3d_effect_material`. Its nine programs are exactly the nine the
+TEV decoder found among the refused materials. It is asked last, so it cannot take a draw from a
+family that already had one, and the measurement confirms it took none: every other family's count
+is unchanged across the wiring.
 
-| authored channels | distinct materials | draws | shape |
-| --- | --- | --- | --- |
-| `0706/0700` | 14 | 11,862 | lit, 1 texture; ten of them are one stage and differ from the accepted `lit_textured` family *only* in their TEV program bytes |
-| `0686/0706` | 2 | 8,804 | two colour channels with a **lit alpha channel**, 2 stages, vertex colour; no family accepts a lit alpha today |
-| `0700/0700`, `0700/0701`, `0701/0700`, `0701/0701` | 6 | 5,124 | genuinely unlit, 1--2 stages |
+    classification: success=35868 unsupported_program=15446
+    families: textured_effect=10248 lit_textured=9394 lit_masked_toon=8540
+              lit_tinted_layered_specular=3416 unlit_textured=1708 lit_specular_color=854
+              lit_dual_alpha_effect=854 lit_alpha_tint=854
+    76 distinct textures decoded, 3,957,504 bytes
+    textures per classified draw: 0=854 1=22204 2=4270 4=8540
 
-The gates partition exactly: of the refusals, `lit_color` turns down every one for texture binding
-(9,394), colour channels (14,100) or stage count (2,468), and those three sum to the total. The
-largest single portable win is the ten single-stage lit materials at `0x80fa7bec`--`0x80fa8f9c`,
-8,540 draws, whose channels the `lit_textured` family already accepts.
+**The frontier is now 10 materials**, and `tools/re/tev_decode.py` reads each one's program:
 
-`lit_specular_ramp`, `alpha_masked_color`, `lit_specular_textured`, `lit_textured_alpha_mask`,
-`lit_layered_textured`, `lit_tinted_layered_specular` and `lit_masked_toon` each refuse *every*
-remaining draw on colour channels alone, so none of them is close; they are not the next port.
+| materials | draws | shape |
+| --- | --- | --- |
+| `0x80d06840`, `0x80d06a70` | 8,708 | `0686/0706`, two colour channels with a **lit alpha**, 2 stages, vertex colour; no family accepts a lit alpha channel |
+| `0x80fa490c`, `0x80fa4c00` | 1,614 | `0706/0700` but **two** stages, so the single-stage effect family refuses them on stage count |
+| six materials | 5,124 | genuinely unlit (`0700/0700`, `0700/0701`, `0701/0700`, `0701/0701`), 1--2 stages |
 
 `tools/re/tev_decode.py` decodes a stage program into the expression it computes, and is checked by
 `--selftest` against the programs the shipping families already accept. Run over the eleven
