@@ -458,9 +458,32 @@ scene's light group holds 15 entries and its ambient group 6; every relight took
 no local override and no effect light; slots 0/2/5/7 and ambient slots 0/1/2/3 are used; two
 distinct rigs are published -- white light over mid-grey ambient (9,394) and a dimmer
 `0x505050`/`0x282828` pair (4,270); the sun sits at `(200000, 500000, 200000)` with shininess
-`50.0`, which is the value the decomp's own RE note predicts. All 44,314 materials are now
-classified against a published light, and all 44,314 are still refused: lighting was a necessary
-input, not the only missing one. The lit families' own refusal reasons are the next measurement.
+`50.0`, which is the value the decomp's own RE note predicts.
+
+All 44,314 materials are now classified against a published light, and all 44,314 are still
+refused: lighting was a necessary input, not the only missing one. Asked of the lit classifiers
+themselves, the remaining gates are specific and the counts close exactly:
+
+    lit colour results:   unsupported colour channels=20496 unsupported colour-stage count=4176
+                          texture binding=19642
+    lit textured results: unsupported colour channels=20496 unsupported colour-stage count=4176
+                          unsupported colour program=10248 missing normal=9394
+    channel controls (colour/alpha): 0686/0706=1708 068e/0700=11956 0700/0700=1708 0700/0701=1708
+                          0701/0700=854 0701/0701=2562 0706/0700=17840 070e/0700=5124 070f/0701=854
+
+The channel-control histogram is the cross-check: three of the nine pairs GMSE01 authors are in the
+lit families' accepted set -- `0706/0700` (17,840), `070e/0700` (5,124) and `070f/0701` (854) --
+totalling **23,818**, and 44,314 − 20,496 = 23,818 exactly. So the channel gate is understood rather
+than merely counted. Of the six unrecognised pairs, `0700/*` and `0701/*` (8,540) have the lighting
+bit clear and are genuinely unlit; `068e/0700` (11,956) differs from the accepted `070e/0700` only
+in its attenuation function, which points at a specular family rather than a missing one.
+
+**The largest single actionable item is `missing normal` = 9,394**, which is not GMSE01's doing: it
+is this hook passing `hasNormal = false`. The decomp classifies per *shape*, at `J3DShape::draw`,
+taking both flags from the shape's own vertex layout and the material from `j3dSys.getMatPacket()`
+(`sms-boot/runtime/native_j3d_adapter.cpp`). The guest probe classifies at `J3DMatPacket::draw`,
+where no shape is in hand. Moving that composition to the shape seam -- which is where a `ModelDraw`
+has to be built anyway -- is the next step.
 
 Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
 textures are counted and discarded; no `ModelDraw` is built, no material classifies into a family

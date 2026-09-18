@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guest_material_probe.h"
 
+#include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_stage_lighting.h>
 
 #include <array>
@@ -205,6 +206,21 @@ void GuestMaterialProbe::measure_refusals(const sb::native_render::J3dMaterialSt
     sb::native_render::UnlitTexturedMaterial unlitTextured{};
     unlitTexturedResults_[sb::native_render::classify_j3d_unlit_textured_material(
         state, placeholder, unlitTextured)] += 1;
+
+    // The two lit families the scene's materials are shaped like. Asked only when a light has been
+    // published, so a zero denominator here says "no relight had run yet" rather than "every lit
+    // family refused".
+    const sb::native_render::ModelLightingContext* const lighting =
+        sb::native_render::current_j3d_stage_lighting();
+    if (lighting == nullptr) {
+        return;
+    }
+    sb::native_render::LitColorMaterial litColor{};
+    litColorResults_[sb::native_render::classify_j3d_lit_color_material(state, *lighting,
+                                                                        litColor)] += 1;
+    sb::native_render::LitTexturedMaterial litTextured{};
+    litTexturedResults_[sb::native_render::classify_j3d_lit_textured_material(
+        state, placeholder, *lighting, litTextured)] += 1;
 }
 
 void GuestMaterialProbe::classify(gcnport::GuestContext& guest,
@@ -273,6 +289,12 @@ gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest)
         litMaterials_ += 1;
     }
     record(colorChannelCounts_, colorChannelCountsUntracked_, read.color.colorChannelCount);
+    // The lit families gate on an exact (colour, alpha) channel-control pair. Reporting the pairs
+    // this scene authors is what turns "unsupported colour channels" into a list of the exact
+    // controls a family would have to recognise.
+    record(channelControls_, channelControlsUntracked_,
+           static_cast<std::uint32_t>(state.colorChannelControl) << 16U |
+               state.alphaChannelControl);
     record(cullModes_, cullModesUntracked_, state.cullMode);
     if (read.texGen.recognised) {
         record(texGenCounts_, texGenCountsUntracked_, read.texGen.texGenCount);
@@ -457,12 +479,30 @@ void GuestMaterialProbe::report() const {
         }
         std::printf("\n");
     }
+    if (channelControls_.empty()) {
+        std::printf("gmse01_boot:   channel controls: none recorded\n");
+    } else {
+        std::printf("gmse01_boot:   channel controls (colour/alpha):");
+        for (const auto& [pair, count] : channelControls_) {
+            std::printf(" %04x/%04x=%llu", pair >> 16U, pair & 0xffffU,
+                        static_cast<unsigned long long>(count));
+        }
+        if (channelControlsUntracked_ != 0) {
+            std::printf(" (+%llu past the tracked distinct values)",
+                        static_cast<unsigned long long>(channelControlsUntracked_));
+        }
+        std::printf("\n");
+    }
     print_errors("raster policy results", rasterResults_,
                  sb::native_render::j3d_raster_policy_result_name);
     print_errors("unlit colour results", unlitResults_,
                  sb::native_render::j3d_unlit_material_result_name);
     print_errors("unlit textured results", unlitTexturedResults_,
                  sb::native_render::j3d_unlit_textured_result_name);
+    print_errors("lit colour results", litColorResults_,
+                 sb::native_render::j3d_lit_color_result_name);
+    print_errors("lit textured results", litTexturedResults_,
+                 sb::native_render::j3d_lit_textured_result_name);
     std::printf("gmse01_boot:   %llu material(s) were classified with a published stage light\n",
                 static_cast<unsigned long long>(litMaterialsClassified_));
     std::printf("gmse01_boot:   material classification:");

@@ -5,6 +5,7 @@
 #include <map>
 #include <set>
 
+#include <sunbright/native_render/j3d_lit_material.h>
 #include <sunbright/native_render/j3d_material_family.h>
 #include <sunbright/native_render/j3d_unlit_material.h>
 
@@ -137,6 +138,8 @@ class GuestMaterialProbe {
     std::map<sb::native_render::J3dRasterPolicyResult, std::uint64_t> rasterResults_;
     std::map<sb::native_render::J3dUnlitMaterialResult, std::uint64_t> unlitResults_;
     std::map<sb::native_render::J3dUnlitTexturedResult, std::uint64_t> unlitTexturedResults_;
+    std::map<sb::native_render::J3dLitColorResult, std::uint64_t> litColorResults_;
+    std::map<sb::native_render::J3dLitTexturedResult, std::uint64_t> litTexturedResults_;
     std::map<sb::title_adapter::GuestMaterialError, std::uint64_t> materialErrors_;
     std::map<sb::title_adapter::GuestColorError, std::uint64_t> colorErrors_;
     std::map<sb::title_adapter::GuestTexGenError, std::uint64_t> texGenErrors_;
@@ -147,6 +150,8 @@ class GuestMaterialProbe {
     std::map<sb::title_adapter::GuestPixelEngineKind, std::uint64_t> kinds_;
     std::uint64_t litMaterials_ = 0;
     std::uint64_t unrecognisedTexGenBlocks_ = 0;
+    std::map<std::uint32_t, std::uint64_t> channelControls_;
+    std::uint64_t channelControlsUntracked_ = 0;
     std::map<std::uint32_t, std::uint64_t> colorChannelCounts_;
     std::uint64_t colorChannelCountsUntracked_ = 0;
     std::map<std::uint32_t, std::uint64_t> texGenCounts_;
