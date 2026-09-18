@@ -72,6 +72,18 @@ int main() {
     assert(texturedMaterial.textureCoordinates == ModelTextureCoordinates::Primary);
     assert(texturedMaterial.texture == texture);
     assert(texturedMaterial.usesVertexColor);
+    assert(texturedMaterial.baseColor == Color(1, 1, 1, 1));
+
+    // The stage multiplies the texture by the raster colour. With the colour channel taking no
+    // vertex colour, that is the material's own register, and carrying it is the difference
+    // between a faint surface and one drawn at full strength.
+    state.colorChannelControl = 0;
+    assert(classify_j3d_unlit_textured_material(state, texture, texturedMaterial) ==
+           J3dUnlitTexturedResult::Success);
+    assert(!texturedMaterial.usesVertexColor);
+    assert(texturedMaterial.baseColor ==
+           Color(128.0F / 255.0F, 64.0F / 255.0F, 32.0F / 255.0F, 1.0F));
+    state.colorChannelControl = 1;
 
     state.textureBindings[0].textureNumber = 0xFFFF;
     state.textureBindings[1].textureNumber = 3;

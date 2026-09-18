@@ -20,6 +20,7 @@ add_executable(sunbright_gcnport_boot
     guest_lighting_probe.cpp
     guest_projection_probe.cpp
     guest_draw_publisher.cpp
+    draw_listing.cpp
     guest_frame_renderer.cpp
     frame_image_file.cpp
     family_color_map.cpp

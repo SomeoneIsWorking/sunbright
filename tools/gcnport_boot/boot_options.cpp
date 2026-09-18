@@ -32,7 +32,7 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-projections <hex-addr>[:<reports>]] "
                      "[--render-frames <hex-addr>] [--dump-frame <path>] "
                      "[--dump-frame-index <n>] [--draw-mode normal|family-map|opaque] "
-                     "[--draw-limit <n>]\n",
+                     "[--draw-skip <n>] [--draw-limit <n>] [--draw-log-frame <n>]\n",
                      argv[0]);
     };
     if (argc < 2 || argv[1][0] == '-') {
@@ -240,6 +240,34 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             // and refused rather than ignored: a run that was asked for an image and silently took
             // no picture is indistinguishable from one whose renderer drew nothing.
             request.frame_image_path = value;
+        } else if (name == "--draw-log-frame") {
+            // Lists every draw of one frame with its family and policy, so a draw ordinal found by
+            // bounding the frame can be named.
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(value, &end, 0);
+            if (end == value || *end != '\0' || errno == ERANGE || parsed == 0) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --draw-log-frame needs a frame number from 1, got "
+                             "'%s'\n",
+                             value);
+                return false;
+            }
+            request.draw_log_frame = parsed;
+        } else if (name == "--draw-skip") {
+            // How many of each frame's leading draws are withheld. With a limit it isolates a
+            // range: bounding the prefix names the draw that introduces a defect, and dropping the
+            // prefix as well is what shows that draw's own geometry and colour on an empty frame.
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(value, &end, 0);
+            if (end == value || *end != '\0' || errno == ERANGE || parsed == 0) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --draw-skip needs a draw count from 1, got '%s'\n",
+                             value);
+                return false;
+            }
+            request.draw_skip = parsed;
         } else if (name == "--draw-limit") {
             // How many of each frame's draws reach the sink. Bounding it and moving the bound is
             // how a defect somewhere in a stack of blended draws is attributed to one of them.
@@ -401,6 +429,18 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
         }
     }
 
+    if (request.draw_log_frame != 0 && request.frame_seam_addresses.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --draw-log-frame names a frame, and there are no frames without "
+                     "--render-frames\n");
+        return false;
+    }
+    if (request.draw_skip != 0 && request.frame_seam_addresses.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --draw-skip withholds each frame's leading draws, and there are "
+                     "no frames without --render-frames\n");
+        return false;
+    }
     if (request.draw_limit != 0 && request.frame_seam_addresses.empty()) {
         std::fprintf(stderr,
                      "gmse01_boot: --draw-limit bounds each frame's draws, and there are no frames "

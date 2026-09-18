@@ -622,9 +622,10 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                                           : material.baseColor,
                 };
             } else if constexpr (std::is_same_v<Material, UnlitTexturedMaterial>) {
-                return VertexColors{.multiplicative = material.usesVertexColor
-                                                          ? vertex.color
-                                                          : Color{1.0F, 1.0F, 1.0F, 1.0F}};
+                return VertexColors{.multiplicative =
+                                        material.usesVertexColor
+                                            ? multiply(material.baseColor, vertex.color)
+                                            : material.baseColor};
             } else if constexpr (std::is_same_v<Material, TexturedEffectMaterial>) {
                 return VertexColors{.multiplicative = material.modulation,
                                     .additive = material.additive};

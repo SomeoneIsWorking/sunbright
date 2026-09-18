@@ -31,7 +31,10 @@ constexpr GuestAddress PE_VTABLE = 0x80000130;
 
 constexpr GuestAddress MATERIAL = 0x80000200;
 constexpr GuestAddress COLOR_BLOCK = 0x80000280;
-constexpr GuestAddress TEX_GEN_BLOCK = 0x80000300;
+// The texture-generation block is 0x48 bytes of coordinates and matrix pointers, so it is
+// placed clear of the other blocks rather than beside them.
+constexpr GuestAddress TEX_GEN_BLOCK = 0x80000a00;
+constexpr GuestAddress TEX_MATRIX = 0x80000b00;
 constexpr GuestAddress TEV_BLOCK = 0x80000340;
 constexpr GuestAddress PE_BLOCK = 0x80000400;
 constexpr GuestAddress FOG = 0x80000440;
@@ -75,9 +78,18 @@ Image build_material() {
     image.half(COLOR_BLOCK + 0x18, 0x0a51);
     image.byte(COLOR_BLOCK + 0x40, 2); // cull mode
 
-    // J3DTexGenBlockBasic.
+    // J3DTexGenBlockBasic: one coordinate, a 2x4 multiply of authored set 0 by texture matrix 0.
     image.word(TEX_GEN_BLOCK + 0x00, TEX_GEN_VTABLE);
     image.word(TEX_GEN_BLOCK + 0x04, 1);
+    image.byte(TEX_GEN_BLOCK + 0x08, 1);  // MTX2x4
+    image.byte(TEX_GEN_BLOCK + 0x09, 4);  // authored coordinate set 0
+    image.byte(TEX_GEN_BLOCK + 0x0a, 30); // the first loadable texture matrix
+    image.word(TEX_GEN_BLOCK + 0x28, TEX_MATRIX);
+    image.byte(TEX_MATRIX + 0x00, 1); // projection
+    image.byte(TEX_MATRIX + 0x01, 0); // info
+    image.real(TEX_MATRIX + 0x64, 2.0F);
+    image.real(TEX_MATRIX + 0x78, 3.0F);
+    image.real(TEX_MATRIX + 0x8c, 1.0F);
 
     // J3DTevBlock2 with one active stage.
     image.word(TEV_BLOCK + 0x00, TEV_VTABLE);
@@ -124,6 +136,16 @@ void reads_all_four_blocks_into_one_state() {
 
     assert(material.colorBlock == COLOR_BLOCK);
     assert(material.texGenBlock == TEX_GEN_BLOCK);
+    assert(material.texGen.texGenCount == 1);
+    assert(material.texGen.coordinates[0] ==
+           (sb::title_adapter::GuestTexCoordDefinition{
+               .texGenType = 1, .texGenSrc = 4, .texGenMatrix = 30}));
+    assert(material.texGen.matrices[0].present);
+    assert(material.texGen.matrices[0].projection == 1);
+    assert(material.texGen.matrices[0].total[0] == 2.0F);
+    assert(material.texGen.matrices[0].total[5] == 3.0F);
+    assert(material.texGen.matrices[0].total[10] == 1.0F);
+    assert(!material.texGen.matrices[1].present);
     assert(material.tevBlock == TEV_BLOCK);
     assert(material.pixelEngineBlock == PE_BLOCK);
 

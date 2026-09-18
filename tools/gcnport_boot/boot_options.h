@@ -179,7 +179,9 @@ struct BootRequest {
     std::string frame_image_path;
     u64 frame_image_index = 0;
     DrawDiagnosticMode draw_mode = DrawDiagnosticMode::Normal;
+    u64 draw_skip = 0;
     u64 draw_limit = 0;
+    u64 draw_log_frame = 0;
     u32 shape_probe_system = sb::title_adapter::GMSE01_J3D_SYS;
 };
 

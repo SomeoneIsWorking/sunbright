@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guest_draw_publisher.h"
 
+#include "draw_listing.h"
 #include "family_color_map.h"
 
 #include <sunbright/native_render/j3d_mesh_vertices.h>
 #include <sunbright/native_render/j3d_projection.h>
+#include <sunbright/native_render/j3d_tex_coord_generation.h>
 
 #include <sunbright/native_render/semantic_sink.h>
 
@@ -124,7 +126,15 @@ GuestDrawPublisher::~GuestDrawPublisher() {
 std::uint32_t
 GuestDrawPublisher::publish(gcnport::GuestContext& guest,
                             const sb::title_adapter::GuestShape& shape, std::uint64_t instance,
-                            const sb::native_render::ClassifiedJ3dMaterial& classified) {
+                            const sb::native_render::ClassifiedJ3dMaterial& classified,
+                            const sb::title_adapter::GuestTexGenBlock& texGen) {
+    const sb::native_render::J3dTexCoordGeneration generation =
+        sb::title_adapter::build_guest_tex_coord_generation(texGen);
+    for (std::uint32_t coordinate = 0; coordinate < generation.count; ++coordinate) {
+        const sb::native_render::J3dTexCoordGenerator& generator =
+            generation.generators[coordinate];
+        coordinateGenerators_[{static_cast<std::uint8_t>(generator.type), generator.source}] += 1;
+    }
     if (!ensure_sink()) {
         return 0;
     }
@@ -158,6 +168,19 @@ GuestDrawPublisher::publish(gcnport::GuestContext& guest,
             continue;
         }
         composed_ += 1;
+        // GX does not sample with the coordinates the vertices carry; it samples with what the
+        // material's generators make of them. Applying that here, before the mesh is built, is what
+        // keeps the scale and scroll a title puts in its texture matrices out of the renderer.
+        sb::native_render::J3dTexCoordGenerationCounts generated{};
+        const sb::native_render::J3dTexCoordGenerationResult generation_result =
+            sb::native_render::apply_j3d_tex_coord_generation(generation, triangles_, generated);
+        coordinateGeneration_[generation_result] += 1;
+        if (generation_result != sb::native_render::J3dTexCoordGenerationResult::Success) {
+            continue;
+        }
+        transformedCoordinates_ += generated.transformed;
+        authoredCoordinates_ += generated.authored;
+        deferredCoordinates_ += generated.deferred;
         // A draw with no projection is not submitted. The identity matrix would be accepted by the
         // sink and would draw the geometry in clip space, which looks like a renderer fault rather
         // than the missing input it is.
@@ -185,9 +208,15 @@ GuestDrawPublisher::publish(gcnport::GuestContext& guest,
         } else if (mode_ == DrawDiagnosticMode::Opaque) {
             draw.material = opaque_material(classified.material);
         }
-        // Counted against the frame's budget only once the draw is complete, so a bound of N
-        // means the first N draws the title would have rendered rather than the first N it tried.
-        if (budget_ != nullptr && !budget_->take()) {
+        // The budget numbers the draw, so the listing and a bisection over `--draw-limit` use one
+        // numbering. Withheld draws are listed too: the listing is of the frame the title composed,
+        // and a bound that cut it in half would otherwise hide the half being looked for.
+        const bool withinBudget = budget_ == nullptr || budget_->take();
+        if (logFrame_ != 0 && budget_ != nullptr && budget_->frames() == logFrame_) {
+            print_draw_listing(logFrame_, budget_->offered(), classified, texGen, images,
+                               triangles_, draw, vertices_, resource);
+        }
+        if (!withinBudget) {
             withheldByBudget_ += 1;
             continue;
         }
@@ -240,9 +269,10 @@ const char* draw_diagnostic_mode_name(DrawDiagnosticMode mode) noexcept {
 
 void GuestDrawPublisher::report() const {
     if (budget_ != nullptr && budget_->bounded()) {
-        std::printf("gmse01_boot:   DRAW BUDGET: at most %llu draw(s) per frame reached the sink, "
-                    "%llu withheld across %llu frame(s); this run's image is a prefix of each "
-                    "frame, not a rendering result\n",
+        std::printf("gmse01_boot:   DRAW BUDGET: each frame's first %llu draw(s) were withheld and "
+                    "at most %llu after them reached the sink, %llu withheld in total across %llu "
+                    "frame(s); this run's image is a slice of each frame, not a rendering result\n",
+                    static_cast<unsigned long long>(budget_->skip()),
                     static_cast<unsigned long long>(budget_->limit()),
                     static_cast<unsigned long long>(withheldByBudget_),
                     static_cast<unsigned long long>(budget_->frames()));
@@ -318,6 +348,21 @@ void GuestDrawPublisher::report() const {
     std::printf(" | pose errors:");
     for (const auto& [error, count] : poseErrors_) {
         std::printf(" %s=%llu", sb::title_adapter::guest_pose_error_name(error),
+                    static_cast<unsigned long long>(count));
+    }
+    std::printf("\n");
+    std::printf("gmse01_boot:   texture coordinate generation:");
+    for (const auto& [result, count] : coordinateGeneration_) {
+        std::printf(" %s=%llu", sb::native_render::j3d_tex_coord_generation_result_name(result),
+                    static_cast<unsigned long long>(count));
+    }
+    std::printf(" | coordinates transformed=%llu authored=%llu deferred=%llu",
+                static_cast<unsigned long long>(transformedCoordinates_),
+                static_cast<unsigned long long>(authoredCoordinates_),
+                static_cast<unsigned long long>(deferredCoordinates_));
+    std::printf(" | generators by type/source:");
+    for (const auto& [generator, count] : coordinateGenerators_) {
+        std::printf(" %u/%u=%llu", generator.first, generator.second,
                     static_cast<unsigned long long>(count));
     }
     std::printf("\n");

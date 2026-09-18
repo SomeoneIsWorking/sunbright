@@ -20,6 +20,7 @@ add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/
                                                  src/j3d_stage_lighting.cpp
                                                  src/j3d_mesh_vertices.cpp
                                                  src/j3d_projection.cpp
+                                                 src/j3d_tex_coord_generation.cpp
                                                  src/j3d_unlit_effect_material.cpp
                                                  src/j3d_unlit_material.cpp
                                                  src/model.cpp src/model_context.cpp
@@ -75,6 +76,10 @@ add_test(NAME native_render_particle_billboard COMMAND native_render_particle_bi
 add_executable(native_render_j3d_mesh_decode_test tests/j3d_mesh_decode_test.cpp)
 target_link_libraries(native_render_j3d_mesh_decode_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_mesh_decode COMMAND native_render_j3d_mesh_decode_test)
+
+add_executable(native_render_j3d_tex_coord_generation_test tests/j3d_tex_coord_generation_test.cpp)
+target_link_libraries(native_render_j3d_tex_coord_generation_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_tex_coord_generation COMMAND native_render_j3d_tex_coord_generation_test)
 
 add_executable(native_render_j3d_fog_test tests/j3d_fog_test.cpp)
 target_link_libraries(native_render_j3d_fog_test PRIVATE sunbright-native-render-core)

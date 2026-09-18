@@ -123,10 +123,16 @@ struct UnlitColorMaterial {
     ModelRasterPolicy raster{};
 };
 
-// A decoded game texture modulated by authored vertex colour. Asset encoding is gone before this
-// boundary; the model submission carries one ordinary RGBA image matching this descriptor.
+// A decoded game texture modulated by the authored colour its surface carries. Asset encoding is
+// gone before this boundary; the model submission carries one ordinary RGBA image matching this
+// descriptor.
 struct UnlitTexturedMaterial {
     PictureTexture texture{};
+    // What the texture is multiplied by. When `usesVertexColor` is set the surface supplies it per
+    // vertex and this is white; otherwise it is the material's own authored colour, and dropping it
+    // for white draws every such surface at full strength -- which is what a cloud layer whose
+    // authored colour is faint looks like when it saturates the sky.
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
     ModelTextureCoordinates textureCoordinates = ModelTextureCoordinates::Primary;
     bool usesVertexColor = true;
     ModelRasterPolicy raster{};

@@ -774,9 +774,84 @@ it: an additive source whose alpha should be small and is 1 blows out exactly li
 attributes a defect inside a stack of blended draws to the draw that introduces it -- the finished
 frame cannot, because every draw contributed to the pixel. The renderer owns when a frame begins and
 the publisher owns what a draw is, so the count they share is its own object rather than a field one
-reaches into. First measurement: at `--draw-limit 35`, frame 3800 is **43.7% pure white -- the same
-as the unbounded frame**, so the whole defect is introduced within the first thirty-five of that
-frame's seventy draws. Bisecting that range is the next scope.
+reaches into. At `--draw-limit 35`, frame 3800 is **43.7% pure white -- the same as the unbounded
+frame**, so the whole defect is introduced within the first thirty-five of that frame's seventy
+draws. Bisecting that range named the draw:
+
+| bound | 4 | 9 | 17 | 26 | 27 | 29 | 30 | 31 | 33 | 35 | unbounded |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| pure white | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.7% | **37.0%** | **43.7%** | 43.7% | 43.7% | 43.7% |
+
+**`--draw-skip <n>` withholds each frame's leading draws**, which is what shows a named draw rather
+than only naming it: with `--draw-limit 1` it leaves exactly one draw on an empty frame, the only
+view in which that draw's own geometry and colour can be read instead of inferred from what it did
+to what was already there. Draw 30 alone covers 82.9% of the frame and is 104,878 pixels of pure
+white; 99.3% of the pixels it whitens were black before it, so it paints white rather than
+saturating something.
+
+That draw is not a renderer defect. `--draw-log-frame <n>` prints every draw of one frame with its
+family, policy, mesh, texture and coordinate range, and it says draw 30 is `unlit_textured`,
+premultiplied-alpha, drawing an **8x8 clamped texture whose channels run the whole 0-255 range**
+over coordinates spanning `u=-0.04..1, v=-0.01..1` -- one of the sky's cloud layers, magnified over
+the surface exactly as authored, with a texture that does contain white. The over-brightness
+survives into the finished frame because the sky that follows it (draw 32, `unlit_color`,
+`GX_BL_ONE`/`GX_BL_INVSRCCLR`, 1,800 vertices, full screen) cannot darken a white destination: that
+blend leaves any destination it meets at one. 
+`--draw-log-frame` also prints the colour each draw resolves to, read back out of the submitted
+draw through the shipping `transform_vertex` rather than restated per material family. Draw 30
+resolves to `r1 g1 b1, a0.2-1`: an intensity texture whose channels are equal, multiplied by a white
+vertex colour with an authored alpha fade, composited with `GX_BL_ONE`. The console computes the
+same thing from the same inputs, so the draw is faithful and the frame is still wrong -- which
+places the defect in what the draw is composited *into*.
+
+The sky that follows it (draw 32, `unlit_color`, `GX_BL_ONE`/`GX_BL_INVSRCCLR`, 1,800 vertices,
+resolving to a blue gradient over the whole screen) is the other half. That blend leaves any
+destination it meets at one, so it can only be authored to run over a dark buffer -- and it runs
+after the cloud layers, over the white they left. **The remaining candidate is composition into the
+wrong target**: GMSE01's title sequence makes EFB copies this renderer has no counterpart for, and a
+pass meant for an offscreen sky texture, drawn into the main frame instead, looks precisely like
+this. Measuring where the title copies the EFB within a frame is the next scope.
+
+One real omission was found on the way and fixed. `UnlitTexturedMaterial` carried no authored
+colour: its stage multiplies the texture by the raster colour, which is the vertex colour when the
+channel takes one and the material's own register when it does not, and the pass substituted white
+for that register. Its untextured sibling had carried `materialColorRgba8` all along, so the two
+classifiers disagreed about the same input. The material now carries a `baseColor` and the pass
+multiplies by it. It is not the cloud defect -- those materials resolve to white because their
+vertex colour is white -- but every unlit textured surface GMSE01 authors a colour for was being
+drawn at full strength.
+
+Frame indices are **not** comparable across runs. Two runs of the same image reached different draws
+at frame 3800; a bisection is only valid within one run's own numbering, and a frame named by index
+must be re-listed in the run that produced it.
+
+#### Texture-coordinate generation
+
+Chasing that draw found a real and unrelated gap: **J3D texture matrices were not implemented at
+all**. `title-adapter` read a material's texture-generation block for its coordinate count only, so
+every generated coordinate was drawn with the values the vertices carried. GX never samples with
+those: each generator names a source and usually a matrix, and a title puts every scale and scroll
+in the matrix. Measured in the same frame, draw 28 scales its coordinates by two, draw 29 by four
+with a -1.5/+0.475 offset, and draw 31 scales one coordinate by two and another by a half, each
+with an offset that moves between frames -- drifting cloud layers, all drawn unscaled and unmoving.
+
+`native_render::apply_j3d_tex_coord_generation` now produces them, and the matrix is supplied rather
+than derived: J3D computes it every frame in `J3DTexMtx::calc` and leaves it in `mTotalMtx`, so
+`title-adapter` hands that over instead of composing the SRT a second time.
+`J3DTexGenBlockBasic::mTexCoord` (`0x08`, stride 4) and `mTexMtx` (`0x28`) are read from the guest,
+and a `GX_IDENTITY` generator is kept distinct from an empty matrix slot so a slot the title never
+filled cannot be read as an identity it never authored.
+
+Measured over one 1,400,000,000-block run, 0 Dolphin alerts, every generator the title issued:
+
+    generators by type/source: 1/4=53,690  1/5=9,394  1/6=8,540  10/19=20,572
+
+All 71,624 matrix generators are `GX_TG_MTX2x4` over authored coordinate sets 0-2; there is no
+`MTX3x4`, and no position- or normal-sourced generator, in this scene. The remaining 20,572 are
+`GX_TG_SRTG` from `GX_TG_COLOR0` -- the toon ramp lookup, whose coordinate is a lighting result that
+does not exist when a mesh is decoded and which the toon families already resolve in their own
+fragment programs. Those are counted as deferred and their authored values left alone; refusing the
+draw instead removed half the scene, which is how the distinction was found.
 
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every

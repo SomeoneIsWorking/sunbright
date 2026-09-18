@@ -456,7 +456,7 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         // Installed before the model probes on purpose: the publisher claims a counting sink the
         // first time it publishes, and the process has one sink. Activating the bridge first is
         // what makes the draws land in a frame instead of in a counter.
-        sunbright::gcnport_boot::FrameDrawBudget draw_budget(request.draw_limit);
+        sunbright::gcnport_boot::FrameDrawBudget draw_budget(request.draw_skip, request.draw_limit);
         sunbright::gcnport_boot::GuestFrameRenderer frame_renderer(&draw_budget);
         std::vector<std::unique_ptr<sunbright::gcnport_boot::FrameSeamHook>> frame_seams;
         if (!request.frame_seam_addresses.empty()) {
@@ -491,7 +491,7 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         for (const u32 address : request.model_probe_addresses) {
             model_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestModelProbe>(
                 request.shape_probe_system, request.model_probe_reports, request.draw_mode,
-                &draw_budget));
+                &draw_budget, request.draw_log_frame));
             adapter.install_hook({.identity = adapter.identity(), .address = address},
                                  std::ref(*model_probes.back()));
             if (!runtime.HasNativeHook(address)) {

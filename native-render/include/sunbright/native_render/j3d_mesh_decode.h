@@ -86,6 +86,7 @@ struct J3dDecodedVertex {
     float nz = 0.0F;
     float uv[kJ3dTextureCoordinateSets][2]{};
     std::uint32_t rgba = 0xFFFFFFFFU;
+    bool operator==(const J3dDecodedVertex&) const = default;
 };
 
 enum class J3dMeshDecodeError : std::uint8_t {

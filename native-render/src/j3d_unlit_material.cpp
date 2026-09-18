@@ -300,6 +300,12 @@ classify_j3d_unlit_textured_material(const J3dMaterialState& state, const Pictur
     material.textureCoordinates =
         static_cast<ModelTextureCoordinates>(state.tevStages[0].textureCoordinate);
     material.usesVertexColor = vertexColor;
+    // The stage multiplies the texture by the raster colour, and the raster colour is the colour
+    // channel's output: the vertex colour when the channel takes one, and the material's own
+    // register when it does not. Substituting white for that register is not a neutral default; it
+    // is the surface drawn at a strength the title never authored.
+    material.baseColor =
+        vertexColor ? Color{1.0F, 1.0F, 1.0F, 1.0F} : color_from_rgba8(state.materialColorRgba8);
     material.raster = raster;
     return J3dUnlitTexturedResult::Success;
 }

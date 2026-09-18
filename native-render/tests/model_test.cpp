@@ -114,6 +114,19 @@ int main() {
     };
     assert(valid(secondaryUv));
     assert(transform_vertex(secondaryUv, vertex).uv == vertex.uv1);
+    // With no vertex colour the texture is multiplied by the material's own authored colour, not
+    // by white: a surface the title authored faint has to stay faint.
+    ModelDraw texturedConstant = secondaryUv;
+    auto& texturedConstantMaterial = std::get<UnlitTexturedMaterial>(texturedConstant.material);
+    texturedConstantMaterial.usesVertexColor = false;
+    texturedConstantMaterial.baseColor = {1.0F, 0.5F, 0.25F, 0.125F};
+    assert(transform_vertex(texturedConstant, vertex).color == texturedConstantMaterial.baseColor);
+    texturedConstantMaterial.usesVertexColor = true;
+    const Color modulated = transform_vertex(texturedConstant, vertex).color;
+    assert(modulated == Color(texturedConstantMaterial.baseColor.r * vertex.color.r,
+                              texturedConstantMaterial.baseColor.g * vertex.color.g,
+                              texturedConstantMaterial.baseColor.b * vertex.color.b,
+                              texturedConstantMaterial.baseColor.a * vertex.color.a));
 
     ModelDraw litColor = draw;
     litColor.material = LitColorMaterial{

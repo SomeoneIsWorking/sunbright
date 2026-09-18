@@ -5,11 +5,14 @@
 #include <map>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <sunbright/native_render/j3d_material_family.h>
+#include <sunbright/native_render/j3d_tex_coord_generation.h>
 #include <sunbright/native_render/model.h>
 #include <sunbright/native_render/semantic_sink.h>
+#include <sunbright/title_adapter/guest_j3d_texgen.h>
 #include <sunbright/title_adapter/guest_shape_geometry.h>
 
 #include "frame_draw_budget.h"
@@ -48,15 +51,18 @@ enum class DrawDiagnosticMode : std::uint8_t {
 
 class GuestDrawPublisher {
   public:
-    // `budget` may be null, which is an unbounded run; it is not owned here.
+    // `budget` may be null, which is an unbounded run; it is not owned here. `logFrame` non-zero
+    // prints one line per draw of that frame: a draw ordinal found by bounding the frame names a
+    // position, and only this names what is at it.
     GuestDrawPublisher(sb::title_adapter::GuestAddress system, DrawDiagnosticMode mode,
-                       FrameDrawBudget* budget) noexcept
-        : system_(system), mode_(mode), budget_(budget) {}
+                       FrameDrawBudget* budget, std::uint64_t logFrame) noexcept
+        : system_(system), mode_(mode), budget_(budget), logFrame_(logFrame) {}
 
     // Returns how many draws this shape submitted. `shape` must already have been read.
     std::uint32_t publish(gcnport::GuestContext& guest, const sb::title_adapter::GuestShape& shape,
                           std::uint64_t instance,
-                          const sb::native_render::ClassifiedJ3dMaterial& classified);
+                          const sb::native_render::ClassifiedJ3dMaterial& classified,
+                          const sb::title_adapter::GuestTexGenBlock& texGen);
 
     void report() const;
 
@@ -95,6 +101,7 @@ class GuestDrawPublisher {
     sb::title_adapter::GuestAddress system_ = 0;
     DrawDiagnosticMode mode_ = DrawDiagnosticMode::Normal;
     FrameDrawBudget* budget_ = nullptr;
+    std::uint64_t logFrame_ = 0;
     std::uint64_t withheldByBudget_ = 0;
     sb::title_adapter::GuestMatrixRegisters registers_{};
     std::vector<sb::native_render::J3dDecodedVertex> triangles_;
@@ -132,6 +139,18 @@ class GuestDrawPublisher {
         auto operator<=>(const PolicyKey&) const = default;
     };
     std::map<PolicyKey, std::uint64_t> policies_;
+    // How each draw's texture coordinates were generated, or why they could not be. A family that
+    // renders wrongly because its coordinates were left authored looks exactly like one that
+    // renders wrongly for any other reason, so the refusals are counted by name rather than
+    // absorbed into the draw being skipped.
+    std::map<sb::native_render::J3dTexCoordGenerationResult, std::uint64_t> coordinateGeneration_;
+    // Every generator a draw carried, by the authored type and source numbers. A refusal counted by
+    // its reason says a generation could not be applied; this says which authored combination asked
+    // for it, which is what an unimplemented one has to be named from.
+    std::map<std::pair<std::uint8_t, std::uint8_t>, std::uint64_t> coordinateGenerators_;
+    std::uint64_t transformedCoordinates_ = 0;
+    std::uint64_t authoredCoordinates_ = 0;
+    std::uint64_t deferredCoordinates_ = 0;
     std::map<sb::title_adapter::GuestShapeError, std::uint64_t> elementErrors_;
     std::map<sb::native_render::J3dMeshDecodeError, std::uint64_t> meshErrors_;
     std::map<sb::title_adapter::GuestPoseError, std::uint64_t> poseErrors_;

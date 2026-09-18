@@ -219,7 +219,7 @@ gcnport::HookResult GuestModelProbe::operator()(gcnport::GuestContext& guest) {
     }
     classified_ += 1;
     record(textureCounts_, textureCountsUntracked_, classified.textureCount);
-    drawsPublished_ += publisher_.publish(guest, shape, shapeAddress, classified);
+    drawsPublished_ += publisher_.publish(guest, shape, shapeAddress, classified, read.texGen);
 
     if (reports_ < maxReports_) {
         reports_ += 1;

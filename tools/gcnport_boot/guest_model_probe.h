@@ -37,8 +37,9 @@ namespace sunbright::gcnport_boot {
 class GuestModelProbe {
   public:
     GuestModelProbe(sb::title_adapter::GuestAddress system, std::uint64_t max_reports,
-                    DrawDiagnosticMode mode, FrameDrawBudget* budget) noexcept
-        : system_(system), maxReports_(max_reports), publisher_(system, mode, budget) {}
+                    DrawDiagnosticMode mode, FrameDrawBudget* budget,
+                    std::uint64_t log_frame) noexcept
+        : system_(system), maxReports_(max_reports), publisher_(system, mode, budget, log_frame) {}
 
     gcnport::HookResult operator()(gcnport::GuestContext& guest);
 
