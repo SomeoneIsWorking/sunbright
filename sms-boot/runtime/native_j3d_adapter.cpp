@@ -5,6 +5,7 @@
 #include "native_j3d_scene.h"
 
 #include <sunbright/native_render/j3d_mesh_decode.h>
+#include <sunbright/native_render/j3d_mesh_vertices.h>
 #include <sunbright/native_render/semantic_sink.h>
 
 #include <JSystem/J3D/J3DGraphBase/J3DMaterial.hpp>
@@ -22,7 +23,6 @@
 #include <vector>
 
 namespace {
-
 
 struct Stats {
     std::uint64_t considered = 0;
@@ -165,18 +165,10 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
         return;
     }
 
-    std::array<sb::native_render::DecodedImageView, 4> image{};
-    std::span<const sb::native_render::DecodedImageView> images;
-    for (std::size_t index = 0; index < capturedMaterial.textureCount; ++index) {
-        const auto& texture = capturedMaterial.textures[index];
-        image[index] = {texture.texture.resource,
-                        texture.texture.revision,
-                        texture.texture.width,
-                        texture.texture.height,
-                        texture.rgba8,
-                        texture.mipLevels};
-    }
-    images = std::span(image).first(capturedMaterial.textureCount);
+    std::array<sb::native_render::DecodedImageView, sb::native_render::kMaxClassifiedTextures>
+        image{};
+    const std::span<const sb::native_render::DecodedImageView> images =
+        sb::native_render::j3d_material_image_views(capturedMaterial, image);
     for (std::uint32_t element = 0; element < shape.mElementCount; ++element) {
         J3DShapeMtx* matrixObject = shape.getShapeMtx(element);
         if (matrixObject == nullptr) {
@@ -219,25 +211,9 @@ extern "C" void sb_native_j3d_shape_submit(const void* shapePointer) {
             ++g_stats.decodeFailures;
             continue;
         }
-        if (std::ranges::any_of(g_decoded, [&](const auto& vertex) {
-                return vertex.positionMatrixSlot >= sourceToCompact.size() ||
-                       sourceToCompact[vertex.positionMatrixSlot] == 0xFFU;
-            })) {
+        if (!sb::native_render::build_j3d_mesh_vertices(g_decoded, sourceToCompact, g_vertices)) {
             ++g_stats.nonRigidElements;
             continue;
-        }
-
-        g_vertices.clear();
-        g_vertices.reserve(g_decoded.size());
-        for (const auto& vertex : g_decoded) {
-            g_vertices.push_back({.position = {vertex.x, vertex.y, vertex.z},
-                                  .uv = {vertex.uv[0][0], vertex.uv[0][1]},
-                                  .uv1 = {vertex.uv[1][0], vertex.uv[1][1]},
-                                  .uv2 = {vertex.uv[2][0], vertex.uv[2][1]},
-                                  .uv3 = {vertex.uv[3][0], vertex.uv[3][1]},
-                                  .color = sb::native_render::color_from_rgba8(vertex.rgba),
-                                  .normal = {vertex.nx, vertex.ny, vertex.nz},
-                                  .matrixIndex = sourceToCompact[vertex.positionMatrixSlot]});
         }
         J3DShapeDraw* shapeDraw = shape.getShapeDraw(element);
         const std::uint64_t resource = reinterpret_cast<std::uintptr_t>(shapeDraw);

@@ -12,6 +12,8 @@
 #include <sunbright/title_adapter/guest_j3d_shape.h>
 #include <sunbright/title_adapter/guest_j3d_texture.h>
 
+#include "guest_draw_publisher.h"
+
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"
 
@@ -35,7 +37,7 @@ namespace sunbright::gcnport_boot {
 class GuestModelProbe {
   public:
     GuestModelProbe(sb::title_adapter::GuestAddress system, std::uint64_t max_reports) noexcept
-        : system_(system), maxReports_(max_reports) {}
+        : system_(system), maxReports_(max_reports), publisher_(system) {}
 
     gcnport::HookResult operator()(gcnport::GuestContext& guest);
 
@@ -117,6 +119,8 @@ class GuestModelProbe {
     std::uint64_t refusedChannelsUntracked_ = 0;
     std::map<std::uint32_t, std::uint64_t> refusedStageCounts_;
     std::uint64_t refusedStageCountsUntracked_ = 0;
+    GuestDrawPublisher publisher_;
+    std::uint64_t drawsPublished_ = 0;
     std::map<std::uint32_t, std::uint64_t> textureCounts_;
     std::uint64_t textureCountsUntracked_ = 0;
 };

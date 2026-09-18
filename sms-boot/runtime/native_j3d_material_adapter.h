@@ -25,12 +25,10 @@ enum class NativeJ3dMaterialResult {
     TextureDecodeFailure,
 };
 
-struct CapturedNativeJ3dMaterial {
-    native_render::ModelMaterial material{};
-    native_render::ModelFog fog{};
-    std::array<native_render::DecodedTexture, native_render::kMaxClassifiedTextures> textures{};
-    std::uint8_t textureCount = 0;
-};
+// The shared classifier's own result. This was a separate structure with the same four fields,
+// filled by copying them across one at a time; the copy is what a shared boundary exists to avoid,
+// and the only thing it dropped was the family name the classifier had already worked out.
+using CapturedNativeJ3dMaterial = native_render::ClassifiedJ3dMaterial;
 
 [[nodiscard]] bool
 capture_native_j3d_material_state(J3DMaterial& material, bool hasVertexColor, bool hasNormal,

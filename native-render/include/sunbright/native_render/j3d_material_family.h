@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sunbright/native_render/image.h>
 #include <sunbright/native_render/j3d_fog.h>
 #include <sunbright/native_render/j3d_material_state.h>
 #include <sunbright/native_render/model.h>
@@ -7,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 
 namespace sb::native_render {
 
@@ -86,6 +88,13 @@ struct ClassifiedJ3dMaterial {
     std::uint8_t textureCount = 0;
     J3dMaterialFamily family = J3dMaterialFamily::None;
 };
+
+// The classified material's textures as the frame sink takes them. Both runtimes submit the same
+// views, so the mapping from a decoded texture to an image view has one owner rather than a copy
+// per runtime that could disagree about which of the four slots a family filled.
+[[nodiscard]] std::span<const DecodedImageView>
+j3d_material_image_views(const ClassifiedJ3dMaterial& classified,
+                         std::array<DecodedImageView, kMaxClassifiedTextures>& storage) noexcept;
 
 [[nodiscard]] const char* j3d_material_family_result_name(J3dMaterialFamilyResult result) noexcept;
 [[nodiscard]] const char* j3d_material_family_name(J3dMaterialFamily family) noexcept;

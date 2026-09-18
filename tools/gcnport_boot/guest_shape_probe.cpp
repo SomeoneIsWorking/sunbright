@@ -133,21 +133,19 @@ gcnport::HookResult GuestShapeProbe::operator()(gcnport::GuestContext& guest) {
     }
 
     for (std::uint16_t element = 0; element < shape.elementCount; ++element) {
-        sb::title_adapter::GuestShapeElement group{};
-        const sb::title_adapter::GuestShapeError elementError =
-            read_guest_shape_element(memory, shape, element, group);
-        elementErrors_[elementError] += 1;
-        if (elementError != sb::title_adapter::GuestShapeError::None) {
+        sb::title_adapter::GuestShapeGeometry geometry =
+            sb::title_adapter::read_guest_shape_geometry(
+                memory, {read_through_byte_address, &guest}, shape, element, system_,
+                sb::title_adapter::GuestMatrixGroupVtables{}, registers_, triangles_);
+        const sb::title_adapter::GuestShapeElement& group = geometry.element;
+        elementErrors_[geometry.elementError] += 1;
+        if (geometry.elementError != sb::title_adapter::GuestShapeError::None) {
             continue;
         }
         elementsRead_ += 1;
         displayListBytes_ += group.displayListSize;
 
-        const sb::native_render::J3dMeshElementSource source =
-            guest_mesh_element_source(shape, group, {read_through_byte_address, &guest});
-        triangles_.clear();
-        const sb::native_render::J3dMeshDecodeResult decoded =
-            decode_j3d_mesh_element(source, triangles_);
+        const sb::native_render::J3dMeshDecodeResult& decoded = geometry.mesh;
         decodeErrors_[decoded.error] += 1;
         const auto vertices = static_cast<std::uint32_t>(triangles_.size());
         if (decoded.error == sb::native_render::J3dMeshDecodeError::None) {
@@ -159,12 +157,9 @@ gcnport::HookResult GuestShapeProbe::operator()(gcnport::GuestContext& guest) {
                 largestElement_ = vertices;
             }
         }
-        sb::title_adapter::GuestShapePose pose{};
-        const sb::title_adapter::GuestPoseError poseError =
-            read_guest_shape_pose(memory, shape, element, system_,
-                                  sb::title_adapter::GuestMatrixGroupVtables{}, registers_, pose);
-        poseErrors_[poseError] += 1;
-        const bool posed = poseError == sb::title_adapter::GuestPoseError::None;
+        const sb::title_adapter::GuestShapePose& pose = geometry.pose;
+        poseErrors_[geometry.poseError] += 1;
+        const bool posed = geometry.poseError == sb::title_adapter::GuestPoseError::None;
         if (posed) {
             posesRead_ += 1;
             matricesPosed_ += pose.pose.count;
@@ -227,7 +222,7 @@ gcnport::HookResult GuestShapeProbe::operator()(gcnport::GuestContext& guest) {
                             decoded.displayListOffset, decoded.opcode);
             }
             std::printf("gmse01_boot:     pose=%s",
-                        sb::title_adapter::guest_pose_error_name(poseError));
+                        sb::title_adapter::guest_pose_error_name(geometry.poseError));
             if (posed) {
                 std::printf(" %s/%s matrices=%u of %u view=%u palette=0x%08x unposed=%u",
                             sb::title_adapter::guest_matrix_group_kind_name(pose.kind),

@@ -12,6 +12,7 @@ add_library(sunbright-title-adapter STATIC
   src/guest_j3d_texture.cpp
   src/guest_stage_lighting.cpp
   src/guest_projection.cpp
+  src/guest_shape_geometry.cpp
 )
 target_include_directories(sunbright-title-adapter PUBLIC include)
 target_link_libraries(sunbright-title-adapter PUBLIC sunbright-native-render-core)

@@ -8,6 +8,7 @@
 
 #include <sunbright/title_adapter/guest_j3d_pose.h>
 #include <sunbright/title_adapter/guest_j3d_shape.h>
+#include <sunbright/title_adapter/guest_shape_geometry.h>
 
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"

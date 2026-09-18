@@ -12,6 +12,7 @@
 #include <sunbright/native_render/j3d_tinted_layered_material.h>
 #include <sunbright/native_render/j3d_unlit_material.h>
 
+#include <algorithm>
 #include <utility>
 
 namespace sb::native_render {
@@ -349,6 +350,22 @@ const char* j3d_material_family_result_name(J3dMaterialFamilyResult result) noex
         return "texture_decode_failure";
     }
     return "unknown";
+}
+
+std::span<const DecodedImageView>
+j3d_material_image_views(const ClassifiedJ3dMaterial& classified,
+                         std::array<DecodedImageView, kMaxClassifiedTextures>& storage) noexcept {
+    const std::size_t count = std::min<std::size_t>(classified.textureCount, storage.size());
+    for (std::size_t index = 0; index < count; ++index) {
+        const DecodedTexture& texture = classified.textures[index];
+        storage[index] = {texture.texture.resource,
+                          texture.texture.revision,
+                          texture.texture.width,
+                          texture.texture.height,
+                          texture.rgba8,
+                          texture.mipLevels};
+    }
+    return std::span(storage).first(count);
 }
 
 const char* j3d_material_family_name(J3dMaterialFamily family) noexcept {

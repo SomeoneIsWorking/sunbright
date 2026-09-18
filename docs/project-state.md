@@ -528,6 +528,31 @@ is unchanged across the wiring.
 | `0x80fa490c`, `0x80fa4c00` | 1,614 | `0706/0700` but **two** stages, so the single-stage effect family refuses them on stage count |
 | six materials | 5,124 | genuinely unlit (`0700/0700`, `0700/0701`, `0701/0700`, `0701/0701`), 1--2 stages |
 
+**GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
+part measured separately -- shape, pose, material, textures, stage light, projection -- is composed
+into one draw by `tools/gcnport_boot/guest_draw_publisher.cpp` and submitted through
+`submit_model`, the same entry the decomp runtime uses. Measured on the real title, 0 Dolphin
+alerts:
+
+    44,408 matrix group(s), 44,408 composed, 44,408 submitted, 8,385,426 vertex(es)
+    44,408 reached the sink; of those rejected: 0 invalid draw, 0 invalid mesh, 0 mismatched mesh,
+      0 unindexable pose, 0 mismatched images, 0 for no reason this knows
+    0 rejected by the sink, 0 had no published projection,
+      0 named a matrix slot the pose never filled
+    element errors: none=44408 | mesh errors: none=44408 | pose errors: none=44408
+
+Nothing is drawn yet -- the sink counts rather than rasterises -- but every value a renderer needs
+is now present, consistent, and accepted by the boundary's own checks.
+
+Three owners were extracted so the two runtimes share them instead of keeping parallel copies:
+`title_adapter::read_guest_shape_geometry` (a matrix group's element, mesh and pose read together,
+because the pose reader carries state across groups and a second caller in a different order would
+silently lose the inherited slots), `native_render::build_j3d_mesh_vertices` (decoded vertices to
+mesh vertices, with the matrix-slot remapping both runtimes must refuse rather than clamp), and
+`native_render::j3d_material_image_views`. `sb::CapturedNativeJ3dMaterial` was a second structure
+with `ClassifiedJ3dMaterial`'s fields, filled by copying them across one at a time; it is now an
+alias.
+
 A `ModelDraw` also carries a projection, and nothing supplied one.
 `title-adapter/src/guest_projection.cpp` reads the matrix GMSE01 hands to `GXSetProjection`
 (`0x80362c34`, matrix in r3, type in r4) and publishes it through

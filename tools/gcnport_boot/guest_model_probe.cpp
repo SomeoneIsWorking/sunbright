@@ -218,6 +218,7 @@ gcnport::HookResult GuestModelProbe::operator()(gcnport::GuestContext& guest) {
     }
     classified_ += 1;
     record(textureCounts_, textureCountsUntracked_, classified.textureCount);
+    drawsPublished_ += publisher_.publish(guest, shape, shapeAddress, classified);
 
     if (reports_ < maxReports_) {
         reports_ += 1;
@@ -285,9 +286,10 @@ void GuestModelProbe::report_refused_materials() const {
 void GuestModelProbe::report() const {
     std::printf(
         "gmse01_boot: guest model probe: %llu shape draw(s), %llu composed with a material, "
-        "%llu classified, %llu distinct (shape, material) pair(s)%s\n",
+        "%llu classified, %llu published, %llu distinct (shape, material) pair(s)%s\n",
         static_cast<unsigned long long>(entries_), static_cast<unsigned long long>(composed_),
         static_cast<unsigned long long>(classified_),
+        static_cast<unsigned long long>(drawsPublished_),
         static_cast<unsigned long long>(draws_.size()),
         drawsPastTheSet_ != 0 ? " (a floor: more were seen than tracked)" : "");
     std::printf("gmse01_boot:   %llu unreadable shape(s), %llu without a material packet, %llu "
@@ -321,6 +323,7 @@ void GuestModelProbe::report() const {
         }
         std::printf("\n");
     }
+    publisher_.report();
     report_refused_materials();
     print_refused_values("refused colour/alpha channels", refusedChannels_,
                          refusedChannelsUntracked_, true);

@@ -279,10 +279,7 @@ capture_native_j3d_material(J3DMaterial& material, J3DTexture* textureTable, boo
     case native_render::J3dMaterialFamilyResult::TextureDecodeFailure:
         return NativeJ3dMaterialResult::TextureDecodeFailure;
     }
-    captured = {.material = std::move(classified.material),
-                .fog = classified.fog,
-                .textures = std::move(classified.textures),
-                .textureCount = classified.textureCount};
+    captured = std::move(classified);
     return NativeJ3dMaterialResult::Success;
 }
 
