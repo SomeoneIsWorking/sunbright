@@ -28,6 +28,7 @@
 #include <fstream>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -39,6 +40,9 @@
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/GcnPortRuntime.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/CoreTiming.h"
+#include "Core/HW/ProcessorInterface.h"
+#include "Core/HW/DVD/DVDInterface.h"
 #include "Core/System.h"
 #include "UICommon/UICommon.h"
 
@@ -172,7 +176,7 @@ DolImage LoadDolAsFlatImage(const std::string& path)
   return image;
 }
 
-void RunBoot(const DolImage& image, u64 block_budget)
+void RunBoot(const DolImage& image, u64 block_budget, const std::string& disc_image_path)
 {
   const std::string profile_path = File::CreateTempDir();
   if (profile_path.empty())
@@ -234,7 +238,9 @@ void RunBoot(const DolImage& image, u64 block_budget)
 
   const auto booted = PowerPC::GcnPort::BootAuthenticatedImage(
       system, identity, image.flat, image.load_address, image.entry_point,
-      /*apply_gamecube_os_init=*/true, /*apply_gamecube_hardware_init=*/true);
+      PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
+                                            .apply_hardware_init = true,
+                                            .disc_image_path = disc_image_path});
   if (!booted.ok)
   {
     std::fprintf(stderr, "gmse01_boot: BootAuthenticatedImage failed: %s\n", booted.detail.c_str());
@@ -291,6 +297,8 @@ void RunBoot(const DolImage& image, u64 block_budget)
     constexpr u64 DEFAULT_MAX_BLOCKS = 160000000;
     const u64 max_blocks = block_budget != 0 ? block_budget : DEFAULT_MAX_BLOCKS;
     u64 blocks_run = 0;
+    u32 previous_stall_pc = 0;
+    u64 previous_stall_ticks = 0;
     const auto started_at = std::chrono::steady_clock::now();
 
     for (; blocks_run < std::min<u64>(STEPPED_BLOCKS, max_blocks); ++blocks_run)
@@ -323,6 +331,40 @@ void RunBoot(const DolImage& image, u64 block_budget)
                     batch.detail.c_str());
         break;
       }
+
+      // A batch that retires its blocks but never leaves one PC is the shape every stall in this
+      // tool has taken so far, and "it is still at the same address" on its own has never been
+      // enough to tell which of them it is. Report the state that distinguishes them, so a negative
+      // result is a reading rather than a silence: whether the guest can take an interrupt at all
+      // (MSR.EE and any pending exception), what the interrupt controller is asserting and allowing
+      // (ProcessorInterface's cause and mask), and whether a disc is actually mounted. A title
+      // idling in SelectThread with no runnable thread looks identical to a crash loop without them.
+      //
+      // These come from the owning device objects, not from a memory read of the MMIO addresses:
+      // Memory::Read_U32 does not serve MMIO and answered every one of these with "Invalid range in
+      // CopyFromEmu" and a zero, which reads exactly like a quiet interrupt controller.
+      if (batch.guest_pc == previous_stall_pc)
+      {
+        const auto& ppc_state = system.GetPPCState();
+        const auto& processor_interface = system.GetProcessorInterface();
+        // pi_cause and exceptions are instantaneous samples, and a handler that has already run
+        // leaves both at zero -- so on their own they cannot tell "no interrupt was ever raised"
+        // from "every interrupt was raised, handled and cleared". The guest tick count is what
+        // makes them readable: a GameCube VI retrace is one interrupt per 486MHz/60 ~= 8.1 million
+        // ticks, so the ticks elapsed since the last report say how many retraces this interval
+        // should have contained, and therefore whether a quiet cause means quiet or means missed.
+        const u64 ticks = system.GetCoreTiming().GetTicks();
+        std::printf("gmse01_boot: stalled at pc=0x%08x msr=0x%08x (ee=%u) exceptions=0x%08x "
+                    "pi_cause=0x%08x pi_mask=0x%08x disc_inside=%d ticks=%llu (+%llu)\n",
+                    batch.guest_pc, ppc_state.msr.Hex, static_cast<u32>(ppc_state.msr.EE),
+                    ppc_state.Exceptions, processor_interface.GetCause(),
+                    processor_interface.GetMask(),
+                    static_cast<int>(system.GetDVDInterface().IsDiscInside()),
+                    static_cast<unsigned long long>(ticks),
+                    static_cast<unsigned long long>(ticks - previous_stall_ticks));
+        previous_stall_ticks = ticks;
+      }
+      previous_stall_pc = batch.guest_pc;
     }
 
     const auto counters = runtime.GetExecutionCounters();
@@ -352,30 +394,59 @@ void RunBoot(const DolImage& image, u64 block_budget)
 int main(int argc, char** argv)
 {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  if (argc < 2 || argc > 3)
+
+  const auto usage = [argv]() {
+    std::fprintf(stderr,
+                 "usage: %s <path-to-extracted-main.dol> [--disc <disc-image>] "
+                 "[--max-blocks <n>]\n",
+                 argv[0]);
+  };
+  if (argc < 2 || argv[1][0] == '-')
   {
-    std::fprintf(stderr, "usage: %s <path-to-extracted-main.dol> [max-blocks]\n", argv[0]);
+    usage();
     return 1;
   }
 
-  // Optional override for the block budget documented in RunBoot. Refuse a malformed or zero value
-  // rather than silently falling back to the default: a run that quietly used a different budget
-  // than the one asked for would be indistinguishable from one that reached a different boundary.
+  // Optional overrides. Every one of these refuses a malformed value rather than silently falling
+  // back to its default: a run that quietly used a different budget, or quietly mounted no disc,
+  // would be indistinguishable from one that genuinely reached a different boundary.
   u64 block_budget = 0;
-  if (argc == 3)
+  std::string disc_image_path;
+  for (int argument = 2; argument < argc; ++argument)
   {
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long long parsed = std::strtoull(argv[2], &end, 0);
-    // strtoull saturates at ULLONG_MAX on overflow, so an out-of-range argument would otherwise be
-    // accepted as a huge budget rather than refused; errno is the only way to tell the two apart.
-    if (end == argv[2] || *end != '\0' || parsed == 0 || errno == ERANGE)
+    const std::string_view name = argv[argument];
+    if (argument + 1 >= argc)
     {
-      std::fprintf(stderr, "gmse01_boot: max-blocks must be a positive value, got '%s'\n",
-                  argv[2]);
+      std::fprintf(stderr, "gmse01_boot: %s needs a value\n", argv[argument]);
       return 1;
     }
-    block_budget = parsed;
+    const char* const value = argv[++argument];
+
+    if (name == "--disc")
+    {
+      disc_image_path = value;
+    }
+    else if (name == "--max-blocks")
+    {
+      char* end = nullptr;
+      errno = 0;
+      const unsigned long long parsed = std::strtoull(value, &end, 0);
+      // strtoull saturates at ULLONG_MAX on overflow, so an out-of-range argument would otherwise
+      // be accepted as a huge budget rather than refused; errno is the only way to tell them apart.
+      if (end == value || *end != '\0' || parsed == 0 || errno == ERANGE)
+      {
+        std::fprintf(stderr, "gmse01_boot: --max-blocks must be a positive value, got '%s'\n",
+                     value);
+        return 1;
+      }
+      block_budget = parsed;
+    }
+    else
+    {
+      std::fprintf(stderr, "gmse01_boot: unknown option '%s'\n", argv[argument - 1]);
+      usage();
+      return 1;
+    }
   }
 
   const DolImage image = LoadDolAsFlatImage(argv[1]);
@@ -383,7 +454,7 @@ int main(int argc, char** argv)
   // Dolphin's BLR-return optimization installs a guard in the current CPU thread's own stack; a
   // dedicated thread gives this tool the same fully mapped stack contract Dolphin's shipping CPU
   // thread has (matching gcnport's own GcnPortRuntimeTest.cpp convention).
-  std::thread cpu_thread(RunBoot, image, block_budget);
+  std::thread cpu_thread(RunBoot, image, block_budget, disc_image_path);
   cpu_thread.join();
   return 0;
 }

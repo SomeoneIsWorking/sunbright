@@ -446,3 +446,42 @@ invalid-access report — which is a property of that wait, not of the runtime.
 
 Next, in order: (1) a **disc/DVD device adapter**, which Sunbright owns because the game image must
 never reach `gcnport`; (2) the `0x802e0390` `J3DShape::draw` runtime override, blocked on (1).
+
+**2026-09-18 (sixth continuation): disc mounting landed; boot now idles in the OS scheduler waiting
+for a hardware interrupt that is never raised.** `gcnport` `e9e6304` (Dolphin fork `7b2be56`) added
+`GameCubeBootOptions::disc_image_path`, which mounts a disc the *consumer* names — only a path crosses
+the API, so no game image enters `gcnport` — and does what `CBoot::EmulatedBS2_GC` does with a disc
+before handing over control: read the 0x20-byte header to physical 0 via `CBoot::DVDReadDiscID` (which
+also moves the drive out of `DiscIdNotRead`), then leave the volume mounted. The two trailing bools
+became a `GameCubeBootOptions` struct in the same change, with every caller migrated.
+
+Mounting the real disc measurably changed GMSE01's behaviour: the repeated one-byte reads from
+ASCII-valued addresses — the disc-error text being drawn through the IPL font — **fell from 822 to 3**,
+and the title no longer renders that screen.
+
+The remaining stop is **not** an error path. `0x80348814` is inside `SelectThread`, and the SDA global
+it spins on (`r13-0x59c0` = `0x8040e800`, `.sbss`) is `__OSRunQueueBits`; the surrounding code writes
+`__OSCurrentThread = NULL` at `0x800000E4` and brackets the spin with `OSEnableInterrupts` /
+`OSDisableInterrupts`. That is the SDK's **idle loop**: every thread is blocked, and the scheduler is
+waiting with interrupts enabled for one to become runnable.
+
+Measured at that point, through the owning device objects: `disc_inside=1`, `msr=0x00009032` (EE set),
+`exceptions=0x00000000`, `pi_mask=0x00000ffc` (the title has unmasked DI, SI, EXI, AI, DSP, MI, VI, PE
+and CP), and `pi_cause=0x00010000` — bit 16, the reset-button state, and **no pending hardware
+interrupt at all**. Guest time is not the constraint: the tick counter advances ~12,000,000,000 ticks
+per report, about 1,480 VI retraces' worth each at 486MHz/60, and roughly 8,700 frames in total. So the
+title has enabled interrupts, unmasked the sources it needs, and waited the equivalent of minutes of
+console time without a single one arriving.
+
+That is the boundary `dolphin-embedding-contract.md` already scopes and this option deliberately does
+not provide: `HW::Init` builds the MMIO handler table and `SystemTimers::Init` schedules the periodic
+events, but Dolphin's own `EmuThread` makes `g_video_backend->Initialize` and `DSPEmulator::Initialize`
+*around* `HW::Init`, and neither is called here. Next: bring those up in their headless forms — the
+Null video backend takes a `WindowSystemInfo` exactly as the `ControllerInterface` fix does — so VI
+retrace and DSP interrupts exist for the scheduler to wake on.
+
+Tooling note: the first version of this stall reporter read the MMIO addresses through
+`Memory::Read_U32`, which does not serve MMIO and answered every field with "Invalid range in
+CopyFromEmu" and a zero — indistinguishable from a genuinely quiet interrupt controller. It now reads
+the owning device objects, and reports the cumulative tick count alongside the instantaneous cause,
+because a handler that has already run leaves cause and exceptions at zero too.

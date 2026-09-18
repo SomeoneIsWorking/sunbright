@@ -197,10 +197,26 @@ defaults-off test caught it as "Unable to resolve write address 80000028". Re-me
 `GMSE01`: **5,250 compiled blocks over 140,000,000 executions with zero faults**, stopping at the same
 disc boundary — as expected, since correct OS globals do not conjure a disc.
 
-Still missing before this item is complete: (1) a **disc/DVD device adapter** so the title's file
-reads succeed — Sunbright owns this, because the game image must never reach `gcnport`; (2) the
-`0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot alone
-does not advance S008.
+The disc adapter landed as `gcnport` `e9e6304` (Dolphin fork `7b2be56`):
+`GameCubeBootOptions::disc_image_path` mounts a disc the consumer names, so only a path crosses the
+API and no game image enters `gcnport`. It reads the disc header via `CBoot::DVDReadDiscID` (which
+also moves the drive out of `DiscIdNotRead`) and leaves the volume mounted, matching what
+`CBoot::EmulatedBS2_GC` does before handing control to a title. Mounting the real disc dropped
+GMSE01's disc-error text rendering from 822 one-byte font reads to 3.
+
+Boot now stops in the SDK's **idle loop** rather than an error path: `0x80348814` is inside
+`SelectThread` spinning on `__OSRunQueueBits`, with every thread blocked. Measured there:
+`disc_inside=1`, MSR.EE set, no pending exception, `pi_mask=0x00000ffc` (DI, SI, EXI, AI, DSP, MI, VI,
+PE, CP all unmasked) and `pi_cause=0x00010000` — no hardware interrupt pending — while the guest clock
+advances ~12 billion ticks per report, roughly 8,700 VI frames in total. The title has enabled
+interrupts and waited minutes of console time without one arriving.
+
+Still missing before this item is complete: (1) **headless video and DSP bring-up**, so periodic VI
+retrace and DSP interrupts exist for the scheduler to wake on — Dolphin's own `EmuThread` calls
+`g_video_backend->Initialize` and `DSPEmulator::Initialize` around `HW::Init`, and neither is called
+here; the Null video backend takes a `WindowSystemInfo` exactly as the `ControllerInterface` fix does;
+(2) the `0x802e0390` `J3DShape::draw` runtime override and one-call suppression, blocked on (1). Boot
+alone does not advance S008.
 
 ### S002 — gcnport Dolphin executor
 
