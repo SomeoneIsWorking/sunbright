@@ -2,6 +2,7 @@
 #include "guest_shape_probe.h"
 
 #include <cstdio>
+#include <limits>
 #include <span>
 
 namespace sunbright::gcnport_boot {
@@ -14,6 +15,21 @@ bool read_through_guest_context(sb::title_adapter::GuestAddress address,
                                 std::span<std::uint8_t> destination, void* context) {
     auto* const guest = static_cast<gcnport::GuestContext*>(context);
     return guest->read_memory(address, std::as_writable_bytes(destination));
+}
+
+// The decoder reads through ByteAddress rather than a raw guest address, so it needs its own thin
+// adapter onto the same GuestContext. Both end at `guest->read_memory`, so a range the runtime
+// refuses is refused identically whichever side asks.
+bool read_through_byte_address(sb::native_render::ByteAddress address,
+                               std::span<std::uint8_t> destination, void* context) {
+    std::uint64_t guestAddress = 0;
+    if (!address.guest_value(guestAddress) ||
+        guestAddress > std::numeric_limits<sb::title_adapter::GuestAddress>::max()) {
+        return false;
+    }
+    auto* const guest = static_cast<gcnport::GuestContext*>(context);
+    return guest->read_memory(static_cast<sb::title_adapter::GuestAddress>(guestAddress),
+                              std::as_writable_bytes(destination));
 }
 
 void print_histogram(const char* label, const std::map<std::uint32_t, std::uint64_t>& histogram,
@@ -90,9 +106,32 @@ gcnport::HookResult GuestShapeProbe::operator()(gcnport::GuestContext& guest) {
         }
         elementsRead_ += 1;
         displayListBytes_ += group.displayListSize;
+
+        const sb::native_render::J3dMeshElementSource source =
+            guest_mesh_element_source(shape, group, {read_through_byte_address, &guest});
+        triangles_.clear();
+        const sb::native_render::J3dMeshDecodeResult decoded =
+            decode_j3d_mesh_element(source, triangles_);
+        decodeErrors_[decoded.error] += 1;
+        const auto vertices = static_cast<std::uint32_t>(triangles_.size());
+        if (decoded.error == sb::native_render::J3dMeshDecodeError::None) {
+            trianglesDecoded_ += vertices / 3;
+            if (smallestElement_ == 0 || vertices < smallestElement_) {
+                smallestElement_ = vertices;
+            }
+            if (vertices > largestElement_) {
+                largestElement_ = vertices;
+            }
+        }
         if (reporting) {
-            std::printf("gmse01_boot:   element %u draw=0x%08x list=0x%08x size=%u\n", element,
-                        group.draw, group.displayList, group.displayListSize);
+            std::printf("gmse01_boot:   element %u draw=0x%08x list=0x%08x size=%u decode=%s "
+                        "vertices=%u\n",
+                        element, group.draw, group.displayList, group.displayListSize,
+                        sb::native_render::j3d_mesh_decode_error_name(decoded.error), vertices);
+            if (decoded.error != sb::native_render::J3dMeshDecodeError::None) {
+                std::printf("gmse01_boot:     stopped at display-list offset %u, opcode 0x%02x\n",
+                            decoded.displayListOffset, decoded.opcode);
+            }
         }
     }
 
@@ -128,6 +167,20 @@ void GuestShapeProbe::report() const {
                     static_cast<unsigned long long>(count));
     }
     std::printf("\n");
+
+    std::printf("gmse01_boot:   decode results:");
+    if (decodeErrors_.empty()) {
+        std::printf(" none attempted");
+    }
+    for (const auto& [error, count] : decodeErrors_) {
+        std::printf(" %s=%llu", sb::native_render::j3d_mesh_decode_error_name(error),
+                    static_cast<unsigned long long>(count));
+    }
+    std::printf("\n");
+    std::printf("gmse01_boot:   %llu triangle(s) decoded; smallest matrix group %u vertices, "
+                "largest %u\n",
+                static_cast<unsigned long long>(trianglesDecoded_), smallestElement_,
+                largestElement_);
 
     print_histogram("matrix groups per shape", elementCounts_, elementCountsUntracked_);
     print_histogram("vertex stride (bytes)", vertexSizes_, vertexSizesUntracked_);

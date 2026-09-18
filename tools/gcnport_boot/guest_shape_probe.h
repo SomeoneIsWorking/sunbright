@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <vector>
 
 #include <sunbright/title_adapter/guest_j3d_shape.h>
 
@@ -19,6 +20,12 @@ namespace sunbright::gcnport_boot {
 // `title-adapter`'s own test proves the offsets against a synthetic image it wrote itself, which
 // cannot tell whether those offsets describe the retail objects GMSE01 actually builds. Only the
 // real title can answer that, and only by being read while it runs.
+//
+// Every matrix group it reads is also decoded, through `native-render`'s own
+// `decode_j3d_mesh_element`. Reading the fields only proves the offsets; running the display list
+// through the decoder is what proves the vertex layout those fields describe is the one the title's
+// geometry was authored against, because a wrong stride or a wrong attribute type produces a
+// truncated list or an out-of-range index rather than a plausible mesh.
 //
 // Bounded in the two directions that matter. `max_reports` caps the per-shape detail, because a
 // function entered a quarter of a million times cannot print per entry; the histograms below are
@@ -51,9 +58,17 @@ class GuestShapeProbe {
     std::uint64_t shapesRead_ = 0;
     std::uint64_t elementsRead_ = 0;
     std::uint64_t displayListBytes_ = 0;
+    std::uint64_t trianglesDecoded_ = 0;
+    std::uint32_t smallestElement_ = 0;
+    std::uint32_t largestElement_ = 0;
+
+    // Reused across every element so a quarter of a million decodes do not each allocate. The
+    // decoder clears and refills it.
+    std::vector<sb::native_render::J3dDecodedVertex> triangles_;
 
     std::map<sb::title_adapter::GuestShapeError, std::uint64_t> shapeErrors_;
     std::map<sb::title_adapter::GuestShapeError, std::uint64_t> elementErrors_;
+    std::map<sb::native_render::J3dMeshDecodeError, std::uint64_t> decodeErrors_;
     std::map<std::uint32_t, std::uint64_t> elementCounts_;
     std::uint64_t elementCountsUntracked_ = 0;
     std::map<std::uint32_t, std::uint64_t> vertexSizes_;
