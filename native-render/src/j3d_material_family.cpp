@@ -7,6 +7,7 @@
 #include <sunbright/native_render/j3d_lit_alpha_mask_material.h>
 #include <sunbright/native_render/j3d_lit_alpha_tint_material.h>
 #include <sunbright/native_render/j3d_lit_material.h>
+#include <sunbright/native_render/j3d_masked_specular_material.h>
 #include <sunbright/native_render/j3d_masked_toon_material.h>
 #include <sunbright/native_render/j3d_specular_material.h>
 #include <sunbright/native_render/j3d_tinted_layered_material.h>
@@ -88,6 +89,7 @@ struct TexturedMatches {
     bool layered = false;
     bool tintedLayered = false;
     bool maskedToon = false;
+    bool maskedSpecular = false;
     bool litTextured = false;
     bool unlitTextured = false;
     bool texturedEffect = false;
@@ -117,6 +119,9 @@ struct TexturedMatches {
         if (maskedToon) {
             return J3dMaterialFamily::LitMaskedToon;
         }
+        if (maskedSpecular) {
+            return J3dMaterialFamily::LitMaskedSpecular;
+        }
         if (litTextured) {
             return J3dMaterialFamily::LitTextured;
         }
@@ -136,7 +141,7 @@ struct TexturedMatches {
         if (maskedToon) {
             return 4;
         }
-        if (dualAlphaEffect || litAlphaMask || layered || tintedLayered) {
+        if (dualAlphaEffect || litAlphaMask || layered || tintedLayered || maskedSpecular) {
             return 2;
         }
         return 1;
@@ -195,6 +200,11 @@ struct TexturedMatches {
         accepted(classify_j3d_masked_toon_material(state, PLACEHOLDER, PLACEHOLDER, PLACEHOLDER,
                                                    PLACEHOLDER, *lighting, maskedToon),
                  j3d_masked_toon_material_result_name, J3dMaterialFamily::LitMaskedToon, refusals);
+    LitMaskedSpecularMaterial maskedSpecular{};
+    matches.maskedSpecular =
+        accepted(classify_j3d_masked_specular_material(state, PLACEHOLDER, PLACEHOLDER, *lighting,
+                                                       maskedSpecular),
+                 j3d_masked_specular_result_name, J3dMaterialFamily::LitMaskedSpecular, refusals);
     LitTexturedMaterial litTextured{};
     matches.litTextured =
         accepted(classify_j3d_lit_textured_material(state, PLACEHOLDER, *lighting, litTextured),
@@ -232,6 +242,15 @@ void record_unasked_lit_families(const ModelLightingContext* lighting,
         LitDualAlphaEffectMaterial built{};
         if (classify_j3d_dual_alpha_effect_material(state, first, second, *lighting, built) !=
             J3dDualAlphaEffectMaterialResult::Success) {
+            return false;
+        }
+        material = built;
+        return true;
+    }
+    case J3dMaterialFamily::LitMaskedSpecular: {
+        LitMaskedSpecularMaterial built{};
+        if (classify_j3d_masked_specular_material(state, first, second, *lighting, built) !=
+            J3dMaskedSpecularResult::Success) {
             return false;
         }
         material = built;
@@ -400,6 +419,8 @@ const char* j3d_material_family_name(J3dMaterialFamily family) noexcept {
         return "lit_tinted_layered_specular";
     case J3dMaterialFamily::LitMaskedToon:
         return "lit_masked_toon";
+    case J3dMaterialFamily::LitMaskedSpecular:
+        return "lit_masked_specular";
     case J3dMaterialFamily::TexturedEffect:
         return "textured_effect";
     }

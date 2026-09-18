@@ -520,11 +520,29 @@ is unchanged across the wiring.
     76 distinct textures decoded, 3,957,504 bytes
     textures per classified draw: 0=854 1=22204 2=4270 4=8540
 
-**The frontier is now 10 materials**, and `tools/re/tev_decode.py` reads each one's program:
+Porting the `lit_masked_specular` family took classification to **44,512 of 51,250 (86.9%)**. Its two
+materials are one program: a detail image added to a signed-diffuse layer offset by one half, then
+chosen per channel against the directional highlight by a mask image's own RGB. They differ only in
+whether the mask's alpha gates opacity, which the family carries as a flag rather than as a second
+near-copy of the program. Its alpha channel is lit in its own right (`0x0706`), which nothing in the
+renderer computed: `diffuse_lighting` passed alpha through unlit, so the illumination is now
+accumulated once and `lit_alpha` multiplies by it.
+
+    classification: success=44512 unsupported_program=6738
+    families: textured_effect=10248 lit_textured=9394 lit_masked_specular=8644
+              lit_masked_toon=8540 lit_tinted_layered_specular=3416 unlit_textured=1708
+              lit_specular_color=854 lit_dual_alpha_effect=854 lit_alpha_tint=854
+    80 distinct textures decoded, 3,984,128 bytes
+    textures per classified draw: 0=854 1=22204 2=12914 4=8540
+
+Every other family's count is unchanged across the port, so the new one took no draw from a family
+that already had it. The two-texture bucket rose by exactly 8,644 -- the new family's own count,
+from a histogram computed independently of it.
+
+**The frontier is now 8 materials**, and `tools/re/tev_decode.py` reads each one's program:
 
 | materials | draws | shape |
 | --- | --- | --- |
-| `0x80d06840`, `0x80d06a70` | 8,708 | `0686/0706`, two colour channels with a **lit alpha**, 2 stages, vertex colour; no family accepts a lit alpha channel |
 | `0x80fa490c`, `0x80fa4c00` | 1,614 | `0706/0700` but **two** stages, so the single-stage effect family refuses them on stage count |
 | six materials | 5,124 | genuinely unlit (`0700/0700`, `0700/0701`, `0701/0700`, `0701/0701`), 1--2 stages |
 
@@ -534,8 +552,8 @@ into one draw by `tools/gcnport_boot/guest_draw_publisher.cpp` and submitted thr
 `submit_model`, the same entry the decomp runtime uses. Measured on the real title, 0 Dolphin
 alerts:
 
-    44,408 matrix group(s), 44,408 composed, 44,408 submitted, 8,385,426 vertex(es)
-    44,408 reached the sink; of those rejected: 0 invalid draw, 0 invalid mesh, 0 mismatched mesh,
+    53,052 matrix group(s), 53,052 composed, 53,052 submitted, 9,733,890 vertex(es)
+    53,052 reached the sink; of those rejected: 0 invalid draw, 0 invalid mesh, 0 mismatched mesh,
       0 unindexable pose, 0 mismatched images, 0 for no reason this knows
     0 rejected by the sink, 0 had no published projection,
       0 named a matrix slot the pose never filled

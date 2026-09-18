@@ -61,6 +61,7 @@ enum class J3dMaterialFamily : std::uint8_t {
     LitLayeredTextured,
     LitTintedLayeredSpecular,
     LitMaskedToon,
+    LitMaskedSpecular,
     TexturedEffect,
 };
 

@@ -300,6 +300,22 @@ struct LitMaskedToonMaterial {
     ModelRasterPolicy raster{};
 };
 
+// A detail image added to one signed-diffuse layer, then chosen against the directional highlight
+// colour per channel by a mask image's own RGB. The mask's alpha optionally gates output opacity;
+// `textureMasksAlpha` says whether it does, because the two authored materials differ only there.
+struct LitMaskedSpecularMaterial {
+    PictureTexture maskTexture{};
+    PictureTexture detailTexture{};
+    Color baseColor{1.0F, 1.0F, 1.0F, 1.0F};
+    Color ambientColor{0.0F, 0.0F, 0.0F, 1.0F};
+    ModelLightingContext lighting{};
+    // What the detail layer keeps of the lit colour, and the authored offset added before clamping.
+    float diffuseWeight = 0.0F;
+    float detailBias = 0.0F;
+    bool textureMasksAlpha = false;
+    ModelRasterPolicy raster{};
+};
+
 // Texture-free authored colour ramp driven by one ordinary directional highlight. The runtime
 // adapter resolves the source material's register colours into the two ramp endpoints; no console
 // colour-stage operation or register identity crosses this boundary.
@@ -342,8 +358,8 @@ using ModelMaterial =
                  LitDualAlphaEffectMaterial, AlphaMaskedColorMaterial, LitColorMaterial,
                  LitTexturedMaterial, LitTexturedAlphaMaskMaterial, LitAlphaTintMaterial,
                  LitLayeredTexturedMaterial, LitTintedLayeredSpecularMaterial,
-                 LitMaskedToonMaterial, LitSpecularRampMaterial, LitSpecularColorMaterial,
-                 LitSpecularTexturedMaterial>;
+                 LitMaskedToonMaterial, LitMaskedSpecularMaterial, LitSpecularRampMaterial,
+                 LitSpecularColorMaterial, LitSpecularTexturedMaterial>;
 
 constexpr std::size_t kMaxModelMatrices = 10;
 

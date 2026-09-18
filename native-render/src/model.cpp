@@ -78,9 +78,10 @@ Vec3 transformed_normal(const Matrix3x4& matrix, Vec3 source) noexcept {
     });
 }
 
-Color diffuse_lighting(Color source, Color ambient, const ModelLightingContext& lighting,
-                       Vec3 eyePosition, Vec3 normal,
-                       ModelDiffuseMode mode = ModelDiffuseMode::Clamped) noexcept {
+// What the lights add up to at this vertex, per channel. Alpha accumulates alongside the colour
+// because a J3D alpha channel can be lit in its own right; whether it is belongs to the caller.
+Color accumulated_illumination(Color ambient, const ModelLightingContext& lighting,
+                               Vec3 eyePosition, Vec3 normal, ModelDiffuseMode mode) noexcept {
     Color illumination = ambient;
     for (std::uint8_t index = 0; index < lighting.pointLightCount; ++index) {
         const PointLight& light = lighting.pointLights[index];
@@ -102,13 +103,29 @@ Color diffuse_lighting(Color source, Color ambient, const ModelLightingContext& 
         illumination.r += light.color.r * contribution;
         illumination.g += light.color.g * contribution;
         illumination.b += light.color.b * contribution;
+        illumination.a += light.color.a * contribution;
     }
     // The game clamps accumulated illumination before multiplying the material source.
     illumination.r = std::clamp(illumination.r, 0.0F, 1.0F);
     illumination.g = std::clamp(illumination.g, 0.0F, 1.0F);
     illumination.b = std::clamp(illumination.b, 0.0F, 1.0F);
+    illumination.a = std::clamp(illumination.a, 0.0F, 1.0F);
+    return illumination;
+}
+
+Color diffuse_lighting(Color source, Color ambient, const ModelLightingContext& lighting,
+                       Vec3 eyePosition, Vec3 normal,
+                       ModelDiffuseMode mode = ModelDiffuseMode::Clamped) noexcept {
+    const Color illumination =
+        accumulated_illumination(ambient, lighting, eyePosition, normal, mode);
     return {source.r * illumination.r, source.g * illumination.g, source.b * illumination.b,
             source.a};
+}
+
+// Opacity for a material whose alpha channel is lit rather than taken straight from the source.
+float lit_alpha(Color source, Color ambient, const ModelLightingContext& lighting, Vec3 eyePosition,
+                Vec3 normal, ModelDiffuseMode mode) noexcept {
+    return source.a * accumulated_illumination(ambient, lighting, eyePosition, normal, mode).a;
 }
 
 Color directional_specular(const DirectionalSpecularLight& light, Vec3 normal) noexcept {
@@ -250,7 +267,8 @@ std::uint8_t material_texture_count(const ModelMaterial& material) noexcept {
             if constexpr (std::is_same_v<Material, LitDualAlphaEffectMaterial> ||
                           std::is_same_v<Material, LitTexturedAlphaMaskMaterial> ||
                           std::is_same_v<Material, LitLayeredTexturedMaterial> ||
-                          std::is_same_v<Material, LitTintedLayeredSpecularMaterial>)
+                          std::is_same_v<Material, LitTintedLayeredSpecularMaterial> ||
+                          std::is_same_v<Material, LitMaskedSpecularMaterial>)
                 return 2;
             if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>)
                 return 4;
@@ -283,6 +301,10 @@ const PictureTexture* material_texture(const ModelMaterial& material, std::uint8
                                  std::is_same_v<Material, LitTintedLayeredSpecularMaterial>) {
                 if (index == 0)
                     return &value.baseTexture;
+                return index == 1 ? &value.detailTexture : nullptr;
+            } else if constexpr (std::is_same_v<Material, LitMaskedSpecularMaterial>) {
+                if (index == 0)
+                    return &value.maskTexture;
                 return index == 1 ? &value.detailTexture : nullptr;
             } else if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>) {
                 constexpr std::array<const PictureTexture LitMaskedToonMaterial::*, 4> textures{
@@ -391,6 +413,15 @@ bool valid(const ModelDraw& draw) noexcept {
                        material.detailWeight >= 0.0F && material.detailWeight <= 1.0F &&
                        finite(material.layerWeight) && material.layerWeight >= 0.0F &&
                        material.layerWeight <= 1.0F;
+            } else if constexpr (std::is_same_v<Material, LitMaskedSpecularMaterial>) {
+                const auto validTexture = [](const PictureTexture& texture) {
+                    return texture.resource != 0 && texture.width != 0 && texture.height != 0;
+                };
+                return validTexture(material.maskTexture) && validTexture(material.detailTexture) &&
+                       valid(material.baseColor) && valid(material.ambientColor) &&
+                       valid(material.lighting) && material.lighting.pointLightCount != 0 &&
+                       finite(material.diffuseWeight) && material.diffuseWeight >= 0.0F &&
+                       material.diffuseWeight <= 1.0F && finite(material.detailBias);
             } else if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>) {
                 const auto validTexture = [](const PictureTexture& texture) {
                     return texture.resource != 0 && texture.width != 0 && texture.height != 0;
@@ -602,6 +633,34 @@ ClipVertex transform_vertex(const ModelDraw& draw, const MeshVertex& vertex) noe
                             material.layerWeight,
                         },
                     .detailTextureWeight = material.detailWeight,
+                };
+            } else if constexpr (std::is_same_v<Material, LitMaskedSpecularMaterial>) {
+                const Color diffuse =
+                    diffuse_lighting(material.baseColor, material.ambientColor, material.lighting,
+                                     eyePosition, normal, ModelDiffuseMode::Signed);
+                const Color specular = directional_specular(material.lighting.specular, normal);
+                // The detail layer's texture-independent part: the weighted lit colour plus the
+                // stage's authored offset. The highlight colour rides in the additive slot, whose
+                // alpha says whether the mask image's alpha gates opacity, so both authored
+                // materials share one program.
+                return VertexColors{
+                    .multiplicative =
+                        {
+                            material.diffuseWeight * diffuse.r + material.detailBias,
+                            material.diffuseWeight * diffuse.g + material.detailBias,
+                            material.diffuseWeight * diffuse.b + material.detailBias,
+                            // The alpha channel is lit in its own right, with the clamped
+                            // diffuse the colour channel takes signed.
+                            lit_alpha(material.baseColor, material.ambientColor, material.lighting,
+                                      eyePosition, normal, ModelDiffuseMode::Clamped),
+                        },
+                    .additive =
+                        {
+                            specular.r,
+                            specular.g,
+                            specular.b,
+                            material.textureMasksAlpha ? 1.0F : 0.0F,
+                        },
                 };
             } else if constexpr (std::is_same_v<Material, LitMaskedToonMaterial>) {
                 const Color diffuse =
