@@ -247,6 +247,8 @@ const char* j3d_mesh_decode_error_name(J3dMeshDecodeError error) noexcept {
         return "unknown primitive";
     case J3dMeshDecodeError::InvalidVertexReference:
         return "invalid vertex reference";
+    case J3dMeshDecodeError::InvalidMatrixSlot:
+        return "invalid matrix slot";
     case J3dMeshDecodeError::AllocationFailure:
         return "allocation failure";
     }
@@ -411,7 +413,11 @@ J3dMeshDecodeResult decode_j3d_mesh_element(const J3dMeshElementSource& source,
                                  matrixAddress)) {
                         return {J3dMeshDecodeError::InvalidVertexReference, offset, command};
                     }
-                    decoded.positionMatrixSlot = matrixAddress / 3U;
+                    if (matrixAddress % kJ3dMatrixSlotStride != 0 ||
+                        matrixAddress / kJ3dMatrixSlotStride >= kJ3dMatrixSlotCount) {
+                        return {J3dMeshDecodeError::InvalidMatrixSlot, offset, command};
+                    }
+                    decoded.positionMatrixSlot = matrixAddress / kJ3dMatrixSlotStride;
                 }
 
                 const auto positionType =

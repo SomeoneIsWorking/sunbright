@@ -4,12 +4,11 @@
 
 #include <sunbright/title_adapter/guest_j3d_shape.h>
 
+#include "guest_image.h"
+
 #include <array>
 #include <cassert>
-#include <cstring>
-#include <span>
 #include <string_view>
-#include <vector>
 
 namespace {
 
@@ -18,50 +17,8 @@ using sb::title_adapter::GuestMemory;
 using sb::title_adapter::GuestShape;
 using sb::title_adapter::GuestShapeElement;
 using sb::title_adapter::GuestShapeError;
-
-constexpr GuestAddress RAM_BASE = 0x80000000;
-constexpr std::size_t RAM_BYTES = 0x1000;
-
-// The synthetic guest image. Anything outside it is refused rather than read as zeroes, which is
-// what lets the negative cases below tell "unmapped" apart from "empty".
-struct Image {
-    std::array<std::uint8_t, RAM_BYTES> bytes{};
-
-    void word(GuestAddress address, std::uint32_t value) {
-        const std::size_t offset = address - RAM_BASE;
-        assert(offset + 4 <= bytes.size());
-        bytes[offset] = static_cast<std::uint8_t>(value >> 24U);
-        bytes[offset + 1] = static_cast<std::uint8_t>(value >> 16U);
-        bytes[offset + 2] = static_cast<std::uint8_t>(value >> 8U);
-        bytes[offset + 3] = static_cast<std::uint8_t>(value);
-    }
-
-    void half(GuestAddress address, std::uint16_t value) {
-        const std::size_t offset = address - RAM_BASE;
-        assert(offset + 2 <= bytes.size());
-        bytes[offset] = static_cast<std::uint8_t>(value >> 8U);
-        bytes[offset + 1] = static_cast<std::uint8_t>(value);
-    }
-
-    void byte(GuestAddress address, std::uint8_t value) {
-        const std::size_t offset = address - RAM_BASE;
-        assert(offset < bytes.size());
-        bytes[offset] = value;
-    }
-};
-
-bool read_image(GuestAddress address, std::span<std::uint8_t> destination, void* context) {
-    const auto& image = *static_cast<const Image*>(context);
-    if (address < RAM_BASE) {
-        return false;
-    }
-    const std::uint64_t offset = address - RAM_BASE;
-    if (offset > image.bytes.size() || destination.size() > image.bytes.size() - offset) {
-        return false;
-    }
-    std::memcpy(destination.data(), image.bytes.data() + offset, destination.size());
-    return true;
-}
+using sb::title_adapter::test::Image;
+using sb::title_adapter::test::read_image;
 
 constexpr GuestAddress SHAPE = 0x80000100;
 constexpr GuestAddress VERTEX_DATA = 0x80000200;

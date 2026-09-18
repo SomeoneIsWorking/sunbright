@@ -62,6 +62,13 @@ struct J3dMeshElementSource {
     J3dArrayByteOrder arrayByteOrder = J3dArrayByteOrder::BigEndian;
 };
 
+// The GX position/normal matrix slot a vertex selects, 0..9. The display list holds the matrix
+// *register* index, which is the slot times three; converting it here rather than at every consumer
+// keeps one owner of that relationship, and an index that is not a multiple of three, or names a
+// slot past the tenth, is refused rather than folded onto a neighbouring matrix.
+constexpr std::uint32_t kJ3dMatrixSlotCount = 10;
+constexpr std::uint32_t kJ3dMatrixSlotStride = 3;
+
 struct J3dDecodedVertex {
     float x = 0.0F;
     float y = 0.0F;
@@ -81,6 +88,7 @@ enum class J3dMeshDecodeError : std::uint8_t {
     TruncatedDisplayList,
     UnknownPrimitive,
     InvalidVertexReference,
+    InvalidMatrixSlot,
     AllocationFailure,
 };
 

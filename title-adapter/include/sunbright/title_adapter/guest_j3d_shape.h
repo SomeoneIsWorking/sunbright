@@ -1,9 +1,9 @@
 #pragma once
 
 #include <sunbright/native_render/j3d_mesh_decode.h>
+#include <sunbright/title_adapter/guest_memory.h>
 
 #include <cstdint>
-#include <span>
 
 namespace sb::title_adapter {
 
@@ -23,8 +23,6 @@ namespace sb::title_adapter {
 // serves a live runtime, a memory dump and a test fixture, and the tests exercise the shipping
 // implementation rather than a second copy of it.
 
-using GuestAddress = std::uint32_t;
-
 // GMSE01's `j3dSys`. J3DShape::loadVtxArray at 0x802e0320 forms it in two instructions
 // (`lis r4, -0x7fc0; addi r31, r4, 0x45dc`) and then reads 0x10c/0x110/0x114 out of it for
 // GX_VA_POS, GX_VA_NRM and GX_VA_CLR0 -- the same three arrays this adapter needs, from the same
@@ -32,17 +30,6 @@ using GuestAddress = std::uint32_t;
 // J3DSys field offsets the decomp header states, and J3DShape's own NBT flag at 0x30, which
 // loadVtxArray tests with `lbz r0, 0x30(r30)` before loading the normal array.
 constexpr GuestAddress GMSE01_J3D_SYS = 0x804045dc;
-
-// Reads `destination.size()` bytes of guest memory at `address`. Must answer false when the range
-// is not wholly readable: a reader that zero-fills instead turns "this address is not mapped" into
-// a shape with no vertices, which is a legitimate-looking answer to a question that failed.
-using GuestReadBytes = bool (*)(GuestAddress address, std::span<std::uint8_t> destination,
-                                void* context);
-
-struct GuestMemory {
-    GuestReadBytes read = nullptr;
-    void* context = nullptr;
-};
 
 enum class GuestShapeError : std::uint8_t {
     None,

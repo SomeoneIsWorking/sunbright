@@ -15,7 +15,9 @@ currently has no gameplay executable while its shared runtime executor is missin
 S004, the PC-native renderer, is the next focus: the execution path underneath it now runs GMSE01's
 whole attract cycle unattended and faultlessly (S008 below has the retrace-timed trajectory), and
 the run presents no frame because it uses Dolphin's Null video backend. Nothing further about the
-title's behaviour can be seen without a renderer.
+title's behaviour can be seen without a renderer. Its producer seam now reads, decodes and poses the
+title's own geometry with the two halves proven to agree; what remains is publishing a `ModelDraw`,
+which needs the material and texture state that has not been read yet.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -330,9 +332,48 @@ matrix group and 854 with eleven (skinned), and vertex strides of 4/6/7/8/9/10/1
 descriptor counts of 2/3/4/5/6, the 7-byte case being a one-byte direct `PNMTXIDX` plus three
 `Index16` attributes.
 
-Gap: nothing is decoded or drawn yet. The probe reads shapes and discards them; no semantic frame is
-produced under the dynarec, no material/texture/matrix state is read, and the run uses Dolphin's Null
-video backend so no frame is presented. The surviving decomp-side adapters
+That geometry is now decoded and posed, both through `native-render`'s own owners rather than a
+second copy. Over three further 1,400,000,000-block runs (0 Dolphin alerts each, every entry still
+calling the original):
+
+- **Every matrix group decodes.** 59,862 of 59,862 display lists ran through
+  `decode_j3d_mesh_element` with no failure of any kind, producing 3,811,638 triangles, smallest
+  group 6 vertices and largest 1,800. Reading the fields only proves the offsets; a wrong stride or
+  attribute type desynchronises the list or yields an out-of-range index, so a clean decode of the
+  title's own display lists is what proves the layout those fields describe is the authored one.
+- **Every matrix group poses.** `read_guest_shape_pose` resolves each group's palette by the route
+  `J3DShape::draw` itself takes — `mDrawMatrices[*mCurrentViewNo]`, bounded by
+  `mDrawMtxData->mEntryNum` — and classifies the group by its guest vtable
+  (`J3DShapeMtx` `0x803e125c`, `J3DShapeMtxDL` `0x803e123c`, `J3DShapeMtxMulti` `0x803e121c`,
+  derived twice over: from `J3DShapeFactory::newShapeMtx` at `0x802e8a84` and from an image scan for
+  the three `load` overrides). 38,336 single and 21,526 multi groups, all on the indexed
+  position-and-normal pipeline, zero errors.
+- **The two halves agree.** Every decoded vertex names a GX matrix slot and the pose says which
+  slots hold a matrix: 0 of 11,434,914 named a slot with none. Getting there corrected two real
+  defects rather than tuning a number. First, `native-render`'s decoder publishes a slot, not the
+  matrix register the display list holds, so an adapter indexing by register was wrong by a factor
+  of three (3,184,566 disagreements); the decoder now also refuses a register that is not a multiple
+  of three or names a slot past the tenth, instead of folding it onto a neighbouring matrix.
+  Second, a matrix group does not have to fill every slot it draws through: `J3DShapeMtxMulti::load`
+  skips a `0xffff` entry, and GX keeps what the previous group loaded. Measured: of the 8,540 groups
+  declaring ten slots, the gaps fall *between* filled slots and their display lists reference them.
+  Modelling that as `GuestMatrixRegisters` — carried in draw order, holding resolved matrices rather
+  than indices — closed the remaining 276,696.
+- **The inheritance is within a model.** Of those 276,696 vertex slots drawn through a register the
+  group did not itself load, **0 came from another shape**. That is the discriminator with two
+  possible answers: a wrong reading would have matrices leaking across model palettes.
+
+The two CPU-skinning pipelines are read faithfully rather than approximated — under `PCPU` the
+position matrix is `j3dSys.mViewMtx` and the normal matrix stays indexed, and under `NCPU` the
+reverse — though GMSE01 used neither in these runs (59,862 of 59,862 groups were `PNGP`), so that
+path has unit coverage and no title evidence yet.
+
+Gap: nothing is drawn yet, and nothing is published. The decoded vertices and poses are counted and
+discarded; no `ModelDraw` is built, no semantic frame is produced under the dynarec, no
+material/texture state is read, and the run uses Dolphin's Null video backend so no frame is
+presented. `native_render::ModelDraw` also has no place for the normal matrix, which under the CPU
+pipelines genuinely differs from the position matrix; the adapter carries it as
+`GuestShapePose::normalViews` and the semantic boundary has yet to accept it. The surviving decomp-side adapters
 (`sms-boot/runtime/native_j3d_adapter.cpp` and its peers) remain native/decomp evidence, attached to
 the decomp product rather than to `gcnport`. Material families, non-billboard particles, image
 producers, screen effects, and full-frame ordering remain incomplete. The new JIT seam must preserve

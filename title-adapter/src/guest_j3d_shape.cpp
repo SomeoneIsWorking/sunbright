@@ -1,7 +1,6 @@
 #include <sunbright/title_adapter/guest_j3d_shape.h>
 
 #include <array>
-#include <cstring>
 
 namespace sb::title_adapter {
 namespace {
@@ -43,42 +42,6 @@ constexpr std::uint32_t GX_VA_NULL = 0xff;
 // list a named failure instead of a read that walks guest memory until it faults: it is
 // deliberately far above any real list, so reaching it means the list is not a list.
 constexpr std::size_t MAX_LIST_ENTRIES = 64;
-
-class GuestReader {
-  public:
-    explicit GuestReader(const GuestMemory& memory) noexcept : memory_(memory) {}
-
-    [[nodiscard]] bool bytes(GuestAddress address, std::span<std::uint8_t> destination) const {
-        return memory_.read(address, destination, memory_.context);
-    }
-
-    [[nodiscard]] bool word(GuestAddress address, std::uint32_t& value) const {
-        std::array<std::uint8_t, 4> raw{};
-        if (!bytes(address, raw)) {
-            return false;
-        }
-        value = (static_cast<std::uint32_t>(raw[0]) << 24) |
-                (static_cast<std::uint32_t>(raw[1]) << 16) |
-                (static_cast<std::uint32_t>(raw[2]) << 8) | static_cast<std::uint32_t>(raw[3]);
-        return true;
-    }
-
-    [[nodiscard]] bool half(GuestAddress address, std::uint16_t& value) const {
-        std::array<std::uint8_t, 2> raw{};
-        if (!bytes(address, raw)) {
-            return false;
-        }
-        value = static_cast<std::uint16_t>((static_cast<std::uint16_t>(raw[0]) << 8) | raw[1]);
-        return true;
-    }
-
-    [[nodiscard]] bool byte(GuestAddress address, std::uint8_t& value) const {
-        return bytes(address, std::span(&value, 1));
-    }
-
-  private:
-    const GuestMemory& memory_;
-};
 
 // Reads the descriptor list and the attribute-format list into native_render's own input types.
 // Neither loop can run away: each stops at GX_VA_NULL, and reaching MAX_LIST_ENTRIES without one is

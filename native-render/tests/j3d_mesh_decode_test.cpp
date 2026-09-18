@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <span>
+#include <string_view>
 
 namespace {
 
@@ -88,6 +89,28 @@ int main() {
     assert(triangles[0].rgba == 0xFF0000FFU);
     assert(triangles[1].rgba == 0x00FF00FFU);
     assert(triangles[2].rgba == 0x0000FFFFU);
+
+    // The per-vertex selector is a matrix *register* index, so it is always a multiple of three.
+    // A value that is not names no slot at all, and dividing it anyway would silently draw the
+    // vertex with a neighbouring matrix -- which is why this refuses instead.
+    Memory unaligned = memory;
+    unaligned.bytes[displayList + 3 + 4] = 4;
+    J3dMeshElementSource unalignedSource = source;
+    unalignedSource.reader.context = &unaligned;
+    triangles.clear();
+    const J3dMeshDecodeResult unalignedResult = decode_j3d_mesh_element(unalignedSource, triangles);
+    assert(unalignedResult.error == J3dMeshDecodeError::InvalidMatrixSlot);
+    assert(std::string_view(j3d_mesh_decode_error_name(J3dMeshDecodeError::InvalidMatrixSlot)) !=
+           "unknown");
+
+    // Register 30 is one past the tenth slot: in range for a byte, out of range for a palette.
+    Memory farSlot = memory;
+    farSlot.bytes[displayList + 3 + 4] = kJ3dMatrixSlotCount * kJ3dMatrixSlotStride;
+    J3dMeshElementSource farSlotSource = source;
+    farSlotSource.reader.context = &farSlot;
+    triangles.clear();
+    assert(decode_j3d_mesh_element(farSlotSource, triangles).error ==
+           J3dMeshDecodeError::InvalidMatrixSlot);
 
     Memory broken = memory;
     broken.bytes[displayList] = 0x61;
