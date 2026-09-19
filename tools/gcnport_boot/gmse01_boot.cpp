@@ -247,30 +247,6 @@ bool ReportAlertWithoutPrompting(const char* caption, const char* text, bool /*y
 // Each step is bounded and each way of stopping is reported, because a truncated backtrace that
 // looks complete is worse than none: the chain must stay inside RAM, stay word-aligned, and move
 // strictly upward, which is what distinguishes a finished walk from a corrupt or circular one.
-void SampleGuestWatch(const Memory::MemoryManager& memory, GuestWatch& watch, u64 blocks_run,
-                      u32 retrace_count) {
-    std::vector<u32> current(watch.words);
-    for (u32 word = 0; word < watch.words; ++word) {
-        current[word] = memory.Read_U32(watch.address + word * 4);
-    }
-    watch.samples += 1;
-    if (current == watch.previous) {
-        return;
-    }
-    const bool first = watch.previous.empty();
-    if (!first) {
-        watch.changes += 1;
-    }
-    std::printf("gmse01_boot: watch 0x%08x %s at block %llu (retrace %u):", watch.address,
-                first ? "first sample" : "changed", static_cast<unsigned long long>(blocks_run),
-                retrace_count);
-    for (const u32 word : current) {
-        std::printf(" %08x", word);
-    }
-    std::printf("\n");
-    watch.previous = std::move(current);
-}
-
 void RunBoot(const DolImage& image, const BootRequest& request) {
     const std::string profile_path = File::CreateTempDir();
     if (profile_path.empty()) {
@@ -774,11 +750,8 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             pad_probe = std::move(installed.front());
         }
 
-        std::vector<GuestWatch> guest_watches = request.guest_watches;
-        for (const GuestWatch& watch : guest_watches) {
-            std::printf("gmse01_boot: watching 0x%08x (%u word(s)) for changes\n", watch.address,
-                        watch.words);
-        }
+        GuestWatchSet guest_watches(request.guest_watches);
+        guest_watches.announce();
 
         // Bounded: this is a diagnostic boot attempt, not a gameplay loop.
         //
@@ -855,9 +828,7 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         elapsed > 0.0 ? blocks_run / elapsed : 0.0);
             if (!guest_watches.empty()) {
                 const u32 retrace_count = system.GetMemory().Read_U32(GUEST_RETRACE_COUNT);
-                for (GuestWatch& watch : guest_watches) {
-                    SampleGuestWatch(system.GetMemory(), watch, blocks_run, retrace_count);
-                }
+                guest_watches.sample(system.GetMemory(), blocks_run, retrace_count);
             }
             if (batch.backend_fault || batch.blocks_executed == 0) {
                 std::printf("gmse01_boot: batch stopped at pc=0x%08x: %s\n", batch.guest_pc,
@@ -1098,11 +1069,7 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             }
         }
 
-        for (const GuestWatch& watch : guest_watches) {
-            std::printf("gmse01_boot: watch 0x%08x sampled %llu time(s), changed %llu time(s)\n",
-                        watch.address, static_cast<unsigned long long>(watch.samples),
-                        static_cast<unsigned long long>(watch.changes));
-        }
+        guest_watches.report();
 
         std::printf("gmse01_boot: synchronous_original_calls=%llu "
                     "synchronous_original_instructions=%llu\n",

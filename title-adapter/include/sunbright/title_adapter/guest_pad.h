@@ -57,6 +57,16 @@ inline constexpr std::uint16_t GUEST_PAD_START = 0x1000;
 // depth, and a title that reads the depth would see a released trigger under a pressed bit.
 inline constexpr std::uint8_t GUEST_PAD_TRIGGER_PRESSED = 0xFF;
 
+// A fully deflected stick, on the scale the title reads it at.
+//
+// `JUTGamePad::CStick::update` (0x802c8340) divides a `PADStatus` axis by 54 for the main stick and
+// by 42 for the C stick and calls the result deflection, so those are the values at which a title
+// sees a stick pushed all the way. Anything larger is clamped back to the same full deflection, but
+// only along a path that depends on the pad's stick mode, so a script that asked for more would be
+// asking for something the title may resolve differently: full scale is the honest maximum.
+inline constexpr std::int8_t GUEST_PAD_MAIN_STICK_FULL = 54;
+inline constexpr std::int8_t GUEST_PAD_SUB_STICK_FULL = 42;
+
 struct GuestPadState {
     std::uint16_t buttons = 0;
     std::int8_t stickX = 0;
@@ -64,6 +74,8 @@ struct GuestPadState {
     std::int8_t substickX = 0;
     std::int8_t substickY = 0;
     bool operator==(const GuestPadState&) const = default;
+    // Ordered so a diagnostic can tally distinct states; the order itself carries no meaning.
+    auto operator<=>(const GuestPadState&) const = default;
 };
 
 // Fills one `PADStatus` as the hardware would, big-endian, ready to be written into guest memory.
@@ -75,23 +87,42 @@ void encode_guest_pad_status(const GuestPadState& state,
 // in a script is a run that silently never pressed what it was told to.
 [[nodiscard]] bool parse_guest_pad_button(std::string_view name, std::uint16_t& button) noexcept;
 
+// One named stick deflection: which of the two sticks, and the full-scale value it puts on each
+// axis. `y` is positive upwards, as the hardware reports it.
+struct GuestPadDirection {
+    bool substick = false;
+    std::int8_t x = 0;
+    std::int8_t y = 0;
+};
+
+// Names one stick deflection, for a script: `STICK_UP`, `STICK_DOWN`, `STICK_LEFT`, `STICK_RIGHT`
+// and the `CSTICK_` four. Returns false for anything else, for the same reason as a button name.
+[[nodiscard]] bool parse_guest_pad_direction(std::string_view name,
+                                             GuestPadDirection& direction) noexcept;
+
 enum class GuestPadScriptError : std::uint8_t {
     None,
     EmptyEntry,
     MissingSeparator,
     MalformedFrame,
     FramesOutOfOrder,
-    UnknownButton,
-    EmptyButtonList,
+    UnknownName,
+    EmptyHeldList,
+    OpposingDirections,
 };
 
 [[nodiscard]] const char* name(GuestPadScriptError error) noexcept;
 
 // What the pad holds at each frame of a run.
 //
-// A script is `<frame>:<buttons>` entries separated by whitespace, with `<buttons>` either `-` for
-// nothing held or `+`-separated button names. A state holds from its frame until the next entry
-// replaces it, which is what a press is: `"2400:START 2410:-"` holds Start for ten frames.
+// A script is `<frame>:<held>` entries separated by whitespace, with `<held>` either `-` for
+// nothing held or `+`-separated button and stick-direction names. A state holds from its frame
+// until the next entry replaces it, which is what a press is: `"2400:START 2410:-"` holds Start for
+// ten frames, and `"4800:STICK_UP+A"` walks forward with the jump button down.
+//
+// Two names that deflect one axis in opposite directions are refused rather than cancelled. A
+// script is a description of what a player did, and no player pushes a stick both ways at once; a
+// pair that quietly summed to centre would be a run that looks driven and never moved.
 class GuestPadTimeline {
   public:
     [[nodiscard]] GuestPadScriptError parse(std::string_view script) noexcept;

@@ -74,7 +74,8 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-matrices load|current:<hex-addr>[:<reports>] ...] "
                      "[--read-glyphs setgx|remap|glyph:<hex-addr>[:<reports>] ...] "
                      "[--press-buttons <hex-addr>[:<reports>]] "
-                     "[--pad-script \"<frame>:<buttons> ...\"] "
+                     "[--watch-guest [deref:]<hex-addr>[+<hex-off>][:<words>] ...] "
+                     "[--pad-script \"<frame>:<held> ...\"] "
                      "[--render-frames <hex-addr>] [--dump-frame <path>] "
                      "[--dump-frame-index <n>] [--draw-mode normal|family-map|opaque] "
                      "[--draw-skip <n>] [--draw-limit <n>] [--draw-log-frame <n>]\n",
@@ -165,18 +166,53 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             }
             request.counted_call_addresses.push_back(address);
         } else if (name == "--watch-guest") {
-            // <hex-addr>[:<words>]. Kept small on purpose: this window is re-read and compared at
-            // every batch report, and a wide one turns a change report into a wall of text in which
-            // the word that actually moved is the hard part to find.
+            // [deref:]<hex-addr>[+<hex-offset>][:<words>]. Kept small on purpose: this window is
+            // re-read and compared at every batch report, and a wide one turns a change report into
+            // a wall of text in which the word that actually moved is the hard part to find.
+            //
+            // `deref:` makes the address a pointer to follow rather than the window itself, with
+            // the optional `+offset` a field inside what it points at. That is how a title's own
+            // state is reached: `deref:0x8040dde0+0x10:6` watches six words at offset 0x10 of
+            // whatever `gpCardLoad` points at, without a first run spent reading the pointer.
             constexpr u32 DEFAULT_WATCH_WORDS = 4;
             constexpr u32 MAX_WATCH_WORDS = 64;
+            constexpr std::string_view DEREF_PREFIX = "deref:";
             GuestWatch watch;
+            const char* text = value;
+            if (std::string_view(text).starts_with(DEREF_PREFIX)) {
+                watch.indirect = true;
+                text += DEREF_PREFIX.size();
+            }
             char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, watch.address) || (*end != '\0' && *end != ':')) {
+            if (!ParseGuestAddress(text, &end, watch.address) ||
+                (*end != '\0' && *end != ':' && *end != '+')) {
                 std::fprintf(stderr,
-                             "gmse01_boot: --watch-guest needs <hex-addr>[:<words>], got '%s'\n",
+                             "gmse01_boot: --watch-guest needs [deref:]<hex-addr>[+<hex-offset>]"
+                             "[:<words>], got '%s'\n",
                              value);
                 return false;
+            }
+            if (*end == '+') {
+                constexpr u32 MAX_WATCH_OFFSET = 0x10000;
+                const char* const offset_text = end + 1;
+                errno = 0;
+                const unsigned long long parsed_offset = std::strtoull(offset_text, &end, 16);
+                if (end == offset_text || (*end != '\0' && *end != ':') || parsed_offset % 4 != 0 ||
+                    parsed_offset > MAX_WATCH_OFFSET || errno == ERANGE) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --watch-guest offset must be a word-aligned hex "
+                                 "offset of at most %#x, got '%s'\n",
+                                 MAX_WATCH_OFFSET, offset_text);
+                    return false;
+                }
+                if (!watch.indirect) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --watch-guest '+offset' only means something after "
+                                 "'deref:'; add the offset to the address instead: '%s'\n",
+                                 value);
+                    return false;
+                }
+                watch.offset = static_cast<u32>(parsed_offset);
             }
             watch.words = DEFAULT_WATCH_WORDS;
             if (*end == ':') {
@@ -194,8 +230,11 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             }
             constexpr u32 GUEST_RAM_START = 0x80000000;
             constexpr u32 GUEST_RAM_END = 0x81800000;
+            // An indirect watch validates only where the pointer is; where it leads is the title's
+            // answer, checked at every sample rather than assumed here.
+            const u32 span = watch.indirect ? sizeof(u32) : watch.words * 4;
             if (watch.address < GUEST_RAM_START || watch.address % 4 != 0 ||
-                watch.address + watch.words * 4 > GUEST_RAM_END) {
+                watch.address + span > GUEST_RAM_END) {
                 std::fprintf(stderr,
                              "gmse01_boot: --watch-guest 0x%08x is not a word-aligned guest RAM "
                              "window of %u word(s)\n",

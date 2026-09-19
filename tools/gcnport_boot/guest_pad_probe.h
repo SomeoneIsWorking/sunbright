@@ -59,10 +59,11 @@ class GuestPadProbe {
     std::uint64_t originalInstructions_ = 0;
     std::uint32_t shortestOriginal_ = 0;
     std::uint32_t longestOriginal_ = 0;
-    // Every distinct button mask this put in front of the title, with how often. A script that
+    // Every distinct pad state this put in front of the title, with how often. A script that
     // pressed nothing and a script whose press never reached a read produce the same silence
-    // otherwise.
-    std::map<std::uint16_t, std::uint64_t> statesWritten_;
+    // otherwise. The sticks are part of the key: a run that only walks holds no button at all, and
+    // keyed on the button mask alone it would report as an idle run.
+    std::map<sb::title_adapter::GuestPadState, std::uint64_t> statesWritten_;
     std::uint64_t statesNotTracked_ = 0;
 };
 

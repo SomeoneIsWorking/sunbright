@@ -4,8 +4,24 @@
 #include <array>
 #include <cstdio>
 #include <span>
+#include <string>
 
 namespace sunbright::gcnport_boot {
+namespace {
+
+// One pad state as a report reads it: the button mask, then the two sticks. The sticks are printed
+// even when centred so that a state holding no button is still distinguishable from an unreported
+// one.
+std::string describe(const sb::title_adapter::GuestPadState& state) {
+    std::array<char, 64> text{};
+    const int written =
+        std::snprintf(text.data(), text.size(), "0x%04x/(%d,%d)/(%d,%d)", state.buttons,
+                      state.stickX, state.stickY, state.substickX, state.substickY);
+    return written > 0 ? std::string(text.data(), static_cast<std::size_t>(written))
+                       : std::string("unprintable");
+}
+
+} // namespace
 
 gcnport::HookResult GuestPadProbe::operator()(gcnport::GuestContext& guest) {
     entries_ += 1;
@@ -30,15 +46,15 @@ gcnport::HookResult GuestPadProbe::operator()(gcnport::GuestContext& guest) {
         return gcnport::HookResult::return_to_caller();
     }
     written_ += 1;
-    if (statesWritten_.size() < MAX_DISTINCT_STATES || statesWritten_.contains(state.buttons)) {
-        statesWritten_[state.buttons] += 1;
+    if (statesWritten_.size() < MAX_DISTINCT_STATES || statesWritten_.contains(state)) {
+        statesWritten_[state] += 1;
     } else {
         statesNotTracked_ += 1;
     }
-    if (state.buttons != 0 && reports_ < maxReports_) {
+    if (state != sb::title_adapter::GuestPadState{} && reports_ < maxReports_) {
         reports_ += 1;
-        std::printf("gmse01_boot: frame %llu: holding 0x%04x on port 0\n",
-                    static_cast<unsigned long long>(frame), state.buttons);
+        std::printf("gmse01_boot: frame %llu: holding %s on port 0\n",
+                    static_cast<unsigned long long>(frame), describe(state).c_str());
     }
     return gcnport::HookResult::return_to_caller();
 }
@@ -55,9 +71,9 @@ void GuestPadProbe::report() const {
     }
     std::printf("gmse01_boot:   the original body cost %u..%u instruction(s) against a %u bound\n",
                 shortestOriginal_, longestOriginal_, ORIGINAL_INSTRUCTION_BUDGET);
-    std::printf("gmse01_boot:   button masks put in front of the title:");
-    for (const auto& [buttons, count] : statesWritten_) {
-        std::printf(" 0x%04x=%llu", buttons, static_cast<unsigned long long>(count));
+    std::printf("gmse01_boot:   pad states put in front of the title:");
+    for (const auto& [state, count] : statesWritten_) {
+        std::printf(" %s=%llu", describe(state).c_str(), static_cast<unsigned long long>(count));
     }
     if (statesNotTracked_ != 0) {
         std::printf(" (+%llu past %zu distinct)",

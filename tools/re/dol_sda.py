@@ -24,7 +24,11 @@ The output is designed to paste into a port's comments — each line names the o
 the value AND (for pointers) the resolved symbol name.
 """
 
-import os, sys, struct
+import os
+import struct
+import sys
+
+from gmse01_sda import SDA2_BASE, SDA_BASE  # r13 and r2 bases, owned by one module
 
 # THREE dirnames: this file is at <repo>/tools/re/dol_sda.py, so two levels reach <repo>/tools
 # and the DOL path resolved to <repo>/tools/scratch/bin/sms.dol — which does not exist, so the
@@ -32,9 +36,6 @@ import os, sys, struct
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOL_PATH  = os.path.join(REPO_ROOT, "scratch/bin/sms.dol")
 FUNCS_TXT = os.path.join(REPO_ROOT, "reference/sms_gmse01_funcs.txt")
-
-SDA_BASE  = 0x804141C0   # r13 base — engine singletons + game state
-SDA2_BASE = 0x80416BA0   # r2  base — float/double constants in .sdata2 / .rodata
 
 # Known r13-relative global names (GMSE01, US). Populated from prior port work — extend as
 # new offsets are identified. `.sbss` symbols live at these VAs but are zero at rest in the
@@ -83,7 +84,8 @@ KNOWN_SDA1 = {
 }
 
 # ── DOL memory map ──────────────────────────────────────────────────────────
-DOL = open(DOL_PATH, "rb").read()
+with open(DOL_PATH, "rb") as _dol_file:
+    DOL = _dol_file.read()
 _offs  = struct.unpack(">18I", DOL[0:72])
 _addrs = struct.unpack(">18I", DOL[72:144])
 _sizes = struct.unpack(">18I", DOL[144:216])
@@ -220,7 +222,7 @@ def cmd_scan(addr, n=None):
     sda1_refs, sda2_refs = scan_function(addr, n or 256)
 
     if sda2_refs:
-        print(f"\n## SDA2 constants (r2 references, likely f32/f64 math literals)")
+        print("\n## SDA2 constants (r2 references, likely f32/f64 math literals)")
         for simm in sorted(sda2_refs):
             va, u, f32, f64 = resolve_sda2(simm)
             uses = sda2_refs[simm]
@@ -232,7 +234,7 @@ def cmd_scan(addr, n=None):
                   f"u32={u_str}  f32={f32_str}  f64={f64_str}  ({mnems}, {len(uses)} use)")
 
     if sda1_refs:
-        print(f"\n## SDA1 globals (r13 references, likely pointers to engine singletons)")
+        print("\n## SDA1 globals (r13 references, likely pointers to engine singletons)")
         for simm in sorted(sda1_refs):
             va, u, fsym, gsym = resolve_sda1(simm)
             uses = sda1_refs[simm]

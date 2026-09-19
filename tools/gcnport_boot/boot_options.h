@@ -18,6 +18,7 @@
 #include "guest_pad_probe.h"
 #include "guest_solid_rectangle_probe.h"
 #include "guest_viewport_probe.h"
+#include "guest_watch.h"
 
 // What one invocation of the GMSE01 boot diagnostic asks for, and the parser that produces it.
 //
@@ -43,24 +44,6 @@ struct GuestMemoryWindow {
 // this address. It advances only when a VI interrupt is both raised by the hardware and dispatched
 // into the title's handler, so it measures end-to-end delivery rather than the instant of a sample.
 constexpr u32 GUEST_RETRACE_COUNT = 0x8040e8d0;
-
-// One --watch-guest request: a small guest window sampled as the run goes, reported only when its
-// contents change.
-//
-// --dump-guest answers "what does this look like when the run ends", which is the wrong question
-// for a state machine. A title that reached its title screen and one that reached it and fell back
-// look identical in a final dump, and a run long enough to be interesting produces far too many
-// samples to print unconditionally. So: print the first sample, print every change, and print
-// nothing in between. A window that never changes says so by producing exactly one line, which is a
-// real answer and a different one from a window that was never sampled.
-struct GuestWatch {
-    u32 address = 0;
-    u32 words = 0;
-
-    std::vector<u32> previous;
-    u64 samples = 0;
-    u64 changes = 0;
-};
 
 // One --count-calls request: a guest function whose every entry is counted by a native hook.
 //
