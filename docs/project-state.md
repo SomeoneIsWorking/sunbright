@@ -30,10 +30,13 @@ Interface one just was. `J2DWindow` is published too, so every 2D producer the
 title has now has a publisher and a framed panel draws under its text. The console the diagnostic
 boots also has a memory card in it now, so a scripted run walks past the card error and renders the
 file-select screen -- the first whole interactive screen this project has composed from its own
-publishers. What the renderer still lacks evidence for is fidelity rather than coverage: the next
+publishers. It is also the first screen this project has *driven*: a script presses Start past the
+title, walks Mario under stick control, head-butts a save block and selects Start from the menu that
+opens, which takes the title to `setNextStage(0)`. The frame renderer now reads the title's
+framebuffer copies as well, so an offscreen pass is dropped instead of being painted into the
+visible image. What the renderer still lacks evidence for is fidelity rather than coverage: the next
 piece is a per-region diff against the console from a matched-state oracle capture, which is what
-the duplicated "OPTIONS" label on that screen and retail's additive sun glow (its object 27 of 127,
-a 3D draw on the model path) are both waiting on.
+retail's additive sun glow (its object 27 of 127, a 3D draw on the model path) is waiting on.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -1418,9 +1421,66 @@ characters**, and the sampled frame is the file-select screen itself -- "Select 
 first screen past the attract cycle this project has rendered from its own publishers, and the first
 evidence that the 2D pass composes a whole interactive screen rather than one producer at a time.
 
-One thing in that frame is not yet explained: "OPTIONS" appears twice, once on the sign's own
-texture and once as white text above it. Whether retail draws both is a question for a matched-state
-oracle capture of this screen, not for a guess here.
+**2026-09-19 (continuation): the file-select screen was being rendered with an offscreen pass
+painted into it, and nobody had ever asked the title where its passes end.** `--read-efb` attaches
+four hooks -- `GXCopyTex`, `GXCopyDisp`, `GXSetTexCopySrc`, `GXSetCopyClear` -- and no render run
+had ever passed it. With no copy reported, `GuestFrameRenderer` saw a frame as one uninterrupted
+stream of draws, which is not what the console does.
+
+What the title actually does on this screen, measured: two copies to a texture per frame. The first
+comes after 26 draws, reads a 256x256 region and clears (`r4=1`); the second comes after 49 to 97
+draws, reads 640x448 and does not. The clearing one is a reflection pass, and carrying its draws
+forward is why a second, vertically mirrored Mario floated above the scene in every frame this
+project had ever dumped of it. One run: 2,848 copies to a texture, 1,424 dropped at a clearing copy
+and 1,424 kept, and the mirrored Mario is gone. It had looked like a blending defect for as long as
+the screen had been rendered.
+
+The duplicated "OPTIONS" the previous entry could not explain is not a defect and did not need an
+oracle: it only appears while the camera is still panning in. In the settled frame the sign carries
+the only one.
+
+**The same screen is now driven rather than only rendered.** `--watch-guest deref:...` follows
+`gpCardLoad` and `gpMarioPos` through it, and the whole path is retrace-timed:
+
+| retrace | what changed | why it matters |
+| --- | --- | --- |
+| 5,959 | `TCardLoad` constructed, `mState` 10 | stage 15 is up; `mState` 10 sets pad flag `0x1` |
+| 5,975 / 6,127 | `mState` 9, then 3 | the title loop. It cycles 10 -> 9 -> 3 and back forever |
+| 6,221 | `mTitleAnimState` 4 | Start is only accepted at `mState` 3 with this >= 4 and `unkBC` >= 100 |
+| 6,617 | `mState` 8 | Start taken: `moveToLoadFromTitle`, the camera pans to the blocks |
+| 6,677 | `mState` 0, `unk1C` 0x31 | file-select proper, reading the card's option block |
+| 6,705 | `unk1C` 0x13 | `PROGRESS_UNK13` clears pad flag `0x1` and makes the three blocks normal |
+| 7,670 - 7,817 | `gpMarioPos` x 1284.7 -> 1358.4 | Mario walks. y stays 100.0, z stays -1000.0 |
+| 7,916 | `gpMarioPos` y 100 -> 133.5 | he jumps |
+| 7,936 | `unk1C` 0x1b | `TFileLoadBlock::pushed()`: the head-butt landed on block C |
+| 8,235 | `unk1C` 0x29 | Start chosen from START/COPY/ERASE/SCORE -> `setNextStage(0)` |
+
+That is the first time this project has taken GMSE01 from boot to starting a save file. The pad
+reading it came from is the title's own: an earlier run that pressed Start too early never left
+`mState` 3, and the conclusion drawn from it -- that the file-select screen locks Mario out of the
+stick -- was drawn from the title screen, which does.
+
+**And it goes further than a stage load: the run renders Delfino Airstrip.** Following
+`gpApplication` at `0x803e9700` through the same script, `mAppState` reaches 5 `GAMEPLAY` at retrace
+5,871 for stage 15, the file-select's `setNextStage(0)` lands at retrace 8,267, and the next change
+is at 12,381. `mAppState` never enters 6 `MOVIE` on this path, so no THP plays and the black frame
+at 6,000 is the stage loading, not a movie with no publisher.
+
+Frame 8,600 is the Airstrip: Mario third-person on the tarmac, the coin/lives HUD, and the opening
+line of dialogue in its framed box, reading correctly. 216,718 models, 144,844 meshes, 83,038,542
+vertices and 129,098 images reached the passes in that run, with 5,854 offscreen passes dropped at a
+clearing copy and 3,483 kept. This is the first frame of an actual stage this project has composed,
+and the first evidence that the renderer's coverage holds outside the two screens it was built on.
+
+Two defects are plain in it and neither is subtle: the sky is flat saturated blue with no gradient
+and no cloud, and the tarmac is washed out to near-white. Both are in the 3D path, both are new
+surface area rather than regressions of anything measured before, and both want the matched-state
+oracle capture the per-region diff is already waiting on.
+
+Running it also named a defect in how these runs are made. The producer flags were being retyped by
+hand, and omitting one does not fail -- it renders something else, which is exactly how `--read-efb`
+went unpassed for the whole life of the renderer. `tools/render/boot_run.py` owns the set now, and
+its self-test resolves all 23 addresses against the committed US function list.
 
 
 ### S005 — decomp evidence adapters
@@ -1477,10 +1537,17 @@ attract cycle twice, with the transitions timed in guest retraces:
 (`Entrance.thp`, 2,816 frames at 30 Hz) occupies 5,916 retraces against the 5,632 its frame count
 predicts, the rest being its fades. The title is not merely surviving; it is keeping console time.
 
+The interactive half has started. A scripted run now takes the title from boot to starting a save
+file -- Start past the attract cycle, Mario walked under stick control, a save block head-butted,
+Start chosen from the block's menu -- with the native renderer presenting every frame of it. S004
+carries the retrace-timed trajectory and the guest state it was read from, and the same run carries
+on into Delfino Airstrip: frame 8,600 of it is Mario on the tarmac with the coin/lives HUD and the
+opening line of dialogue. What it is not yet is a *scenario*: nothing is asked of the stage once it
+loads, nothing is compared against an oracle, and no native subsystem owner is involved.
+
 Missing capability: drive a bounded, *interactive* gameplay scenario through the real gameplay
-target with native renderer and native owners active. Nothing above involves input, a native
-renderer (the run uses Dolphin's Null video backend, so no frame is presented), or native subsystem
-owners. Compare guest PC/register state, relevant memory,
+target with native renderer and native owners active. The run above reaches a stage and stops
+there, and uses no native subsystem owners. Compare guest PC/register state, relevant memory,
 timing/interrupt/service events, audio, input, and presented frames against an independent oracle;
 report JIT blocks, cache activity, invalidations, overrides, and denominators. Qualify correctness and
 frame-time behavior on every released host architecture.

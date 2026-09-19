@@ -69,7 +69,8 @@ tools/               Python verification, RE, oracle parsing, and diagnostics
   tools/info/          project-ledger support
   tools/interp/        presentation-analysis tooling
   tools/perf/          bounded performance probes
-  tools/render/        renderer and GPU diagnostic tooling
+  tools/render/        renderer and GPU diagnostic tooling; boot_run.py owns the producer flag set a
+                       render run attaches, so the list is not retyped per run
   tools/gcnport_boot/  standalone maintainer diagnostic (gmse01_boot.cpp + boot_options.cpp and one
                        probe per guest seam: shape, material, lighting, model, projection,
                        framebuffer copy, viewport/scissor, J2D screen, picture, window, solid
@@ -83,7 +84,8 @@ tools/               Python verification, RE, oracle parsing, and diagnostics
                        probes establish for 2D that no J2DGrafContext owns, guest_matrix_state.h
                        owns the position matrix an immediate-mode draw is placed by, and
                        guest_texture_cache.h decodes each JUTTexture once for every publisher that
-                       draws with one): boots the real
+                       draws with one, and guest_watch.h owns the guest memory windows a run
+                       follows, including one reached through a pointer): boots the real
                        GMSE01
                        image through gcnport's public API;
                        NOT the gameplay product, excluded from the default CMake `all` target (see
