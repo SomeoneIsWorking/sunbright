@@ -330,7 +330,8 @@ std::string describe_fog(const sb::native_render::ModelFog& fog) {
 // transforms put it there. A model-view whose translation sits at the eye and a projection whose
 // depth row is wrong produce the same unusable clip position, and no amount of describing the
 // result separates them.
-std::string describe_transforms(const sb::native_render::ModelDraw& draw) {
+std::string describe_transforms(const sb::native_render::ModelDraw& draw,
+                                const sb::native_render::Matrix3x4& view) {
     std::string text = " model-view[0] ";
     std::array<char, 64> number{};
     const auto append = [&](float value, const char* separator) {
@@ -352,19 +353,32 @@ std::string describe_transforms(const sb::native_render::ModelDraw& draw) {
         }
         text.append(row == 3 ? "" : "; ");
     }
+    // And the camera the title is drawing with at this moment, which the model-view above is
+    // supposed to have concatenated into it. A draw matrix built for an earlier pass's camera is a
+    // perfectly well-formed matrix; the only thing that says it is the wrong one is this beside it.
+    text.append(" | view ");
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            append(view.value[(row * 4) + column], column == 3 ? "" : " ");
+        }
+        text.append(row == 2 ? "" : "; ");
+    }
     return text;
 }
 
 } // namespace
 
-void print_draw_listing(std::uint64_t frame, std::uint64_t ordinal,
-                        const sb::native_render::ClassifiedJ3dMaterial& classified,
-                        const sb::title_adapter::GuestTexGenBlock& texGen,
-                        std::span<const sb::native_render::DecodedImageView> images,
-                        std::span<const sb::native_render::J3dDecodedVertex> triangles,
-                        const sb::native_render::ModelDraw& draw,
-                        std::span<const sb::native_render::MeshVertex> vertices,
-                        std::uint64_t mesh) {
+void print_draw_listing(const DrawListing& listing) {
+    const sb::native_render::ClassifiedJ3dMaterial& classified = *listing.classified;
+    const sb::title_adapter::GuestTexGenBlock& texGen = *listing.texGen;
+    const sb::title_adapter::GuestShapePose& pose = *listing.pose;
+    const sb::native_render::ModelDraw& draw = *listing.draw;
+    const std::span<const sb::native_render::DecodedImageView> images = listing.images;
+    const std::span<const sb::native_render::J3dDecodedVertex> triangles = listing.triangles;
+    const std::span<const sb::native_render::MeshVertex> vertices = listing.vertices;
+    const std::uint64_t frame = listing.frame;
+    const std::uint64_t ordinal = listing.ordinal;
+    const std::uint64_t mesh = listing.mesh;
     const sb::native_render::ModelRasterPolicy& policy =
         sb::native_render::raster_policy(classified.material);
     std::printf("gmse01_boot:   frame %llu draw %llu: %s %s/%s/depth-write=%d %zu vertex(es) from "
@@ -382,7 +396,11 @@ void print_draw_listing(std::uint64_t frame, std::uint64_t ordinal,
         describe_coordinate_range(triangles, texGen.recognised ? texGen.texGenCount : 0).c_str(),
         describe_resolved_color(draw, vertices).c_str());
     std::printf("gmse01_boot:   %s\n", describe_clip_coverage(draw, vertices, policy).c_str());
-    std::printf("gmse01_boot:   %s\n", describe_transforms(draw).c_str());
+    std::printf("gmse01_boot:   %s pipeline=%s group=%s view=%u palette=0x%08x\n",
+                describe_transforms(draw, pose.viewMatrix).c_str(),
+                sb::title_adapter::guest_skinning_pipeline_name(pose.pipeline),
+                sb::title_adapter::guest_matrix_group_kind_name(pose.kind), pose.viewNumber,
+                pose.matrixPalette);
 }
 
 } // namespace sunbright::gcnport_boot

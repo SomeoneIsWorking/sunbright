@@ -71,6 +71,15 @@ class GuestFrameRenderer {
 
     [[nodiscard]] bool started() const noexcept { return started_; }
 
+    // Whether the run has already written the frame it was told by number to write. A run that
+    // named a frame has nothing left to do once that frame exists, and every such run so far spent
+    // two thirds of its time executing past it; the caller is what decides to stop, because only it
+    // knows what else the run was asked for. A run that did not name a frame never reports true
+    // here, since "the first frame that is not the clear" is not a finishing line.
+    [[nodiscard]] bool named_image_written() const noexcept {
+        return imageFrameWanted_ != 0 && imageWritten_;
+    }
+
   private:
     // Called by the frame client with the sampled frame's pixels still mapped.
     static bool observe_sample(const sb::native_render::SemanticFrameSample& sample, void* context,

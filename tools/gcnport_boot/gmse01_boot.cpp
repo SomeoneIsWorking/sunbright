@@ -660,6 +660,15 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                 break;
             }
 
+            // The run asked for one numbered frame and has it. Everything after it is execution
+            // nobody asked for, and it was two thirds of every such run.
+            if (frame_renderer.named_image_written()) {
+                std::printf("gmse01_boot: stopping at %llu blocks: the named frame has been "
+                            "written\n",
+                            static_cast<unsigned long long>(blocks_run));
+                break;
+            }
+
             // A batch that retires its blocks but never leaves one PC was the shape of every stall
             // this tool saw while the boot could not get past its first seconds, and this report
             // used to be named for that conclusion. It is not a stall discriminator. Once the title

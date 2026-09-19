@@ -213,8 +213,16 @@ GuestDrawPublisher::publish(gcnport::GuestContext& guest,
         // and a bound that cut it in half would otherwise hide the half being looked for.
         const bool withinBudget = budget_ == nullptr || budget_->take();
         if (logFrame_ != 0 && budget_ != nullptr && budget_->frames() == logFrame_) {
-            print_draw_listing(logFrame_, budget_->offered(), classified, texGen, images,
-                               triangles_, draw, vertices_, resource);
+            print_draw_listing({.frame = logFrame_,
+                                .ordinal = budget_->offered(),
+                                .classified = &classified,
+                                .texGen = &texGen,
+                                .pose = &geometry.pose,
+                                .images = images,
+                                .triangles = triangles_,
+                                .draw = &draw,
+                                .vertices = vertices_,
+                                .mesh = resource});
         }
         if (!withinBudget) {
             withheldByBudget_ += 1;

@@ -342,10 +342,13 @@ GuestPoseError read_guest_shape_pose(const GuestMemory& memory, const GuestShape
 
     const bool cpuPosition = guest_pipeline_positions_are_view_space(result.pipeline);
     const bool cpuNormal = guest_pipeline_normals_are_view_space(result.pipeline);
-    native_render::Matrix3x4 viewMatrix{};
-    if ((cpuPosition || cpuNormal) && !read_matrix(reader, system + SYSTEM_VIEW_MTX, viewMatrix)) {
+    // Read for every pipeline, not only the two that transform with it: what the current view is
+    // has to be recorded even where it is unused, because a draw matrix carrying a stale camera is
+    // only visible next to the camera the title is drawing with now.
+    if (!read_matrix(reader, system + SYSTEM_VIEW_MTX, result.viewMatrix)) {
         return GuestPoseError::UnreadableViewMatrix;
     }
+    const native_render::Matrix3x4& viewMatrix = result.viewMatrix;
 
     // What this group loads. A 0xffff slot is not loaded and not empty: it keeps the matrix an
     // earlier group put in that register, which is why nothing is written to `registers` for it.

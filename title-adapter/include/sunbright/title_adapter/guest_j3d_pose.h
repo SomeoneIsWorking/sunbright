@@ -168,6 +168,11 @@ struct GuestShapePose {
     // matrix or with one left behind.
     std::uint32_t loadedSlotMask = 0;
     native_render::ModelPose pose{};
+    // j3dSys.mViewMtx as it stood when this group was drawn. Under the CPU pipelines it *is* the
+    // position matrix; under the indexed ones it is not used, and is carried anyway because it is
+    // the only way to tell a draw matrix that has the current view concatenated into it from one
+    // left over from a pass that used another camera. Those two look identical in isolation.
+    native_render::Matrix3x4 viewMatrix{};
     // The normal matrix behind each entry of `pose`, in the same order. J3D keeps a second palette
     // of 3x3 normal matrices alongside the position ones and, under the CPU pipelines, takes one of
     // the two from the view matrix while the other stays indexed -- so under PCPU and NCPU the two
