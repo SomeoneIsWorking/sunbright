@@ -491,6 +491,64 @@ int main() {
     assert(client.shutdown(platformError));
     assert(sharedPlatform.shutdown(platformError));
 
+    // Naming a frame downloads that frame and no other. A run that wants one image out of thousands
+    // pays for one readback, and the frame it gets is the one it named -- the two halves of the
+    // claim, because sampling every frame and keeping the third would also report calls == 1 from
+    // the observer's side while costing every frame's download.
+    assert(sharedPlatform.initialize_device({}, platformError));
+    observed = Observed{};
+    constexpr std::uint64_t NAMED_FRAME = 3;
+    constexpr std::uint64_t FRAMES_SEALED = 5;
+    assert(client.initialize(sharedPlatform, bridge,
+                             {.width = 16,
+                              .height = 16,
+                              .readback = sb::native_render::SemanticReadbackMode::NamedFrame,
+                              .readbackFrame = NAMED_FRAME,
+                              .onSample = observe,
+                              .onSampleContext = &observed},
+                             platformError));
+    for (std::uint64_t frame = 0; frame < FRAMES_SEALED; ++frame) {
+        assert(bridge.begin());
+        assert(
+            sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+        assert(bridge.seal());
+        assert(client.encode_last_sealed(platformError));
+    }
+    assert(client.stats().submittedFrames == FRAMES_SEALED);
+    assert(client.stats().sampledFrames == 1);
+    assert(observed.calls == 1 && observed.frameIndex == NAMED_FRAME);
+    assert(client.validate_output(platformError));
+    assert(client.shutdown(platformError));
+
+    // A named frame the run never reaches is a failure, and says which kind: the renderer drew, and
+    // the run stopped short of the frame it was told to look at.
+    assert(client.initialize(sharedPlatform, bridge,
+                             {.width = 16,
+                              .height = 16,
+                              .readback = sb::native_render::SemanticReadbackMode::NamedFrame,
+                              .readbackFrame = FRAMES_SEALED + 1,
+                              .onSample = observe,
+                              .onSampleContext = &observed},
+                             platformError));
+    assert(bridge.begin());
+    assert(sb::native_render::submit_picture(draw, std::span<const DecodedImageView>(&image, 1)));
+    assert(bridge.seal());
+    assert(client.encode_last_sealed(platformError));
+    assert(client.stats().sampledFrames == 0);
+    assert(!client.validate_output(platformError));
+    assert(platformError.find("never reached the frame") != std::string::npos);
+    assert(client.shutdown(platformError));
+
+    // Frame zero does not exist, so a mode that needs a frame number refuses it at startup rather
+    // than running a whole title and taking no picture.
+    assert(!client.initialize(sharedPlatform, bridge,
+                              {.width = 16,
+                               .height = 16,
+                               .readback = sb::native_render::SemanticReadbackMode::NamedFrame},
+                              platformError));
+    assert(platformError.find("frame number from 1") != std::string::npos);
+    assert(sharedPlatform.shutdown(platformError));
+
     // Preview startup refuses a hidden/headless window instead of running a plausible-looking
     // present loop that can never display anything.
     assert(sharedPlatform.initialize_device({}, platformError));

@@ -421,6 +421,12 @@ SDL_GPUGraphicsPipeline* ensure_pipeline(Semantic3dPassImpl& impl, PipelineKey k
     // J3D/GX-authored front faces are clockwise. The semantic policy preserves that authored
     // winding convention while carrying no GX register encoding into this pass.
     info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
+    // The console clips against its near and far planes rather than clamping to them, so geometry
+    // the title placed outside the depth range it authored does not appear at all. This field
+    // defaults to clamping, which draws that geometry flattened onto the nearest plane -- and until
+    // the projection was handed over in this renderer's clip-depth convention, clamping was the
+    // only reason a frame appeared at all, which is why it is being switched on in the same breath.
+    info.rasterizer_state.enable_depth_clip = true;
     info.target_info.color_target_descriptions = &colorTarget;
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = key.depth;

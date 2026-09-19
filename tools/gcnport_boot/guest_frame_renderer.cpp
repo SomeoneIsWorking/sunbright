@@ -36,11 +36,9 @@ bool GuestFrameRenderer::observe_sample(const sb::native_render::SemanticFrameSa
     if (renderer.imagePath_.empty() || renderer.imageWritten_) {
         return true;
     }
-    // With no frame named, the readback mode has already decided this: it samples nothing after the
-    // first non-clear frame. With one named, every frame is sampled and this is the choice.
-    if (renderer.imageFrameWanted_ != 0 && sample.frameIndex != renderer.imageFrameWanted_) {
-        return true;
-    }
+    // Which frame this is was decided by the readback mode -- the first non-clear one, or the one
+    // named -- so every sample offered here is one to write. Deciding it again here would be a
+    // second answer to the same question, and the one that pays for a download of every frame.
     if (!write_ppm(renderer.imagePath_, sample.width, sample.height, sample.rgba8, error)) {
         return false;
     }
@@ -82,8 +80,9 @@ bool GuestFrameRenderer::start(const std::string& imagePath, std::uint64_t image
             platform, bridge,
             {.width = FRAMEBUFFER_WIDTH,
              .height = FRAMEBUFFER_HEIGHT,
-             .readback = imageFrame != 0 ? sb::native_render::SemanticReadbackMode::EveryFrame
+             .readback = imageFrame != 0 ? sb::native_render::SemanticReadbackMode::NamedFrame
                                          : sb::native_render::SemanticReadbackMode::UntilNonClear,
+             .readbackFrame = imageFrame,
              .onSample = observe_sample,
              .onSampleContext = this},
             detail)) {

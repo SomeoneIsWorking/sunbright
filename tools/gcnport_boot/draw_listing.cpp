@@ -308,6 +308,24 @@ std::string describe_clip_coverage(const sb::native_render::ModelDraw& draw,
 
 // The two matrices the draw carries, printed as they are rather than summarised.
 //
+// What the fog stage will do to this draw, printed whether or not it is switched on. A listing that
+// says nothing about a draw whose fog is off cannot be told from one whose fog was never read, and
+// a distant fragment taken to the fog colour outright is indistinguishable, in the finished frame,
+// from one drawn in the wrong colour to begin with.
+std::string describe_fog(const sb::native_render::ModelFog& fog) {
+    if (fog.mode == sb::native_render::ModelFogMode::Disabled) {
+        return ", fog off";
+    }
+    std::array<char, 160> text{};
+    const int written =
+        std::snprintf(text.data(), text.size(), ", fog linear %g..%g to rgba %g %g %g %g",
+                      fog.start, fog.end, fog.color.r, fog.color.g, fog.color.b, fog.color.a);
+    if (written <= 0) {
+        return ", fog unprintable";
+    }
+    return {text.data(), static_cast<std::size_t>(written)};
+}
+
 // The clip description above says where the geometry ended up; this says which of the two
 // transforms put it there. A model-view whose translation sits at the eye and a projection whose
 // depth row is wrong produce the same unusable clip position, and no amount of describing the
@@ -350,7 +368,7 @@ void print_draw_listing(std::uint64_t frame, std::uint64_t ordinal,
     const sb::native_render::ModelRasterPolicy& policy =
         sb::native_render::raster_policy(classified.material);
     std::printf("gmse01_boot:   frame %llu draw %llu: %s %s/%s/depth-write=%d %zu vertex(es) from "
-                "0x%08llx, %u texture(s)%s\n",
+                "0x%08llx, %u texture(s)%s%s\n",
                 static_cast<unsigned long long>(frame), static_cast<unsigned long long>(ordinal),
                 sb::native_render::j3d_material_family_name(classified.family),
                 sb::native_render::model_blend_mode_name(policy.blend),
@@ -358,7 +376,7 @@ void print_draw_listing(std::uint64_t frame, std::uint64_t ordinal,
                 static_cast<int>(policy.depthWrite), vertices.size(),
                 static_cast<unsigned long long>(mesh),
                 static_cast<unsigned>(classified.textureCount),
-                describe_first_texture(classified, images).c_str());
+                describe_first_texture(classified, images).c_str(), describe_fog(draw.fog).c_str());
     std::printf(
         "gmse01_boot:    %s%s%s\n", describe_tex_gen(texGen).c_str(),
         describe_coordinate_range(triangles, texGen.recognised ? texGen.texGenCount : 0).c_str(),

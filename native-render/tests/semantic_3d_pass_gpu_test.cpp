@@ -108,6 +108,40 @@ int main() {
         const SemanticFramePixels backCull = render(std::span<const ModelDraw>(&model, 1));
         assert(pixel(backCull, 8, 8).r > 0.9F);
 
+        // Depth clipping, which is what the console does with geometry outside the depth range the
+        // title authored: it is not drawn. The adjacent control above is the same triangle inside
+        // that range. A pipeline left on the SDL default clamps instead, and clamping draws both of
+        // these flattened onto the near or far plane -- so what fails here when the rasterizer
+        // state regresses is not a shade but the presence of a triangle the console never showed.
+        const SemanticFramePixels nothingDrawn = render({});
+        for (const float outsideDepth : {-0.5F, 1.5F}) {
+            std::array<MeshVertex, 3> movedVertices = vertices;
+            for (MeshVertex& vertex : movedVertices) {
+                vertex.position.z = outsideDepth;
+            }
+            // Its own resource id: the same one carrying different vertices would ask the pass's
+            // mesh cache whether it notices, which is a separate question from this one.
+            const MeshResourceView movedMesh{203, 1, movedVertices};
+            ModelDraw beyond = model;
+            beyond.mesh = {.resource = 203, .revision = 1, .vertexCount = 3};
+            const SemanticFrame beyondFrame{.targetWidth = 16,
+                                            .targetHeight = 16,
+                                            .models = std::span<const ModelDraw>(&beyond, 1),
+                                            .meshes =
+                                                std::span<const MeshResourceView>(&movedMesh, 1)};
+            SemanticFramePixels clipped{};
+            if (!encode_3d_and_readback(pass, beyondFrame, modelTarget, clipped, error) ||
+                !error.empty()) {
+                std::cerr << "depth clip control failed: " << error << '\n';
+                std::abort();
+            }
+            if (hash(clipped) != hash(nothingDrawn)) {
+                std::cerr << "depth clip control: a triangle at depth " << outsideDepth
+                          << " reached the target instead of being clipped\n";
+            }
+            assert(hash(clipped) == hash(nothingDrawn));
+        }
+
         // Linear fog is evaluated from view-space depth in every model fragment shader. The
         // triangle sits at eye depth -0.5, exactly halfway through [-1, 0], so red material under
         // blue fog must become purple. Disabling fog is the adjacent control above.

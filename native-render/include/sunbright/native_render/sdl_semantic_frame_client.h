@@ -16,7 +16,10 @@
 
 namespace sb::native_render {
 
-enum class SemanticReadbackMode : std::uint8_t { None, UntilNonClear, EveryFrame };
+// Which frames come back off the GPU. A readback is a full-target download and a stall, so a run
+// that wants one image pays for it once rather than on every frame before it: `NamedFrame` is what
+// separates "which frame do I want" from "how many frames must I pay for".
+enum class SemanticReadbackMode : std::uint8_t { None, UntilNonClear, NamedFrame, EveryFrame };
 
 // One sampled frame's pixels, offered to a consumer that wants to keep the image rather than only
 // the measurement taken from it. RGBA8, tightly packed, top row first, already in the target's sRGB
@@ -39,6 +42,11 @@ struct SdlSemanticFrameClientConfig {
     std::uint32_t width = 640;
     std::uint32_t height = 480;
     SemanticReadbackMode readback = SemanticReadbackMode::UntilNonClear;
+    // With `NamedFrame`, the one frame to read back, numbered as `SemanticFrameSample::frameIndex`
+    // is -- so the first frame is 1. Required by that mode and ignored by the others; zero with
+    // `NamedFrame` is refused rather than read as "never", which would be a run that asked for an
+    // image and could not have taken one.
+    std::uint64_t readbackFrame = 0;
     // Null measures each sample and discards its pixels, which is what an audit run wants.
     SemanticSampleObserver onSample = nullptr;
     void* onSampleContext = nullptr;

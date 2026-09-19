@@ -987,6 +987,71 @@ convention was not already fatal is the next finding: the pass leaves `enable_de
 the pipeline was clamping depth rather than clipping it, and geometry the console would have removed
 at the near plane was being drawn at the near plane instead.
 
+#### Attributing a frame to the draws that made it
+
+Two describers and a readback mode, because attributing one frame out of four thousand was costing
+thirteen minutes an experiment.
+
+`SemanticReadbackMode::NamedFrame` downloads the one frame a run names instead of every frame up to
+it. A readback is a full-target download and a stall, and `EveryFrame` was paying for it on all 3,599
+frames before the one wanted; naming the frame cuts a run from about thirteen minutes to about three.
+Its control in `semantic_2d_pass_gpu_test.cpp` seals five frames, names the third, and asserts both
+halves -- one sample, and that sample being frame three -- because sampling every frame and keeping
+the third would report the same single observer call while costing every download. An off-by-one in
+the frame it names fails that assertion, checked by making it off by one. A named frame the run never
+reaches is its own failure message, separate from the one about pixels, so a run that stopped short
+is not read as a renderer that drew nothing.
+
+What that buys, on frame 3600 of the attract cycle: **the frame is 72 draws, and 26 of them are
+Mario and FLUDD in a pass whose every vertex is behind its camera.** Draws 1-20 are
+`lit_masked_toon` with a 32x32 skin texture, 21-24 are `lit_tinted_layered_specular`, and all of
+them, plus the two after, project behind the eye under the 1.52357/2.0503 frustum -- which is a
+different projection from the 2.04163/2.74748 one every later draw uses, and 26 draws is exactly
+where the framebuffer copy and the 256x256 viewport both fall. So those 26 are the mirror pass,
+measured a third way.
+
+The remaining 46 draws are the sky, a handful of effect quads, part of the island, and the
+seagulls. Mapping the family-map image's colours back through `family_color_map.cpp` says what
+covers the frame: `UnlitColor` 45.2%, `TexturedEffect` 35.4%, `InterpolatedRegisters` 14.0%,
+`DoubledTexturePair` 5.3%, `LitMaskedSpecular` 0.15% -- the last being the seagulls. The island's
+own families cover nothing, and the sand's depth range says why it is not a transform defect: draw
+38's NDC depth of 0.878..0.9996 is a ground plane running from 82 to 23,256 units ahead of the
+camera, which is what a ground plane does. It is below the frustum in this frame, not misplaced.
+
+#### The white is six draws, and what is missing is the scene
+
+Isolating the frame by draw range answers it. Frame 3600 rendered whole is 40.45% pure white; draws
+27-32 rendered alone are 40.35% of it, and draws 60-72 alone are a black frame. So six draws own
+essentially all of the white, and the effect families that cover the frame are not the ones making
+it bright.
+
+Two candidates died here. Fog is off on every one of those six draws -- the draw listing now says so
+per draw, printed for a draw whose fog is disabled as well as one whose fog is on, because a listing
+silent about fog cannot be told from one that never read it. And depth clipping, switched on in the
+same change, changes this frame by exactly zero pixels: the pipeline had been left on SDL's default
+of clamping, which is not what the console does, so the field is now set and has its own control in
+`semantic_3d_pass_gpu_test.cpp` -- a triangle behind the near plane and one past the far plane, both
+of which have to be absent. Clamping draws them flattened onto the nearest plane, which is how that
+control fails when the rasterizer state regresses. It is a correctness fix with no visible effect
+here, and saying so is the point.
+
+What the frame actually shows, looked at rather than measured: a cyan sky, four enormous white
+glare quads, and five seagulls. **No island, no water, no logo, no Mario.** The scene is not
+missing from the publisher -- draws 33-57 are `lit_textured`, `lit_masked_specular`,
+`lit_alpha_tint` and `lit_dual_alpha_effect`, which is the island and its buildings. They are
+missing from the *frame*, because of where their model-views put them: eleven of those draws have
+every vertex behind the eye, and the ones in front land at NDC x up to 1820 or entirely below
+y = -1. The view those matrices carry has a third row of `0.563 -0.809 -0.171`, which is a camera
+tilted about 54 degrees upward -- so the sky fills the frame and the island sits below it.
+
+Two things follow that are worth separating. The mirror pass's own matrices put its geometry 17,236
+units behind its eye, which no camera does to the subject it is rendering, so the pose the reader
+reconstructs for that pass is wrong rather than merely unused. And the glare quads carry model-views
+with no rotation at all -- pure scale and translation, `60 0 0 79454; 0 60 0 81050; 0 0 80 -222832`
+-- which is a draw matrix that never had a view concatenated into it. Both are questions about
+`read_guest_shape_pose` and the draw-matrix palette it indexes, not about shading, and that is the
+next thing to settle.
+
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

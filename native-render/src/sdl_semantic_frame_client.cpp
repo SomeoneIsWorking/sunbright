@@ -50,6 +50,10 @@ bool SdlSemanticFrameClient::initialize(SdlGpuPlatform& platform, SemanticFrameB
         error = "semantic SDL frame client has an invalid platform or extent";
         return false;
     }
+    if (config.readback == SemanticReadbackMode::NamedFrame && config.readbackFrame == 0) {
+        error = "semantic readback of a named frame needs a frame number from 1";
+        return false;
+    }
     if (config.presentationWindow != nullptr && (SDL_GetWindowFlags(config.presentationWindow) &
                                                  (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) != 0) {
         error = "native 2D preview requires a visible, non-minimized SDL window";
@@ -261,6 +265,13 @@ bool SdlSemanticFrameClient::validate_output(std::string& error) const noexcept 
         error = "semantic output did not complete every submitted frame";
         return false;
     }
+    if (config_.readback == SemanticReadbackMode::NamedFrame && stats_.sampledFrames == 0) {
+        // Said separately because the reason differs: this run did not fail to see pixels, it
+        // never reached the frame it was told to look at, and reporting the other message would
+        // send a reader looking for a renderer defect that is not there.
+        error = "semantic output never reached the frame its readback names";
+        return false;
+    }
     if (config_.readback != SemanticReadbackMode::None &&
         (stats_.sampledFrames == 0 || stats_.firstNonClearFrame == 0)) {
         error = "semantic output never observed pixels distinct from the controlled clear";
@@ -320,6 +331,11 @@ bool SdlSemanticFrameClient::should_read_back(const SemanticFrame& frame) const 
         return false;
     if (config_.readback == SemanticReadbackMode::EveryFrame)
         return true;
+    if (config_.readback == SemanticReadbackMode::NamedFrame) {
+        // This frame is the one about to be counted, so it carries the index the sample will
+        // report. Reading `submittedFrames` alone would name the frame before it.
+        return stats_.submittedFrames + 1 == config_.readbackFrame;
+    }
     return config_.readback == SemanticReadbackMode::UntilNonClear &&
            (!frame.draws.empty() || !frame.models.empty()) && stats_.firstNonClearFrame == 0;
 }

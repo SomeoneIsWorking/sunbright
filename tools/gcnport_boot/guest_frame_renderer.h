@@ -43,9 +43,8 @@ class GuestFrameRenderer {
     //
     // `imageFrame` 0 writes the first frame whose pixels differ from the clear, and the readback
     // stops once it has one: which frame that is, is a property of the title rather than of when
-    // the run happened to look. A non-zero `imageFrame` names a sealed frame instead, which costs a
-    // readback of every frame up to it -- the client cannot know a frame is the one wanted without
-    // downloading it.
+    // the run happened to look. A non-zero `imageFrame` names a sealed frame instead, and only that
+    // frame is downloaded.
     [[nodiscard]] bool start(const std::string& imagePath, std::uint64_t imageFrame,
                              std::string& error);
 
