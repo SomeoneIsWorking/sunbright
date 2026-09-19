@@ -39,6 +39,7 @@ def gate_steps() -> tuple[Step, ...]:
                 "tools/disc/main_dol.py",
                 "tools/info/registry_paths.py",
                 "tools/re/dataref.py",
+                "tools/render/boot_run.py",
                 "tools/re/dol_sda.py",
                 "tools/re/gmse01_sda.py",
                 "tools/info/stale_triage.py",
