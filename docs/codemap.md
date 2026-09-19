@@ -75,7 +75,8 @@ tools/               Python verification, RE, oracle parsing, and diagnostics
                        framebuffer copy, viewport/scissor, J2D screen, picture, window, solid
                        rectangle, position matrix, glyph, and one writer -- the pad probe, which runs
                        PADRead's original body and then puts the scripted port-0 state in front of
-                       the title;
+                       the title, alongside --memory-card, which asks gcnport for the raw card its
+                       EXI slot A otherwise has none of;
                        bounded_tally.h owns the bound each probe reports its distinct values under,
                        draw_listing.cpp owns how one composed draw is described, and
                        guest_screen_space.h owns the orthographic screen the projection and viewport

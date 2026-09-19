@@ -27,10 +27,13 @@ characters of the title's own text. `draw_wipe_box` and `J2DGrafContext::fillBox
 coverage and no title evidence -- a card-error screen uses neither, and reaching a save file behind
 it needs the memory card `gcnport` does not configure, the same class of frontend duty the Serial
 Interface one just was. `J2DWindow` is published too, so every 2D producer the
-title has now has a publisher and a framed panel draws under its text. What the renderer still
-lacks evidence for is fidelity rather than coverage: the next piece is a per-region diff against
-the console from a matched-state oracle capture, which is what both the card-error panel and
-retail's additive sun glow (its object 27 of 127, a 3D draw on the model path) are waiting on.
+title has now has a publisher and a framed panel draws under its text. The console the diagnostic
+boots also has a memory card in it now, so a scripted run walks past the card error and renders the
+file-select screen -- the first whole interactive screen this project has composed from its own
+publishers. What the renderer still lacks evidence for is fidelity rather than coverage: the next
+piece is a per-region diff against the console from a matched-state oracle capture, which is what
+the duplicated "OPTIONS" label on that screen and retail's additive sun glow (its object 27 of 127,
+a 3D draw on the model path) are both waiting on.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -1388,6 +1391,36 @@ Two DRY extractions came with it, because the window needed exactly what the pic
 `JUTTexture` and its palette, and `gcnport_boot::GuestTextureCache` (`guest_texture_cache.{h,cpp}`)
 is the one owner of planning, reading and decoding those bytes once each. Both were private to the
 picture probe and are now shared rather than copied.
+
+**2026-09-19 (continuation): the diagnostic can reach a save file, because the console it boots now
+has a memory card in it.** "There is no Memory Card in Slot A." was the correct answer to a real
+question: `gcnport`'s headless boot forces EXI slot A to `EXIDeviceType::None` immediately before
+`HW::Init`, which is an ordinary hardware state and exactly the frontend duty
+`docs/issues/`'s frontend-gap pattern keeps producing -- the same class as the Serial Interface
+device the pad probe worked around, and one that could not be worked around from this side at all,
+because the forcing overwrites whatever a consumer sets.
+
+The fix is in the shared owner, landed and pushed before this consumer:
+`GameCubeBootOptions::memory_card_slot_a_path` attaches Dolphin's own maintained raw `MemoryCard`
+device to slot A, which creates and formats a card that does not exist yet and flushes the title's
+writes back to it. `gcnport` ships no card and picks no save location; only Sunbright's path
+crosses. Writing its test found a second requirement that reasoning had missed: a card also
+requires a disc, because Dolphin names the card file by the console's region and only the disc
+establishes one -- without it `SConfig` leaves the region `Unknown`, which `GetDirectoryForRegion`
+reaches as its unreachable default and asserts on. Both refusals, and the attached card, are proven
+by `GcnPortRuntimeTest.MemoryCardAttachesOnlyWhenTheConsumerNamesOne` without a game image.
+
+`gcnport_boot` passes it through as `--memory-card <path>`. Measured on the real title, one
+1,400,000,000-block run with that flag and a script that presses Start and then A: a 16 MiB
+formatted card appears at the path named, **14,068 windows drawing 126,405 quads and 147,378
+characters**, and the sampled frame is the file-select screen itself -- "Select data.", three framed
+"New" panels over the A/B/C save blocks, Mario, the palm tree and the OPTIONS sign. That is the
+first screen past the attract cycle this project has rendered from its own publishers, and the first
+evidence that the 2D pass composes a whole interactive screen rather than one producer at a time.
+
+One thing in that frame is not yet explained: "OPTIONS" appears twice, once on the sign's own
+texture and once as white text above it. Whether retail draws both is a question for a matched-state
+oracle capture of this screen, not for a guess here.
 
 
 ### S005 — decomp evidence adapters

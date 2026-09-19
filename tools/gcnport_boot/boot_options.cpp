@@ -56,6 +56,7 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
     const auto usage = [argv]() {
         std::fprintf(stderr,
                      "usage: %s <path-to-extracted-main.dol> [--disc <disc-image>] "
+                     "[--memory-card <raw-card-path>] "
                      "[--max-blocks <n>] [--raw-faults] [--dump-guest <hex-addr>[:<words>] ...] "
                      "[--count-calls <hex-addr> ...] [--watch-guest <hex-addr>[:<words>] ...] "
                      "[--super-call <hex-addr>:<round-trips>:<instruction-budget> ...] "
@@ -104,6 +105,13 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
 
         if (name == "--disc") {
             request.disc_image_path = value;
+        } else if (name == "--memory-card") {
+            // Where the raw GameCube memory card for slot A lives. Without one the title finds an
+            // empty slot, which it reports and will not move past: "There is no Memory Card in
+            // Slot A." is the first sentence a run that presses Start reads. gcnport's device
+            // creates and formats the file if it is not there yet and flushes the title's writes
+            // back to it, so pointing this at a scratch path is what lets a run reach a save file.
+            request.memory_card_path = value;
         } else if (name == "--max-blocks") {
             char* end = nullptr;
             errno = 0;

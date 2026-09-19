@@ -201,6 +201,7 @@ struct GlyphProbeRequest {
 // about which flag each one came from.
 struct BootRequest {
     u64 block_budget = 0;
+    std::string memory_card_path;
     std::string disc_image_path;
     bool report_counters_on_fault = true;
     std::vector<GuestMemoryWindow> dump_windows;

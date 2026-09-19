@@ -360,6 +360,7 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         PowerPC::GcnPort::GameCubeBootOptions{.apply_os_init = true,
                                               .apply_hardware_init = true,
                                               .disc_image_path = request.disc_image_path,
+                                              .memory_card_slot_a_path = request.memory_card_path,
                                               .apply_media_init = true,
                                               .run_apploader = !request.disc_image_path.empty()});
     if (!booted.ok) {
