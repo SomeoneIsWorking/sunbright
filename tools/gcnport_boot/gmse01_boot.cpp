@@ -73,6 +73,7 @@
 #include "guest_shape_probe.h"
 #include "guest_solid_rectangle_probe.h"
 #include "guest_viewport_probe.h"
+#include "guest_window_probe.h"
 #include "probe_installation.h"
 
 namespace sunbright::gcnport_boot {
@@ -563,6 +564,25 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                                     : "");
                 });
 
+        const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestWindowProbe>>
+            window_probes = install_guest_probes<sunbright::gcnport_boot::GuestWindowProbe>(
+                adapter, runtime, request.window_probe_addresses,
+                "report windows it could not have seen drawn",
+                [&](u32) {
+                    return std::make_unique<sunbright::gcnport_boot::GuestWindowProbe>(
+                        j2d_context, &draw_budget, request.window_probe_reports);
+                },
+                [&](u32 address) {
+                    std::printf("gmse01_boot: publishing guest J2D windows at 0x%08x (first %llu "
+                                "reported in full)%s\n",
+                                address,
+                                static_cast<unsigned long long>(request.window_probe_reports),
+                                j2d_context == nullptr
+                                    ? "; no --read-j2d-screen was given, so every window will be "
+                                      "counted as having no canvas"
+                                    : "");
+                });
+
         const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMaterialProbe>>
             material_probes = install_guest_probes<sunbright::gcnport_boot::GuestMaterialProbe>(
                 adapter, runtime, request.material_probe_addresses,
@@ -1034,6 +1054,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             probe->report();
         }
         for (const auto& probe : picture_probes) {
+            probe->report();
+        }
+        for (const auto& probe : window_probes) {
             probe->report();
         }
         for (const auto& probe : efb_copy_probes) {

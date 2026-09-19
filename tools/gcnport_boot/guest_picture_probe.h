@@ -3,15 +3,13 @@
 
 #include <cstdint>
 #include <map>
-#include <vector>
 
-#include <sunbright/native_render/jut_texture.h>
 #include <sunbright/native_render/picture.h>
-#include <sunbright/native_render/res_timg_decode.h>
 #include <sunbright/title_adapter/guest_j2d_picture.h>
 
 #include "frame_draw_budget.h"
 #include "guest_j2d_context_probe.h"
+#include "guest_texture_cache.h"
 
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"
@@ -49,22 +47,6 @@ class GuestPictureProbe {
     void report() const;
 
   private:
-    // One decoded image, kept so a pane drawn every frame decodes once. Keyed by the address of
-    // the encoded bytes together with the extent and format read beside them: a `JUTTexture` that
-    // is repointed at another resource changes that key, and one whose pixels are rewritten in
-    // place does not -- which is why `revision` is carried into the view rather than assumed.
-    struct TextureKey {
-        std::uint32_t data = 0;
-        std::uint32_t format = 0;
-        std::uint32_t extent = 0;
-        std::uint32_t palette = 0;
-        auto operator<=>(const TextureKey&) const = default;
-    };
-
-    [[nodiscard]] bool resolve_texture(gcnport::GuestContext& guest,
-                                       const sb::title_adapter::GuestJutTexture& texture,
-                                       const sb::native_render::DecodedTexture*& decoded);
-
     const GuestJ2dContextProbe* context_ = nullptr;
     FrameDrawBudget* budget_ = nullptr;
     std::uint64_t maxReports_ = 0;
@@ -79,19 +61,14 @@ class GuestPictureProbe {
     std::uint64_t invalidBlendFactor_ = 0;
     std::uint64_t submitted_ = 0;
     std::uint64_t acceptedBySink_ = 0;
-    std::uint64_t texturesDecoded_ = 0;
-    std::uint64_t textureBytes_ = 0;
     // Panes whose clip rectangle is smaller than their bounds. `J2DScreen::draw` is what decides
     // whether a subtree clips to its parent and this probe is not on it, so the clip is not
     // applied; this counts the panes for which that could have mattered. Zero is the answer that
     // says the gap is empty rather than unexamined.
     std::uint64_t panesWithNarrowerClip_ = 0;
     std::map<sb::title_adapter::GuestPictureError, std::uint64_t> pictureErrors_;
-    std::map<sb::native_render::JutTextureError, std::uint64_t> textureErrors_;
     std::map<std::uint32_t, std::uint64_t> textureCounts_;
-    std::map<TextureKey, sb::native_render::DecodedTexture> textureCache_;
-    std::vector<std::uint8_t> encodedBytes_;
-    std::vector<std::uint8_t> paletteBytes_;
+    GuestTextureCache textures_;
 };
 
 } // namespace sunbright::gcnport_boot

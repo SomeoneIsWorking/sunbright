@@ -20,69 +20,7 @@ bool read_through_guest_context(sb::title_adapter::GuestAddress address,
     return guest->read_memory(address, std::as_writable_bytes(destination));
 }
 
-[[nodiscard]] sb::native_render::JutTextureFields
-fields_of(const sb::title_adapter::GuestJutTexture& texture) noexcept {
-    return {.format = texture.format,
-            .alphaEnabled = texture.alphaEnabled != 0,
-            .width = texture.width,
-            .height = texture.height,
-            .wrapS = texture.wrapS,
-            .wrapT = texture.wrapT,
-            .minFilter = texture.minFilter,
-            .magFilter = texture.magFilter,
-            .hasPalette = texture.palette.present(),
-            .paletteFormat = texture.palette.format,
-            .paletteEntries = texture.palette.entries};
-}
-
 } // namespace
-
-bool GuestPictureProbe::resolve_texture(gcnport::GuestContext& guest,
-                                        const sb::title_adapter::GuestJutTexture& texture,
-                                        const sb::native_render::DecodedTexture*& decoded) {
-    const TextureKey key{texture.data, texture.format,
-                         (static_cast<std::uint32_t>(texture.width) << 16U) | texture.height,
-                         texture.palette.colorTable};
-    if (const auto found = textureCache_.find(key); found != textureCache_.end()) {
-        decoded = &found->second;
-        return true;
-    }
-
-    const sb::native_render::JutTextureFields fields = fields_of(texture);
-    sb::native_render::JutTexturePlan plan{};
-    sb::native_render::JutTextureError error = sb::native_render::plan_jut_texture(fields, plan);
-    if (error != sb::native_render::JutTextureError::None) {
-        textureErrors_[error] += 1;
-        return false;
-    }
-
-    encodedBytes_.assign(plan.encodedBytes, 0);
-    if (!guest.read_memory(texture.data, std::as_writable_bytes(std::span(encodedBytes_)))) {
-        textureErrors_[sb::native_render::JutTextureError::EncodedBytesTooShort] += 1;
-        return false;
-    }
-    paletteBytes_.assign(plan.paletteBytes, 0);
-    if (plan.paletteBytes != 0 &&
-        !guest.read_memory(texture.palette.colorTable,
-                           std::as_writable_bytes(std::span(paletteBytes_)))) {
-        textureErrors_[sb::native_render::JutTextureError::PaletteBytesTooShort] += 1;
-        return false;
-    }
-
-    sb::native_render::DecodedTexture value{};
-    error = sb::native_render::decode_jut_texture(fields, encodedBytes_, paletteBytes_, value);
-    textureErrors_[error] += 1;
-    if (error != sb::native_render::JutTextureError::None) {
-        return false;
-    }
-    // The GPU cache keys on this, so it names the resource the title drew rather than the bytes
-    // this run happened to read: two panes sharing one texture must share one upload.
-    value.texture.resource = texture.resource != 0 ? texture.resource : texture.data;
-    texturesDecoded_ += 1;
-    textureBytes_ += value.rgba8.size();
-    decoded = &textureCache_.emplace(key, std::move(value)).first->second;
-    return true;
-}
 
 gcnport::HookResult GuestPictureProbe::operator()(gcnport::GuestContext& guest) {
     entries_ += 1;
@@ -138,7 +76,7 @@ gcnport::HookResult GuestPictureProbe::operator()(gcnport::GuestContext& guest) 
         images{};
     for (std::size_t layer = 0; layer < picture.textureCount; ++layer) {
         const sb::native_render::DecodedTexture* decoded = nullptr;
-        if (!resolve_texture(guest, picture.textures[layer], decoded)) {
+        if (!textures_.resolve(guest, picture.textures[layer], decoded)) {
             return gcnport::HookResult::call_original_once();
         }
         sb::native_render::PictureTexture& texture = command.material.textures[layer];
@@ -216,18 +154,7 @@ void GuestPictureProbe::report() const {
                 static_cast<unsigned long long>(unresolvedLayout_),
                 static_cast<unsigned long long>(invalidBlendFactor_),
                 static_cast<unsigned long long>(withoutSink_));
-    std::printf("gmse01_boot:   textures: %llu decoded, %llu distinct, %llu byte(s)\n",
-                static_cast<unsigned long long>(texturesDecoded_),
-                static_cast<unsigned long long>(textureCache_.size()),
-                static_cast<unsigned long long>(textureBytes_));
-    if (!textureErrors_.empty()) {
-        std::printf("gmse01_boot:   texture decode results:");
-        for (const auto& [error, count] : textureErrors_) {
-            std::printf(" %s=%llu", sb::native_render::jut_texture_error_name(error),
-                        static_cast<unsigned long long>(count));
-        }
-        std::printf("\n");
-    }
+    textures_.report();
     if (!textureCounts_.empty()) {
         std::printf("gmse01_boot:   layers per pane:");
         for (const auto& [count, panes] : textureCounts_) {

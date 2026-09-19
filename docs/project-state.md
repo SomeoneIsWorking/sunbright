@@ -26,10 +26,11 @@ leaves the attract cycle, and the glyph publisher that had never been entered dr
 characters of the title's own text. `draw_wipe_box` and `J2DGrafContext::fillBox` still have unit
 coverage and no title evidence -- a card-error screen uses neither, and reaching a save file behind
 it needs the memory card `gcnport` does not configure, the same class of frontend duty the Serial
-Interface one just was. The next piece is `J2DWindow` (`draw_private`, `0x802d18ec`), the last 2D
-producer without a publisher and what draws the panel that text sits on. A per-region diff against
-the console follows; the one named difference there today is retail's additive sun glow (its object
-27 of 127), a 3D draw on the model path.
+Interface one just was. `J2DWindow` is published too, so every 2D producer the
+title has now has a publisher and a framed panel draws under its text. What the renderer still
+lacks evidence for is fidelity rather than coverage: the next piece is a per-region diff against
+the console from a matched-state oracle capture, which is what both the card-error panel and
+retail's additive sun glow (its object 27 of 127, a 3D draw on the model path) are waiting on.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -1356,6 +1357,37 @@ an intensity texel as `(I, I, I, I)`, and contradicting the hardware, which expa
 nothing but its intensity -- became a filled cell. Fixed at the format owner, with its unit coverage
 restated; the same frame now reads the sentence. `J2DWindow` (`draw_private`, `0x802d18ec`) is the
 one 2D producer still unpublished, and the white panel the text sits on is its.
+
+**2026-09-19 (continuation): every 2D producer GMSE01 has now has a publisher.** `J2DWindow` was
+the last one without, and it is the panel almost all of the title's text is written onto -- so the
+frame that proved the glyph publisher showed the sentence floating over the sky with nothing behind
+it. `title_adapter::read_guest_window` (`guest_j2d_window.{h,cpp}`) reads the object, and
+`gcnport_boot`'s `guest_window_probe.{h,cpp}` publishes it from `draw_private` (`0x802d18ec`) --
+the one point both `drawSelf` overloads funnel into, and the only place the outer rectangle, the
+contents rectangle and the parent transform are all arguments in hand, because `drawSelf(int, int)`
+builds its matrix on its own stack and passes a pointer to it.
+
+The arithmetic is `native_render::resolve_window_layout` and the two `make_window_*_command`
+functions, which the decomp-side adapter already used: a window needs no window-specific shader,
+only the right ordered composition of one gradient rectangle and up to nine textured quads. The
+reader states retail's own four-corner test as `hasFrame` rather than taking whichever corners it
+found -- three corner textures is a window that draws no frame at all, not a window with three
+corners -- and its unit coverage separates that from a corner that is present and unreadable, which
+is an error rather than a frameless window.
+
+Measured on the real title, one 1,400,000,000-block run reaching the card-error screen: **3,771
+windows drawn, every one read without error, 33,930 quads submitted and all 33,930 accepted --
+3,770 gradient fills and 30,160 frame pieces, exactly eight per window, with one window culled by
+retail's own minimum-size test**. The frame at 4400 now draws the rounded, rivetted, translucent
+panel with the text on top of it, in `draw_private`'s own order. Its fidelity against the console
+is not claimed: that needs a matched-state oracle capture of this screen, which is the same thing
+the sun glow is waiting on.
+
+Two DRY extractions came with it, because the window needed exactly what the picture already had:
+`title_adapter::read_guest_jut_texture` (`guest_jut_texture.{h,cpp}`) is now the one reader of a
+`JUTTexture` and its palette, and `gcnport_boot::GuestTextureCache` (`guest_texture_cache.{h,cpp}`)
+is the one owner of planning, reading and decoding those bytes once each. Both were private to the
+picture probe and are now shared rather than copied.
 
 
 ### S005 — decomp evidence adapters

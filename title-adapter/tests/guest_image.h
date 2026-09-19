@@ -67,4 +67,21 @@ inline bool read_image(GuestAddress address, std::span<std::uint8_t> destination
     return true;
 }
 
+// One `JUTTexture` as `JUTTexture::storeTIMG` leaves it. Two readers hold these -- a picture in a
+// layer array, a window in named roles -- so the object their tests describe is written once here.
+inline void write_jut_texture(Image& image, GuestAddress texture, std::uint16_t width,
+                              std::uint16_t height, std::uint32_t format, GuestAddress palette) {
+    image.word(texture + 0x20, texture + 0x800);
+    image.word(texture + 0x24, texture + 0x820);
+    image.word(texture + 0x2C, palette);
+    image.word(texture + 0x34, format);
+    image.word(texture + 0x38, 1);
+    image.half(texture + 0x3C, width);
+    image.half(texture + 0x3E, height);
+    image.byte(texture + 0x40, 1);
+    image.byte(texture + 0x41, 2);
+    image.byte(texture + 0x42, 4);
+    image.byte(texture + 0x43, 1);
+}
+
 } // namespace sb::title_adapter::test

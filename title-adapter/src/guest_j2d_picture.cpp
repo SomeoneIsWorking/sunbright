@@ -3,52 +3,20 @@
 namespace sb::title_adapter {
 namespace {
 
-[[nodiscard]] GuestPictureError read_palette(const GuestReader& reader, GuestAddress palette,
-                                             GuestJutPalette& out) noexcept {
-    out = {};
-    if (palette == 0) {
+[[nodiscard]] GuestPictureError translate(GuestJutTextureError error) noexcept {
+    switch (error) {
+    case GuestJutTextureError::None:
         return GuestPictureError::None;
-    }
-    GuestJutPalette value{};
-    value.address = palette;
-    if (!reader.word(palette + GUEST_JUT_PALETTE_FORMAT, value.format) ||
-        !reader.word(palette + GUEST_JUT_PALETTE_COLOR_TABLE, value.colorTable) ||
-        !reader.half(palette + GUEST_JUT_PALETTE_ENTRIES, value.entries)) {
+    case GuestJutTextureError::NullTexture:
+        return GuestPictureError::NullTexture;
+    case GuestJutTextureError::UnreadableTexture:
+        return GuestPictureError::UnreadableTexture;
+    case GuestJutTextureError::UnreadablePalette:
         return GuestPictureError::UnreadablePalette;
-    }
-    // A palette object that names no colours cannot be sampled through, and reporting it as one
-    // that simply is not there would hand the decoder an indexed image with nothing to index.
-    if (value.colorTable == 0) {
+    case GuestJutTextureError::NullPaletteColorTable:
         return GuestPictureError::NullPaletteColorTable;
     }
-    out = value;
-    return GuestPictureError::None;
-}
-
-[[nodiscard]] GuestPictureError read_texture(const GuestReader& reader, GuestAddress texture,
-                                             GuestJutTexture& out) noexcept {
-    GuestJutTexture value{};
-    value.address = texture;
-    GuestAddress palette = 0;
-    if (!reader.word(texture + GUEST_JUT_TEXTURE_RESOURCE, value.resource) ||
-        !reader.word(texture + GUEST_JUT_TEXTURE_DATA, value.data) ||
-        !reader.word(texture + GUEST_JUT_TEXTURE_ACTIVE_PALETTE, palette) ||
-        !reader.word(texture + GUEST_JUT_TEXTURE_FORMAT, value.format) ||
-        !reader.word(texture + GUEST_JUT_TEXTURE_ALPHA_ENABLED, value.alphaEnabled) ||
-        !reader.half(texture + GUEST_JUT_TEXTURE_WIDTH, value.width) ||
-        !reader.half(texture + GUEST_JUT_TEXTURE_HEIGHT, value.height) ||
-        !reader.byte(texture + GUEST_JUT_TEXTURE_WRAP_S, value.wrapS) ||
-        !reader.byte(texture + GUEST_JUT_TEXTURE_WRAP_T, value.wrapT) ||
-        !reader.byte(texture + GUEST_JUT_TEXTURE_MIN_FILTER, value.minFilter) ||
-        !reader.byte(texture + GUEST_JUT_TEXTURE_MAG_FILTER, value.magFilter)) {
-        return GuestPictureError::UnreadableTexture;
-    }
-    const GuestPictureError error = read_palette(reader, palette, value.palette);
-    if (error != GuestPictureError::None) {
-        return error;
-    }
-    out = value;
-    return GuestPictureError::None;
+    return GuestPictureError::UnreadableTexture;
 }
 
 } // namespace
@@ -141,10 +109,8 @@ GuestPictureError read_guest_picture(const GuestMemory& memory, GuestAddress pic
                          texture)) {
             return GuestPictureError::UnreadablePicture;
         }
-        if (texture == 0) {
-            return GuestPictureError::NullTexture;
-        }
-        const GuestPictureError error = read_texture(reader, texture, value.textures[layer]);
+        const GuestPictureError error =
+            translate(read_guest_jut_texture(reader, texture, value.textures[layer]));
         if (error != GuestPictureError::None) {
             return error;
         }

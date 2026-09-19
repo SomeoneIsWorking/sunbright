@@ -65,6 +65,7 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-models <hex-addr>[:<reports>]] "
                      "[--read-j2d-screen <hex-addr>[:<reports>]] "
                      "[--read-pictures <hex-addr>[:<reports>]] "
+                     "[--read-windows <hex-addr>[:<reports>]] "
                      "[--read-projections <hex-addr>[:<reports>]] "
                      "[--read-efb texture|display|source|clear:<hex-addr>[:<reports>] ...] "
                      "[--read-viewport viewport|scissor:<hex-addr>[:<reports>] ...] "
@@ -230,6 +231,16 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 return false;
             }
             request.picture_probe_addresses.push_back(address);
+        } else if (name == "--read-windows") {
+            // <hex-addr>[:<reports>]. The address is J2DWindow::draw_private (0x802d18ec in
+            // GMSE01), the one point both drawSelf overloads funnel into and the only place the
+            // outer rectangle, the contents rectangle and the parent transform are all arguments
+            // in hand -- drawSelf(int, int) builds its matrix on its own stack.
+            u32 address = 0;
+            if (!parse_probe_address(name, value, address, request.window_probe_reports)) {
+                return false;
+            }
+            request.window_probe_addresses.push_back(address);
         } else if (name == "--read-models") {
             // <hex-addr>[:<reports>]. The address is J3DShape::draw (0x802e0390 in GMSE01), where
             // the shape and the material packet in force are both in hand. The count bounds only

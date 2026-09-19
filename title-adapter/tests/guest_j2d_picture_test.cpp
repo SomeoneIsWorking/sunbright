@@ -26,28 +26,13 @@ using sb::title_adapter::read_guest_matrix;
 using sb::title_adapter::read_guest_picture;
 using sb::title_adapter::test::Image;
 using sb::title_adapter::test::read_image;
+using sb::title_adapter::test::write_jut_texture;
 
 constexpr GuestAddress PICTURE = 0x80000000;
 constexpr GuestAddress TEXTURE = 0x80000400;
 constexpr GuestAddress SECOND_TEXTURE = 0x80000500;
 constexpr GuestAddress PALETTE = 0x80000600;
 constexpr GuestAddress MATRIX = 0x80000700;
-
-// One `JUTTexture` as `JUTTexture::storeTIMG` leaves it, with no palette.
-void write_texture(Image& image, GuestAddress texture, std::uint16_t width, std::uint16_t height,
-                   std::uint32_t format, GuestAddress palette) {
-    image.word(texture + 0x20, texture + 0x800);
-    image.word(texture + 0x24, texture + 0x820);
-    image.word(texture + 0x2C, palette);
-    image.word(texture + 0x34, format);
-    image.word(texture + 0x38, 1);
-    image.half(texture + 0x3C, width);
-    image.half(texture + 0x3E, height);
-    image.byte(texture + 0x40, 1);
-    image.byte(texture + 0x41, 2);
-    image.byte(texture + 0x42, 4);
-    image.byte(texture + 0x43, 1);
-}
 
 // A pane the title could have authored: the 456x304 logo quad, opaque, drawn from one texture.
 Image logo_pane() {
@@ -82,7 +67,7 @@ Image logo_pane() {
     image.word(PICTURE + 0x150, 0xDDEEFF00);
     image.word(PICTURE + 0x154, 0x40608000);
     image.word(PICTURE + 0x158, 0x20304050);
-    write_texture(image, TEXTURE, 512, 512, 14, 0);
+    write_jut_texture(image, TEXTURE, 512, 512, 14, 0);
     return image;
 }
 
@@ -135,7 +120,7 @@ void follows_an_indexed_texture_to_its_palette() {
     Image image = logo_pane();
     image.byte(PICTURE + 0xFC, 2);
     image.word(PICTURE + 0xF0, SECOND_TEXTURE);
-    write_texture(image, SECOND_TEXTURE, 64, 32, 9, PALETTE);
+    write_jut_texture(image, SECOND_TEXTURE, 64, 32, 9, PALETTE);
     image.word(PALETTE + 0x10, 1);
     image.word(PALETTE + 0x14, PALETTE + 0x40);
     image.half(PALETTE + 0x18, 256);
