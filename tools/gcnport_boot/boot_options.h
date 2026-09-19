@@ -188,6 +188,10 @@ struct BootRequest {
     u64 projection_probe_reports = 0;
     std::vector<u32> model_probe_addresses;
     u64 model_probe_reports = 0;
+    std::vector<u32> j2d_context_probe_addresses;
+    u64 j2d_context_probe_reports = 0;
+    std::vector<u32> picture_probe_addresses;
+    u64 picture_probe_reports = 0;
     std::vector<u32> shape_probe_addresses;
     u64 shape_probe_reports = 0;
     std::vector<EfbCopyProbeRequest> efb_copy_probes;

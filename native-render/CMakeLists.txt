@@ -14,6 +14,7 @@ add_library(sunbright-native-render-core STATIC src/frame.cpp src/glyph.cpp src/
                                                  src/j3d_masked_toon_material.cpp
                                                  src/j3d_fog.cpp
                                                  src/j3d_mesh_decode.cpp
+                                                 src/jut_texture.cpp
                                                  src/j3d_specular_material.cpp
                                                  src/j3d_tinted_layered_material.cpp
                                                  src/j3d_tinted_texture_sum_material.cpp
@@ -52,6 +53,10 @@ add_test(NAME native_render_semantic_sink COMMAND native_render_semantic_sink_te
 add_executable(native_render_image_decode_test tests/image_decode_test.cpp)
 target_link_libraries(native_render_image_decode_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_image_decode COMMAND native_render_image_decode_test)
+
+add_executable(native_render_jut_texture_test tests/jut_texture_test.cpp)
+target_link_libraries(native_render_jut_texture_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_jut_texture COMMAND native_render_jut_texture_test)
 
 add_executable(native_render_frame_test tests/frame_test.cpp)
 target_link_libraries(native_render_frame_test PRIVATE sunbright-native-render-core)

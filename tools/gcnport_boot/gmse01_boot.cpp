@@ -59,9 +59,11 @@
 #include "gcnport/dolphin_adapter.h"
 #include "guest_efb_copy_probe.h"
 #include "guest_frame_renderer.h"
+#include "guest_j2d_context_probe.h"
 #include "guest_lighting_probe.h"
 #include "guest_material_probe.h"
 #include "guest_model_probe.h"
+#include "guest_picture_probe.h"
 #include "guest_projection_probe.h"
 #include "guest_report.h"
 #include "guest_shape_probe.h"
@@ -505,6 +507,48 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                                 static_cast<unsigned long long>(request.model_probe_reports));
                 });
 
+        // The 2D pass. The screen has to be followed before the panes drawn into it, because a
+        // picture published without one is a quad with a size and no space to be in; installing
+        // them in this order is not what makes that true, but it is what makes the context probe
+        // exist by the time the picture probe is handed a pointer to it.
+        const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestJ2dContextProbe>>
+            j2d_context_probes =
+                install_guest_probes<sunbright::gcnport_boot::GuestJ2dContextProbe>(
+                    adapter, runtime, request.j2d_context_probe_addresses,
+                    "report a 2D screen it could not have seen established",
+                    [&](u32) {
+                        return std::make_unique<sunbright::gcnport_boot::GuestJ2dContextProbe>(
+                            request.j2d_context_probe_reports);
+                    },
+                    [&](u32 address) {
+                        std::printf(
+                            "gmse01_boot: following the guest J2D screen at 0x%08x (first "
+                            "%llu reported in full)\n",
+                            address,
+                            static_cast<unsigned long long>(request.j2d_context_probe_reports));
+                    });
+
+        const sunbright::gcnport_boot::GuestJ2dContextProbe* const j2d_context =
+            j2d_context_probes.empty() ? nullptr : j2d_context_probes.front().get();
+        const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestPictureProbe>>
+            picture_probes = install_guest_probes<sunbright::gcnport_boot::GuestPictureProbe>(
+                adapter, runtime, request.picture_probe_addresses,
+                "report picture panes it could not have seen drawn",
+                [&](u32) {
+                    return std::make_unique<sunbright::gcnport_boot::GuestPictureProbe>(
+                        j2d_context, &draw_budget, request.picture_probe_reports);
+                },
+                [&](u32 address) {
+                    std::printf("gmse01_boot: publishing guest picture panes at 0x%08x (first %llu "
+                                "reported in full)%s\n",
+                                address,
+                                static_cast<unsigned long long>(request.picture_probe_reports),
+                                j2d_context == nullptr
+                                    ? "; no --read-j2d-screen was given, so every pane will be "
+                                      "counted as having no canvas"
+                                    : "");
+                });
+
         const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMaterialProbe>>
             material_probes = install_guest_probes<sunbright::gcnport_boot::GuestMaterialProbe>(
                 adapter, runtime, request.material_probe_addresses,
@@ -852,6 +896,12 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             probe->report();
         }
         for (const auto& probe : model_probes) {
+            probe->report();
+        }
+        for (const auto& probe : j2d_context_probes) {
+            probe->report();
+        }
+        for (const auto& probe : picture_probes) {
             probe->report();
         }
         for (const auto& probe : efb_copy_probes) {

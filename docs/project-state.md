@@ -15,10 +15,12 @@ currently has no gameplay executable while its shared runtime executor is missin
 S004, the PC-native renderer, is the next focus: the execution path underneath it now runs GMSE01's
 whole attract cycle unattended and faultlessly (S008 below has the retrace-timed trajectory). Its
 producer seam reads, decodes and poses the title's own geometry, classifies every material it draws,
-and now rasterises those draws through the shipping passes on a real device -- 4,004 of the title's
-own frames, 59,864 models, on an offscreen 640x448 target. What remains is comparing what the passes
-produced against the console: the run measures its readback and discards the pixels, so no image has
-been diffed yet.
+resolves each material's textures from the display list it baked rather than from its packet's stale
+table, publishes the title's `J2DPicture` panes as the 2D pass, and rasterises all of it through the
+shipping passes on a real device. Frame 3600 is the title screen: sky, sea, logo, shine, palm tree,
+rainbow, copyright line and fly-in letters. What remains is a per-region diff against the console --
+the one named difference today is retail's additive sun glow (its object 27 of 127), which is a 3D
+draw on the model path.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -1162,17 +1164,60 @@ taken from a constant or a TEV register colour, and the shift applied. Six of th
 `konst`-only variants are separate programs and stay refused until they are ported on their own
 evidence.
 
-Gap: nothing is drawn yet, and nothing is published. The decoded vertices, poses, materials and
-textures are counted and discarded; no `ModelDraw` is built, no material classifies into a family
-(measured above), no stage lighting is published from the guest, no semantic frame is produced under
-the dynarec, and the run uses Dolphin's Null video backend so no frame is presented. `native_render::ModelDraw` also has no place for the normal matrix, which under the CPU
-pipelines genuinely differs from the position matrix; the adapter carries it as
-`GuestShapePose::normalViews` and the semantic boundary has yet to accept it. The surviving decomp-side adapters
-(`sms-boot/runtime/native_j3d_adapter.cpp` and its peers) remain native/decomp evidence, attached to
-the decomp product rather than to `gcnport`. Material families, non-billboard particles, image
-producers, screen effects, and full-frame ordering remain incomplete. The new JIT seam must preserve
-the same value-only contract; no old body or GX compatibility path may become a silent fallback
-after its semantic owner is proven.
+**2026-09-19: the title screen's 2D composite is published, and the title now renders as a title
+screen.** Everything a player would call the title screen -- the logo, the letters that fly into it,
+the shine, "PRESS START!", the copyright line -- is not geometry. Each is one textured quad drawn by
+a `J2DPicture`, through a path no model hook is on, so a run that published only models was not
+rendering a partly-wrong title screen but a complete one with a whole pass missing.
+
+Three owners, each tested on its own:
+
+* `title_adapter::read_guest_picture` reads a pane (`guest_j2d_picture.{h,cpp}`) -- bounds, clip,
+  both transforms, inherited opacity, binding/mirror/flip/wrap, black/white remap, four corner
+  colours, the two packed blend constants, and each layer's `JUTTexture` with its `JUTPalette`.
+* `title_adapter::read_guest_ortho_graph` reads the screen a pane is laid out in
+  (`guest_j2d_graf_context.{h,cpp}`). It identifies the class by the recovered `J2DOrthoGraph`
+  vtable `0x803e14b0`, **not** by the `unk4 == 1` discriminator `J2DPane::draw` itself uses: the
+  base constructor never writes that field in retail, so a plain `J2DGrafContext` carries whatever
+  its storage held.
+* `native_render::plan_jut_texture` / `decode_jut_texture` (`jut_texture.{h,cpp}`) own what a
+  `JUTTexture`'s fields mean -- which formats are owned, which samplers are legal, when a palette is
+  required -- so the byte source is the only thing that differs between runtimes.
+
+The boot tool consumes them through `--read-j2d-screen <addr>` (`J2DGrafContext::setup2D`,
+`0x802eb6bc`) and `--read-pictures <addr>` (`J2DPicture::drawSelf(int, int, Mtx*)`, `0x802cc7c0`,
+entered once `J2DPane::draw` has finalised the pane's transform, clip and opacity). Measured on the
+real title, one 1,400,000,000-block run, 0 Dolphin alerts:
+
+```
+guest J2D context probe: 3400 setup(s), 3400 accepted, 1 distinct screen(s)
+  graf context errors: none=3400
+  J2D screen 640x448 at (0, 0) into viewport 640x448 at (0, 0)
+guest picture probe: 13981 pane(s) drawn, 13981 submitted, 13981 accepted by the sink
+  picture errors: none=13981
+  not published: no_canvas=0 unreadable_transform=0 withheld_by_budget=0
+                 unresolved_layout=0 invalid_blend_factor=0 no_sink=0
+  textures: 31 decoded, 31 distinct, 1084364 byte(s); decode results: none=31
+  0 pane(s) clip to less than their bounds
+```
+
+Frame 3600 (`scratch/render/j2d1.png`) draws the logo, the shine, the sun character, the palm tree,
+the rainbow, `(C)2002 NINTENDO` and the fly-in letters over the sky and sea. That last counter is
+the size of one deliberate gap: `J2DScreen::draw` is what decides whether a subtree clips to its
+parent and this probe is not on it, so no clip is applied -- and at the title no pane asks for one.
+
+Gap: the sun is missing. Retail's object 27 of 127 is a large additive glow in the upper right
+(`scratch/oracle/objiso/obj27.png`); our frame has clear sky there. It is a 3D draw in the sky pass,
+so it is on the model path and not this one. `native_render::ModelDraw` also has no place for the
+normal matrix, which under the CPU pipelines genuinely differs from the position matrix; the adapter
+carries it as `GuestShapePose::normalViews` and the semantic boundary has yet to accept it. Offscreen
+passes are dropped rather than rendered into a target a later draw could sample, so a material that
+reads one still reads whatever it was bound to. Non-billboard particles, image producers, screen
+effects and full-frame ordering remain incomplete. The surviving decomp-side adapters
+(`sms-boot/runtime/native_j3d_adapter.cpp` and its peers) remain native/decomp evidence attached to
+the decomp product rather than to `gcnport`; they are not built. The JIT seam must preserve the same
+value-only contract; no old body or GX compatibility path may become a silent fallback after its
+semantic owner is proven.
 
 ### S005 — decomp evidence adapters
 

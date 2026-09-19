@@ -18,6 +18,40 @@ bool ParseGuestAddress(const char* text, char** end, u32& address) {
     return true;
 }
 
+namespace {
+
+constexpr u64 DEFAULT_PROBE_REPORTS = 8;
+
+// Every probe flag takes its address the same way: a guest address, optionally followed by how many
+// of that probe's entries to print in full. Six flags each spelled that out, which was six chances
+// for one of them to accept a value the others refuse -- and the refusals are the point, since a
+// probe installed at an address that parsed differently reports about somewhere else entirely.
+[[nodiscard]] bool parse_probe_address(std::string_view flag, const char* text, u32& address,
+                                       u64& reports) {
+    char* end = nullptr;
+    if (!ParseGuestAddress(text, &end, address) || (*end != '\0' && *end != ':')) {
+        std::fprintf(stderr, "gmse01_boot: %.*s needs <hex-addr>[:<reports>], got '%s'\n",
+                     static_cast<int>(flag.size()), flag.data(), text);
+        return false;
+    }
+    reports = DEFAULT_PROBE_REPORTS;
+    if (*end != ':') {
+        return true;
+    }
+    const char* const reports_text = end + 1;
+    errno = 0;
+    const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
+    if (end == reports_text || *end != '\0' || errno == ERANGE) {
+        std::fprintf(stderr, "gmse01_boot: %.*s report count must be an integer, got '%s'\n",
+                     static_cast<int>(flag.size()), flag.data(), reports_text);
+        return false;
+    }
+    reports = parsed;
+    return true;
+}
+
+} // namespace
+
 bool parse_boot_options(int argc, char** argv, BootRequest& request) {
     const auto usage = [argv]() {
         std::fprintf(stderr,
@@ -29,6 +63,8 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-materials <hex-addr>[:<reports>]] "
                      "[--read-lighting <hex-addr>[:<reports>] ...] "
                      "[--read-models <hex-addr>[:<reports>]] "
+                     "[--read-j2d-screen <hex-addr>[:<reports>]] "
+                     "[--read-pictures <hex-addr>[:<reports>]] "
                      "[--read-projections <hex-addr>[:<reports>]] "
                      "[--read-efb texture|display|source|clear:<hex-addr>[:<reports>] ...] "
                      "[--read-viewport viewport|scissor:<hex-addr>[:<reports>] ...] "
@@ -156,85 +192,46 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
         } else if (name == "--read-shapes") {
             // <hex-addr>[:<reports>]. The address is J3DShape::draw (0x802e0390 in GMSE01); the
             // count bounds only how many are printed in full, never how many are read.
-            constexpr u64 DEFAULT_REPORTS = 8;
             u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --read-shapes needs <hex-addr>[:<reports>], got '%s'\n",
-                             value);
+            if (!parse_probe_address(name, value, address, request.shape_probe_reports)) {
                 return false;
-            }
-            request.shape_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-shapes report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return false;
-                }
-                request.shape_probe_reports = parsed;
             }
             request.shape_probe_addresses.push_back(address);
         } else if (name == "--read-materials") {
             // <hex-addr>[:<reports>]. The address is J3DMatPacket::draw (0x802edc38 in GMSE01),
             // which is where the title resolves the material its shape packets are drawn with. The
             // count bounds only how many are printed in full, never how many are read.
-            constexpr u64 DEFAULT_REPORTS = 8;
             u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(
-                    stderr,
-                    "gmse01_boot: --read-materials needs <hex-addr>[:<reports>], got '%s'\n",
-                    value);
+            if (!parse_probe_address(name, value, address, request.material_probe_reports)) {
                 return false;
             }
-            request.material_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-materials report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return false;
-                }
-                request.material_probe_reports = parsed;
-            }
             request.material_probe_addresses.push_back(address);
+        } else if (name == "--read-j2d-screen") {
+            // <hex-addr>[:<reports>]. The address is J2DGrafContext::setup2D (0x802eb6bc in
+            // GMSE01), where the title establishes the logical screen and viewport its 2D is drawn
+            // in. Without it a picture has a size and no space to be in, so --read-pictures on its
+            // own reports panes it deliberately did not publish.
+            u32 address = 0;
+            if (!parse_probe_address(name, value, address, request.j2d_context_probe_reports)) {
+                return false;
+            }
+            request.j2d_context_probe_addresses.push_back(address);
+        } else if (name == "--read-pictures") {
+            // <hex-addr>[:<reports>]. The address is J2DPicture::drawSelf(int, int, Mtx*)
+            // (0x802cc7c0 in GMSE01), reached from J2DPane::draw once the pane's transform, clip
+            // and inherited opacity are final and the parent transform is the argument in hand.
+            u32 address = 0;
+            if (!parse_probe_address(name, value, address, request.picture_probe_reports)) {
+                return false;
+            }
+            request.picture_probe_addresses.push_back(address);
         } else if (name == "--read-models") {
             // <hex-addr>[:<reports>]. The address is J3DShape::draw (0x802e0390 in GMSE01), where
             // the shape and the material packet in force are both in hand. The count bounds only
             // how many draws are printed in full, never how many are composed.
-            constexpr u64 DEFAULT_REPORTS = 8;
             u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(stderr,
-                             "gmse01_boot: --read-models needs <hex-addr>[:<reports>], got '%s'\n",
-                             value);
+            if (!parse_probe_address(name, value, address, request.model_probe_reports)) {
                 return false;
-            }
-            request.model_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-models report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return false;
-                }
-                request.model_probe_reports = parsed;
             }
             request.model_probe_addresses.push_back(address);
         } else if (name == "--dump-frame") {
@@ -324,29 +321,9 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             // <hex-addr>[:<reports>]. The address is GXSetProjection (0x80362c34 in GMSE01), which
             // takes the matrix in r3 and the projection type in r4. The count bounds only how many
             // distinct projections are printed, never how many are read or published.
-            constexpr u64 DEFAULT_REPORTS = 8;
             u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(
-                    stderr,
-                    "gmse01_boot: --read-projections needs <hex-addr>[:<reports>], got '%s'\n",
-                    value);
+            if (!parse_probe_address(name, value, address, request.projection_probe_reports)) {
                 return false;
-            }
-            request.projection_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-projections report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return false;
-                }
-                request.projection_probe_reports = parsed;
             }
             request.projection_probe_addresses.push_back(address);
         } else if (name == "--read-efb") {
@@ -355,7 +332,6 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             // 0x8035e388 and GXSetCopyClear 0x8035ea40. The kind is named rather than inferred
             // from the address: the four entries take different arguments, and guessing wrong
             // would report a width as a clear flag without ever saying so.
-            constexpr u64 DEFAULT_REPORTS = 8;
             const std::string_view text(value);
             const std::size_t separator = text.find(':');
             if (separator == std::string_view::npos) {
@@ -382,27 +358,9 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                              static_cast<int>(kind.size()), kind.data());
                 return false;
             }
-            const char* const address_text = value + separator + 1;
-            char* end = nullptr;
-            if (!ParseGuestAddress(address_text, &end, probe.address) ||
-                (*end != '\0' && *end != ':')) {
-                std::fprintf(stderr, "gmse01_boot: --read-efb needs a hex address, got '%s'\n",
-                             address_text);
+            if (!parse_probe_address(name, value + separator + 1, probe.address,
+                                     request.efb_copy_probe_reports)) {
                 return false;
-            }
-            request.efb_copy_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-efb report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return false;
-                }
-                request.efb_copy_probe_reports = parsed;
             }
             request.efb_copy_probes.push_back(probe);
         } else if (name == "--read-viewport") {
@@ -410,7 +368,6 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
             // are GXSetViewportJitter 0x80362fac -- the single owner, which GXSetViewport at
             // 0x803630c8 delegates to, so hooking it sees both routes once each -- and GXSetScissor
             // 0x80363138.
-            constexpr u64 DEFAULT_REPORTS = 8;
             const std::string_view text(value);
             const std::size_t separator = text.find(':');
             if (separator == std::string_view::npos) {
@@ -433,55 +390,18 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                              static_cast<int>(kind.size()), kind.data());
                 return false;
             }
-            const char* const address_text = value + separator + 1;
-            char* end = nullptr;
-            if (!ParseGuestAddress(address_text, &end, probe.address) ||
-                (*end != '\0' && *end != ':')) {
-                std::fprintf(stderr, "gmse01_boot: --read-viewport needs a hex address, got '%s'\n",
-                             address_text);
+            if (!parse_probe_address(name, value + separator + 1, probe.address,
+                                     request.viewport_probe_reports)) {
                 return false;
-            }
-            request.viewport_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-viewport report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return false;
-                }
-                request.viewport_probe_reports = parsed;
             }
             request.viewport_probes.push_back(probe);
         } else if (name == "--read-lighting") {
             // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
             // or its TLightMario override (0x80229610); pass the flag twice to cover both. The
             // count bounds only how many relights are printed in full, never how many are read.
-            constexpr u64 DEFAULT_REPORTS = 8;
             u32 address = 0;
-            char* end = nullptr;
-            if (!ParseGuestAddress(value, &end, address) || (*end != '\0' && *end != ':')) {
-                std::fprintf(
-                    stderr, "gmse01_boot: --read-lighting needs <hex-addr>[:<reports>], got '%s'\n",
-                    value);
+            if (!parse_probe_address(name, value, address, request.lighting_probe_reports)) {
                 return false;
-            }
-            request.lighting_probe_reports = DEFAULT_REPORTS;
-            if (*end == ':') {
-                const char* const reports_text = end + 1;
-                errno = 0;
-                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
-                if (end == reports_text || *end != '\0' || errno == ERANGE) {
-                    std::fprintf(stderr,
-                                 "gmse01_boot: --read-lighting report count must be an integer, "
-                                 "got '%s'\n",
-                                 reports_text);
-                    return false;
-                }
-                request.lighting_probe_reports = parsed;
             }
             request.lighting_probe_addresses.push_back(address);
         } else if (name == "--j3d-sys") {

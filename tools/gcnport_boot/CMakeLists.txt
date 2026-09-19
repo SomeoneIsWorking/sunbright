@@ -25,6 +25,8 @@ add_executable(sunbright_gcnport_boot
     frame_image_file.cpp
     family_color_map.cpp
     guest_model_probe.cpp
+    guest_j2d_context_probe.cpp
+    guest_picture_probe.cpp
     guest_material_probe.cpp
   guest_shape_probe.cpp
   guest_efb_copy_probe.cpp
