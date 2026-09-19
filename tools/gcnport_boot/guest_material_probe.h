@@ -7,6 +7,7 @@
 
 #include <sunbright/native_render/j3d_material_family.h>
 
+#include <sunbright/title_adapter/guest_j3d_display_list.h>
 #include <sunbright/title_adapter/guest_j3d_material.h>
 #include <sunbright/title_adapter/guest_j3d_texture.h>
 
@@ -75,29 +76,20 @@ class GuestMaterialProbe {
     void record(std::map<std::uint32_t, std::uint64_t>& histogram, std::uint64_t& untracked,
                 std::uint32_t value);
 
-    // What `classify_j3d_material` is given to turn a texture number into pixels. The probe's own
-    // cache and counters live behind it, so the classifier never learns it is reading a guest.
-    struct TextureResolver {
-        GuestMaterialProbe* probe = nullptr;
-        gcnport::GuestContext* guest = nullptr;
-        sb::title_adapter::GuestTextureTable table{};
-    };
-
     [[nodiscard]] bool read_texture_table(gcnport::GuestContext& guest,
                                           const sb::title_adapter::GuestMemory& memory,
                                           sb::title_adapter::GuestAddress packet,
                                           sb::title_adapter::GuestTextureTable& table);
-    [[nodiscard]] bool resolve_texture(gcnport::GuestContext& guest,
-                                       const sb::title_adapter::GuestTextureTable& table,
-                                       std::uint16_t number,
-                                       sb::native_render::DecodedTexture& texture,
-                                       sb::native_render::ResTimgDecodeError& error);
-    static bool resolve_texture_thunk(std::uint16_t number,
-                                      sb::native_render::DecodedTexture& texture,
-                                      sb::native_render::ResTimgDecodeError& error, void* context);
+    [[nodiscard]] bool
+    resolve_texture(gcnport::GuestContext& guest, const sb::title_adapter::GuestTextureTable& table,
+                    const sb::title_adapter::GuestDisplayListTextures& displayList,
+                    std::uint8_t textureMap, std::uint16_t number,
+                    sb::native_render::DecodedTexture& texture,
+                    sb::native_render::ResTimgDecodeError& error);
     void measure_bindings(gcnport::GuestContext& guest,
                           const sb::native_render::J3dMaterialState& state,
                           const sb::title_adapter::GuestTextureTable& table,
+                          const sb::title_adapter::GuestDisplayListTextures& displayList,
                           std::uint8_t bindingCount);
 
     std::uint64_t maxReports_ = 0;
@@ -121,6 +113,8 @@ class GuestMaterialProbe {
     std::uint64_t texturesBound_ = 0;
     std::uint64_t texturesPastTheTable_ = 0;
     std::uint64_t texturesDecoded_ = 0;
+    std::uint64_t texturesFromDisplayList_ = 0;
+    std::uint64_t texturesFromTable_ = 0;
     std::uint64_t textureBytes_ = 0;
     std::uint64_t texturePaddingNonZero_ = 0;
     std::map<sb::title_adapter::GuestTextureError, std::uint64_t> textureErrors_;
@@ -129,6 +123,7 @@ class GuestMaterialProbe {
     std::map<std::uint32_t, std::uint64_t> textureSizes_;
     std::uint64_t textureSizesUntracked_ = 0;
     std::map<sb::native_render::ResTimgDecodeError, std::uint64_t> decodeErrors_;
+    std::map<sb::title_adapter::GuestDisplayListError, std::uint64_t> displayListErrors_;
     std::map<sb::title_adapter::GuestMaterialError, std::uint64_t> materialErrors_;
     std::map<sb::title_adapter::GuestColorError, std::uint64_t> colorErrors_;
     std::map<sb::title_adapter::GuestTexGenError, std::uint64_t> texGenErrors_;

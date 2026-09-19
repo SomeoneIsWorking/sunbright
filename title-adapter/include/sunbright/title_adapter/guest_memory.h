@@ -15,6 +15,11 @@ namespace sb::title_adapter {
 
 using GuestAddress = std::uint32_t;
 
+// Where the guest's main RAM is mapped in its own address space. Hardware registers state physical
+// addresses; every reader here works in the addresses the game's own pointers hold, so the one
+// place the two meet says so rather than each caller adding the same constant.
+inline constexpr GuestAddress GUEST_RAM_BASE = 0x80000000;
+
 // Reads `destination.size()` bytes of guest memory at `address`. Must answer false when the range
 // is not wholly readable: a reader that zero-fills instead turns "this address is not mapped" into
 // a structure full of zeroes, which is a legitimate-looking answer to a question that failed.

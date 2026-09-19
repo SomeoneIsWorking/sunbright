@@ -251,6 +251,27 @@ bool decode_palette_format(std::uint8_t raw, PaletteFormat& format) noexcept {
     }
 }
 
+bool encoded_image_format_has_alpha(EncodedImageFormat format,
+                                    PaletteFormat paletteFormat) noexcept {
+    switch (format) {
+    case EncodedImageFormat::IntensityAlpha4:
+    case EncodedImageFormat::IntensityAlpha8:
+    case EncodedImageFormat::Rgb5A3:
+    case EncodedImageFormat::Rgba8:
+    case EncodedImageFormat::BlockCompressed:
+        return true;
+    case EncodedImageFormat::Indexed4:
+    case EncodedImageFormat::Indexed8:
+    case EncodedImageFormat::Indexed14:
+        return paletteFormat != PaletteFormat::Rgb565;
+    case EncodedImageFormat::Intensity4:
+    case EncodedImageFormat::Intensity8:
+    case EncodedImageFormat::Rgb565:
+        return false;
+    }
+    return false;
+}
+
 bool encoded_image_data_size(std::uint32_t width, std::uint32_t height, EncodedImageFormat format,
                              std::size_t& bytes) noexcept {
     bytes = 0;

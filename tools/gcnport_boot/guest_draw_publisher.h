@@ -12,7 +12,9 @@
 #include <sunbright/native_render/j3d_tex_coord_generation.h>
 #include <sunbright/native_render/model.h>
 #include <sunbright/native_render/semantic_sink.h>
+#include <sunbright/title_adapter/guest_j3d_display_list.h>
 #include <sunbright/title_adapter/guest_j3d_texgen.h>
+#include <sunbright/title_adapter/guest_j3d_texture.h>
 #include <sunbright/title_adapter/guest_shape_geometry.h>
 
 #include "frame_draw_budget.h"
@@ -62,7 +64,10 @@ class GuestDrawPublisher {
     std::uint32_t publish(gcnport::GuestContext& guest, const sb::title_adapter::GuestShape& shape,
                           std::uint64_t instance,
                           const sb::native_render::ClassifiedJ3dMaterial& classified,
-                          const sb::title_adapter::GuestTexGenBlock& texGen);
+                          const sb::title_adapter::GuestTexGenBlock& texGen,
+                          const sb::title_adapter::GuestTextureTable& textureTable,
+                          const sb::title_adapter::GuestDisplayListTextures& displayList,
+                          const sb::native_render::J3dMaterialState& materialState);
 
     void report() const;
 

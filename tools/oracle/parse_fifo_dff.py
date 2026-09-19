@@ -228,6 +228,67 @@ BP_CLEAR_BG = 0x50   # b: bits 0-7, g: bits 8-15
 BP_CLEAR_Z = 0x51    # depth: bits 0-23
 BP_EFB_COPY_EXEC = 0x52  # clear_enable: bit 11, display_copy: bit 14
 
+# --- Texture image registers. A TEV stage names a texmap; what that texmap IS lives in these,
+# and nothing was reading them, so every question about a draw's texture had to be answered from
+# the guest side and taken on trust. TX_SETIMAGE0 carries the size and format, TX_SETIMAGE3 the
+# image's address in main memory (stored >> 5). Texmaps 0-3 use one register block and 4-7 another,
+# which is the whole reason for the second pair of bases.
+BP_TX_SETIMAGE0_I0 = 0x88   # 0x88-0x8B: texmaps 0-3
+BP_TX_SETIMAGE0_I4 = 0xA8   # 0xA8-0xAB: texmaps 4-7
+BP_TX_SETIMAGE3_I0 = 0x94   # 0x94-0x97: texmaps 0-3
+BP_TX_SETIMAGE3_I4 = 0xB4   # 0xB4-0xB7: texmaps 4-7
+MAX_TEXMAPS = 8
+
+# GX texture formats, by the value TX_SETIMAGE0 bits 20-23 hold.
+GX_TEXTURE_FORMAT_NAMES = {
+    0x0: "I4", 0x1: "I8", 0x2: "IA4", 0x3: "IA8", 0x4: "RGB565", 0x5: "RGB5A3",
+    0x6: "RGBA8", 0x8: "C4", 0x9: "C8", 0xA: "C14X2", 0xE: "CMPR",
+}
+
+
+class TextureBindingState:
+    """Which image each of the eight texmaps is bound to, as the stream last said.
+
+    Threaded sequentially like every other BP register here: a draw is drawn with whatever was
+    loaded before it, including loads from an earlier frame. A texmap nothing has ever loaded
+    reports None rather than a zero-sized texture at address 0, because "never bound" and "bound
+    to an empty image" are different answers and only one of them is a defect.
+    """
+
+    __slots__ = ("image0", "image3")
+
+    def __init__(self):
+        self.image0 = [None] * MAX_TEXMAPS
+        self.image3 = [None] * MAX_TEXMAPS
+
+    def load(self, command: int, value: int):
+        for base, first in ((BP_TX_SETIMAGE0_I0, 0), (BP_TX_SETIMAGE0_I4, 4)):
+            if base <= command <= base + 3:
+                self.image0[first + command - base] = value
+                return
+        for base, first in ((BP_TX_SETIMAGE3_I0, 0), (BP_TX_SETIMAGE3_I4, 4)):
+            if base <= command <= base + 3:
+                self.image3[first + command - base] = value
+                return
+
+    def binding(self, texmap: int):
+        if texmap >= MAX_TEXMAPS or self.image0[texmap] is None:
+            return None
+        value = self.image0[texmap]
+        image_format = bits(value, 20, 4)
+        return {
+            "width": bits(value, 0, 10) + 1,
+            "height": bits(value, 10, 10) + 1,
+            "format": image_format,
+            "format_name": GX_TEXTURE_FORMAT_NAMES.get(image_format, f"0x{image_format:x}"),
+            # TX_SETIMAGE3 holds the address in 32-byte units; a texmap whose size was loaded
+            # without its address is reported with none rather than as living at zero.
+            "address": (bits(self.image3[texmap], 0, 24) << 5)
+            if self.image3[texmap] is not None
+            else None,
+        }
+
+
 GX_COMPARE_NAMES = ["NEVER", "LESS", "EQUAL", "LEQUAL", "GREATER", "NEQUAL", "GEQUAL", "ALWAYS"]
 DOLPHIN_CULLMODE_NAMES = ["NONE", "BACK", "FRONT", "ALL"]
 ALPHA_LOGIC_NAMES = ["AND", "OR", "XOR", "XNOR"]
@@ -342,6 +403,7 @@ class BPRasterState:
         self.cmode1 = 0  # BP 0x42: dst-alpha value (7:0) + enable (bit 8)
         self.alphacompare = 0
         self.tev = TevStageState()
+        self.textures = TextureBindingState()
         self.clear_ra = 0    # BP 0x4F raw (r/a)
         self.clear_bg = 0    # BP 0x50 raw (b/g)
         self.clear_z = 0xFFFFFF  # BP 0x51 raw depth, HW reset default = far
@@ -349,6 +411,7 @@ class BPRasterState:
 
     def load(self, command: int, value: int):
         self.tev.load(command, value)
+        self.textures.load(command, value)
         if command == BP_GENMODE:
             self.genmode = value
         elif command == BP_SCISSORTL:
@@ -394,6 +457,10 @@ class BPRasterState:
     def tev_stages(self):
         n = self.num_tev_stages()
         return [self.tev.stage_fields(i, n) for i in range(n)]
+
+    def stage_texture_bindings(self):
+        """The image bound to each active stage's texmap, in stage order."""
+        return [self.textures.binding(stage["texmap"]) for stage in self.tev_stages()]
 
     def scissor_rect(self):
         """Returns (x0, y0, x1, y1) in EFB pixel space, both TL/BR de-biased by
@@ -664,6 +731,7 @@ class DrawEvent:
     blend: dict = None               # {blend_enable, logic_op_enable, color_update, alpha_update, dst_factor, src_factor, subtract}
     alphacompare: dict = None        # {ref0, ref1, comp0, comp1, logic}
     tev_stages: tuple = None         # tuple of per-stage dicts (TevStageState.stage_fields), title-fidelity task
+    stage_textures: tuple = None     # per-stage image the stage's texmap was bound to, or None per stage
 
 
 @dataclass
@@ -867,7 +935,8 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState, bp: "BPRasterState" =
                 cullmode=bp.cullmode(), scissor=bp.scissor_rect(),
                 zmode=bp.zmode_fields(), blend=bp.blend_fields(),
                 alphacompare=bp.alphacompare_fields(),
-                tev_stages=tuple(bp.tev_stages())))
+                tev_stages=tuple(bp.tev_stages()),
+                stage_textures=tuple(bp.stage_texture_bindings())))
             seq += 1
             pos += total
             continue
@@ -877,6 +946,33 @@ def decode_frame(frame_idx: int, data: bytes, cp: CPState, bp: "BPRasterState" =
         pos += 1
 
     return xf_events, draw_events, bp_events, unknown, warnings
+
+
+def object_numbers(draws):
+    """Dolphin's own object number for each draw, in the order the draws were decoded.
+
+    FifoPlayer::WriteFrame counts one object per maximal run of consecutive primitive
+    commands (FifoPlaybackAnalyzer sets end_of_primitives on the first non-NOP command that
+    is not a primitive), and numbers them from 0 within each frame. That is the numbering
+    --fifo-play-objects selects with, so it is the only way to ask the console to replay the
+    same draw a row here describes. A run is consecutive when the command sequence numbers
+    are, because this decoder advances `seq` for every command it sees except NOP runs --
+    which Dolphin also lets pass through a primitive run.
+    """
+    numbers = []
+    previous_seq = None
+    previous_frame = None
+    current = -1
+    for draw in draws:
+        if draw.frame != previous_frame:
+            current = -1
+            previous_seq = None
+        if previous_seq is None or draw.seq != previous_seq + 1:
+            current += 1
+        numbers.append(current)
+        previous_seq = draw.seq
+        previous_frame = draw.frame
+    return numbers
 
 
 def main():
@@ -907,8 +1003,9 @@ def main():
                           "2026-07-10_fifo_parser_colorupdate_validation.md).")
     ap.add_argument("--tev-tsv", metavar="OUT",
                      help="write a per-draw-per-stage TEV/material-state TSV (color_env/alpha_env/"
-                          "tref/ksel decode) for the world-pass sky DOME (202v) + up to 3 CLOUD "
-                          "STRIP (40v) draws to OUT, instead of the normal timeline dump")
+                          "tref/ksel decode) for EVERY draw of the chosen --frame to OUT, instead "
+                          "of the normal timeline dump; the draw column is the same ordinal "
+                          "--raster-all numbers by")
     args = ap.parse_args()
 
     with open(args.dff, "rb") as f:
@@ -974,16 +1071,17 @@ def main():
             rows.extend(draws)
         if not rows:
             raise SystemExit("REFUSING: --raster-all found 0 draws (bad --frame / stale file?)")
+        objects = object_numbers(rows)
         with open(args.raster_all, "w") as out:
-            out.write("seq\tprim\tnverts\tproj\tcU\taU\tblend\tsrcF\tdstF\tdstA_en\tdstA\tzfun\tzupd\tcull\ttx\tty\ttz\n")
-            for e in rows:
+            out.write("obj\tseq\tprim\tnverts\tproj\tcU\taU\tblend\tsrcF\tdstF\tdstA_en\tdstA\tzfun\tzupd\tcull\ttx\tty\ttz\n")
+            for obj, e in zip(objects, rows):
                 b = e.blend; z = e.zmode
                 def _f(v):
                     return v if isinstance(v, float) else 0.0
                 tx = _f(e.posmtx[3]) if e.posmtx else 0.0
                 ty = _f(e.posmtx[7]) if e.posmtx else 0.0
                 tz = _f(e.posmtx[11]) if e.posmtx else 0.0
-                out.write(f"{e.seq}\t{e.primitive}\t{e.num_vertices}\t{(e.proj_type or '?')[:4]}\t"
+                out.write(f"{obj}\t{e.seq}\t{e.primitive}\t{e.num_vertices}\t{(e.proj_type or '?')[:4]}\t"
                           f"{b['color_update']}\t{b['alpha_update']}\t{b['blend_enable']}\t"
                           f"{b['src_factor']}\t{b['dst_factor']}\t{b['dst_alpha_enable']}\t{b['dst_alpha_val']}\t"
                           f"{z['func']}\t{z['update_enable']}\t{e.cullmode}\t{tx:.1f}\t{ty:.1f}\t{tz:.1f}\n")
@@ -1070,31 +1168,39 @@ def main():
             _xf_events, draw_events, _bp_events, _unknown, _warnings = decode_frame(i, data, cp, bp)
             out_rows.extend(draw_events)
 
-        def is_world_proj(e):
-            if not e.proj_floats or e.proj_type != "PERSPECTIVE":
-                return False
-            return abs(e.proj_floats[0] - 2.04163) < 0.01 and abs(e.proj_floats[2] - 2.74748) < 0.01
-
-        dome_rows = [e for e in out_rows if is_world_proj(e) and e.num_vertices == 202]
-        cloud_rows = [e for e in out_rows if is_world_proj(e) and e.num_vertices == 40]
-        selected = [("DOME", e) for e in dome_rows[:2]] + [("CLOUD", e) for e in cloud_rows[:3]]
+        # Every draw, in frame order. This used to select two draws by vertex count -- the 202v
+        # dome and the 40v cloud strip named in the 2026-07-10 investigation -- which answered that
+        # question and then quietly answered no other: any draw whose TEV was wanted afterwards had
+        # to be added to the predicate first, and a shape whose vertex count had changed produced a
+        # refusal that read like "this frame has no sky". The ordinal is in the row instead, so a
+        # draw is matched against --raster-all by position rather than by being anticipated here.
+        selected = list(enumerate(out_rows))
         if not selected:
             raise SystemExit(
-                "REFUSING: found 0 matching world-pass draws (dome 202v or cloud-strip 40v) -- "
-                "filter predicates likely stale vs this .dff; not writing an empty/misleading TSV")
+                "REFUSING: the selected frame(s) decoded to 0 draws -- not writing an "
+                "empty/misleading TSV")
 
-        cols = ["frame", "seq", "role", "nverts", "stage", "num_stages",
-                "texmap", "texcoord", "tex_enable", "chan_hw",
+        objects = object_numbers(out_rows)
+        cols = ["frame", "seq", "obj", "draw", "nverts", "stage", "num_stages",
+                "texmap", "tex_w", "tex_h", "tex_fmt", "tex_addr",
+                "texcoord", "tex_enable", "chan_hw",
                 "ca", "cb", "cc", "cd", "c_op", "c_bias", "c_scale", "c_clamp", "c_outreg",
                 "aa", "ab", "ac", "ad", "a_op", "a_bias", "a_scale", "a_clamp", "a_outreg",
                 "swap_ras", "swap_tex", "kc_sel", "ka_sel"]
         with open(args.tev_tsv, "w") as out:
             out.write("\t".join(cols) + "\n")
-            for role, e in selected:
+            for ordinal, e in selected:
                 stages = e.tev_stages or ()
                 for st_idx, st in enumerate(stages):
-                    row = [e.frame, e.seq, role, e.num_vertices, st_idx, len(stages),
-                           st["texmap"], st["texcoord"], st["tex_enable"], st["chan_hw"],
+                    bound = (e.stage_textures or ())[st_idx] if e.stage_textures else None
+                    row = [e.frame, e.seq, objects[ordinal], ordinal, e.num_vertices, st_idx,
+                           len(stages), st["texmap"],
+                           bound["width"] if bound else "-",
+                           bound["height"] if bound else "-",
+                           bound["format_name"] if bound else "-",
+                           f"0x{bound['address']:08x}"
+                           if bound and bound["address"] is not None else "-",
+                           st["texcoord"], st["tex_enable"], st["chan_hw"],
                            st["ca"], st["cb"], st["cc"], st["cd"],
                            st["c_op"], st["c_bias"], st["c_scale"], st["c_clamp"], st["c_outreg"],
                            st["aa"], st["ab"], st["ac"], st["ad"],
@@ -1102,9 +1208,11 @@ def main():
                            st["swap_ras"], st["swap_tex"], st["kc_sel"], st["ka_sel"]]
                     out.write("\t".join(str(x) for x in row) + "\n")
         n_stage_rows = sum(len(e.tev_stages or ()) for _, e in selected)
+        stageless = sum(1 for _, e in selected if not e.tev_stages)
         print(f"# MANIFEST wrote {n_stage_rows} stage-rows from {len(selected)} draws "
-              f"({len(dome_rows[:2])} DOME + {len(cloud_rows[:3])} CLOUD) from {args.dff} "
-              f"frame(s) {args.frame if args.frame is not None else 'all'} to {args.tev_tsv}",
+              f"({stageless} of them carried no TEV stages and are absent from the rows) "
+              f"from {args.dff} frame(s) "
+              f"{args.frame if args.frame is not None else 'all'} to {args.tev_tsv}",
               file=sys.stderr)
         return
 

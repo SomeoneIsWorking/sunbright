@@ -56,6 +56,15 @@ struct EncodedImageView {
 
 [[nodiscard]] bool decode_image_format(std::uint8_t raw, EncodedImageFormat& format) noexcept;
 [[nodiscard]] bool decode_palette_format(std::uint8_t raw, PaletteFormat& format) noexcept;
+
+// Whether sampling `format` produces an alpha channel the consumer has to honour. A colour-indexed
+// format answers for its palette rather than for itself, so `paletteFormat` is read only then; the
+// two intensity-alpha palettes carry alpha and the 565 one cannot. This is a property of the
+// hardware format, not of the resource that happened to describe it: a display list names a format
+// and never restates a resource's `hasAlpha` byte, and deriving the answer keeps those two sources
+// from disagreeing about the same image.
+[[nodiscard]] bool encoded_image_format_has_alpha(EncodedImageFormat format,
+                                                  PaletteFormat paletteFormat) noexcept;
 [[nodiscard]] bool encoded_image_data_size(std::uint32_t width, std::uint32_t height,
                                            EncodedImageFormat format, std::size_t& bytes) noexcept;
 [[nodiscard]] bool encoded_image_chain_size(std::uint32_t width, std::uint32_t height,

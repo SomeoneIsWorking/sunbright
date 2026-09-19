@@ -69,32 +69,67 @@ void GuestModelProbe::record(std::map<std::uint32_t, std::uint64_t>& histogram,
     untracked += 1;
 }
 
-bool GuestModelProbe::resolve_texture(gcnport::GuestContext& guest,
-                                      const sb::title_adapter::GuestTextureTable& table,
-                                      std::uint16_t number,
+namespace {
+
+// Which texture map a material bound `number` into. The display list is keyed by map and the
+// table by number, so one of the two records has to be translated into the other's terms, and the
+// material's own bindings are the translation the title itself used.
+std::uint8_t texture_map_for_number(const sb::native_render::J3dMaterialState& state,
+                                    std::uint16_t number) {
+    for (std::size_t index = 0; index < state.textureBindings.size(); ++index) {
+        if (state.textureBindings[index].textureNumber == number) {
+            return static_cast<std::uint8_t>(index);
+        }
+    }
+    return sb::title_adapter::GUEST_MAX_TEXMAPS;
+}
+
+} // namespace
+
+bool GuestModelProbe::resolve_texture(TextureResolver& resolver, std::uint16_t number,
                                       sb::native_render::DecodedTexture& texture,
                                       sb::native_render::ResTimgDecodeError& error) {
-    if (number == 0xFFFF || number >= table.count) {
+    if (number == 0xFFFF) {
         return false;
     }
-    const sb::title_adapter::GuestAddress header =
-        table.resources + static_cast<sb::title_adapter::GuestAddress>(number) *
-                              sb::title_adapter::GUEST_RES_TIMG_BYTES;
-    if (const auto cached = textureCache_.find(header); cached != textureCache_.end()) {
+    const std::uint8_t map = texture_map_for_number(*resolver.state, number);
+    if (map >= sb::title_adapter::GUEST_MAX_TEXMAPS) {
+        textureNumbersWithoutMap_ += 1;
+    }
+    const bool fromList =
+        map < sb::title_adapter::GUEST_MAX_TEXMAPS && resolver.displayList->texmap[map].bound();
+    if (!fromList && (number >= resolver.table.count || resolver.table.resources == 0)) {
+        return false;
+    }
+
+    // Two records, two address spaces: the list names an image, the table names a resource header.
+    // The high bit keeps a key from one from ever colliding with a key from the other.
+    const std::uint64_t key =
+        fromList ? (1ULL << 32U) | resolver.displayList->texmap[map].imageAddress
+                 : static_cast<std::uint64_t>(resolver.table.resources +
+                                              static_cast<sb::title_adapter::GuestAddress>(number) *
+                                                  sb::title_adapter::GUEST_RES_TIMG_BYTES);
+    if (const auto cached = textureCache_.find(key); cached != textureCache_.end()) {
+        (fromList ? texturesFromDisplayList_ : texturesFromTable_) += 1;
         texture = cached->second;
         return true;
     }
+
     sb::native_render::DecodedTexture decoded{};
-    const sb::title_adapter::GuestTextureError textureError =
-        decode_guest_texture({read_through_byte_address, &guest}, table, number, decoded, error);
+    sb::title_adapter::GuestTextureSource source = sb::title_adapter::GuestTextureSource::None;
+    const sb::title_adapter::GuestTextureError textureError = decode_guest_material_texture(
+        {read_through_byte_address, resolver.guest}, *resolver.displayList, resolver.table, map,
+        number, decoded, error, source);
     decodeErrors_[error] += 1;
     if (textureError != sb::title_adapter::GuestTextureError::None) {
         return false;
     }
+    (source == sb::title_adapter::GuestTextureSource::DisplayList ? texturesFromDisplayList_
+                                                                  : texturesFromTable_) += 1;
     texturesDecoded_ += 1;
     textureBytes_ += decoded.rgba8.size();
     texture = decoded;
-    textureCache_.emplace(header, std::move(decoded));
+    textureCache_.emplace(key, std::move(decoded));
     return true;
 }
 
@@ -103,7 +138,7 @@ bool GuestModelProbe::resolve_texture_thunk(std::uint16_t number,
                                             sb::native_render::ResTimgDecodeError& error,
                                             void* context) {
     auto& resolver = *static_cast<TextureResolver*>(context);
-    return resolver.probe->resolve_texture(*resolver.guest, resolver.table, number, texture, error);
+    return resolver.probe->resolve_texture(resolver, number, texture, error);
 }
 
 void GuestModelProbe::record_refusals(const sb::native_render::J3dFamilyRefusals& refusals,
@@ -205,7 +240,21 @@ gcnport::HookResult GuestModelProbe::operator()(gcnport::GuestContext& guest) {
         sb::native_render::current_j3d_stage_lighting();
     withLighting_ += lighting != nullptr ? 1 : 0;
 
-    TextureResolver resolver{.probe = this, .guest = &guest, .table = table};
+    // What the material actually binds. `J3DModel` fills a packet's texture table once, at
+    // construction, from the model data; a title that then hands the model an external material
+    // table re-points the model data and bakes the material's display list against it, leaving the
+    // packet's pointer a pre-swap snapshot. GMSE01 does this for the sky, for eight `MoveBG`
+    // objects and for the Mare townsfolk, so the list is read for every draw rather than for those.
+    sb::title_adapter::GuestDisplayListTextures displayList{};
+    const sb::title_adapter::GuestDisplayListError displayListError =
+        read_guest_material_packet_textures(memory, packet, displayList);
+    displayListErrors_[displayListError] += 1;
+
+    TextureResolver resolver{.probe = this,
+                             .guest = &guest,
+                             .table = table,
+                             .displayList = &displayList,
+                             .state = &state};
     sb::native_render::ClassifiedJ3dMaterial classified{};
     sb::native_render::J3dFamilyRefusals refusals{};
     const sb::native_render::J3dMaterialFamilyResult result =
@@ -219,7 +268,8 @@ gcnport::HookResult GuestModelProbe::operator()(gcnport::GuestContext& guest) {
     }
     classified_ += 1;
     record(textureCounts_, textureCountsUntracked_, classified.textureCount);
-    drawsPublished_ += publisher_.publish(guest, shape, shapeAddress, classified, read.texGen);
+    drawsPublished_ += publisher_.publish(guest, shape, shapeAddress, classified, read.texGen,
+                                          table, displayList, state);
 
     if (reports_ < maxReports_) {
         reports_ += 1;
@@ -333,6 +383,8 @@ void GuestModelProbe::report() const {
                     [](sb::title_adapter::GuestTextureError error) { return name(error); });
     print_histogram("texture decode results", decodeErrors_,
                     sb::native_render::res_timg_decode_error_name);
+    print_histogram("material display list", displayListErrors_,
+                    [](sb::title_adapter::GuestDisplayListError error) { return name(error); });
     print_histogram("classification", results_, sb::native_render::j3d_material_family_result_name);
     print_histogram("families", families_, sb::native_render::j3d_material_family_name);
     if (refusals_.empty()) {
@@ -355,6 +407,12 @@ void GuestModelProbe::report() const {
     std::printf("gmse01_boot:   %llu distinct texture(s) decoded, %llu byte(s) of RGBA\n",
                 static_cast<unsigned long long>(texturesDecoded_),
                 static_cast<unsigned long long>(textureBytes_));
+    std::printf(
+        "gmse01_boot:   textures resolved: %llu from the material's display list, %llu from "
+        "its packet's table, %llu number(s) bound to no texture map\n",
+        static_cast<unsigned long long>(texturesFromDisplayList_),
+        static_cast<unsigned long long>(texturesFromTable_),
+        static_cast<unsigned long long>(textureNumbersWithoutMap_));
     if (textureCounts_.empty()) {
         std::printf("gmse01_boot:   textures per classified draw: none recorded\n");
         return;

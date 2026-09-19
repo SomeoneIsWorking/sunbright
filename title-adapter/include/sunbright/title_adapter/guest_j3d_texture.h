@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sunbright/native_render/res_timg_decode.h>
+#include <sunbright/title_adapter/guest_j3d_display_list.h>
 #include <sunbright/title_adapter/guest_memory.h>
 
 #include <cstdint>
@@ -58,5 +59,36 @@ struct GuestTextureTable {
 decode_guest_texture(const native_render::AssetByteSource& source, const GuestTextureTable& table,
                      std::uint16_t textureNumber, native_render::DecodedTexture& decoded,
                      native_render::ResTimgDecodeError& textureError) noexcept;
+
+// Decodes the image one texmap of a material's display list binds. The binding states the format,
+// extent, sampler and mip count the hardware was given, so nothing is taken from a resource header
+// here -- there may not be one, and where there is, the list is free to have overridden it.
+[[nodiscard]] GuestTextureError
+decode_guest_texmap_binding(const native_render::AssetByteSource& source,
+                            const GuestTexmapBinding& binding,
+                            native_render::DecodedTexture& decoded,
+                            native_render::ResTimgDecodeError& textureError) noexcept;
+
+// Which record a texture was resolved from, carried out so a consumer can count the two apart.
+enum class GuestTextureSource : std::uint8_t {
+    None,
+    DisplayList,
+    Table,
+};
+
+[[nodiscard]] const char* name(GuestTextureSource source) noexcept;
+
+// Resolves one texture map of one material the way the hardware did.
+//
+// The display list wins when it bound that map, because it is what the title handed GX: a material
+// whose model was given an external material table binds that table's images while the packet still
+// points at the table the model file shipped with, and only the list records the swap. A material
+// drawn without a baked list -- the title may load its registers directly -- has no list to read,
+// and there the packet's table is not a stale record but the only one, so it answers.
+[[nodiscard]] GuestTextureError decode_guest_material_texture(
+    const native_render::AssetByteSource& source, const GuestDisplayListTextures& displayList,
+    const GuestTextureTable& table, std::uint8_t textureMap, std::uint16_t textureNumber,
+    native_render::DecodedTexture& decoded, native_render::ResTimgDecodeError& textureError,
+    GuestTextureSource& resolvedFrom) noexcept;
 
 } // namespace sb::title_adapter

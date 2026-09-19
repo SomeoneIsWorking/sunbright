@@ -8,6 +8,7 @@
 
 #include <sunbright/native_render/j3d_material_family.h>
 
+#include <sunbright/title_adapter/guest_j3d_display_list.h>
 #include <sunbright/title_adapter/guest_j3d_material.h>
 #include <sunbright/title_adapter/guest_j3d_shape.h>
 #include <sunbright/title_adapter/guest_j3d_texture.h>
@@ -58,17 +59,21 @@ class GuestModelProbe {
                          sb::title_adapter::GuestAddress material);
     void report_refused_materials() const;
 
-    // Resolves a texture number through the material packet's own table, decoding once per distinct
-    // resource. The classifier is handed this and cannot tell it is reading a guest.
+    // Resolves a texture number the way the material did, decoding once per distinct image. The
+    // classifier is handed this and cannot tell it is reading a guest.
+    //
+    // It carries both records a texture can come from, and the material state that maps a texture
+    // number back to the texture map it was bound into -- which is what the two records are keyed
+    // by on their respective sides.
     struct TextureResolver {
         GuestModelProbe* probe = nullptr;
         gcnport::GuestContext* guest = nullptr;
         sb::title_adapter::GuestTextureTable table{};
+        const sb::title_adapter::GuestDisplayListTextures* displayList = nullptr;
+        const sb::native_render::J3dMaterialState* state = nullptr;
     };
 
-    [[nodiscard]] bool resolve_texture(gcnport::GuestContext& guest,
-                                       const sb::title_adapter::GuestTextureTable& table,
-                                       std::uint16_t number,
+    [[nodiscard]] bool resolve_texture(TextureResolver& resolver, std::uint16_t number,
                                        sb::native_render::DecodedTexture& texture,
                                        sb::native_render::ResTimgDecodeError& error);
     static bool resolve_texture_thunk(std::uint16_t number,
@@ -89,14 +94,24 @@ class GuestModelProbe {
     std::uint64_t withLighting_ = 0;
     std::uint64_t classified_ = 0;
     std::uint64_t texturesDecoded_ = 0;
+    // The two records apart. A run that resolves every texture from one of them is saying something
+    // about the scene; a run that never reaches the display list at all is saying something about
+    // this hook, and the totals are what tell those two apart.
+    std::uint64_t texturesFromDisplayList_ = 0;
+    std::uint64_t texturesFromTable_ = 0;
+    std::uint64_t textureNumbersWithoutMap_ = 0;
     std::uint64_t textureBytes_ = 0;
     std::uint64_t drawsPastTheSet_ = 0;
 
     std::set<std::uint64_t> draws_;
-    std::map<sb::title_adapter::GuestAddress, sb::native_render::DecodedTexture> textureCache_;
+    // Keyed by where the image came from rather than by its texture number: the same number names
+    // different images in different materials, and the two records this resolves from address
+    // different things -- a resource header on one side, an image on the other.
+    std::map<std::uint64_t, sb::native_render::DecodedTexture> textureCache_;
     std::map<sb::title_adapter::GuestShapeError, std::uint64_t> shapeErrors_;
     std::map<sb::title_adapter::GuestMaterialError, std::uint64_t> materialErrors_;
     std::map<sb::title_adapter::GuestTextureError, std::uint64_t> tableErrors_;
+    std::map<sb::title_adapter::GuestDisplayListError, std::uint64_t> displayListErrors_;
     std::map<sb::native_render::ResTimgDecodeError, std::uint64_t> decodeErrors_;
     std::map<sb::native_render::J3dMaterialFamilyResult, std::uint64_t> results_;
     std::map<sb::native_render::J3dMaterialFamily, std::uint64_t> families_;

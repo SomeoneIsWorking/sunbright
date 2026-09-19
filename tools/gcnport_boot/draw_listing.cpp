@@ -366,6 +366,76 @@ std::string describe_transforms(const sb::native_render::ModelDraw& draw,
     return text;
 }
 
+// Where the draw's textures were looked up: the table the title's own material packet named, and
+// the numbers this material asked it for. Printed even when the lookup succeeded, because a lookup
+// that succeeds against the wrong table is the case this exists to catch -- it produces a perfectly
+// valid texture of the wrong size, and nothing else in the listing distinguishes it from the right
+// one.
+// What the material's display list bound into each texture map: the image the hardware sampled,
+// stated as the hardware was given it. A map the list never completed prints as absent rather than
+// as a zero-sized image at address zero, so "this material binds nothing here" stays separable from
+// "this list was not read".
+std::string
+describe_display_list_textures(const sb::title_adapter::GuestDisplayListTextures* list) {
+    if (list == nullptr) {
+        return {};
+    }
+    std::array<char, 160> buffer{};
+    const int written =
+        std::snprintf(buffer.data(), buffer.size(),
+                      "    display list 0x%08x (%u bytes, %u commands, %u register writes, %u of "
+                      "them texture), binds",
+                      list->address, list->bytes, list->commands, list->registerWrites,
+                      list->textureRegisterWrites);
+    std::string text(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0U);
+    for (const sb::title_adapter::GuestTexmapBinding& binding : list->texmap) {
+        if (!binding.bound()) {
+            text.append(" -");
+            continue;
+        }
+        std::array<char, 96> slot{};
+        const int slotWritten = std::snprintf(
+            slot.data(), slot.size(), " %ux%u.fmt%u@0x%08x/mip%u",
+            static_cast<unsigned>(binding.width), static_cast<unsigned>(binding.height),
+            static_cast<unsigned>(binding.format), binding.imageAddress,
+            static_cast<unsigned>(binding.mipCount));
+        text.append(slot.data(), slotWritten > 0 ? static_cast<std::size_t>(slotWritten) : 0U);
+    }
+    return text;
+}
+
+std::string describe_texture_source(const sb::title_adapter::GuestTextureTable* table,
+                                    const sb::native_render::J3dMaterialState* state) {
+    if (table == nullptr || state == nullptr) {
+        return {};
+    }
+    std::array<char, 128> buffer{};
+    const int written = std::snprintf(buffer.data(), buffer.size(),
+                                      "    textures from table 0x%08x (%u entr%s at 0x%08x), "
+                                      "numbers",
+                                      table->address, static_cast<unsigned>(table->count),
+                                      table->count == 1 ? "y" : "ies", table->resources);
+    std::string text(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0U);
+    // Every binding slot, including the unbound ones: a material that asked for nothing at a slot
+    // and a material whose number was lost on the way read the same in a list of the ones that
+    // resolved.
+    for (std::size_t binding = 0; binding < state->textureBindings.size(); ++binding) {
+        const std::uint16_t number = state->textureBindings[binding].textureNumber;
+        if (number == 0xFFFF) {
+            text.append(" -");
+            continue;
+        }
+        std::array<char, 32> slot{};
+        const int slotWritten = std::snprintf(
+            slot.data(), slot.size(), " %u@0x%08x", static_cast<unsigned>(number),
+            table->resources +
+                (static_cast<std::uint32_t>(number) *
+                 static_cast<std::uint32_t>(sb::title_adapter::GUEST_RES_TIMG_BYTES)));
+        text.append(slot.data(), slotWritten > 0 ? static_cast<std::size_t>(slotWritten) : 0U);
+    }
+    return text;
+}
+
 } // namespace
 
 void print_draw_listing(const DrawListing& listing) {
@@ -395,6 +465,15 @@ void print_draw_listing(const DrawListing& listing) {
         "gmse01_boot:    %s%s%s\n", describe_tex_gen(texGen).c_str(),
         describe_coordinate_range(triangles, texGen.recognised ? texGen.texGenCount : 0).c_str(),
         describe_resolved_color(draw, vertices).c_str());
+    const std::string textureSource =
+        describe_texture_source(listing.textureTable, listing.materialState);
+    if (!textureSource.empty()) {
+        std::printf("gmse01_boot:%s\n", textureSource.c_str());
+    }
+    const std::string displayListTextures = describe_display_list_textures(listing.displayList);
+    if (!displayListTextures.empty()) {
+        std::printf("gmse01_boot:%s\n", displayListTextures.c_str());
+    }
     std::printf("gmse01_boot:   %s\n", describe_clip_coverage(draw, vertices, policy).c_str());
     std::printf("gmse01_boot:   %s pipeline=%s group=%s view=%u palette=0x%08x "
                 "index=%u/%u slots=%u loaded=%u inherited=%u\n",

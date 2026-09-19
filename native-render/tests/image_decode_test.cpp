@@ -70,6 +70,30 @@ void check_sizes_and_raw_formats() {
     assert(paletteFormat == PaletteFormat::Rgb5A3);
     assert(!sb::native_render::decode_palette_format(3, paletteFormat));
 
+    // Alpha is a property of the sampled format. The three formats that carry none have to answer
+    // so even when asked alongside a palette that does, and an indexed format has to answer for its
+    // palette rather than for itself -- otherwise a display list, which names a format and no
+    // resource, would have to guess.
+    using sb::native_render::encoded_image_format_has_alpha;
+    assert(!encoded_image_format_has_alpha(EncodedImageFormat::Intensity4, PaletteFormat::Rgb5A3));
+    assert(!encoded_image_format_has_alpha(EncodedImageFormat::Intensity8, PaletteFormat::Rgb5A3));
+    assert(!encoded_image_format_has_alpha(EncodedImageFormat::Rgb565, PaletteFormat::Rgb5A3));
+    assert(
+        encoded_image_format_has_alpha(EncodedImageFormat::IntensityAlpha4, PaletteFormat::Rgb565));
+    assert(
+        encoded_image_format_has_alpha(EncodedImageFormat::IntensityAlpha8, PaletteFormat::Rgb565));
+    assert(encoded_image_format_has_alpha(EncodedImageFormat::Rgb5A3, PaletteFormat::Rgb565));
+    assert(encoded_image_format_has_alpha(EncodedImageFormat::Rgba8, PaletteFormat::Rgb565));
+    assert(
+        encoded_image_format_has_alpha(EncodedImageFormat::BlockCompressed, PaletteFormat::Rgb565));
+    for (const EncodedImageFormat indexed :
+         {EncodedImageFormat::Indexed4, EncodedImageFormat::Indexed8,
+          EncodedImageFormat::Indexed14}) {
+        assert(encoded_image_format_has_alpha(indexed, PaletteFormat::IntensityAlpha8));
+        assert(encoded_image_format_has_alpha(indexed, PaletteFormat::Rgb5A3));
+        assert(!encoded_image_format_has_alpha(indexed, PaletteFormat::Rgb565));
+    }
+
     std::size_t bytes = 0;
     assert(
         sb::native_render::encoded_image_data_size(9, 9, EncodedImageFormat::Intensity4, bytes) &&

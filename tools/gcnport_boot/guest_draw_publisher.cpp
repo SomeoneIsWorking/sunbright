@@ -127,7 +127,10 @@ std::uint32_t
 GuestDrawPublisher::publish(gcnport::GuestContext& guest,
                             const sb::title_adapter::GuestShape& shape, std::uint64_t instance,
                             const sb::native_render::ClassifiedJ3dMaterial& classified,
-                            const sb::title_adapter::GuestTexGenBlock& texGen) {
+                            const sb::title_adapter::GuestTexGenBlock& texGen,
+                            const sb::title_adapter::GuestTextureTable& textureTable,
+                            const sb::title_adapter::GuestDisplayListTextures& displayList,
+                            const sb::native_render::J3dMaterialState& materialState) {
     const sb::native_render::J3dTexCoordGeneration generation =
         sb::title_adapter::build_guest_tex_coord_generation(texGen);
     for (std::uint32_t coordinate = 0; coordinate < generation.count; ++coordinate) {
@@ -219,6 +222,9 @@ GuestDrawPublisher::publish(gcnport::GuestContext& guest,
                                 .texGen = &texGen,
                                 .pose = &geometry.pose,
                                 .images = images,
+                                .textureTable = &textureTable,
+                                .displayList = &displayList,
+                                .materialState = &materialState,
                                 .triangles = triangles_,
                                 .draw = &draw,
                                 .vertices = vertices_,

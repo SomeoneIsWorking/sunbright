@@ -104,50 +104,52 @@ void GuestMaterialProbe::record(std::map<std::uint32_t, std::uint64_t>& histogra
     untracked += 1;
 }
 
-bool GuestMaterialProbe::resolve_texture(gcnport::GuestContext& guest,
-                                         const sb::title_adapter::GuestTextureTable& table,
-                                         std::uint16_t number,
-                                         sb::native_render::DecodedTexture& texture,
-                                         sb::native_render::ResTimgDecodeError& error) {
+bool GuestMaterialProbe::resolve_texture(
+    gcnport::GuestContext& guest, const sb::title_adapter::GuestTextureTable& table,
+    const sb::title_adapter::GuestDisplayListTextures& displayList, std::uint8_t textureMap,
+    std::uint16_t number, sb::native_render::DecodedTexture& texture,
+    sb::native_render::ResTimgDecodeError& error) {
     if (number == 0xFFFF) {
         return false;
     }
-    if (number >= table.count) {
+    const bool fromList =
+        textureMap < sb::title_adapter::GUEST_MAX_TEXMAPS && displayList.texmap[textureMap].bound();
+    if (!fromList && number >= table.count) {
         texturesPastTheTable_ += 1;
         return false;
     }
-    const sb::title_adapter::GuestAddress header =
-        table.resources + static_cast<sb::title_adapter::GuestAddress>(number) *
-                              sb::title_adapter::GUEST_RES_TIMG_BYTES;
-    // A texture is the same bytes every time it is bound, so it is decoded once per resource. With
+    // A texture is the same bytes every time it is bound, so it is decoded once per image. With
     // 78,380 binds of fewer than a hundred textures, decoding per bind would have measured the
-    // cache rather than the decoder.
-    if (const auto cached = textureCache_.find(header); cached != textureCache_.end()) {
+    // cache rather than the decoder. The two records name different things -- an image on one side,
+    // a resource header on the other -- so the high bit keeps their keys apart.
+    const std::uint64_t key =
+        fromList ? (1ULL << 32U) | displayList.texmap[textureMap].imageAddress
+                 : static_cast<std::uint64_t>(table.resources +
+                                              static_cast<sb::title_adapter::GuestAddress>(number) *
+                                                  sb::title_adapter::GUEST_RES_TIMG_BYTES);
+    if (const auto cached = textureCache_.find(key); cached != textureCache_.end()) {
+        (fromList ? texturesFromDisplayList_ : texturesFromTable_) += 1;
         texture = cached->second;
         return true;
     }
     sb::native_render::DecodedTexture decoded{};
+    sb::title_adapter::GuestTextureSource source = sb::title_adapter::GuestTextureSource::None;
     const sb::title_adapter::GuestTextureError textureError =
-        decode_guest_texture({read_through_byte_address, &guest}, table, number, decoded, error);
+        decode_guest_material_texture({read_through_byte_address, &guest}, displayList, table,
+                                      textureMap, number, decoded, error, source);
     decodeErrors_[error] += 1;
     if (textureError != sb::title_adapter::GuestTextureError::None) {
         return false;
     }
+    (source == sb::title_adapter::GuestTextureSource::DisplayList ? texturesFromDisplayList_
+                                                                  : texturesFromTable_) += 1;
     texturesDecoded_ += 1;
     textureBytes_ += decoded.rgba8.size();
     record(textureSizes_, textureSizesUntracked_,
            decoded.texture.width * 0x10000U + decoded.texture.height);
     texture = decoded;
-    textureCache_.emplace(header, std::move(decoded));
+    textureCache_.emplace(key, std::move(decoded));
     return true;
-}
-
-bool GuestMaterialProbe::resolve_texture_thunk(std::uint16_t number,
-                                               sb::native_render::DecodedTexture& texture,
-                                               sb::native_render::ResTimgDecodeError& error,
-                                               void* context) {
-    auto& resolver = *static_cast<TextureResolver*>(context);
-    return resolver.probe->resolve_texture(*resolver.guest, resolver.table, number, texture, error);
 }
 
 bool GuestMaterialProbe::read_texture_table(gcnport::GuestContext& guest,
@@ -175,10 +177,10 @@ bool GuestMaterialProbe::read_texture_table(gcnport::GuestContext& guest,
     return true;
 }
 
-void GuestMaterialProbe::measure_bindings(gcnport::GuestContext& guest,
-                                          const sb::native_render::J3dMaterialState& state,
-                                          const sb::title_adapter::GuestTextureTable& table,
-                                          std::uint8_t bindingCount) {
+void GuestMaterialProbe::measure_bindings(
+    gcnport::GuestContext& guest, const sb::native_render::J3dMaterialState& state,
+    const sb::title_adapter::GuestTextureTable& table,
+    const sb::title_adapter::GuestDisplayListTextures& displayList, std::uint8_t bindingCount) {
     for (std::uint8_t binding = 0; binding < bindingCount; ++binding) {
         const std::uint16_t number = state.textureBindings[binding].textureNumber;
         if (number == 0xFFFF) {
@@ -187,7 +189,8 @@ void GuestMaterialProbe::measure_bindings(gcnport::GuestContext& guest,
         texturesBound_ += 1;
         sb::native_render::DecodedTexture texture{};
         sb::native_render::ResTimgDecodeError error = sb::native_render::ResTimgDecodeError::None;
-        static_cast<void>(resolve_texture(guest, table, number, texture, error));
+        static_cast<void>(
+            resolve_texture(guest, table, displayList, binding, number, texture, error));
     }
 }
 
@@ -253,9 +256,13 @@ gcnport::HookResult GuestMaterialProbe::operator()(gcnport::GuestContext& guest)
     tevKinds_[read.tev.kind] += 1;
     record(tevStageCounts_, tevStageCountsUntracked_, read.tev.stageCount);
 
+    // The packet's table and the list the material was baked against, which part company whenever
+    // the model was given an external material table after its packets were built.
+    sb::title_adapter::GuestDisplayListTextures displayList{};
+    displayListErrors_[read_guest_material_packet_textures(memory, packet, displayList)] += 1;
     sb::title_adapter::GuestTextureTable table{};
     if (read_texture_table(guest, memory, packet, table)) {
-        measure_bindings(guest, state, table, read.tev.textureBindingCount);
+        measure_bindings(guest, state, table, displayList, read.tev.textureBindingCount);
     }
 
     const sb::title_adapter::GuestPixelEngineBlock& block = read.pixelEngine;
@@ -449,6 +456,19 @@ void GuestMaterialProbe::report() const {
                     static_cast<unsigned long long>(count));
     }
     std::printf("\n");
+    std::printf("gmse01_boot:   material display list:");
+    if (displayListErrors_.empty()) {
+        std::printf(" none recorded -- no packet was read");
+    }
+    for (const auto& [error, count] : displayListErrors_) {
+        std::printf(" %s=%llu", name(error), static_cast<unsigned long long>(count));
+    }
+    std::printf("\n");
+    std::printf(
+        "gmse01_boot:   textures resolved: %llu from the material's display list, %llu from "
+        "its packet's table\n",
+        static_cast<unsigned long long>(texturesFromDisplayList_),
+        static_cast<unsigned long long>(texturesFromTable_));
 
     // The one check here that could fail on its own. A zero denominator is not a pass: it means no
     // block ever carried a policy to check, which is reported as such rather than as agreement.

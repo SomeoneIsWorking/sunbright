@@ -7,8 +7,10 @@
 #include <sunbright/native_render/j3d_material_family.h>
 #include <sunbright/native_render/j3d_mesh_decode.h>
 #include <sunbright/native_render/model.h>
+#include <sunbright/title_adapter/guest_j3d_display_list.h>
 #include <sunbright/title_adapter/guest_j3d_pose.h>
 #include <sunbright/title_adapter/guest_j3d_texgen.h>
+#include <sunbright/title_adapter/guest_j3d_texture.h>
 
 namespace sunbright::gcnport_boot {
 
@@ -38,6 +40,15 @@ struct DrawListing {
     const sb::title_adapter::GuestTexGenBlock* texGen = nullptr;
     const sb::title_adapter::GuestShapePose* pose = nullptr;
     std::span<const sb::native_render::DecodedImageView> images;
+    // Where those images were looked up, and under which numbers. A decoded texture on its own
+    // says what was sampled and not what was asked for, and the two answers part company exactly
+    // when a draw resolves against a table that is not the one the title would have used -- which
+    // looks, in the finished frame, like a shading defect rather than a lookup one.
+    const sb::title_adapter::GuestTextureTable* textureTable = nullptr;
+    // What the material's own baked display list binds, which is what the hardware sampled. Printed
+    // beside the table because the two parting company is the defect, not the symptom.
+    const sb::title_adapter::GuestDisplayListTextures* displayList = nullptr;
+    const sb::native_render::J3dMaterialState* materialState = nullptr;
     std::span<const sb::native_render::J3dDecodedVertex> triangles;
     const sb::native_render::ModelDraw* draw = nullptr;
     std::span<const sb::native_render::MeshVertex> vertices;
