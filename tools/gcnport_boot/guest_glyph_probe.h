@@ -97,6 +97,11 @@ class GuestGlyphProbe {
     std::uint64_t undecodablePage_ = 0;
     std::uint64_t withheldByBudget_ = 0;
     std::uint64_t unresolvedLayout_ = 0;
+    // A layout refusal always prints, on its own small budget, whatever the reporting budget is.
+    // "One glyph in 230,784 was refused" is not a finding; the scale, position and page it was
+    // refused for is, and the refusal is exactly the case nobody would have thought to ask about.
+    static constexpr std::uint64_t MAX_REFUSAL_REPORTS = 4;
+    std::uint64_t refusalReports_ = 0;
     std::uint64_t withoutSink_ = 0;
     std::uint64_t submitted_ = 0;
     std::uint64_t acceptedBySink_ = 0;
@@ -106,6 +111,10 @@ class GuestGlyphProbe {
     std::map<sb::title_adapter::GuestResFontError, std::uint64_t> glyphErrors_;
     std::map<sb::title_adapter::GuestFontMapping, std::uint64_t> mappings_;
     std::map<sb::native_render::ImageDecodeError, std::uint64_t> pageErrors_;
+    // What the pages a run decoded were encoded as. A font page's intensity is its coverage, so
+    // which format it is decides whether its alpha means anything -- a fact worth printing rather
+    // than inferring from a glyph that came out as a block.
+    std::map<sb::native_render::EncodedImageFormat, std::uint64_t> pageFormats_;
     std::map<PageKey, DecodedPage> pageCache_;
     std::vector<std::uint8_t> encodedBytes_;
 };

@@ -100,6 +100,7 @@ bool GuestGlyphProbe::resolve_page(gcnport::GuestContext& guest,
         format, sb::native_render::PaletteFormat::Rgb5A3);
     pagesDecoded_ += 1;
     pageBytes_ += value.rgba8.size();
+    pageFormats_[format] += 1;
     decoded = &pageCache_.emplace(key, std::move(value)).first->second;
     return true;
 }
@@ -210,6 +211,15 @@ gcnport::HookResult GuestGlyphProbe::publish_glyph(gcnport::GuestContext& guest)
     sb::native_render::ResolvedGlyphLayout resolved{};
     if (!sb::native_render::resolve_resource_glyph_layout(layout, resolved)) {
         unresolvedLayout_ += 1;
+        if (refusalReports_ < MAX_REFUSAL_REPORTS) {
+            refusalReports_ += 1;
+            std::printf("gmse01_boot: glyph 0x%08x code 0x%x has no layout: at (%g, %g) scale "
+                        "%gx%g, font %ux%u, cell %u,%u of a %ux%u page\n",
+                        font, code, static_cast<double>(layout.positionX),
+                        static_cast<double>(layout.positionY), static_cast<double>(layout.scaleX),
+                        static_cast<double>(layout.scaleY), layout.fontWidth, layout.fontHeight,
+                        layout.cellX, layout.cellY, layout.atlasWidth, layout.atlasHeight);
+        }
         return gcnport::HookResult::call_original_once();
     }
 
@@ -305,6 +315,14 @@ void GuestGlyphProbe::report() const {
                 static_cast<unsigned long long>(pageCache_.size()),
                 static_cast<unsigned long long>(pageBytes_),
                 static_cast<unsigned long long>(retainedPages_));
+    if (!pageFormats_.empty()) {
+        std::printf("gmse01_boot:   page formats:");
+        for (const auto& [format, count] : pageFormats_) {
+            std::printf(" %s=%llu", sb::native_render::encoded_image_format_name(format),
+                        static_cast<unsigned long long>(count));
+        }
+        std::printf("\n");
+    }
     if (!pageErrors_.empty()) {
         std::printf("gmse01_boot:   page decode results:");
         for (const auto& [error, count] : pageErrors_) {

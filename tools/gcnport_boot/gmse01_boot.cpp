@@ -65,6 +65,7 @@
 #include "guest_material_probe.h"
 #include "guest_matrix_probe.h"
 #include "guest_model_probe.h"
+#include "guest_pad_probe.h"
 #include "guest_picture_probe.h"
 #include "guest_projection_probe.h"
 #include "guest_report.h"
@@ -729,6 +730,29 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             glyph_probes.push_back(std::move(installed.front()));
         }
 
+        // The one probe that changes what the title sees rather than only reading it. Installed
+        // last, so every publisher above is already watching when the first press lands.
+        std::unique_ptr<sunbright::gcnport_boot::GuestPadProbe> pad_probe;
+        if (request.pad_read_address != 0) {
+            const std::array<u32, 1> address{request.pad_read_address};
+            std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestPadProbe>> installed =
+                install_guest_probes<sunbright::gcnport_boot::GuestPadProbe>(
+                    adapter, runtime, address, "press buttons the title never read",
+                    [&](u32) {
+                        return std::make_unique<sunbright::gcnport_boot::GuestPadProbe>(
+                            request.pad_script, &draw_budget, request.pad_probe_reports);
+                    },
+                    [&](u32 installed_address) {
+                        std::printf(
+                            "gmse01_boot: pressing buttons at 0x%08x through frame %llu "
+                            "(first %llu press reported)\n",
+                            installed_address,
+                            static_cast<unsigned long long>(request.pad_script.last_frame()),
+                            static_cast<unsigned long long>(request.pad_probe_reports));
+                    });
+            pad_probe = std::move(installed.front());
+        }
+
         std::vector<GuestWatch> guest_watches = request.guest_watches;
         for (const GuestWatch& watch : guest_watches) {
             std::printf("gmse01_boot: watching 0x%08x (%u word(s)) for changes\n", watch.address,
@@ -1032,6 +1056,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         }
         for (const auto& probe : glyph_probes) {
             probe->report();
+        }
+        if (pad_probe != nullptr) {
+            pad_probe->report();
         }
         for (const auto& seam : frame_seams) {
             std::printf("gmse01_boot: frame seam 0x%08x entered %llu time(s)%s\n", seam->address,

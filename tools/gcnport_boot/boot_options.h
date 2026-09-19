@@ -15,6 +15,7 @@
 #include "guest_efb_copy_probe.h"
 #include "guest_glyph_probe.h"
 #include "guest_matrix_probe.h"
+#include "guest_pad_probe.h"
 #include "guest_solid_rectangle_probe.h"
 #include "guest_viewport_probe.h"
 
@@ -230,6 +231,12 @@ struct BootRequest {
     u64 matrix_probe_reports = 0;
     std::vector<GlyphProbeRequest> glyph_probes;
     u64 glyph_probe_reports = 0;
+    // Where the title reads its controllers, and what is held when it does. Both are needed: an
+    // address with no script would press nothing, and a script with no address would be a run that
+    // believes it pressed something.
+    u32 pad_read_address = 0;
+    sb::title_adapter::GuestPadTimeline pad_script;
+    u64 pad_probe_reports = 0;
     // Where the title finishes a frame. Supplying one turns the run from counting its draws into
     // rendering them: the process frame bridge takes the sink, and each entry here seals what the
     // title submitted and encodes it through the shipping passes.

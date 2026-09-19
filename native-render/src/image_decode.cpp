@@ -266,6 +266,11 @@ bool encoded_image_format_has_alpha(EncodedImageFormat format,
         return paletteFormat != PaletteFormat::Rgb565;
     case EncodedImageFormat::Intensity4:
     case EncodedImageFormat::Intensity8:
+        // The hardware expands an intensity texel to (I, I, I, I): its alpha is its intensity, not
+        // an implied opaque. `decode_image_rgba8` above writes exactly that, and a consumer told
+        // otherwise forces the alpha back to one -- which turns a resource font's glyph, whose
+        // coverage is nothing but its intensity, into an opaque block over the text.
+        return true;
     case EncodedImageFormat::Rgb565:
         return false;
     }

@@ -75,8 +75,11 @@ void check_sizes_and_raw_formats() {
     // palette rather than for itself -- otherwise a display list, which names a format and no
     // resource, would have to guess.
     using sb::native_render::encoded_image_format_has_alpha;
-    assert(!encoded_image_format_has_alpha(EncodedImageFormat::Intensity4, PaletteFormat::Rgb5A3));
-    assert(!encoded_image_format_has_alpha(EncodedImageFormat::Intensity8, PaletteFormat::Rgb5A3));
+    // An intensity texel expands to (I, I, I, I), so its alpha is its intensity -- which is what
+    // the decoder in this same file writes, and what a resource font's glyph is made of. 565 is the
+    // format that genuinely carries none.
+    assert(encoded_image_format_has_alpha(EncodedImageFormat::Intensity4, PaletteFormat::Rgb5A3));
+    assert(encoded_image_format_has_alpha(EncodedImageFormat::Intensity8, PaletteFormat::Rgb5A3));
     assert(!encoded_image_format_has_alpha(EncodedImageFormat::Rgb565, PaletteFormat::Rgb5A3));
     assert(
         encoded_image_format_has_alpha(EncodedImageFormat::IntensityAlpha4, PaletteFormat::Rgb565));

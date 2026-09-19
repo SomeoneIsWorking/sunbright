@@ -20,13 +20,16 @@ table, publishes the title's `J2DPicture` panes and the screen fader's quads as 
 rasterises all of it through the shipping passes on a real device. Frame 3600 is the title screen:
 sky, sea, logo, shine, palm tree, rainbow, copyright line and fly-in letters, and the boot sequence
 now fades rather than cutting. Every 2D producer now has a publisher, including resource-font
-glyphs and the position matrix that places an immediate-mode draw, but three of them -- glyphs,
-`draw_wipe_box` and `J2DGrafContext::fillBox` -- have unit coverage and no title evidence, because
-the attract cycle reaches none of them. What stands between them and evidence is guest pad input:
-the diagnostic cannot press Start, so no run it can make leaves the attract cycle. That is the next
-piece, and it is also what a per-region diff against the console needs; the one named difference
-there today is retail's additive sun glow (its object 27 of 127), a 3D draw on the model path.
-`J2DWindow` remains unpublished.
+glyphs and the position matrix that places an immediate-mode draw. The diagnostic can now press a
+button as well: a scripted timeline overwrites port 0 after `PADRead`'s own body has run, so a run
+leaves the attract cycle, and the glyph publisher that had never been entered draws 228,224
+characters of the title's own text. `draw_wipe_box` and `J2DGrafContext::fillBox` still have unit
+coverage and no title evidence -- a card-error screen uses neither, and reaching a save file behind
+it needs the memory card `gcnport` does not configure, the same class of frontend duty the Serial
+Interface one just was. The next piece is `J2DWindow` (`draw_private`, `0x802d18ec`), the last 2D
+producer without a publisher and what draws the panel that text sits on. A per-region diff against
+the console follows; the one named difference there today is retail's additive sun glow (its object
+27 of 127), a 3D draw on the model path.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -1316,6 +1319,43 @@ entries. Every visible word at the title -- the logo, "PRESS START!", the copyri
 textured `J2DPicture`, and GMSE01's resource-font text begins at the file-select screen. This tool
 cannot press Start, so no run it can make reaches one. That is the next gap: guest pad input, which
 is also what would let a run reach any screen past the attract cycle.
+
+**2026-09-19 (continuation): the diagnostic can press a button, and the first screen behind one
+showed that an intensity glyph was being drawn opaque.** Three of the 2D publishers above -- glyphs,
+`draw_wipe_box` and `J2DGrafContext::fillBox` -- were installed and had never once been entered,
+because every screen that uses them is behind Start and `gcnport` configures no Serial Interface
+device. Nothing in the guest was missing: `JUTGamePad::read` polls `PADRead` (`0x80351600`) and
+copies whichever of the four `PADStatus` records reports `err == 0`.
+
+`title_adapter::GuestPadTimeline` (`guest_pad.{h,cpp}`) owns the button vocabulary and the script:
+every `PADStatus` field offset, the twelve digital bits, and a `frame:BUTTONS` timeline that refuses
+an out-of-order frame, a malformed entry, an unknown button name or an empty list rather than
+silently dropping it, leaving the previously parsed timeline untouched on refusal. Its encoder
+follows each digital bit with the analogue depth retail reports alongside it -- `L`/`R` set the
+trigger bytes, `A`/`B` set `analogA`/`analogB` -- so a press the title reads through either path
+looks the same. `gcnport_boot`'s `guest_pad_probe.{h,cpp}` hooks `PADRead`, **runs the title's own
+body first** through `call_original` and only then overwrites port 0, so `PADClamp`, the stick mode,
+the trigger and release edges and the repeat timers all remain the guest's own; the probe is
+installed last, after every publisher above it, so the first press lands with all of them watching.
+
+Measured on the real title, one 1,400,000,000-block run with `--pad-script "200:START 215:- ...
+3200:START 3215:-"`: **4,402 `PADRead` entries, 4,402 port-0 writes, 0 unwritable**, the original
+body running 345..5,477 instructions against its 1,048,576-instruction bound. The run leaves the
+attract cycle, and the glyph publisher that had drawn nothing draws **228,224 characters, 228,224
+published, 228,160 into the 2D pass, 0 layout refusals, one Intensity4 glyph page, every code a
+direct `MAP1` mapping**. Reconstructed from the published codes, the first text GMSE01 prints is
+"There is no Memory Card in Slot A." -- which is correct and is itself a finding: `gcnport`
+configures no memory card either, so the screen behind Start is the card error, and reaching a save
+file needs that frontend duty filled the way the Serial Interface one now is.
+
+The frame that text draws into showed the glyphs as opaque white slabs, and the cause was in the
+shared decoder rather than in anything new: `encoded_image_format_has_alpha` answered `false` for
+`Intensity4`/`Intensity8`, contradicting `decode_image_rgba8` four functions above it, which writes
+an intensity texel as `(I, I, I, I)`, and contradicting the hardware, which expands it the same way.
+`picture.cpp`'s `shade` believed the former and forced `a = 1.0f`, so a glyph -- whose coverage is
+nothing but its intensity -- became a filled cell. Fixed at the format owner, with its unit coverage
+restated; the same frame now reads the sentence. `J2DWindow` (`draw_private`, `0x802d18ec`) is the
+one 2D producer still unpublished, and the white panel the text sits on is its.
 
 
 ### S005 — decomp evidence adapters

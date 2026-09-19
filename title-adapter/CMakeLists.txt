@@ -16,6 +16,7 @@ add_library(sunbright-title-adapter STATIC
   src/guest_j2d_picture.cpp
   src/guest_scrn_fader.cpp
   src/guest_res_font.cpp
+  src/guest_pad.cpp
   src/guest_stage_lighting.cpp
   src/guest_projection.cpp
   src/guest_shape_geometry.cpp
@@ -28,7 +29,7 @@ foreach(title_adapter_test guest_j3d_shape guest_j3d_pose guest_j3d_pixel_engine
                           guest_j3d_material guest_j3d_texture
                           guest_j3d_display_list
                           guest_j2d_graf_context guest_j2d_picture
-                          guest_scrn_fader guest_res_font
+                          guest_scrn_fader guest_res_font guest_pad
                           guest_stage_lighting guest_projection)
   add_executable(title_adapter_${title_adapter_test}_test tests/${title_adapter_test}_test.cpp)
   target_link_libraries(title_adapter_${title_adapter_test}_test PRIVATE sunbright-title-adapter)

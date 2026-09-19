@@ -31,6 +31,7 @@ add_executable(sunbright_gcnport_boot
     guest_matrix_state.cpp
     guest_matrix_probe.cpp
     guest_glyph_probe.cpp
+    guest_pad_probe.cpp
     guest_solid_rectangle_probe.cpp
     guest_material_probe.cpp
   guest_shape_probe.cpp

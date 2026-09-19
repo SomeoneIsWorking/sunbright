@@ -71,6 +71,8 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-rectangles fade|wipe|fillbox:<hex-addr>[:<reports>] ...] "
                      "[--read-matrices load|current:<hex-addr>[:<reports>] ...] "
                      "[--read-glyphs setgx|remap|glyph:<hex-addr>[:<reports>] ...] "
+                     "[--press-buttons <hex-addr>[:<reports>]] "
+                     "[--pad-script \"<frame>:<buttons> ...\"] "
                      "[--render-frames <hex-addr>] [--dump-frame <path>] "
                      "[--dump-frame-index <n>] [--draw-mode normal|family-map|opaque] "
                      "[--draw-skip <n>] [--draw-limit <n>] [--draw-log-frame <n>]\n",
@@ -501,6 +503,20 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 return false;
             }
             request.glyph_probes.push_back(probe);
+        } else if (name == "--press-buttons") {
+            // PADRead in GMSE01 is 0x80351600. The original still runs; what this changes is what
+            // port 0 contains by the time JUTGamePad::read walks the array.
+            if (!parse_probe_address(name, value, request.pad_read_address,
+                                     request.pad_probe_reports)) {
+                return false;
+            }
+        } else if (name == "--pad-script") {
+            const sb::title_adapter::GuestPadScriptError error = request.pad_script.parse(value);
+            if (error != sb::title_adapter::GuestPadScriptError::None) {
+                std::fprintf(stderr, "gmse01_boot: --pad-script is not a script (%s): '%s'\n",
+                             sb::title_adapter::name(error), value);
+                return false;
+            }
         } else if (name == "--read-lighting") {
             // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
             // or its TLightMario override (0x80229610); pass the flag twice to cover both. The
@@ -599,6 +615,19 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
         std::fprintf(stderr,
                      "gmse01_boot: --dump-frame names where to write a rendered frame, but nothing "
                      "renders without --render-frames\n");
+        return false;
+    }
+    if ((request.pad_read_address != 0) != !request.pad_script.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --press-buttons and --pad-script are one request: an address "
+                     "with no script presses nothing, and a script with no address is a run that "
+                     "believes it pressed something\n");
+        return false;
+    }
+    if (request.pad_read_address != 0 && request.frame_seam_addresses.empty()) {
+        std::fprintf(stderr,
+                     "gmse01_boot: --pad-script is timed in frames, and there are no frames "
+                     "without --render-frames\n");
         return false;
     }
     return true;
