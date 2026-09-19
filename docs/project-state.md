@@ -1049,8 +1049,54 @@ units behind its eye, which no camera does to the subject it is rendering, so th
 reconstructs for that pass is wrong rather than merely unused. And the glare quads carry model-views
 with no rotation at all -- pure scale and translation, `60 0 0 79454; 0 60 0 81050; 0 0 80 -222832`
 -- which is a draw matrix that never had a view concatenated into it. Both are questions about
-`read_guest_shape_pose` and the draw-matrix palette it indexes, not about shading, and that is the
-next thing to settle.
+`read_guest_shape_pose` and the draw-matrix palette it indexes, not about shading.
+
+#### Asking the console, instead of reasoning about it
+
+`extern/dolphin_fork` already carries a headless oracle, and it settles both. It records the
+title's own FIFO at a named VI field, and `tools/oracle/parse_fifo_dff.py` decodes it without
+linking Dolphin:
+
+    ./extern/dolphin_fork/build/Binaries/dolphin-emu-nogui -u scratch/dolphin-user-pic \
+      -e "$SUNBRIGHT_ROM" -p headless -v OGL -C Dolphin.DSP.Backend="No Audio" \
+      -C Dolphin.Movie.DumpFrames=True -C Dolphin.Movie.DumpFramesSilent=True \
+      --fifo-record scratch/oracle/pic.dff --fifo-record-after 8100 --fifo-record-frames 1
+
+The recording exits at that field, and the frame dump beside it is an AVI the last frame of which
+is the console's own image (`ffmpeg -sseof -2 -i <avi> -frames:v 1 out.png`). Game imagery stays in
+`scratch/`; none of it is committed or leaves the machine.
+
+What it says. Retail's title-screen frame is 1,258 GX primitives under exactly the two perspective
+projections this renderer sees, in the same order: 653 under 1.52357/2.0503, then 567 under
+2.04163/2.74748, then the ortho overlay. And the position matrix it loads for 37 of the second
+pass's draws is, to every digit printed, the view this port reads out of `j3dSys`:
+`-0.29029 0 -0.95694 305.422; 0.77384 0.58828 -0.23474 -1043.36; 0.56295 -0.80866 -0.17077
+-353.411`. **So the camera pitched 54 degrees upward is the title's own, and the pose reader agrees
+with the console.** The console's image confirms it from the other side: the title screen is sky,
+with the sun in the upper right and gulls across it.
+
+That reframes what is missing. Against the console's frame, this renderer has the sky's colour, the
+gulls and the camera. It does not have the clouds, the logo, the palm tree, the sea, or a sun that
+is a disc rather than a white field over two fifths of the frame. Those are the next targets, and
+they are separate from each other -- not one transform defect behind all of them, which is what the
+matrices had suggested.
+
+Bisecting the white by single draw narrows it further. Of the six draws that own it, draw 27
+contributes nothing, draw 28 contributes 15% of the frame at a mean of 3/255, draw 32 is the sky
+itself -- a clean cyan gradient, mean 19,184,232, no white at all -- and **draws 29, 30 and 31 alone
+are the whole 40.35%**, at a mean of 194 grey. They are the sky dome's own layers: all three share
+the dome's model-view, a pure yaw rotation of the camera, and all three sample 8x8 textures. On the
+console those layers are the clouds. Here they are white fields with soft edges, which is what an
+additive draw of a bright texel over the whole dome looks like. Two things about them are worth
+writing down before the next session touches them: draw 29's generated `v` runs from -1.997 to
+-0.02, entirely outside the texture under a clamp wrap, so every sample it takes is the same edge
+row; and an 8x8 image is a ramp, not a cloud, so which texture the layer resolves to is as
+suspect as how it is sampled.
+
+The run's own timeline is ahead of the console's, not out of step with it. Retail reaches this
+title screen at VI field 8000; this runtime reaches it by field 5687, and at field 10000 both are
+back to a single-quad movie frame. The scene is the same one -- the camera matrix is identical to
+the digit -- so the two can be compared, as long as neither is indexed by time.
 
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every

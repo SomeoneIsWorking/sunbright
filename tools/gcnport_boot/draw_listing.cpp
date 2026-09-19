@@ -396,11 +396,14 @@ void print_draw_listing(const DrawListing& listing) {
         describe_coordinate_range(triangles, texGen.recognised ? texGen.texGenCount : 0).c_str(),
         describe_resolved_color(draw, vertices).c_str());
     std::printf("gmse01_boot:   %s\n", describe_clip_coverage(draw, vertices, policy).c_str());
-    std::printf("gmse01_boot:   %s pipeline=%s group=%s view=%u palette=0x%08x\n",
+    std::printf("gmse01_boot:   %s pipeline=%s group=%s view=%u palette=0x%08x "
+                "index=%u/%u slots=%u loaded=%u inherited=%u\n",
                 describe_transforms(draw, pose.viewMatrix).c_str(),
                 sb::title_adapter::guest_skinning_pipeline_name(pose.pipeline),
                 sb::title_adapter::guest_matrix_group_kind_name(pose.kind), pose.viewNumber,
-                pose.matrixPalette);
+                pose.matrixPalette, static_cast<unsigned>(pose.drawMatrixIndex[0]),
+                pose.drawMatrixCount, pose.declaredSlotCount, pose.loadedSlotCount,
+                pose.inheritedSlotCount);
 }
 
 } // namespace sunbright::gcnport_boot
