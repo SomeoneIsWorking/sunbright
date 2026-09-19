@@ -32,7 +32,7 @@ gcnport::HookResult GuestEfbCopyProbe::operator()(gcnport::GuestContext& guest) 
     entries_ += 1;
     const std::uint64_t offered = budget_ != nullptr ? budget_->offered() : 0;
     if (entry_ == Entry::CopyToTexture || entry_ == Entry::CopyToDisplay) {
-        drawsBefore_[offered] += 1;
+        drawsBefore_.add(offered);
         const bool cleared = guest.general_register(FIRST_ARGUMENT + 1) != 0;
         if (cleared) {
             clearing_ += 1;
@@ -51,11 +51,7 @@ gcnport::HookResult GuestEfbCopyProbe::operator()(gcnport::GuestContext& guest) 
         const auto height = static_cast<std::uint32_t>(guest.general_register(FIRST_ARGUMENT + 3));
         const std::pair<std::uint32_t, std::uint32_t> origin{(left << 16U) | top,
                                                              (width << 16U) | height};
-        if (regions_.size() < MAX_DISTINCT_REGIONS || regions_.contains(origin)) {
-            regions_[origin] += 1;
-        } else {
-            regionsPastTheSet_ += 1;
-        }
+        regions_.add(origin);
     }
     if (reports_ < maxReports_) {
         reports_ += 1;
@@ -82,25 +78,16 @@ void GuestEfbCopyProbe::report() const {
     if (entry_ == Entry::CopyToTexture || entry_ == Entry::CopyToDisplay) {
         std::printf("gmse01_boot:   %llu cleared the buffer afterwards\n",
                     static_cast<unsigned long long>(clearing_));
-        std::printf("gmse01_boot:   draws offered before the copy:");
-        for (const auto& [draws, count] : drawsBefore_) {
-            std::printf(" %llu=%llu", static_cast<unsigned long long>(draws),
-                        static_cast<unsigned long long>(count));
-        }
-        std::printf("\n");
+        print_tally("draws offered before the copy", drawsBefore_, [](std::uint64_t draws) {
+            std::printf("%llu", static_cast<unsigned long long>(draws));
+        });
     }
     if (entry_ == Entry::SetTextureSource) {
-        std::printf("gmse01_boot:   source regions, as left,top width x height = times read:");
-        for (const auto& [region, count] : regions_) {
-            std::printf(" %u,%u %ux%u=%llu", region.first >> 16U, region.first & 0xFFFFU,
-                        region.second >> 16U, region.second & 0xFFFFU,
-                        static_cast<unsigned long long>(count));
-        }
-        if (regionsPastTheSet_ != 0) {
-            std::printf(" (+%llu past the set)",
-                        static_cast<unsigned long long>(regionsPastTheSet_));
-        }
-        std::printf("\n");
+        print_tally("source regions, as left,top width x height = times read", regions_,
+                    [](const std::pair<std::uint32_t, std::uint32_t>& region) {
+                        std::printf("%u,%u %ux%u", region.first >> 16U, region.first & 0xFFFFU,
+                                    region.second >> 16U, region.second & 0xFFFFU);
+                    });
     }
 }
 

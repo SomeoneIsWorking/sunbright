@@ -28,6 +28,7 @@ add_executable(sunbright_gcnport_boot
     guest_material_probe.cpp
   guest_shape_probe.cpp
   guest_efb_copy_probe.cpp
+  guest_viewport_probe.cpp
   "${GCPORT_DOLPHIN_STUB_HOST}"
 )
 # `sunbright-native-render-sdl3` is here for --render-frames: the diagnostic draws the title's own

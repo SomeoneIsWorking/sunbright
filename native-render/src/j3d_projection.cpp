@@ -8,6 +8,16 @@ thread_local bool g_hasCurrentProjection = false;
 
 } // namespace
 
+Matrix4x4 with_zero_to_one_clip_depth(const Matrix4x4& projection) noexcept {
+    Matrix4x4 converted = projection;
+    constexpr std::size_t DEPTH_ROW = 8;
+    constexpr std::size_t W_ROW = 12;
+    for (std::size_t column = 0; column < 4; ++column) {
+        converted.value[DEPTH_ROW + column] += projection.value[W_ROW + column];
+    }
+    return converted;
+}
+
 void publish_j3d_projection(const Matrix4x4& projection) noexcept {
     g_currentProjection = projection;
     g_hasCurrentProjection = true;

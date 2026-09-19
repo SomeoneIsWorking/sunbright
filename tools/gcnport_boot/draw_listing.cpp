@@ -3,10 +3,12 @@
 
 #include <sunbright/native_render/model.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace sunbright::gcnport_boot {
 namespace {
@@ -25,6 +27,23 @@ const char* address_mode_name(sb::native_render::AddressMode mode) noexcept {
 
 const char* filter_mode_name(sb::native_render::FilterMode mode) noexcept {
     return mode == sb::native_render::FilterMode::Linear ? "linear" : "nearest";
+}
+
+// What the cull mode removes, named the way the clip description reads it: alongside a count of
+// clockwise and counter-clockwise triangles, so the two can be compared without knowing which
+// winding this pass calls front.
+const char* culled_faces(sb::native_render::ModelCullMode mode) noexcept {
+    switch (mode) {
+    case sb::native_render::ModelCullMode::None:
+        return "nothing";
+    case sb::native_render::ModelCullMode::Front:
+        return "front (clockwise)";
+    case sb::native_render::ModelCullMode::Back:
+        return "back (counter-clockwise)";
+    case sb::native_render::ModelCullMode::All:
+        return "every triangle, so the pass submits no batch at all";
+    }
+    return "unknown";
 }
 
 // What the draw's first bound texture is and what it holds.
@@ -199,6 +218,125 @@ std::string describe_resolved_color(const sb::native_render::ModelDraw& draw,
     return std::string(text.data(), static_cast<std::size_t>(written));
 }
 
+// Where the draw's geometry lands once it has been transformed, and whether anything could have
+// rasterised it.
+//
+// A draw that resolves a sensible colour and covers no pixel at all is answered by nothing above:
+// the colour describer runs the same transform and reads only what comes out of it as colour. This
+// reads the position. Every count here is a separate way for a draw to disappear -- behind the eye,
+// outside the clip volume on one axis, wound the way the pipeline is culling -- and a run prints
+// all of them so that "the geometry vanished" is replaced by which one.
+//
+// The winding is measured in the same convention the pipeline rasterises with: the pass declares
+// clockwise front faces, and a clockwise triangle in a y-down screen has a positive signed area.
+std::string describe_clip_coverage(const sb::native_render::ModelDraw& draw,
+                                   std::span<const sb::native_render::MeshVertex> vertices,
+                                   const sb::native_render::ModelRasterPolicy& policy) {
+    if (vertices.empty()) {
+        return {};
+    }
+    std::vector<sb::native_render::Vec4> positions;
+    positions.reserve(vertices.size());
+    std::uint64_t behindEye = 0;
+    float lowestX = std::numeric_limits<float>::max();
+    float highestX = std::numeric_limits<float>::lowest();
+    float lowestY = lowestX;
+    float highestY = highestX;
+    float lowestZ = lowestX;
+    float highestZ = highestX;
+    for (const sb::native_render::MeshVertex& vertex : vertices) {
+        const sb::native_render::Vec4 position =
+            sb::native_render::transform_vertex(draw, vertex).position;
+        positions.push_back(position);
+        if (!(position.w > 0.0F)) {
+            behindEye += 1;
+            continue;
+        }
+        lowestX = std::min(lowestX, position.x / position.w);
+        highestX = std::max(highestX, position.x / position.w);
+        lowestY = std::min(lowestY, position.y / position.w);
+        highestY = std::max(highestY, position.y / position.w);
+        lowestZ = std::min(lowestZ, position.z / position.w);
+        highestZ = std::max(highestZ, position.z / position.w);
+    }
+
+    std::uint64_t clockwise = 0;
+    std::uint64_t counterClockwise = 0;
+    std::uint64_t degenerate = 0;
+    std::uint64_t unprojectable = 0;
+    for (std::size_t first = 0; first + 2 < positions.size(); first += 3) {
+        const sb::native_render::Vec4& a = positions[first];
+        const sb::native_render::Vec4& b = positions[first + 1];
+        const sb::native_render::Vec4& c = positions[first + 2];
+        if (!(a.w > 0.0F) || !(b.w > 0.0F) || !(c.w > 0.0F)) {
+            unprojectable += 1;
+            continue;
+        }
+        const float area = (((b.x / b.w) - (a.x / a.w)) * ((c.y / c.w) - (a.y / a.w))) -
+                           (((c.x / c.w) - (a.x / a.w)) * ((b.y / b.w) - (a.y / a.w)));
+        if (area > 0.0F) {
+            clockwise += 1;
+        } else if (area < 0.0F) {
+            counterClockwise += 1;
+        } else {
+            degenerate += 1;
+        }
+    }
+
+    const char* culled = culled_faces(policy.cull);
+
+    std::array<char, 320> text{};
+    const int written =
+        behindEye == vertices.size()
+            ? std::snprintf(text.data(), text.size(),
+                            " clip: every one of %zu vertex(es) is behind the eye; culling %s",
+                            vertices.size(), culled)
+            : std::snprintf(text.data(), text.size(),
+                            " clip: x%g..%g y%g..%g z%g..%g | %llu behind the eye | triangles "
+                            "cw=%llu ccw=%llu degenerate=%llu unprojectable=%llu | culling %s",
+                            lowestX, highestX, lowestY, highestY, lowestZ, highestZ,
+                            static_cast<unsigned long long>(behindEye),
+                            static_cast<unsigned long long>(clockwise),
+                            static_cast<unsigned long long>(counterClockwise),
+                            static_cast<unsigned long long>(degenerate),
+                            static_cast<unsigned long long>(unprojectable), culled);
+    if (written <= 0) {
+        return " clip: could not be described";
+    }
+    return std::string(text.data(), static_cast<std::size_t>(written));
+}
+
+// The two matrices the draw carries, printed as they are rather than summarised.
+//
+// The clip description above says where the geometry ended up; this says which of the two
+// transforms put it there. A model-view whose translation sits at the eye and a projection whose
+// depth row is wrong produce the same unusable clip position, and no amount of describing the
+// result separates them.
+std::string describe_transforms(const sb::native_render::ModelDraw& draw) {
+    std::string text = " model-view[0] ";
+    std::array<char, 64> number{};
+    const auto append = [&](float value, const char* separator) {
+        const int written = std::snprintf(number.data(), number.size(), "%g%s", value, separator);
+        if (written > 0) {
+            text.append(number.data(), static_cast<std::size_t>(written));
+        }
+    };
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            append(draw.pose.modelViews[0].value[(row * 4) + column], column == 3 ? "" : " ");
+        }
+        text.append(row == 2 ? "" : "; ");
+    }
+    text.append(" | projection ");
+    for (std::size_t row = 0; row < 4; ++row) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            append(draw.projection.value[(row * 4) + column], column == 3 ? "" : " ");
+        }
+        text.append(row == 3 ? "" : "; ");
+    }
+    return text;
+}
+
 } // namespace
 
 void print_draw_listing(std::uint64_t frame, std::uint64_t ordinal,
@@ -225,6 +363,8 @@ void print_draw_listing(std::uint64_t frame, std::uint64_t ordinal,
         "gmse01_boot:    %s%s%s\n", describe_tex_gen(texGen).c_str(),
         describe_coordinate_range(triangles, texGen.recognised ? texGen.texGenCount : 0).c_str(),
         describe_resolved_color(draw, vertices).c_str());
+    std::printf("gmse01_boot:   %s\n", describe_clip_coverage(draw, vertices, policy).c_str());
+    std::printf("gmse01_boot:   %s\n", describe_transforms(draw).c_str());
 }
 
 } // namespace sunbright::gcnport_boot

@@ -65,6 +65,7 @@
 #include "guest_projection_probe.h"
 #include "guest_report.h"
 #include "guest_shape_probe.h"
+#include "guest_viewport_probe.h"
 #include "probe_installation.h"
 
 namespace sunbright::gcnport_boot {
@@ -544,6 +545,30 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             efb_copy_probes.push_back(std::move(installed.front()));
         }
 
+        // The regions the title confines its draws to, installed after the draw budget for the
+        // same reason the copies are: where in a frame a rectangle is set is what says whether it
+        // governs the whole frame or only the pass that follows it.
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestViewportProbe>> viewport_probes;
+        for (const sunbright::gcnport_boot::ViewportProbeRequest& probe : request.viewport_probes) {
+            const std::array<u32, 1> address{probe.address};
+            std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestViewportProbe>> installed =
+                install_guest_probes<sunbright::gcnport_boot::GuestViewportProbe>(
+                    adapter, runtime, address, "report draw regions it could not have seen",
+                    [&](u32) {
+                        return std::make_unique<sunbright::gcnport_boot::GuestViewportProbe>(
+                            probe.entry, &draw_budget, request.viewport_probe_reports);
+                    },
+                    [&](u32 installed_address) {
+                        std::printf(
+                            "gmse01_boot: reading guest %s at 0x%08x (first %llu reported "
+                            "in full)\n",
+                            sunbright::gcnport_boot::GuestViewportProbe::entry_name(probe.entry),
+                            installed_address,
+                            static_cast<unsigned long long>(request.viewport_probe_reports));
+                    });
+            viewport_probes.push_back(std::move(installed.front()));
+        }
+
         std::vector<GuestWatch> guest_watches = request.guest_watches;
         for (const GuestWatch& watch : guest_watches) {
             std::printf("gmse01_boot: watching 0x%08x (%u word(s)) for changes\n", watch.address,
@@ -813,6 +838,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             probe->report();
         }
         for (const auto& probe : efb_copy_probes) {
+            probe->report();
+        }
+        for (const auto& probe : viewport_probes) {
             probe->report();
         }
         for (const auto& seam : frame_seams) {

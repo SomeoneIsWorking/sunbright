@@ -31,6 +31,7 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-models <hex-addr>[:<reports>]] "
                      "[--read-projections <hex-addr>[:<reports>]] "
                      "[--read-efb texture|display|source|clear:<hex-addr>[:<reports>] ...] "
+                     "[--read-viewport viewport|scissor:<hex-addr>[:<reports>] ...] "
                      "[--render-frames <hex-addr>] [--dump-frame <path>] "
                      "[--dump-frame-index <n>] [--draw-mode normal|family-map|opaque] "
                      "[--draw-skip <n>] [--draw-limit <n>] [--draw-log-frame <n>]\n",
@@ -404,6 +405,57 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 request.efb_copy_probe_reports = parsed;
             }
             request.efb_copy_probes.push_back(probe);
+        } else if (name == "--read-viewport") {
+            // <kind>:<hex-addr>[:<reports>], with kind one of viewport or scissor. In GMSE01 those
+            // are GXSetViewportJitter 0x80362fac -- the single owner, which GXSetViewport at
+            // 0x803630c8 delegates to, so hooking it sees both routes once each -- and GXSetScissor
+            // 0x80363138.
+            constexpr u64 DEFAULT_REPORTS = 8;
+            const std::string_view text(value);
+            const std::size_t separator = text.find(':');
+            if (separator == std::string_view::npos) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-viewport needs <kind>:<hex-addr>[:<reports>], "
+                             "got '%s'\n",
+                             value);
+                return false;
+            }
+            const std::string_view kind = text.substr(0, separator);
+            ViewportProbeRequest probe;
+            if (kind == "viewport") {
+                probe.entry = GuestViewportProbe::Entry::Viewport;
+            } else if (kind == "scissor") {
+                probe.entry = GuestViewportProbe::Entry::Scissor;
+            } else {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-viewport kind must be viewport or scissor, "
+                             "got '%.*s'\n",
+                             static_cast<int>(kind.size()), kind.data());
+                return false;
+            }
+            const char* const address_text = value + separator + 1;
+            char* end = nullptr;
+            if (!ParseGuestAddress(address_text, &end, probe.address) ||
+                (*end != '\0' && *end != ':')) {
+                std::fprintf(stderr, "gmse01_boot: --read-viewport needs a hex address, got '%s'\n",
+                             address_text);
+                return false;
+            }
+            request.viewport_probe_reports = DEFAULT_REPORTS;
+            if (*end == ':') {
+                const char* const reports_text = end + 1;
+                errno = 0;
+                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
+                if (end == reports_text || *end != '\0' || errno == ERANGE) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --read-viewport report count must be an integer, "
+                                 "got '%s'\n",
+                                 reports_text);
+                    return false;
+                }
+                request.viewport_probe_reports = parsed;
+            }
+            request.viewport_probes.push_back(probe);
         } else if (name == "--read-lighting") {
             // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
             // or its TLightMario override (0x80229610); pass the flag twice to cover both. The

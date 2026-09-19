@@ -904,11 +904,88 @@ target a later draw can sample, so a material that reads the mirror or screen te
 whatever it was bound to; the renderer's report counts the dropped and kept passes so that gap
 cannot be mistaken for faithfulness.
 
-The measurement names the next owner. A 256x256 copy out of a 640x448 framebuffer means the title
+The measurement named the next owner. A 256x256 copy out of a 640x448 framebuffer means the title
 draws into a region smaller than the target, and this renderer has no viewport: every draw is
-rasterised against the full 640x448. That is the remaining candidate for a draw covering 82.9% of
-the frame when the console would have confined it, and `GXSetViewport`/`GXSetScissor` are the next
-scope.
+rasterised against the full 640x448.
+
+#### Which part of the framebuffer each draw may reach
+
+`--read-viewport <kind>:<hex-addr>[:<reports>]` reads both authored regions.
+`tools/gcnport_boot/guest_viewport_probe.cpp` hooks `GXSetViewportJitter` (`0x80362fac`, the single
+owner that `GXSetViewport` at `0x803630c8` delegates to, so one hook sees both routes exactly once)
+and `GXSetScissor` (`0x80363138`), and records each rectangle, how many of the frame's draws
+preceded it, whether the viewport's floats were whole pixels, and its depth range.
+
+Reading the viewport needed a capability gcnport did not have. Its `GuestContext` exposed only the
+general register file, and the ABI passes every floating argument in `f1` upwards -- so a probe on
+`GXSetViewport` could read four registers the caller never wrote and nothing else.
+`floating_register`/`set_floating_register` were added there (gcnport `f6f3625`), as doubles because
+that is what the register holds whatever the callee declared. Its adapter test drives them against
+the live `PowerPCState` with values chosen to be unrepresentable as singles, so an accessor that
+narrowed through a float fails by name -- checked by making it do so.
+
+Measured over one 1,400,000,000-block run of the attract cycle, 0 Dolphin alerts:
+
+    viewport: 10740 entr(ies)
+      rectangles, as left,top width x height = times set: 0,0 256x256=854 0,0 640x448=9616 0,0 640x480=270
+      draws offered before the set: 0=7326 26=854 49=2 51=6 53=23 55=123 57=335 59=289 60=4 61=76
+                                    62=12 64=46 66=32 68=214 70=668 72=578 74=152
+      0 rectangle(s) were not whole pixels; depth range 0.000000..1.000000
+    scissor: 15093 entr(ies)
+      rectangles, as left,top width x height = times set: 0,0 0x0=1 0,0 256x256=854 0,0 640x447=3803 0,0 640x448=10434 0,0 640x480=1
+      draws offered before the set: 0=9971 26=854 49=2 51=6 53=23 55=123 57=335 59=289 60=8 61=76
+                                    62=24 64=92 66=64 68=428 70=1338 72=1156 74=304
+
+**The only region smaller than the framebuffer is the mirror pass's, and it is the one already being
+dropped.** Its 256x256 viewport and scissor are set 854 times each -- once per rendered frame,
+before that frame's first draw -- and restored to 640x448 after exactly 26 draws, which is the same
+boundary the framebuffer copy falls on, measured by a different instrument reading different
+registers. Everything the visible scene draws is full-screen.
+
+So the viewport is not the over-bright cause either. Both candidates the copy measurement raised are
+now closed by measurement rather than by argument, and the brightness is in the shading or the order
+of the visible pass. The probe is worth keeping: the 640x447 scissor (3,803 sets, one row short of
+the buffer) and the single 0x0 scissor are authored details a renderer that ignores the scissor
+cannot honour, and the depth range says the title never narrows it, which is what a renderer
+assuming 0..1 needs to be true.
+
+#### The console's clip depth is not this renderer's
+
+`tools/gcnport_boot/draw_listing.cpp` gained two describers to answer where a draw's geometry
+actually goes: `describe_clip_coverage` runs the shipping `transform_vertex` and reports the NDC
+bounds, how many vertices fall behind the eye, each triangle's winding in the pipeline's own
+clockwise-front convention, and the cull mode; `describe_transforms` prints the draw's model-view
+and projection verbatim, because a model-view sitting at the eye and a projection with a wrong depth
+row produce the same unusable clip position and no description of the result separates them.
+
+What they reported, per 3D draw in one frame, is that **every vertex in the scene has a negative NDC
+depth** -- the sky at -0.018..-0.00015, the clouds at -0.0033..-0.00006, the trees at -8.03..-0.044,
+the sand at -0.121..-0.0004 -- and that several draws have every vertex behind the eye. The
+projection read back is
+
+    2.04163 0 0 0; 0 2.74748 0 0; 0 0 -3.33344e-05 -10.0003; 0 0 -1 0
+
+which is exactly what `MTXFrustum` writes for a near plane of 10 and a far plane of 300000:
+`-n/(f-n)` is -3.3334e-05 and `-(f*n)/(f-n)` is -10.0003. Both of GX's builders map the near plane
+to clip z = -w and the far plane to 0. This renderer's pipelines clip and test depth over [0, w].
+
+`native_render::with_zero_to_one_clip_depth` converts between them by adding the w row to the depth
+row: the two ranges are the same size and one unit of w apart, so that is exact -- near becomes 0,
+far becomes 1, with no scale and nothing chosen, and x, y and w untouched.
+`native-render/tests/j3d_projection_test.cpp` builds the console's own frustum and orthographic
+matrices from the SDK formulas at the title's own near and far planes and asserts both conventions
+by evaluating the depth at each plane, that the conversion is a pure shift at the midpoint, and that
+only the depth row changes. `title_adapter::read_guest_projection` applies it, so the conversion
+happens at the single boundary where a console matrix becomes a renderer one, after the
+canonical-entry check has run on the matrix as the title authored it; its test asks the shipping
+conversion what to expect and separately asserts the console matrix is *not* what comes back, which
+fails by name when the conversion is removed -- checked by removing it.
+
+**This is a real defect fixed and it is not the over-bright cause.** Frame 3800 is 1.45% different
+with the conversion than without, and 44.07% of it is still pure white. The reason the wrong
+convention was not already fatal is the next finding: the pass leaves `enable_depth_clip` false, so
+the pipeline was clamping depth rather than clipping it, and geometry the console would have removed
+at the near plane was being drawn at the near plane instead.
 
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every

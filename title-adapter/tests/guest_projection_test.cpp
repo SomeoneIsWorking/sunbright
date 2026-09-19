@@ -1,5 +1,7 @@
 #include <sunbright/title_adapter/guest_projection.h>
 
+#include <sunbright/native_render/j3d_projection.h>
+
 #include "guest_image.h"
 
 #include <array>
@@ -45,6 +47,14 @@ GuestMemory memory_of(Image& image) {
     return {read_image, &image};
 }
 
+// What the reader owes its caller for a matrix the guest wrote: the same sixteen values, in the
+// renderer's clip-depth convention. This asks the shipping conversion what that is rather than
+// transcribing its result, because what is under test here is that the reader applies it at all --
+// that the conversion means near-at-zero and far-at-one is `native_render`'s own test to make.
+std::array<float, 16> as_the_renderer_wants_it(const std::array<float, 16>& authored) {
+    return sb::native_render::with_zero_to_one_clip_depth({authored}).value;
+}
+
 void reads_both_projection_types() {
     Image image{};
     put(image, frustum());
@@ -54,13 +64,29 @@ void reads_both_projection_types() {
            GuestProjectionError::None);
     assert(kind == GuestProjectionKind::Perspective);
     // All sixteen come back, in the order the guest wrote them, unswapped by the reader's caller.
-    assert(out.value == frustum());
+    assert(out.value == as_the_renderer_wants_it(frustum()));
 
     put(image, ortho());
     assert(read_guest_projection(memory_of(image), MATRIX, GX_ORTHOGRAPHIC, out, kind) ==
            GuestProjectionError::None);
     assert(kind == GuestProjectionKind::Orthographic);
-    assert(out.value == ortho());
+    assert(out.value == as_the_renderer_wants_it(ortho()));
+}
+
+// A reader that handed the console's matrix straight through would pass everything above if the
+// conversion happened to be the identity, and both of these matrices would still render -- wrongly,
+// and only in a way a whole frame shows. So the two must be told apart here.
+void the_console_matrix_is_not_what_comes_back() {
+    assert(as_the_renderer_wants_it(frustum()) != frustum());
+    assert(as_the_renderer_wants_it(ortho()) != ortho());
+
+    Image image{};
+    sb::native_render::Matrix4x4 out{};
+    GuestProjectionKind kind = GuestProjectionKind::Orthographic;
+    put(image, frustum());
+    assert(read_guest_projection(memory_of(image), MATRIX, GX_PERSPECTIVE, out, kind) ==
+           GuestProjectionError::None);
+    assert(out.value != frustum());
 }
 
 // The two types disagree about which column the offsets live in, so each one's matrix must be
@@ -126,6 +152,7 @@ void names_every_failure() {
 
 int main() {
     reads_both_projection_types();
+    the_console_matrix_is_not_what_comes_back();
     the_type_decides_which_matrix_is_canonical();
     a_non_canonical_entry_is_refused_not_kept();
     names_every_failure();

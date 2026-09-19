@@ -81,6 +81,10 @@ add_executable(native_render_j3d_tex_coord_generation_test tests/j3d_tex_coord_g
 target_link_libraries(native_render_j3d_tex_coord_generation_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_tex_coord_generation COMMAND native_render_j3d_tex_coord_generation_test)
 
+add_executable(native_render_j3d_projection_test tests/j3d_projection_test.cpp)
+target_link_libraries(native_render_j3d_projection_test PRIVATE sunbright-native-render-core)
+add_test(NAME native_render_j3d_projection COMMAND native_render_j3d_projection_test)
+
 add_executable(native_render_j3d_fog_test tests/j3d_fog_test.cpp)
 target_link_libraries(native_render_j3d_fog_test PRIVATE sunbright-native-render-core)
 add_test(NAME native_render_j3d_fog COMMAND native_render_j3d_fog_test)

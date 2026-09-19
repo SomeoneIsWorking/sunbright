@@ -70,9 +70,12 @@ tools/               Python verification, RE, oracle parsing, and diagnostics
   tools/perf/          bounded performance probes
   tools/render/        renderer and GPU diagnostic tooling
   tools/gcnport_boot/  standalone maintainer diagnostic (gmse01_boot.cpp + boot_options.cpp and one
-                       probe per guest seam: shape, material, lighting, model): boots the real GMSE01
-                       image through gcnport's public API; NOT the gameplay product, excluded from
-                       the default CMake `all` target (see cmake/GcnPortDependency.cmake)
+                       probe per guest seam: shape, material, lighting, model, projection,
+                       framebuffer copy, viewport/scissor; bounded_tally.h owns the bound each probe
+                       reports its distinct values under, draw_listing.cpp owns how one composed
+                       draw is described): boots the real GMSE01 image through gcnport's public API;
+                       NOT the gameplay product, excluded from the default CMake `all` target (see
+                       cmake/GcnPortDependency.cmake)
 docs/                goals, state, ownership, issues, claims, and RE facts
 ```
 

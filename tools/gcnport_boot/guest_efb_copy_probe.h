@@ -2,9 +2,9 @@
 #pragma once
 
 #include <cstdint>
-#include <map>
 #include <utility>
 
+#include "bounded_tally.h"
 #include "frame_draw_budget.h"
 #include "guest_frame_renderer.h"
 
@@ -55,9 +55,10 @@ class GuestEfbCopyProbe {
     [[nodiscard]] static const char* entry_name(Entry entry) noexcept;
 
   private:
-    // A title's copy regions are a handful of authored sizes. Past this the count keeps rising
-    // while the set stops growing, which is reported as a floor rather than a total.
     static constexpr std::size_t MAX_DISTINCT_REGIONS = 64;
+    // A frame's draw count is the title's, not this probe's, so the ordinals a copy can fall on are
+    // bounded only by how much the title draws.
+    static constexpr std::size_t MAX_DISTINCT_ORDINALS = 256;
 
     Entry entry_ = Entry::CopyToTexture;
     const FrameDrawBudget* budget_ = nullptr;
@@ -66,13 +67,12 @@ class GuestEfbCopyProbe {
     std::uint64_t entries_ = 0;
     std::uint64_t reports_ = 0;
     std::uint64_t clearing_ = 0;
-    std::uint64_t regionsPastTheSet_ = 0;
     // Where in a frame each copy fell, by the number of draws the frame had already offered. This
     // is the measurement: a copy before every draw is a frame that begins by clearing, and a copy
     // partway through one is a pass that was never meant to be in the visible image.
-    std::map<std::uint64_t, std::uint64_t> drawsBefore_;
+    BoundedTally<std::uint64_t> drawsBefore_{MAX_DISTINCT_ORDINALS};
     // For `SetTextureSource`, the left/top and width/height a later copy will read.
-    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint64_t> regions_;
+    BoundedTally<std::pair<std::uint32_t, std::uint32_t>> regions_{MAX_DISTINCT_REGIONS};
 };
 
 } // namespace sunbright::gcnport_boot

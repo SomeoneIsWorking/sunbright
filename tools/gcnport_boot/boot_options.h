@@ -13,6 +13,7 @@
 
 #include "guest_draw_publisher.h"
 #include "guest_efb_copy_probe.h"
+#include "guest_viewport_probe.h"
 
 // What one invocation of the GMSE01 boot diagnostic asks for, and the parser that produces it.
 //
@@ -160,6 +161,14 @@ struct EfbCopyProbeRequest {
     u32 address = 0;
 };
 
+// One --read-viewport request. Like --read-efb the kind is named rather than inferred: the two
+// entries take their arguments in different register files, and a probe told the wrong one would
+// read four registers the caller never wrote.
+struct ViewportProbeRequest {
+    GuestViewportProbe::Entry entry = GuestViewportProbe::Entry::Viewport;
+    u32 address = 0;
+};
+
 // Everything one invocation of this tool asks for, past the image itself. These arrived as
 // positional parameters until there were five of them, at which point the call site said nothing
 // about which flag each one came from.
@@ -183,6 +192,8 @@ struct BootRequest {
     u64 shape_probe_reports = 0;
     std::vector<EfbCopyProbeRequest> efb_copy_probes;
     u64 efb_copy_probe_reports = 0;
+    std::vector<ViewportProbeRequest> viewport_probes;
+    u64 viewport_probe_reports = 0;
     // Where the title finishes a frame. Supplying one turns the run from counting its draws into
     // rendering them: the process frame bridge takes the sink, and each entry here seals what the
     // title submitted and encodes it through the shipping passes.

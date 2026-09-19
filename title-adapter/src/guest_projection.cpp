@@ -1,5 +1,7 @@
 #include <sunbright/title_adapter/guest_projection.h>
 
+#include <sunbright/native_render/j3d_projection.h>
+
 #include <cmath>
 
 namespace sb::title_adapter {
@@ -92,7 +94,12 @@ GuestProjectionError read_guest_projection(const GuestMemory& memory, GuestAddre
     if (!discarded_entries_are_canonical(read, readKind)) {
         return GuestProjectionError::NonCanonicalDiscardedEntries;
     }
-    out = read;
+    // Validated as the console authored it, and handed over in the renderer's clip-depth
+    // convention. Both steps are here because this is the one place a guest projection becomes a
+    // renderer one: checking a converted matrix against the console's canonical entries would
+    // check the conversion rather than the read, and leaving the conversion to each caller is a
+    // step a second caller can forget with no symptom but a frame that will not sort.
+    out = native_render::with_zero_to_one_clip_depth(read);
     kind = readKind;
     return GuestProjectionError::None;
 }

@@ -41,6 +41,12 @@ enum class GuestProjectionError : std::uint8_t {
 [[nodiscard]] const char* name(GuestProjectionKind kind) noexcept;
 
 // `matrix` is the guest pointer `GXSetProjection` was given, `type` its second argument.
+//
+// `out` comes back in the renderer's clip-depth convention, not the console's: the console's
+// projections put the near plane at clip z = -w and the far plane at 0, and the renderer's clip
+// volume is [0, w]. The conversion belongs to this reader because this is the one place a console
+// projection becomes a renderer one, and because the canonical-entry check above has to run on the
+// matrix as the title authored it to mean anything.
 [[nodiscard]] GuestProjectionError read_guest_projection(const GuestMemory& memory,
                                                          GuestAddress matrix, std::uint32_t type,
                                                          native_render::Matrix4x4& out,
