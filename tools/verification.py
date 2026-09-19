@@ -36,6 +36,7 @@ def gate_steps() -> tuple[Step, ...]:
                 "tools/selftest_all.py",
                 "tools/runtime_dependencies.py",
                 "tools/runtime_dependencies_test.py",
+                "tools/disc/main_dol.py",
                 "tools/info/registry_paths.py",
                 "tools/info/stale_triage.py",
                 "tools/render/build_shaders.py",

@@ -126,7 +126,15 @@ u32 ReadBigEndianU32(const std::vector<u8>& bytes, std::size_t offset) {
 DolImage LoadDolAsFlatImage(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        std::fprintf(stderr, "gmse01_boot: cannot open DOL image '%s'\n", path.c_str());
+        // The DOL is derived from the user's own disc and lives in gitignored scratch, so it is
+        // routinely absent: on a fresh clone, and after the scratch collector removes it for being
+        // older than the retention window. It takes a third of a second to produce, and the run
+        // that needs it should say so rather than leaving the reader to find that out.
+        std::fprintf(stderr,
+                     "gmse01_boot: cannot open DOL image '%s'\n"
+                     "gmse01_boot: produce it from your own disc with: "
+                     "python3 tools/disc/main_dol.py\n",
+                     path.c_str());
         std::exit(1);
     }
     const std::vector<u8> header_and_body((std::istreambuf_iterator<char>(file)),
