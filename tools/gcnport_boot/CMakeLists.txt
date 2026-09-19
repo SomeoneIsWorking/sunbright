@@ -27,6 +27,11 @@ add_executable(sunbright_gcnport_boot
     guest_model_probe.cpp
     guest_j2d_context_probe.cpp
     guest_picture_probe.cpp
+    guest_screen_space.cpp
+    guest_matrix_state.cpp
+    guest_matrix_probe.cpp
+    guest_glyph_probe.cpp
+    guest_solid_rectangle_probe.cpp
     guest_material_probe.cpp
   guest_shape_probe.cpp
   guest_efb_copy_probe.cpp

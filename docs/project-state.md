@@ -16,11 +16,17 @@ S004, the PC-native renderer, is the next focus: the execution path underneath i
 whole attract cycle unattended and faultlessly (S008 below has the retrace-timed trajectory). Its
 producer seam reads, decodes and poses the title's own geometry, classifies every material it draws,
 resolves each material's textures from the display list it baked rather than from its packet's stale
-table, publishes the title's `J2DPicture` panes as the 2D pass, and rasterises all of it through the
-shipping passes on a real device. Frame 3600 is the title screen: sky, sea, logo, shine, palm tree,
-rainbow, copyright line and fly-in letters. What remains is a per-region diff against the console --
-the one named difference today is retail's additive sun glow (its object 27 of 127), which is a 3D
-draw on the model path.
+table, publishes the title's `J2DPicture` panes and the screen fader's quads as the 2D pass, and
+rasterises all of it through the shipping passes on a real device. Frame 3600 is the title screen:
+sky, sea, logo, shine, palm tree, rainbow, copyright line and fly-in letters, and the boot sequence
+now fades rather than cutting. Every 2D producer now has a publisher, including resource-font
+glyphs and the position matrix that places an immediate-mode draw, but three of them -- glyphs,
+`draw_wipe_box` and `J2DGrafContext::fillBox` -- have unit coverage and no title evidence, because
+the attract cycle reaches none of them. What stands between them and evidence is guest pad input:
+the diagnostic cannot press Start, so no run it can make leaves the attract cycle. That is the next
+piece, and it is also what a per-region diff against the console needs; the one named difference
+there today is retail's additive sun glow (its object 27 of 127), a 3D draw on the model path.
+`J2DWindow` remains unpublished.
 
 S003 is `partial` rather than `missing`: Sunbright installs its hooks
 through `gcnport::DolphinRuntimeAdapter`, and both original-call forms are proven on the real title
@@ -1213,11 +1219,104 @@ normal matrix, which under the CPU pipelines genuinely differs from the position
 carries it as `GuestShapePose::normalViews` and the semantic boundary has yet to accept it. Offscreen
 passes are dropped rather than rendered into a target a later draw could sample, so a material that
 reads one still reads whatever it was bound to. Non-billboard particles, image producers, screen
-effects and full-frame ordering remain incomplete. The surviving decomp-side adapters
+effects and full-frame ordering remain incomplete.
+
+**2026-09-19: the screen fader is published, so a transition is a fade rather than a cut.** Every
+scene change in GMSE01 goes through `TSMSFader::draw`, which fills the frame with the fade colour
+(`fill_rect`, `0x80140390`) or closes an iris of four opaque bands over it (`draw_wipe_box`,
+`0x801400cc`). Neither is a `J2DPicture` or a `J3DShape`, so nothing published them and every
+transition was an instant cut.
+
+The fader's quads are not in any `J2DGrafContext`: `TApplication::gameLoop` sets an orthographic
+projection with `C_MTXOrtho` and a region with `GXSetViewport`, then hands the fader a rectangle and
+nothing else, so the screen its quad is in exists only as GX state. `gcnport_boot`'s
+`guest_screen_space.{h,cpp}` holds that pair -- fed by the projection and viewport probes, which
+already sat on both entries -- and `title_adapter::read_orthographic_screen` recovers the screen's
+edges from the matrix by inverting the two rows `MTXOrtho` wrote.
+
+That recovery found a real defect in the recovered source on the way: `TApplication::gameLoop` was
+calling `C_MTXOrtho(m, 0, fbWidth, 0, efbHeight, ...)`, and retail loads `bottom` from efbHeight and
+`right` from fbWidth (`0x802a623c`..`0x802a6278`). The transposed pair projects a 448-wide by
+640-tall screen, so the full-frame fade box would have covered neither the right of the frame nor
+its lower third. Fixed in `decomp/sms`.
+
+`title_adapter::resolve_wipe_box_bands` (`guest_scrn_fader.{h,cpp}`) owns the iris geometry, which
+exists only as the sixteen vertices `draw_wipe_box` pushes. Its unit coverage states the two
+properties a uniform border would fail: a closed iris tiles the frame exactly once, and the two axes
+inset by their own half-extent, so on a 640x448 frame the first alpha at which the sides have moved
+is one at which the top and bottom have not.
+
+The boot tool consumes all three through `--read-rectangles fade|wipe|fillbox:<addr>`. Measured on
+the real title, one 1,400,000,000-block run, 0 Dolphin alerts:
+
+```
+guest screen space: 9627 orthographic and 3613 perspective projection(s), 8729 viewport(s)
+guest fade rect probe: 69 call(s), 69 quad(s) submitted, 69 accepted by the sink
+  not published: no_canvas=0 unreadable_arguments=0 no_area=0 withheld_by_budget=0
+                 unresolved_positions=0 no_sink=0
+guest wipe box probe: 0 call(s) -- the hook installed and the title never reached it
+guest fill box probe: 0 call(s) -- the hook installed and the title never reached it
+```
+
+The 69 are one fade, reported by frame ordinal: opaque black through frame 43, then alpha 236, 216,
+197, 177, 157, 138, 118, 99, 79, 59, 40 across frames 44-54, and the same ramp again at 80-93 and
+130-154. A bounded 250,000,000-block run of the first 48 frames closes the loop on the renderer:
+**13 solid rectangles reached the 2D pass**, which is what the sink passed to the encoder rather
+than what the publisher handed the sink, and 0 encode failures. The pass's own rasterisation of a
+solid rectangle -- including half-alpha blending and an out-of-clip no-op -- is
+`semantic_2d_pass_gpu_test`'s existing watched-GPU coverage.
+
+Two gaps are named rather than closed. `draw_wipe_box` and `J2DGrafContext::fillBox` are read and
+published but the attract cycle reaches neither, so both have unit coverage and no title evidence;
+`fillBox`'s only in-game caller is `JUTConsole`. And 1,192 of the run's orthographic
+projection/viewport pairs are not a canvas this renderer can draw into -- `Canvas` requires a
+positive extent on both axes and GMSE01 authors at least one vertically inverted screen
+(`bossManta` sets `C_MTXOrtho(proj, height, 0, ...)`). They are counted, not clamped. The surviving decomp-side adapters
 (`sms-boot/runtime/native_j3d_adapter.cpp` and its peers) remain native/decomp evidence attached to
 the decomp product rather than to `gcnport`; they are not built. The JIT seam must preserve the same
 value-only contract; no old body or GX compatibility path may become a silent fallback after its
 semantic owner is proven.
+
+**2026-09-19: the last 2D producer is published, and what places an immediate-mode draw is read
+rather than assumed.** A `J2DPicture` is handed its parent transform as an argument; a glyph and a
+fader band are handed nothing and are multiplied by whichever position matrix GX has current. That
+matrix was loaded by an earlier, unrelated call, so `gcnport_boot`'s `guest_matrix_state.{h,cpp}`
+follows both halves -- `GXLoadPosMtxImm` (`0x80362e0c`) writes a row of matrix memory and
+`GXSetCurrentMtx` (`0x80362eec`) chooses the row -- through one probe per entry. The fader probe now
+reads its placement from that state instead of carrying a constant identity matrix; a run without
+`--read-matrices` reports every fader quad as having no placement rather than publishing it
+somewhere plausible.
+
+Measured on the real title, one 1,400,000,000-block run: **49,250 loads into exactly one row, 41,765
+selections, row 0 the only row ever made current, and the matrix in force is the identity**. That is
+the fact the fader's old constant asserted from `TSMSFader::setupGraphicsFadeinout`, now measured,
+and the 69 fader quads still publish with `no_matrix=0`. (Guest-side counts drift by a few tens
+between runs of the same budget -- interrupt timing is not reproducible here -- so a count is one
+run's, while the shape it shows is stable.)
+
+`title_adapter::read_guest_res_font_glyph` (`guest_res_font.{h,cpp}`) owns the other half: the glyph
+`JUTResFont` selects for a character code. The selection is spread across `getFontCode`, `loadFont`
+and `loadImage` and lands in fields the object only carries after the body has run, which a hook on
+the entry cannot wait for -- so the reader performs the same selection from the font resource's own
+`MAP1`, `WID1` and `GLY1` blocks. Its unit coverage states each branch separately: the direct and
+sorted-pair mappings, the ASCII-to-full-width fold a two-byte font applies before consulting any
+map, the font-width substitution `loadFont` makes where no width entry exists, and the page a glyph
+draws with when no `GLY1` covers its code at all -- which `loadImage` leaves as whatever was already
+bound, read from the font rather than picked here.
+
+`gcnport_boot`'s `guest_glyph_probe.{h,cpp}` publishes through it, on three entries of one class:
+`drawChar_scale` (`0x802f1b00`) is the draw, and the two `setGX` overloads (`0x802f178c` and
+`0x802f1864`) are how the title states what a font's intensity ramp maps onto -- a colour pair per
+font, stated once and drawn with many times. The layout is `native_render::resolve_resource_glyph_
+layout`, the same owner the decomp-side adapter uses, so both producers share one copy of retail's
+arithmetic.
+
+It is installed and unexercised: **0 characters drawn in the whole attract cycle**, on all three
+entries. Every visible word at the title -- the logo, "PRESS START!", the copyright line -- is a
+textured `J2DPicture`, and GMSE01's resource-font text begins at the file-select screen. This tool
+cannot press Start, so no run it can make reaches one. That is the next gap: guest pad input, which
+is also what would let a run reach any screen past the attract cycle.
+
 
 ### S005 — decomp evidence adapters
 

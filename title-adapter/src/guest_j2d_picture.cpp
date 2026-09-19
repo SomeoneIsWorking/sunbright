@@ -3,16 +3,6 @@
 namespace sb::title_adapter {
 namespace {
 
-[[nodiscard]] bool read_matrix(const GuestReader& reader, GuestAddress address,
-                               std::array<float, 12>& out) noexcept {
-    for (std::size_t index = 0; index < out.size(); ++index) {
-        if (!reader.real(address + static_cast<GuestAddress>(index * 4), out[index])) {
-            return false;
-        }
-    }
-    return true;
-}
-
 [[nodiscard]] GuestPictureError read_palette(const GuestReader& reader, GuestAddress palette,
                                              GuestJutPalette& out) noexcept {
     out = {};
@@ -89,14 +79,6 @@ const char* name(GuestPictureError error) noexcept {
     return "unknown";
 }
 
-bool read_guest_matrix(const GuestMemory& memory, GuestAddress matrix,
-                       std::array<float, 12>& out) noexcept {
-    if (memory.read == nullptr || matrix == 0) {
-        return false;
-    }
-    return read_matrix(GuestReader(memory), matrix, out);
-}
-
 GuestPictureError read_guest_picture(const GuestMemory& memory, GuestAddress picture,
                                      GuestPicture& out) noexcept {
     if (memory.read == nullptr) {
@@ -112,8 +94,8 @@ GuestPictureError read_guest_picture(const GuestMemory& memory, GuestAddress pic
     std::uint8_t flip = 0;
     if (!read_guest_rect(reader, picture + GUEST_PANE_BOUNDS, value.bounds) ||
         !read_guest_rect(reader, picture + GUEST_PANE_CLIP_RECT, value.clipRect) ||
-        !read_matrix(reader, picture + GUEST_PANE_POSITION_MATRIX, value.positionMatrix) ||
-        !read_matrix(reader, picture + GUEST_PANE_GLOBAL_MATRIX, value.globalMatrix) ||
+        !read_guest_matrix(reader, picture + GUEST_PANE_POSITION_MATRIX, value.positionMatrix) ||
+        !read_guest_matrix(reader, picture + GUEST_PANE_GLOBAL_MATRIX, value.globalMatrix) ||
         !reader.byte(picture + GUEST_PANE_COLOR_ALPHA, value.colorAlpha) ||
         !reader.byte(picture + GUEST_PICTURE_TEXTURE_COUNT, value.textureCount) ||
         !reader.word(picture + GUEST_PICTURE_BINDING, value.binding) ||

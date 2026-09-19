@@ -52,4 +52,33 @@ enum class GuestProjectionError : std::uint8_t {
                                                          native_render::Matrix4x4& out,
                                                          GuestProjectionKind& kind) noexcept;
 
+// The screen an orthographic projection states, recovered from the matrix itself.
+//
+// GMSE01 draws 2D that no `J2DGrafContext` owns -- `TApplication::gameLoop` sets its own ortho with
+// `C_MTXOrtho` and fades the whole frame under it -- so those quads' coordinates are in a screen
+// that exists only as the loaded projection. Reading it back is exact arithmetic on the two rows
+// `MTXOrtho` wrote and not an inference: it authored `m00 = 2/(right-left)` and
+// `m03 = -(right+left)/(right-left)`, and the pair inverts.
+struct GuestOrthographicScreen {
+    float left = 0.0F;
+    float top = 0.0F;
+    float right = 0.0F;
+    float bottom = 0.0F;
+};
+
+enum class GuestOrthographicScreenError : std::uint8_t {
+    None,
+    // A perspective projection has no screen to recover; asking for one is the caller's error.
+    NotOrthographic,
+    // A zero or non-finite scale: the projection collapses an axis, so no pair of edges produced
+    // it and any numbers this returned would be invented.
+    DegenerateScale,
+};
+
+[[nodiscard]] const char* name(GuestOrthographicScreenError error) noexcept;
+
+[[nodiscard]] GuestOrthographicScreenError
+read_orthographic_screen(const native_render::Matrix4x4& projection, GuestProjectionKind kind,
+                         GuestOrthographicScreen& out) noexcept;
+
 } // namespace sb::title_adapter

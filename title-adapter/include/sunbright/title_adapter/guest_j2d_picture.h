@@ -1,6 +1,6 @@
 #pragma once
 
-#include <sunbright/title_adapter/guest_j2d_rect.h>
+#include <sunbright/title_adapter/guest_j2d_primitives.h>
 #include <sunbright/title_adapter/guest_memory.h>
 
 #include <array>
@@ -130,10 +130,5 @@ struct GuestPicture {
 
 [[nodiscard]] GuestPictureError read_guest_picture(const GuestMemory& memory, GuestAddress picture,
                                                    GuestPicture& out) noexcept;
-
-// Reads one `Mtx` -- the parent transform `J2DPane::draw` hands `drawSelf`, which lives on the
-// guest stack rather than in any object this can reach from the pane.
-[[nodiscard]] bool read_guest_matrix(const GuestMemory& memory, GuestAddress matrix,
-                                     std::array<float, 12>& out) noexcept;
 
 } // namespace sb::title_adapter

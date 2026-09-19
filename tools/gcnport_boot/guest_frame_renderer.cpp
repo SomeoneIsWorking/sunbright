@@ -194,6 +194,16 @@ void GuestFrameRenderer::report() const {
                 static_cast<unsigned long long>(stats.submittedMeshes),
                 static_cast<unsigned long long>(stats.submittedMeshVertices),
                 static_cast<unsigned long long>(stats.submittedImages));
+    // The 2D denominator, separately: a publisher reports what it handed the sink, and this is
+    // what the sink passed on. A producer whose count is nonzero here and zero there was sealed
+    // into a frame nothing encoded, which no pixel dump distinguishes from a producer that drew.
+    std::printf("gmse01_boot:   %llu picture(s), %llu solid rectangle(s) (%llu fill box(es), %llu "
+                "window content(s)), %llu glyph(s) reached the 2D pass\n",
+                static_cast<unsigned long long>(stats.submittedPictures),
+                static_cast<unsigned long long>(stats.submittedSolidRectangles),
+                static_cast<unsigned long long>(stats.submittedJ2dFillBoxes),
+                static_cast<unsigned long long>(stats.submittedJ2dWindowContents),
+                static_cast<unsigned long long>(stats.submittedGlyphs));
     // The clear is black, so a frame whose readback is entirely clear drew nothing that survived.
     // Reporting the first frame that was not, and how much of it was not, is what separates a
     // renderer that ran from one that only submitted.

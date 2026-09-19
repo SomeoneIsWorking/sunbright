@@ -68,6 +68,9 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-projections <hex-addr>[:<reports>]] "
                      "[--read-efb texture|display|source|clear:<hex-addr>[:<reports>] ...] "
                      "[--read-viewport viewport|scissor:<hex-addr>[:<reports>] ...] "
+                     "[--read-rectangles fade|wipe|fillbox:<hex-addr>[:<reports>] ...] "
+                     "[--read-matrices load|current:<hex-addr>[:<reports>] ...] "
+                     "[--read-glyphs setgx|remap|glyph:<hex-addr>[:<reports>] ...] "
                      "[--render-frames <hex-addr>] [--dump-frame <path>] "
                      "[--dump-frame-index <n>] [--draw-mode normal|family-map|opaque] "
                      "[--draw-skip <n>] [--draw-limit <n>] [--draw-log-frame <n>]\n",
@@ -395,6 +398,109 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 return false;
             }
             request.viewport_probes.push_back(probe);
+        } else if (name == "--read-rectangles") {
+            // <kind>:<hex-addr>[:<reports>], with kind one of fade, wipe or fillbox. In GMSE01
+            // those are ScrnFader's fill_rect 0x80140390 and draw_wipe_box 0x801400cc -- the two
+            // quads TSMSFader::draw chooses between -- and J2DGrafContext::fillBox 0x802eba70.
+            // The fader pair needs --read-projections and --read-viewport viewport to have a
+            // screen to be drawn in; fillbox needs --read-j2d-screen.
+            const std::string_view text(value);
+            const std::size_t separator = text.find(':');
+            if (separator == std::string_view::npos) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-rectangles needs "
+                             "<kind>:<hex-addr>[:<reports>], got '%s'\n",
+                             value);
+                return false;
+            }
+            const std::string_view kind = text.substr(0, separator);
+            SolidRectangleProbeRequest probe;
+            if (kind == "fade") {
+                probe.entry = GuestSolidRectangleProbe::Entry::FadeRect;
+            } else if (kind == "wipe") {
+                probe.entry = GuestSolidRectangleProbe::Entry::WipeBox;
+            } else if (kind == "fillbox") {
+                probe.entry = GuestSolidRectangleProbe::Entry::FillBox;
+            } else {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-rectangles kind must be fade, wipe or fillbox, "
+                             "got '%.*s'\n",
+                             static_cast<int>(kind.size()), kind.data());
+                return false;
+            }
+            if (!parse_probe_address(name, value + separator + 1, probe.address,
+                                     request.solid_rectangle_probe_reports)) {
+                return false;
+            }
+            request.solid_rectangle_probes.push_back(probe);
+        } else if (name == "--read-matrices") {
+            // <kind>:<hex-addr>[:<reports>], with kind one of load or current. In GMSE01 those are
+            // GXLoadPosMtxImm 0x80362e0c and GXSetCurrentMtx 0x80362eec. Both are needed before an
+            // immediate-mode draw has a placement: the first says what a row holds and the second
+            // says which row a vertex is multiplied by.
+            const std::string_view text(value);
+            const std::size_t separator = text.find(':');
+            if (separator == std::string_view::npos) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-matrices needs <kind>:<hex-addr>[:<reports>], "
+                             "got '%s'\n",
+                             value);
+                return false;
+            }
+            const std::string_view kind = text.substr(0, separator);
+            MatrixProbeRequest probe;
+            if (kind == "load") {
+                probe.entry = GuestMatrixProbe::Entry::LoadPosMtxImm;
+            } else if (kind == "current") {
+                probe.entry = GuestMatrixProbe::Entry::SetCurrentMtx;
+            } else {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-matrices kind must be load or current, got "
+                             "'%.*s'\n",
+                             static_cast<int>(kind.size()), kind.data());
+                return false;
+            }
+            if (!parse_probe_address(name, value + separator + 1, probe.address,
+                                     request.matrix_probe_reports)) {
+                return false;
+            }
+            request.matrix_probes.push_back(probe);
+        } else if (name == "--read-glyphs") {
+            // <kind>:<hex-addr>[:<reports>], with kind one of setgx, remap or glyph. In GMSE01
+            // those are JUTResFont::setGX() 0x802f178c, its two-colour overload 0x802f1864, and
+            // drawChar_scale 0x802f1b00. A glyph needs all three plus --read-projections,
+            // --read-viewport viewport and --read-matrices: the font says what its ramp means, the
+            // matrices say where its quad is, and the projection pair says what that means on
+            // screen.
+            const std::string_view text(value);
+            const std::size_t separator = text.find(':');
+            if (separator == std::string_view::npos) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-glyphs needs <kind>:<hex-addr>[:<reports>], got "
+                             "'%s'\n",
+                             value);
+                return false;
+            }
+            const std::string_view kind = text.substr(0, separator);
+            GlyphProbeRequest probe;
+            if (kind == "setgx") {
+                probe.entry = GuestGlyphProbe::Entry::SetGXDefault;
+            } else if (kind == "remap") {
+                probe.entry = GuestGlyphProbe::Entry::SetGXRemap;
+            } else if (kind == "glyph") {
+                probe.entry = GuestGlyphProbe::Entry::DrawChar;
+            } else {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-glyphs kind must be setgx, remap or glyph, got "
+                             "'%.*s'\n",
+                             static_cast<int>(kind.size()), kind.data());
+                return false;
+            }
+            if (!parse_probe_address(name, value + separator + 1, probe.address,
+                                     request.glyph_probe_reports)) {
+                return false;
+            }
+            request.glyph_probes.push_back(probe);
         } else if (name == "--read-lighting") {
             // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
             // or its TLightMario override (0x80229610); pass the flag twice to cover both. The

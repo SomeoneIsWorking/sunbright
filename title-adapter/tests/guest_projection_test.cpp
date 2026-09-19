@@ -6,7 +6,9 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 
 namespace {
@@ -148,6 +150,84 @@ void names_every_failure() {
     assert(std::string_view{name(GuestProjectionKind::Orthographic)} == "orthographic");
 }
 
+// `MTXOrtho`'s own arithmetic, so the round trip below is checked against the authored edges
+// rather than against numbers copied out of a previous run of the reader.
+std::array<float, 16> ortho_of(float top, float bottom, float left, float right) {
+    return {2.0F / (right - left),
+            0.0F,
+            0.0F,
+            -(right + left) / (right - left),
+            0.0F,
+            2.0F / (top - bottom),
+            0.0F,
+            -(top + bottom) / (top - bottom),
+            0.0F,
+            0.0F,
+            0.0F,
+            -1.0F,
+            0.0F,
+            0.0F,
+            0.0F,
+            1.0F};
+}
+
+bool near(float value, float expected) {
+    return std::fabs(value - expected) <= 1.0e-3F;
+}
+
+// The screen `TApplication::gameLoop` sets before it fades the frame: it is nobody's
+// `J2DGrafContext`, so the projection is the only record of it.
+void recovers_the_screen_an_orthographic_projection_states() {
+    GuestOrthographicScreen screen{};
+    assert(read_orthographic_screen({ortho_of(0.0F, 448.0F, 0.0F, 640.0F)},
+                                    GuestProjectionKind::Orthographic,
+                                    screen) == GuestOrthographicScreenError::None);
+    assert(near(screen.left, 0.0F));
+    assert(near(screen.right, 640.0F));
+    assert(near(screen.top, 0.0F));
+    assert(near(screen.bottom, 448.0F));
+
+    // An off-origin, inverted-vertical screen, so neither edge can be right by being zero and the
+    // reader cannot be passing by assuming which way up a console screen is.
+    assert(read_orthographic_screen({ortho_of(464.0F, 16.0F, -32.0F, 600.0F)},
+                                    GuestProjectionKind::Orthographic,
+                                    screen) == GuestOrthographicScreenError::None);
+    assert(near(screen.left, -32.0F));
+    assert(near(screen.right, 600.0F));
+    assert(near(screen.top, 464.0F));
+    assert(near(screen.bottom, 16.0F));
+}
+
+void refuses_a_projection_that_states_no_screen() {
+    GuestOrthographicScreen screen{1.0F, 2.0F, 3.0F, 4.0F};
+    const GuestOrthographicScreen untouched = screen;
+
+    // A perspective matrix has offsets in column 2, so the same arithmetic would return numbers;
+    // they would just not be a screen.
+    assert(read_orthographic_screen({frustum()}, GuestProjectionKind::Perspective, screen) ==
+           GuestOrthographicScreenError::NotOrthographic);
+
+    // A collapsed axis: `left == right` makes `MTXOrtho`'s scale infinite, and no pair of edges
+    // produced the zero that reaches the reader.
+    std::array<float, 16> collapsed = ortho_of(0.0F, 448.0F, 0.0F, 640.0F);
+    collapsed[0] = 0.0F;
+    assert(read_orthographic_screen({collapsed}, GuestProjectionKind::Orthographic, screen) ==
+           GuestOrthographicScreenError::DegenerateScale);
+    collapsed = ortho_of(0.0F, 448.0F, 0.0F, 640.0F);
+    collapsed[5] = std::numeric_limits<float>::quiet_NaN();
+    assert(read_orthographic_screen({collapsed}, GuestProjectionKind::Orthographic, screen) ==
+           GuestOrthographicScreenError::DegenerateScale);
+
+    assert(screen.left == untouched.left && screen.top == untouched.top &&
+           screen.right == untouched.right && screen.bottom == untouched.bottom);
+
+    for (const GuestOrthographicScreenError error :
+         {GuestOrthographicScreenError::None, GuestOrthographicScreenError::NotOrthographic,
+          GuestOrthographicScreenError::DegenerateScale}) {
+        assert(std::string_view{name(error)} != "unknown");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -156,5 +236,7 @@ int main() {
     the_type_decides_which_matrix_is_canonical();
     a_non_canonical_entry_is_refused_not_kept();
     names_every_failure();
+    recovers_the_screen_an_orthographic_projection_states();
+    refuses_a_projection_that_states_no_screen();
     return 0;
 }

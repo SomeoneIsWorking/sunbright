@@ -24,7 +24,7 @@ application composition
 | Renderer-neutral schema | Scene values, image/J3D/J2D decoding, bounded frame storage | `native-render/include/`, `native-render/src/` | `native-render/include/sunbright/native_render/frame.h` | `docs/graphics/README.md` |
 | Semantic GPU renderer | PC-native passes, shaders, resources, targets, presenter | `native-render/src/`, `native-render/shaders/` | `native-render/src/sdl_semantic_frame_client.cpp` | `docs/graphics/README.md` |
 | Renderer controls | Production-boundary CPU and watched GPU controls | `native-render/tests/` | Focused test executables | `docs/graphics/README.md` |
-| Guest semantic adapters | Copy GMSE01 values through gcnport memory/state interfaces | `title-adapter/include/sunbright/title_adapter/`, `title-adapter/src/` | `guest_j3d_shape.h`: `read_guest_shape`, `read_guest_shape_element`, `guest_mesh_element_source`; `guest_j3d_pose.h`: `read_guest_shape_pose`, `GuestMatrixRegisters`; `guest_j3d_material.h`: `read_guest_material`; `guest_j3d_texture.h`: `read_guest_texture_table`, `decode_guest_texture`; `guest_stage_lighting.h`: `read_guest_stage_lighting`; `guest_projection.h`: `read_guest_projection`; `guest_shape_geometry.h`: `read_guest_shape_geometry`; `guest_j3d_display_list.h`: `read_guest_material_packet_textures` (what a material's baked display list binds, which outranks its packet's table); `guest_j2d_picture.h`: `read_guest_picture`, `read_guest_matrix`; `guest_j2d_graf_context.h`: `read_guest_ortho_graph`; `guest_j2d_rect.h`: `GuestRect`; one reader per J3D block family in `guest_j3d_color.h`, `guest_j3d_texgen.h`, `guest_j3d_tev.h`, `guest_j3d_pixel_engine.h`; `guest_memory.h`: `GuestReader` | `docs/architecture.md` |
+| Guest semantic adapters | Copy GMSE01 values through gcnport memory/state interfaces | `title-adapter/include/sunbright/title_adapter/`, `title-adapter/src/` | `guest_j3d_shape.h`: `read_guest_shape`, `read_guest_shape_element`, `guest_mesh_element_source`; `guest_j3d_pose.h`: `read_guest_shape_pose`, `GuestMatrixRegisters`; `guest_j3d_material.h`: `read_guest_material`; `guest_j3d_texture.h`: `read_guest_texture_table`, `decode_guest_texture`; `guest_stage_lighting.h`: `read_guest_stage_lighting`; `guest_projection.h`: `read_guest_projection`, `read_orthographic_screen`; `guest_shape_geometry.h`: `read_guest_shape_geometry`; `guest_j3d_display_list.h`: `read_guest_material_packet_textures` (what a material's baked display list binds, which outranks its packet's table); `guest_j2d_picture.h`: `read_guest_picture`; `guest_j2d_graf_context.h`: `read_guest_ortho_graph`, `read_guest_graf_context_fill`; `guest_scrn_fader.h`: `wipe_box_inset`, `resolve_wipe_box_bands` (the quads `TSMSFader` draws, which are vertices and nothing else); `guest_res_font.h`: `read_guest_res_font_glyph` (the glyph `JUTResFont::loadFont` would select, performed from the font's own `WID1`/`GLY1`/`MAP1` blocks rather than read back after the fact); `guest_j2d_primitives.h`: `GuestRect`, `read_guest_rect`, `read_guest_matrix`; one reader per J3D block family in `guest_j3d_color.h`, `guest_j3d_texgen.h`, `guest_j3d_tev.h`, `guest_j3d_pixel_engine.h`; `guest_memory.h`: `GuestReader` | `docs/architecture.md` |
 | Native-layout evidence | Exercise semantic contracts from recovered source | `sms-boot/runtime/`, `sms-boot/shims/` | Focused evidence adapters only | `docs/decomp/` |
 | Native asset evidence | Decode and transform title assets into ordinary values | `sms-boot/assets/` | Focused asset decoders | `docs/decomp/` |
 | Native scaffold evidence | Retain reached declarations and behavior seams for analysis | `sms-boot/boot_stubs/` | Evidence-only source units | `docs/decomp/` |
@@ -72,9 +72,15 @@ tools/               Python verification, RE, oracle parsing, and diagnostics
   tools/render/        renderer and GPU diagnostic tooling
   tools/gcnport_boot/  standalone maintainer diagnostic (gmse01_boot.cpp + boot_options.cpp and one
                        probe per guest seam: shape, material, lighting, model, projection,
-                       framebuffer copy, viewport/scissor; bounded_tally.h owns the bound each probe
-                       reports its distinct values under, draw_listing.cpp owns how one composed
-                       draw is described): boots the real GMSE01 image through gcnport's public API;
+                       framebuffer copy, viewport/scissor, J2D screen, picture, solid rectangle,
+                       position matrix, glyph;
+                       bounded_tally.h owns the bound each probe reports its distinct values under,
+                       draw_listing.cpp owns how one composed draw is described, and
+                       guest_screen_space.h owns the orthographic screen the projection and viewport
+                       probes establish for 2D that no J2DGrafContext owns, and guest_matrix_state.h
+                       owns the position matrix an immediate-mode draw is placed by): boots the real
+                       GMSE01
+                       image through gcnport's public API;
                        NOT the gameplay product, excluded from the default CMake `all` target (see
                        cmake/GcnPortDependency.cmake)
 docs/                goals, state, ownership, issues, claims, and RE facts

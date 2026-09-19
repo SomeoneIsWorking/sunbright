@@ -59,14 +59,18 @@
 #include "gcnport/dolphin_adapter.h"
 #include "guest_efb_copy_probe.h"
 #include "guest_frame_renderer.h"
+#include "guest_glyph_probe.h"
 #include "guest_j2d_context_probe.h"
 #include "guest_lighting_probe.h"
 #include "guest_material_probe.h"
+#include "guest_matrix_probe.h"
 #include "guest_model_probe.h"
 #include "guest_picture_probe.h"
 #include "guest_projection_probe.h"
 #include "guest_report.h"
+#include "guest_screen_space.h"
 #include "guest_shape_probe.h"
+#include "guest_solid_rectangle_probe.h"
 #include "guest_viewport_probe.h"
 #include "probe_installation.h"
 
@@ -442,13 +446,22 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         address, static_cast<unsigned long long>(request.lighting_probe_reports));
         }
 
+        // Where the title's un-owned 2D lands. The projection and viewport probes below both feed
+        // it, and the fader's rectangles read it: none of them owns what a screen is, so it is its
+        // own object rather than a field inside whichever probe happened to see one first.
+        sunbright::gcnport_boot::GuestScreenSpace screen_space;
+        // What an immediate-mode vertex is multiplied by. Declared beside the screen
+        // because the two answer different halves of the same question: this places a
+        // quad, and the screen says what that placement means on the frame.
+        sunbright::gcnport_boot::GuestMatrixState matrix_state;
+
         const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestProjectionProbe>>
             projection_probes = install_guest_probes<sunbright::gcnport_boot::GuestProjectionProbe>(
                 adapter, runtime, request.projection_probe_addresses,
                 "report projections it could not have read",
                 [&](u32) {
                     return std::make_unique<sunbright::gcnport_boot::GuestProjectionProbe>(
-                        request.projection_probe_reports);
+                        &screen_space, request.projection_probe_reports);
                 },
                 [&](u32 address) {
                     std::printf("gmse01_boot: reading guest projections at 0x%08x (first %llu "
@@ -608,7 +621,8 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                     adapter, runtime, address, "report draw regions it could not have seen",
                     [&](u32) {
                         return std::make_unique<sunbright::gcnport_boot::GuestViewportProbe>(
-                            probe.entry, &draw_budget, request.viewport_probe_reports);
+                            probe.entry, &draw_budget, &screen_space,
+                            request.viewport_probe_reports);
                     },
                     [&](u32 installed_address) {
                         std::printf(
@@ -619,6 +633,100 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                             static_cast<unsigned long long>(request.viewport_probe_reports));
                     });
             viewport_probes.push_back(std::move(installed.front()));
+        }
+
+        // The flat-coloured quads drawn over the frame: the fader's fill and iris, and
+        // J2DGrafContext::fillBox. Installed last of the 2D publishers so the screen they are
+        // placed in is whichever probe established it, rather than an order this file decides.
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestSolidRectangleProbe>>
+            solid_rectangle_probes;
+        for (const sunbright::gcnport_boot::SolidRectangleProbeRequest& probe :
+             request.solid_rectangle_probes) {
+            const std::array<u32, 1> address{probe.address};
+            std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestSolidRectangleProbe>>
+                installed = install_guest_probes<sunbright::gcnport_boot::GuestSolidRectangleProbe>(
+                    adapter, runtime, address, "report rectangles it could not have seen",
+                    [&](u32) {
+                        return std::make_unique<sunbright::gcnport_boot::GuestSolidRectangleProbe>(
+                            probe.entry, &screen_space, j2d_context, &matrix_state, &draw_budget,
+                            request.solid_rectangle_probe_reports);
+                    },
+                    [&](u32 installed_address) {
+                        std::printf(
+                            "gmse01_boot: reading guest %s rectangles at 0x%08x (first %llu "
+                            "reported in full)%s\n",
+                            sunbright::gcnport_boot::GuestSolidRectangleProbe::entry_name(
+                                probe.entry),
+                            installed_address,
+                            static_cast<unsigned long long>(request.solid_rectangle_probe_reports),
+                            probe.entry == sunbright::gcnport_boot::GuestSolidRectangleProbe::
+                                               Entry::FillBox
+                                ? (j2d_context == nullptr
+                                       ? "  -- without --read-j2d-screen, so every box is reported"
+                                         " as having no canvas"
+                                       : "")
+                            : request.matrix_probes.empty()
+                                ? "  -- without --read-matrices, so every quad is reported as"
+                                  " having no placement"
+                                : "");
+                    });
+            solid_rectangle_probes.push_back(std::move(installed.front()));
+        }
+
+        // What places an immediate-mode draw. Installed before the glyph probes because a glyph
+        // entered before any matrix was seen has no placement and is counted rather than guessed.
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMatrixProbe>> matrix_probes;
+        for (const sunbright::gcnport_boot::MatrixProbeRequest& probe : request.matrix_probes) {
+            const std::array<u32, 1> address{probe.address};
+            std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMatrixProbe>> installed =
+                install_guest_probes<sunbright::gcnport_boot::GuestMatrixProbe>(
+                    adapter, runtime, address, "report placements it could not have seen",
+                    [&](u32) {
+                        return std::make_unique<sunbright::gcnport_boot::GuestMatrixProbe>(
+                            probe.entry, &matrix_state, request.matrix_probe_reports);
+                    },
+                    [&](u32 installed_address) {
+                        std::printf(
+                            "gmse01_boot: reading guest matrix %s at 0x%08x (first %llu "
+                            "reported in full)\n",
+                            sunbright::gcnport_boot::GuestMatrixProbe::entry_name(probe.entry),
+                            installed_address,
+                            static_cast<unsigned long long>(request.matrix_probe_reports));
+                    });
+            matrix_probes.push_back(std::move(installed.front()));
+        }
+
+        // The text. The three entries share one store of per-font colour ramps, because what a
+        // font's intensity maps onto is stated once and drawn with many times.
+        sunbright::gcnport_boot::GuestGlyphProbe::RemapStore font_remaps;
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestGlyphProbe>> glyph_probes;
+        for (const sunbright::gcnport_boot::GlyphProbeRequest& probe : request.glyph_probes) {
+            const std::array<u32, 1> address{probe.address};
+            std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestGlyphProbe>> installed =
+                install_guest_probes<sunbright::gcnport_boot::GuestGlyphProbe>(
+                    adapter, runtime, address, "report glyphs it could not have seen",
+                    [&](u32) {
+                        auto made = std::make_unique<sunbright::gcnport_boot::GuestGlyphProbe>(
+                            probe.entry, &screen_space, &matrix_state, &draw_budget,
+                            request.glyph_probe_reports);
+                        made->share(&font_remaps);
+                        return made;
+                    },
+                    [&](u32 installed_address) {
+                        std::printf(
+                            "gmse01_boot: reading guest font %s at 0x%08x (first %llu reported in "
+                            "full)%s\n",
+                            sunbright::gcnport_boot::GuestGlyphProbe::entry_name(probe.entry),
+                            installed_address,
+                            static_cast<unsigned long long>(request.glyph_probe_reports),
+                            probe.entry ==
+                                        sunbright::gcnport_boot::GuestGlyphProbe::Entry::DrawChar &&
+                                    request.matrix_probes.empty()
+                                ? "  -- without --read-matrices, so every glyph is reported as"
+                                  " having no placement"
+                                : "");
+                    });
+            glyph_probes.push_back(std::move(installed.front()));
         }
 
         std::vector<GuestWatch> guest_watches = request.guest_watches;
@@ -908,6 +1016,21 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             probe->report();
         }
         for (const auto& probe : viewport_probes) {
+            probe->report();
+        }
+        if (!request.solid_rectangle_probes.empty() || !request.glyph_probes.empty()) {
+            screen_space.report();
+        }
+        if (!request.matrix_probes.empty()) {
+            matrix_state.report();
+        }
+        for (const auto& probe : matrix_probes) {
+            probe->report();
+        }
+        for (const auto& probe : solid_rectangle_probes) {
+            probe->report();
+        }
+        for (const auto& probe : glyph_probes) {
             probe->report();
         }
         for (const auto& seam : frame_seams) {

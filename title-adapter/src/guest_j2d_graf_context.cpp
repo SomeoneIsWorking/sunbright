@@ -65,4 +65,29 @@ GuestGrafContextError read_guest_ortho_graph(const GuestMemory& memory, GuestAdd
     return GuestGrafContextError::None;
 }
 
+GuestGrafContextError read_guest_graf_context_fill(const GuestMemory& memory, GuestAddress context,
+                                                   GuestGrafContextFill& out) noexcept {
+    if (memory.read == nullptr) {
+        return GuestGrafContextError::NoReader;
+    }
+    if (context == 0) {
+        return GuestGrafContextError::NullContext;
+    }
+    const GuestReader reader(memory);
+
+    GuestGrafContextFill value{};
+    value.address = context;
+    if (!reader.word(context + GUEST_GRAF_CONTEXT_COLOR_TL, value.colorTL) ||
+        !reader.word(context + GUEST_GRAF_CONTEXT_COLOR_TR, value.colorTR) ||
+        !reader.word(context + GUEST_GRAF_CONTEXT_COLOR_BR, value.colorBR) ||
+        !reader.word(context + GUEST_GRAF_CONTEXT_COLOR_BL, value.colorBL) ||
+        !read_guest_matrix(reader, context + GUEST_GRAF_CONTEXT_POSITION_MATRIX,
+                           value.positionMatrix)) {
+        return GuestGrafContextError::UnreadableContext;
+    }
+
+    out = value;
+    return GuestGrafContextError::None;
+}
+
 } // namespace sb::title_adapter

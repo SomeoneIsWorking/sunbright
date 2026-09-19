@@ -9,6 +9,7 @@
 
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"
+#include "guest_screen_space.h"
 
 namespace sunbright::gcnport_boot {
 
@@ -25,7 +26,10 @@ namespace sunbright::gcnport_boot {
 // fault. Nothing is replaced: every entry ends in `call_original_once`.
 class GuestProjectionProbe {
   public:
-    explicit GuestProjectionProbe(std::uint64_t max_reports) noexcept : maxReports_(max_reports) {}
+    // `screen_space` may be null: the probe's own job is publishing a 3D projection, and telling
+    // the screen space what the orthographic ones mean is a second consumer of the same read.
+    GuestProjectionProbe(GuestScreenSpace* screen_space, std::uint64_t max_reports) noexcept
+        : screenSpace_(screen_space), maxReports_(max_reports) {}
 
     gcnport::HookResult operator()(gcnport::GuestContext& guest);
 
@@ -35,6 +39,7 @@ class GuestProjectionProbe {
     // A title uses a handful of distinct projections: a scene camera, a HUD, and little else.
     static constexpr std::size_t MAX_DISTINCT_PROJECTIONS = 64;
 
+    GuestScreenSpace* screenSpace_ = nullptr;
     std::uint64_t maxReports_ = 0;
     std::uint64_t entries_ = 0;
     std::uint64_t reports_ = 0;
@@ -42,6 +47,7 @@ class GuestProjectionProbe {
     std::uint64_t distinctPast_ = 0;
     std::map<sb::title_adapter::GuestProjectionError, std::uint64_t> errors_;
     std::map<sb::title_adapter::GuestProjectionKind, std::uint64_t> kinds_;
+    std::map<sb::title_adapter::GuestOrthographicScreenError, std::uint64_t> screenErrors_;
     std::set<std::uint64_t> distinct_;
 };
 

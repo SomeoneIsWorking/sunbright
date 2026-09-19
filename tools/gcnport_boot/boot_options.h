@@ -13,6 +13,9 @@
 
 #include "guest_draw_publisher.h"
 #include "guest_efb_copy_probe.h"
+#include "guest_glyph_probe.h"
+#include "guest_matrix_probe.h"
+#include "guest_solid_rectangle_probe.h"
 #include "guest_viewport_probe.h"
 
 // What one invocation of the GMSE01 boot diagnostic asks for, and the parser that produces it.
@@ -169,6 +172,29 @@ struct ViewportProbeRequest {
     u32 address = 0;
 };
 
+// One --read-rectangles request. The kind is named for the same reason: the two fader entries take
+// a rectangle and a colour, `J2DGrafContext::fillBox` takes a context and a box, and a probe told
+// the wrong one would read a colour where a rectangle is.
+struct SolidRectangleProbeRequest {
+    GuestSolidRectangleProbe::Entry entry = GuestSolidRectangleProbe::Entry::FadeRect;
+    u32 address = 0;
+};
+
+// One --read-matrices request. Loading a row of matrix memory and choosing which row is current
+// are separate entries taking different arguments, so the kind is named rather than inferred.
+struct MatrixProbeRequest {
+    GuestMatrixProbe::Entry entry = GuestMatrixProbe::Entry::LoadPosMtxImm;
+    u32 address = 0;
+};
+
+// One --read-glyphs request. A resource font states its intensity ramp through one entry and draws
+// through another, so the same naming applies: a probe told the wrong one would read a character
+// code where a colour pointer is.
+struct GlyphProbeRequest {
+    GuestGlyphProbe::Entry entry = GuestGlyphProbe::Entry::DrawChar;
+    u32 address = 0;
+};
+
 // Everything one invocation of this tool asks for, past the image itself. These arrived as
 // positional parameters until there were five of them, at which point the call site said nothing
 // about which flag each one came from.
@@ -198,6 +224,12 @@ struct BootRequest {
     u64 efb_copy_probe_reports = 0;
     std::vector<ViewportProbeRequest> viewport_probes;
     u64 viewport_probe_reports = 0;
+    std::vector<SolidRectangleProbeRequest> solid_rectangle_probes;
+    u64 solid_rectangle_probe_reports = 0;
+    std::vector<MatrixProbeRequest> matrix_probes;
+    u64 matrix_probe_reports = 0;
+    std::vector<GlyphProbeRequest> glyph_probes;
+    u64 glyph_probe_reports = 0;
     // Where the title finishes a frame. Supplying one turns the run from counting its draws into
     // rendering them: the process frame bridge takes the sink, and each entry here seals what the
     // title submitted and encodes it through the shipping passes.

@@ -52,6 +52,22 @@ gcnport::HookResult GuestProjectionProbe::operator()(gcnport::GuestContext& gues
     published_ += 1;
     sb::native_render::publish_j3d_projection(projection);
 
+    // The same read answers a second question: which screen the title's un-owned 2D is in. An
+    // orthographic matrix states one, a perspective matrix retires it.
+    if (screenSpace_ != nullptr) {
+        if (kind == sb::title_adapter::GuestProjectionKind::Orthographic) {
+            sb::title_adapter::GuestOrthographicScreen screen{};
+            const sb::title_adapter::GuestOrthographicScreenError screenError =
+                sb::title_adapter::read_orthographic_screen(projection, kind, screen);
+            screenErrors_[screenError] += 1;
+            if (screenError == sb::title_adapter::GuestOrthographicScreenError::None) {
+                screenSpace_->set_orthographic(screen);
+            }
+        } else {
+            screenSpace_->set_perspective();
+        }
+    }
+
     const std::uint64_t id = fingerprint(projection);
     if (distinct_.size() < MAX_DISTINCT_PROJECTIONS) {
         const bool added = distinct_.insert(id).second;
@@ -91,6 +107,13 @@ void GuestProjectionProbe::report() const {
         std::printf(" %s=%llu", name(kind), static_cast<unsigned long long>(count));
     }
     std::printf("\n");
+    if (!screenErrors_.empty()) {
+        std::printf("gmse01_boot:   orthographic screens recovered:");
+        for (const auto& [error, count] : screenErrors_) {
+            std::printf(" %s=%llu", name(error), static_cast<unsigned long long>(count));
+        }
+        std::printf("\n");
+    }
 }
 
 } // namespace sunbright::gcnport_boot

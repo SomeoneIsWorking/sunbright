@@ -66,6 +66,10 @@ gcnport::HookResult GuestViewportProbe::operator()(gcnport::GuestContext& guest)
         farthestZ_ = std::fmax(farthestZ_, farZ);
     }
     rectangles_.add(rectangle);
+    if (entry_ == Entry::Viewport && screenSpace_ != nullptr) {
+        screenSpace_->set_viewport(std::get<0>(rectangle), std::get<1>(rectangle),
+                                   std::get<2>(rectangle), std::get<3>(rectangle));
+    }
 
     if (reports_ < maxReports_) {
         reports_ += 1;

@@ -59,6 +59,18 @@ const char* name(GuestProjectionError error) noexcept {
     return "unknown";
 }
 
+const char* name(GuestOrthographicScreenError error) noexcept {
+    switch (error) {
+    case GuestOrthographicScreenError::None:
+        return "none";
+    case GuestOrthographicScreenError::NotOrthographic:
+        return "not orthographic";
+    case GuestOrthographicScreenError::DegenerateScale:
+        return "degenerate scale";
+    }
+    return "unknown";
+}
+
 const char* name(GuestProjectionKind kind) noexcept {
     switch (kind) {
     case GuestProjectionKind::Perspective:
@@ -102,6 +114,32 @@ GuestProjectionError read_guest_projection(const GuestMemory& memory, GuestAddre
     out = native_render::with_zero_to_one_clip_depth(read);
     kind = readKind;
     return GuestProjectionError::None;
+}
+
+GuestOrthographicScreenError read_orthographic_screen(const native_render::Matrix4x4& projection,
+                                                      GuestProjectionKind kind,
+                                                      GuestOrthographicScreen& out) noexcept {
+    if (kind != GuestProjectionKind::Orthographic) {
+        return GuestOrthographicScreenError::NotOrthographic;
+    }
+    const std::array<float, MATRIX_VALUES>& m = projection.value;
+    const float horizontalScale = m[0];
+    const float verticalScale = m[5];
+    if (!std::isnormal(horizontalScale) || !std::isnormal(verticalScale)) {
+        return GuestOrthographicScreenError::DegenerateScale;
+    }
+    // `m00 * x + m03` maps left to -1 and right to +1, so each edge is one division.
+    GuestOrthographicScreen screen{};
+    screen.left = (-1.0F - m[3]) / horizontalScale;
+    screen.right = (1.0F - m[3]) / horizontalScale;
+    screen.top = (1.0F - m[7]) / verticalScale;
+    screen.bottom = (-1.0F - m[7]) / verticalScale;
+    if (!std::isfinite(screen.left) || !std::isfinite(screen.right) || !std::isfinite(screen.top) ||
+        !std::isfinite(screen.bottom)) {
+        return GuestOrthographicScreenError::DegenerateScale;
+    }
+    out = screen;
+    return GuestOrthographicScreenError::None;
 }
 
 } // namespace sb::title_adapter

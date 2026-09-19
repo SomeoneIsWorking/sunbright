@@ -9,6 +9,7 @@
 
 #include "gcnport/guest_context.h"
 #include "gcnport/native_hooks.h"
+#include "guest_screen_space.h"
 
 namespace sunbright::gcnport_boot {
 
@@ -34,9 +35,11 @@ class GuestViewportProbe {
     // is the whole reason a probe has to be told rather than infer.
     enum class Entry : std::uint8_t { Viewport, Scissor };
 
-    GuestViewportProbe(Entry entry, const FrameDrawBudget* budget,
+    // `screen_space` may be null, and is fed only by the viewport entry: the scissor discards
+    // outside a region, it does not say what a coordinate means.
+    GuestViewportProbe(Entry entry, const FrameDrawBudget* budget, GuestScreenSpace* screen_space,
                        std::uint64_t max_reports) noexcept
-        : entry_(entry), budget_(budget), maxReports_(max_reports) {}
+        : entry_(entry), budget_(budget), screenSpace_(screen_space), maxReports_(max_reports) {}
 
     gcnport::HookResult operator()(gcnport::GuestContext& guest);
 
@@ -56,6 +59,7 @@ class GuestViewportProbe {
 
     Entry entry_ = Entry::Viewport;
     const FrameDrawBudget* budget_ = nullptr;
+    GuestScreenSpace* screenSpace_ = nullptr;
     std::uint64_t maxReports_ = 0;
     std::uint64_t entries_ = 0;
     std::uint64_t reports_ = 0;
