@@ -137,6 +137,30 @@ void GuestFrameRenderer::seal_frame() {
     }
 }
 
+void GuestFrameRenderer::end_offscreen_pass(bool cleared) {
+    if (!collecting_) {
+        return;
+    }
+    if (!cleared) {
+        passesKept_ += 1;
+        return;
+    }
+    passesDropped_ += 1;
+    auto& bridge = sb::native_render::semantic_frame_bridge();
+    // Sealed and not encoded: sealing is how the bridge ends a frame's collection, and leaving it
+    // unencoded is what makes this a drop rather than a second visible frame.
+    if (!bridge.seal()) {
+        sealFailures_ += 1;
+        record(firstError_, bridge.last_error());
+        return;
+    }
+    if (!bridge.begin()) {
+        beginFailures_ += 1;
+        record(firstError_, bridge.last_error());
+        collecting_ = false;
+    }
+}
+
 bool GuestFrameRenderer::finish(std::string& error) {
     if (!started_) {
         return true;
@@ -207,6 +231,11 @@ void GuestFrameRenderer::report() const {
                         imagePath_.c_str());
         }
     }
+    std::printf("gmse01_boot:   %llu offscreen pass(es) dropped at a clearing framebuffer copy, "
+                "%llu kept at a copy that did not clear; no pass was rendered into a target a "
+                "later draw could sample\n",
+                static_cast<unsigned long long>(passesDropped_),
+                static_cast<unsigned long long>(passesKept_));
     std::printf("gmse01_boot:   %llu seal failure(s), %llu encode failure(s), %llu begin "
                 "failure(s); first error: %s\n",
                 static_cast<unsigned long long>(sealFailures_),

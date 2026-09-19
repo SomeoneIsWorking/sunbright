@@ -30,6 +30,7 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                      "[--read-lighting <hex-addr>[:<reports>] ...] "
                      "[--read-models <hex-addr>[:<reports>]] "
                      "[--read-projections <hex-addr>[:<reports>]] "
+                     "[--read-efb texture|display|source|clear:<hex-addr>[:<reports>] ...] "
                      "[--render-frames <hex-addr>] [--dump-frame <path>] "
                      "[--dump-frame-index <n>] [--draw-mode normal|family-map|opaque] "
                      "[--draw-skip <n>] [--draw-limit <n>] [--draw-log-frame <n>]\n",
@@ -347,6 +348,62 @@ bool parse_boot_options(int argc, char** argv, BootRequest& request) {
                 request.projection_probe_reports = parsed;
             }
             request.projection_probe_addresses.push_back(address);
+        } else if (name == "--read-efb") {
+            // <kind>:<hex-addr>[:<reports>], with kind one of texture, display, source, clear.
+            // In GMSE01 those are GXCopyTex 0x8035ee5c, GXCopyDisp 0x8035ecec, GXSetTexCopySrc
+            // 0x8035e388 and GXSetCopyClear 0x8035ea40. The kind is named rather than inferred
+            // from the address: the four entries take different arguments, and guessing wrong
+            // would report a width as a clear flag without ever saying so.
+            constexpr u64 DEFAULT_REPORTS = 8;
+            const std::string_view text(value);
+            const std::size_t separator = text.find(':');
+            if (separator == std::string_view::npos) {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-efb needs <kind>:<hex-addr>[:<reports>], "
+                             "got '%s'\n",
+                             value);
+                return false;
+            }
+            const std::string_view kind = text.substr(0, separator);
+            EfbCopyProbeRequest probe;
+            if (kind == "texture") {
+                probe.entry = GuestEfbCopyProbe::Entry::CopyToTexture;
+            } else if (kind == "display") {
+                probe.entry = GuestEfbCopyProbe::Entry::CopyToDisplay;
+            } else if (kind == "source") {
+                probe.entry = GuestEfbCopyProbe::Entry::SetTextureSource;
+            } else if (kind == "clear") {
+                probe.entry = GuestEfbCopyProbe::Entry::SetClear;
+            } else {
+                std::fprintf(stderr,
+                             "gmse01_boot: --read-efb kind must be texture, display, source or "
+                             "clear, got '%.*s'\n",
+                             static_cast<int>(kind.size()), kind.data());
+                return false;
+            }
+            const char* const address_text = value + separator + 1;
+            char* end = nullptr;
+            if (!ParseGuestAddress(address_text, &end, probe.address) ||
+                (*end != '\0' && *end != ':')) {
+                std::fprintf(stderr, "gmse01_boot: --read-efb needs a hex address, got '%s'\n",
+                             address_text);
+                return false;
+            }
+            request.efb_copy_probe_reports = DEFAULT_REPORTS;
+            if (*end == ':') {
+                const char* const reports_text = end + 1;
+                errno = 0;
+                const unsigned long long parsed = std::strtoull(reports_text, &end, 0);
+                if (end == reports_text || *end != '\0' || errno == ERANGE) {
+                    std::fprintf(stderr,
+                                 "gmse01_boot: --read-efb report count must be an integer, "
+                                 "got '%s'\n",
+                                 reports_text);
+                    return false;
+                }
+                request.efb_copy_probe_reports = parsed;
+            }
+            request.efb_copy_probes.push_back(probe);
         } else if (name == "--read-lighting") {
             // <hex-addr>[:<reports>]. The address is TLightCommon::setLight (0x80229a30 in GMSE01)
             // or its TLightMario override (0x80229610); pass the flag twice to cover both. The

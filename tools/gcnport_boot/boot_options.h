@@ -12,6 +12,7 @@
 #include <sunbright/title_adapter/guest_j3d_shape.h>
 
 #include "guest_draw_publisher.h"
+#include "guest_efb_copy_probe.h"
 
 // What one invocation of the GMSE01 boot diagnostic asks for, and the parser that produces it.
 //
@@ -151,6 +152,14 @@ struct SuperCall {
 // out-of-range argument from a legitimately large one.
 [[nodiscard]] bool ParseGuestAddress(const char* text, char** end, u32& address);
 
+// One --read-efb request. The kind is carried separately from the address because the four GX
+// entries that read the embedded framebuffer take different arguments and mean different things,
+// and a probe that did not know which one it sat on could only report that something happened.
+struct EfbCopyProbeRequest {
+    GuestEfbCopyProbe::Entry entry = GuestEfbCopyProbe::Entry::CopyToTexture;
+    u32 address = 0;
+};
+
 // Everything one invocation of this tool asks for, past the image itself. These arrived as
 // positional parameters until there were five of them, at which point the call site said nothing
 // about which flag each one came from.
@@ -172,6 +181,8 @@ struct BootRequest {
     u64 model_probe_reports = 0;
     std::vector<u32> shape_probe_addresses;
     u64 shape_probe_reports = 0;
+    std::vector<EfbCopyProbeRequest> efb_copy_probes;
+    u64 efb_copy_probe_reports = 0;
     // Where the title finishes a frame. Supplying one turns the run from counting its draws into
     // rendering them: the process frame bridge takes the sink, and each entry here seals what the
     // title submitted and encodes it through the shipping passes.

@@ -853,6 +853,63 @@ does not exist when a mesh is decoded and which the toon families already resolv
 fragment programs. Those are counted as deferred and their authored values left alone; refusing the
 draw instead removed half the scene, which is how the distinction was found.
 
+#### Where the title copies the embedded framebuffer
+
+The console holds one framebuffer and a title may finish with it several times in a frame: render a
+pass, copy the result into a texture, clear, and render the visible scene over the top. This
+renderer composed every draw of a frame into one image, so an offscreen pass landed in the frame the
+player sees -- which looks exactly like a blending defect and is not one.
+
+`--read-efb <kind>:<hex-addr>[:<reports>]` measures those boundaries. `tools/gcnport_boot/
+guest_efb_copy_probe.cpp` hooks the four GX entries that read the framebuffer -- `GXCopyTex`
+(`0x8035ee5c`), `GXCopyDisp` (`0x8035ecec`), `GXSetTexCopySrc` (`0x8035e388`) and `GXSetCopyClear`
+(`0x8035ea40`) -- names the kind on the command line rather than inferring it from the address, and
+records for each copy how many of the frame's draws preceded it, what region it read, and whether it
+cleared. Every entry still calls the original, so the title copies exactly as it did.
+
+Measured over one 1,400,000,000-block run of the attract cycle, 0 Dolphin alerts:
+
+    copy to texture: 1,708 entries; 854 cleared the buffer afterwards
+      draws offered before the copy: 26=854  49..61=854
+    copy to display: 4,005 entries; 4,005 cleared
+    source regions: 0,0 256x256=854   0,0 640x448=854
+
+**Every rendered frame is three passes, and the first boundary falls at exactly 26 draws.** The
+256x256 copy that clears is the mirror stage: `TMarDirector::initECTMir`
+(`decomp/sms/src/System/MarDirectorInitECT.cpp`) hands the mirror camera's own texture object to the
+`JDrama::TEfbCtrlTex` named `鏡描画ステージ`, and `TEfbCtrlTex::perform` is the single site in the
+title that issues `GXSetTexCopySrc`/`GXCopyTex`. The 640x448 copy that does not clear is
+`通常シーン描画ステージ`, which fills `スクリーンテクスチャ`. The two independent readings agree:
+the guest's own region sizes match the source the decomp names for each stage, and the clear flag
+matches which of the two has to leave the buffer empty.
+
+`GuestFrameRenderer::end_offscreen_pass` now honours that boundary. A copy that clears ends the
+pass: the collected frame is sealed and dropped, and the next one starts empty, which is what the
+console's buffer does. A copy that does not clear leaves the collection alone. The copy to the
+display is deliberately not a boundary here -- the frame seam already seals and reopens the frame,
+and ending a pass there would drop the visible image before anything encoded it.
+
+**Over half of every frame's geometry was an offscreen pass.** The same run, with and without the
+boundary: 59,530 models and 10,341,666 vertices reached the passes before, 37,784 models and
+4,669,047 after.
+
+**It is not the over-bright cause, and that is a measurement rather than an expectation.** Frame
+3600 rendered with the boundary and without it is **byte-identical** -- 0 differing pixels of
+286,720, 40.43% pure white either way. The mirror pass was entirely overwritten by the visible scene
+that followed it, which is consistent with the earlier bisection finding 0.0% pure white at a bound
+of 26 draws. The pass boundary is faithful and halves the work; the brightness enters after it.
+
+What the boundary does **not** yet do is produce the texture. A dropped pass is not rendered into a
+target a later draw can sample, so a material that reads the mirror or screen texture still reads
+whatever it was bound to; the renderer's report counts the dropped and kept passes so that gap
+cannot be mistaken for faithfulness.
+
+The measurement names the next owner. A 256x256 copy out of a 640x448 framebuffer means the title
+draws into a region smaller than the target, and this renderer has no viewport: every draw is
+rasterised against the full 640x448. That is the remaining candidate for a draw covering 82.9% of
+the frame when the console would have confined it, and `GXSetViewport`/`GXSetScissor` are the next
+scope.
+
 
 **GMSE01's geometry now reaches the renderer's own sink as a `native_render::ModelDraw`.** Every
 part measured separately -- shape, pose, material, textures, stage light, projection -- is composed

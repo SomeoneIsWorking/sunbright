@@ -57,6 +57,7 @@
 #include "UICommon/UICommon.h"
 #include "boot_options.h"
 #include "gcnport/dolphin_adapter.h"
+#include "guest_efb_copy_probe.h"
 #include "guest_frame_renderer.h"
 #include "guest_lighting_probe.h"
 #include "guest_material_probe.h"
@@ -64,6 +65,7 @@
 #include "guest_projection_probe.h"
 #include "guest_report.h"
 #include "guest_shape_probe.h"
+#include "probe_installation.h"
 
 namespace sunbright::gcnport_boot {
 namespace {
@@ -362,20 +364,16 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
         // callback's context -- hence the indirection rather than a vector of values that would
         // rehome its elements on the next push_back.
         gcnport::DolphinRuntimeAdapter adapter(system, runtime);
-        std::vector<std::unique_ptr<CountedCall>> counted_calls;
-        for (const u32 address : request.counted_call_addresses) {
-            counted_calls.push_back(std::make_unique<CountedCall>(CountedCall{.address = address}));
-            adapter.install_hook({.identity = adapter.identity(), .address = address},
-                                 std::ref(*counted_calls.back()));
-            if (!runtime.HasNativeHook(address)) {
-                std::fprintf(stderr,
-                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
-                             "a count it could not have measured\n",
-                             address);
-                std::exit(1);
-            }
-            std::printf("gmse01_boot: counting entries to 0x%08x\n", address);
-        }
+        const std::vector<std::unique_ptr<CountedCall>> counted_calls =
+            install_guest_probes<CountedCall>(
+                adapter, runtime, request.counted_call_addresses,
+                "report a count it could not have measured",
+                [](u32 address) {
+                    return std::make_unique<CountedCall>(CountedCall{.address = address});
+                },
+                [](u32 address) {
+                    std::printf("gmse01_boot: counting entries to 0x%08x\n", address);
+                });
 
         std::vector<std::unique_ptr<SuperCall>> super_calls;
         for (const SuperCall& requested : request.super_calls) {
@@ -433,25 +431,20 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
                         address, static_cast<unsigned long long>(request.lighting_probe_reports));
         }
 
-        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestProjectionProbe>>
-            projection_probes;
-        for (const u32 address : request.projection_probe_addresses) {
-            projection_probes.push_back(
-                std::make_unique<sunbright::gcnport_boot::GuestProjectionProbe>(
-                    request.projection_probe_reports));
-            adapter.install_hook({.identity = adapter.identity(), .address = address},
-                                 std::ref(*projection_probes.back()));
-            if (!runtime.HasNativeHook(address)) {
-                std::fprintf(stderr,
-                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
-                             "projections it could not have read\n",
-                             address);
-                std::exit(1);
-            }
-            std::printf("gmse01_boot: reading guest projections at 0x%08x (first %llu reported in "
-                        "full)\n",
-                        address, static_cast<unsigned long long>(request.projection_probe_reports));
-        }
+        const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestProjectionProbe>>
+            projection_probes = install_guest_probes<sunbright::gcnport_boot::GuestProjectionProbe>(
+                adapter, runtime, request.projection_probe_addresses,
+                "report projections it could not have read",
+                [&](u32) {
+                    return std::make_unique<sunbright::gcnport_boot::GuestProjectionProbe>(
+                        request.projection_probe_reports);
+                },
+                [&](u32 address) {
+                    std::printf("gmse01_boot: reading guest projections at 0x%08x (first %llu "
+                                "reported in full)\n",
+                                address,
+                                static_cast<unsigned long long>(request.projection_probe_reports));
+                });
 
         // Installed before the model probes on purpose: the publisher claims a counting sink the
         // first time it publishes, and the process has one sink. Activating the bridge first is
@@ -487,42 +480,68 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             }
         }
 
-        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestModelProbe>> model_probes;
-        for (const u32 address : request.model_probe_addresses) {
-            model_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestModelProbe>(
-                request.shape_probe_system, request.model_probe_reports, request.draw_mode,
-                &draw_budget, request.draw_log_frame));
-            adapter.install_hook({.identity = adapter.identity(), .address = address},
-                                 std::ref(*model_probes.back()));
-            if (!runtime.HasNativeHook(address)) {
-                std::fprintf(stderr,
-                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
-                             "draws it could not have composed\n",
-                             address);
-                std::exit(1);
-            }
-            std::printf("gmse01_boot: composing guest draws at 0x%08x through j3dSys 0x%08x (first "
-                        "%llu reported in full)\n",
-                        address, request.shape_probe_system,
-                        static_cast<unsigned long long>(request.model_probe_reports));
-        }
+        const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestModelProbe>> model_probes =
+            install_guest_probes<sunbright::gcnport_boot::GuestModelProbe>(
+                adapter, runtime, request.model_probe_addresses,
+                "report draws it could not have composed",
+                [&](u32) {
+                    return std::make_unique<sunbright::gcnport_boot::GuestModelProbe>(
+                        request.shape_probe_system, request.model_probe_reports, request.draw_mode,
+                        &draw_budget, request.draw_log_frame);
+                },
+                [&](u32 address) {
+                    std::printf("gmse01_boot: composing guest draws at 0x%08x through j3dSys "
+                                "0x%08x (first %llu reported in full)\n",
+                                address, request.shape_probe_system,
+                                static_cast<unsigned long long>(request.model_probe_reports));
+                });
 
-        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMaterialProbe>> material_probes;
-        for (const u32 address : request.material_probe_addresses) {
-            material_probes.push_back(std::make_unique<sunbright::gcnport_boot::GuestMaterialProbe>(
-                request.material_probe_reports));
-            adapter.install_hook({.identity = adapter.identity(), .address = address},
-                                 std::ref(*material_probes.back()));
-            if (!runtime.HasNativeHook(address)) {
-                std::fprintf(stderr,
-                             "gmse01_boot: the hook at 0x%08x did not install; refusing to report "
-                             "materials it could not have read\n",
-                             address);
-                std::exit(1);
-            }
-            std::printf("gmse01_boot: reading guest J3D materials at 0x%08x (first %llu reported "
-                        "in full)\n",
-                        address, static_cast<unsigned long long>(request.material_probe_reports));
+        const std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestMaterialProbe>>
+            material_probes = install_guest_probes<sunbright::gcnport_boot::GuestMaterialProbe>(
+                adapter, runtime, request.material_probe_addresses,
+                "report materials it could not have read",
+                [&](u32) {
+                    return std::make_unique<sunbright::gcnport_boot::GuestMaterialProbe>(
+                        request.material_probe_reports);
+                },
+                [&](u32 address) {
+                    std::printf("gmse01_boot: reading guest J3D materials at 0x%08x (first %llu "
+                                "reported in full)\n",
+                                address,
+                                static_cast<unsigned long long>(request.material_probe_reports));
+                });
+
+        // The embedded-framebuffer boundaries, installed after the draw budget exists because
+        // that is what tells a copy where in the frame it fell. Each request names its own entry,
+        // so they go in one at a time rather than as one set of addresses.
+        std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestEfbCopyProbe>> efb_copy_probes;
+        for (const sunbright::gcnport_boot::EfbCopyProbeRequest& probe : request.efb_copy_probes) {
+            const std::array<u32, 1> address{probe.address};
+            std::vector<std::unique_ptr<sunbright::gcnport_boot::GuestEfbCopyProbe>> installed =
+                install_guest_probes<sunbright::gcnport_boot::GuestEfbCopyProbe>(
+                    adapter, runtime, address, "report framebuffer copies it could not have seen",
+                    [&](u32) {
+                        return std::make_unique<sunbright::gcnport_boot::GuestEfbCopyProbe>(
+                            probe.entry, &draw_budget,
+                            frame_renderer.started() ? &frame_renderer : nullptr,
+                            request.efb_copy_probe_reports);
+                    },
+                    [&](u32 installed_address) {
+                        const bool ends_a_pass =
+                            probe.entry ==
+                                sunbright::gcnport_boot::GuestEfbCopyProbe::Entry::CopyToTexture &&
+                            frame_renderer.started();
+                        std::printf(
+                            "gmse01_boot: reading guest %s at 0x%08x (first %llu reported "
+                            "in full)%s\n",
+                            sunbright::gcnport_boot::GuestEfbCopyProbe::entry_name(probe.entry),
+                            installed_address,
+                            static_cast<unsigned long long>(request.efb_copy_probe_reports),
+                            ends_a_pass ? "; a copy that clears ends the pass and the frame "
+                                          "renderer drops what it collected"
+                                        : "");
+                    });
+            efb_copy_probes.push_back(std::move(installed.front()));
         }
 
         std::vector<GuestWatch> guest_watches = request.guest_watches;
@@ -791,6 +810,9 @@ void RunBoot(const DolImage& image, const BootRequest& request) {
             probe->report();
         }
         for (const auto& probe : model_probes) {
+            probe->report();
+        }
+        for (const auto& probe : efb_copy_probes) {
             probe->report();
         }
         for (const auto& seam : frame_seams) {

@@ -54,6 +54,19 @@ class GuestFrameRenderer {
     // boundary -- a renderer that stopped working halfway is a result, and an aborted run is not.
     void seal_frame();
 
+    // The title finished an offscreen pass by copying the embedded framebuffer into a texture.
+    //
+    // `cleared` is the copy's own clear flag, and it is the whole of the decision. The console
+    // holds one framebuffer: a copy that clears leaves it empty, so the draws collected since the
+    // last boundary ended up in the copy's texture and not in the visible image, and carrying them
+    // forward would paint an offscreen pass over the frame the player sees. A copy that does not
+    // clear leaves the buffer exactly as it was, and those draws go on to be part of the frame.
+    //
+    // What this does not do is produce the texture. The pass is dropped rather than rendered into
+    // a target the later draws could sample, so a material that reads one still reads whatever it
+    // was bound to; that gap is counted here so it cannot be mistaken for faithfulness.
+    void end_offscreen_pass(bool cleared);
+
     [[nodiscard]] bool finish(std::string& error);
     void report() const;
 
@@ -72,6 +85,8 @@ class GuestFrameRenderer {
     bool started_ = false;
     bool collecting_ = false;
     std::uint64_t seams_ = 0;
+    std::uint64_t passesDropped_ = 0;
+    std::uint64_t passesKept_ = 0;
     std::uint64_t sealFailures_ = 0;
     std::uint64_t encodeFailures_ = 0;
     std::uint64_t beginFailures_ = 0;
