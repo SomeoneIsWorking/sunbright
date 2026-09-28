@@ -1559,31 +1559,45 @@ this DOL's header BSS range overlaps DATA6, which aborts the shared loader; and
 `#@runtime Jython` scripts cannot run at all.
 
 Gap (corrected 2026-10-01; unchanged in kind): 43 files were known to be behind upstream at the
-sync; measured per file against upstream's line counts, it is now **33 files, 2,085 lines** behind
-(vs 256 files and 11,540 lines where this fork is AHEAD of upstream, because the fork's recovered
+sync; measured per file against upstream's line counts, it is now **30 files, 1,429 lines** behind
+(vs 329 files where this fork is AHEAD of or level with upstream, because the fork's recovered
 source and native ports predate or extend upstream's). Four files need field-name reconciliation
 and `TPortArgs::unk1C`/`unk20` are unnamed. The largest single debts are
-`MarioUtil/ShadowUtil.cpp` (579, the hand-merged native shadow implementation),
-`GC2D/SelectMenu.cpp` (305), `Enemy/BathtubKiller.cpp` (298) and
-`J3D/J3DGraphBase/J3DTransform.cpp` (275). Each needs a per-file decision about whether the native
-port owns that behavior before upstream's version is taken — a line count is a way to rank the
-work, not evidence that taking upstream's copy is right. (The first attempt to measure this
-inverted `git diff --numstat`'s columns and produced a "266 files behind" figure that was simply
-backwards; the numbers above compare the two trees' line counts directly.)
+`MarioUtil/ShadowUtil.cpp` (579), `MoveBG/MapObjTree.cpp` (134, upstream would add 8 methods),
+`Enemy/generator.cpp` (74, +4 methods) and `MoveBG/MapObjRailBlock.cpp` (52). Each needs a
+per-file decision about whether the native port owns that behavior before upstream's version is
+taken — a line count is a way to rank the work, not evidence that taking upstream's copy is right.
+(The first attempt to measure this inverted `git diff --numstat`'s columns and produced a "266
+files behind" figure that was simply backwards; the numbers above compare the two trees' line
+counts directly.)
 
-`GC2D/GCConsole2.cpp` is the one that is now converged, and it is the shape of the rest. The fork
-held 3079 lines against upstream's 4026, but the difference was not drift: our `perform` was an
-8-line stage-1 hand port written because upstream shipped an empty stub and `sms-boot` drew no HUD
-at all, and upstream has since decompiled the whole method plus sixteen `process*`/`draw*` methods
-the fork never had — exactly the stage its own TODO listed. Taking upstream's file and re-applying
-the fork's region-tolerance null guards (a US archive lacks panes that the GC one has), the
-life-meter tag-arithmetic transcription note, and the retail addresses (perform @ 0x8014083c,
-gauges at 0x801492a4 / 0x801441e0 / 0x80144840) closed both stages at once and removed 947 lines
-of debt. The "convergence scripts are still in scratch/" claim in the earlier note was stale and is
-withdrawn: the loss check and its triage both live in the promoted `tools/re/convergence_loss.py`,
-and 355 of 355 local-delta files are intact. What is still missing is the gameplay arm
-(`converge`/`audit` refuse, by design, because the executor that provided them is retired) and any
-check better than marker text for deciding whether to adopt upstream's copy of a file. Issue 38
+Three files are now converged, and they are the shape the rest of the CONVERGE class is: upstream
+has since decompiled what the fork had stubbed, so the work is taking upstream's copy and
+re-applying the fork's evidence, its region-tolerance null guards and its maintainer diagnostics.
+`GC2D/GCConsole2.cpp` (-947) closed both stages of a hand-ported `perform` that existed because
+upstream shipped an empty stub, keeping the region guards, the life-meter tag-arithmetic
+transcription note and the retail addresses (perform @ 0x8014083c, gauges at 0x801492a4 /
+0x801441e0 / 0x80144840). `Enemy/BathtubKiller.cpp` (-298) restored ~25 stubbed bodies
+(`perform(u32, JDrama::TGraphics*) { }` and its siblings) and the retail param defaults the fork
+had replaced with a uniform 0/5/40/15 scaffolding pattern in `ab285a7e`, whose message records no
+reason. `GC2D/SelectMenu.cpp` + its header (-305) adopted upstream's decompilation of the
+file-select class this fork had reconstructed from the DOL, which closed its own "PORT STATUS
+milestone 2" note: upstream now has `startOpenWindow`, `startCloseWindow`, `startMove`,
+`getPrevIndex`, `getNextIndex` and the `SelectMenuState` machine. All three kept their DOL anchors
+and their `SB_SEL_DBG` diagnostics (including the recursive J2D pane-tree dump that is how the
+file-select layout was read while the class was empty), and the `convergence_loss.py` check
+reports 355 of 355 local-delta files intact after each.
+
+The "convergence scripts are still in scratch/" claim in the earlier note was stale and is
+withdrawn: the loss check and its triage both live in the promoted
+`tools/re/convergence_loss.py`. What is still missing is the gameplay arm (`converge`/`audit`
+refuse, by design, because the executor that provided them is retired) and any check better than
+marker text for deciding whether to adopt upstream's copy of a file. That decision is now at
+least a queue rather than a number: `tools/decomp/convergence_debt.py` splits the debt into 27
+files that are mechanical CONVERGE and 3 that need a DECIDE (`MarioUtil/ShadowUtil.cpp`'s `sb_*`
+native shadow reimplementation, which `J3DModel.cpp` and `J3DCluster.cpp` call, plus
+`SelectDir.cpp`'s `sel_dbg` and `MSoundMainSide.cpp`'s `vec_dist`), and it matches methods we hold
+under one name against upstream's by signature so a rename is not mistaken for fork work. Issue 38
 tracks this.
 
 **2026-10-01: the decomp parses again, and the gate that proves it now runs in the verifier.**

@@ -110,6 +110,43 @@ file, which is the falsified history C044 records. The compile arm now has a
 real replacement (issue 39, `tools/decomp/hostcheck.py`); the gameplay arm has
 none and this issue stays open for it.
 
+**And the standing debt is now a ranked, pre-classified queue rather than a
+number.** `tools/decomp/convergence_debt.py` measures both trees' line counts
+per file and sorts the 32 files / 1,787 lines we are behind into two classes
+that need different work: 29 **CONVERGE** (upstream has the recovered source and
+we own nothing it lacks — take it, re-apply our deltas, and `convergence_loss.py`
+plus `hostcheck` check the result), and 3 **DECIDE** (our side defines functions
+upstream does not have, so a merge would delete them). Those three are
+`MarioUtil/ShadowUtil.cpp` (the `sb_*` native shadow reimplementation, called
+from `J3DModel.cpp` and `J3DCluster.cpp`, so it is a rewiring and not a stray
+helper), `GC2D/SelectDir.cpp` (`sel_dbg`) and `System/MSoundMainSide.cpp`
+(`vec_dist`). A DECIDE entry is a prompt to look, not a verdict.
+
+The classifier earns that split by matching a method we still have under one
+name against one upstream has under another, by signature. It was wrong twice
+before it was right, and both errors are in its self-test: it paired two
+same-signature methods on *different classes* as a rename (which would hide a
+real method from the DECIDE class), and it compared one physical line at a time,
+so `TSelectMenu::setup` did not match upstream's `initData` because the decomp
+wraps that parameter list across two lines — a false DECIDE, which is the error
+that never gets fixed. `SelectMenu.cpp` is 305 lines of mechanical convergence
+that the first version of this tool would have deferred forever.
+
+Two files have been converged by hand with that procedure — `GCConsole2.cpp`
+(-947 lines), `BathtubKiller.cpp` (-298) and `SelectMenu.cpp` + its header (-305) — and each is
+the shape the rest of the CONVERGE class is: upstream has since decompiled what the fork had
+stubbed or reconstructed, and the work is taking upstream's copy while re-applying the fork's DOL
+anchors, region-tolerance null guards, transcription-bug notes and `SB_SEL_DBG` maintainer
+diagnostics. `convergence_loss.py` reports 355 of 355 local-delta files intact after all three,
+and `hostcheck` is 580/580 in both build modes. Current debt: 30 files, 1,429 lines, 27 CONVERGE
+and 3 DECIDE.
+
+The classifier has a stated limit, found while using it: it compares function
+*definitions*, so a file whose bodies the fork rewrote inline reads as CONVERGE
+even though converging means re-applying hundreds of body-level lines.
+`SelectMenu.cpp` is 334 fork lines and was still the right call, but that is a
+judgement this tool cannot make for you.
+
 ## The 43 held files
 
 Recorded here rather than left in `scratch/`, which is gitignored and gets wiped.

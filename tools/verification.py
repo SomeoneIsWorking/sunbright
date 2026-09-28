@@ -51,6 +51,7 @@ def gate_steps() -> tuple[Step, ...]:
                 "tools/render/shader_toolchain.py",
                 "tools/decomp/hostcheck.py",
                 "tools/decomp/stale_names.py",
+                "tools/decomp/convergence_debt.py",
             ),
         ),
         python_step("pinned shader toolchain", "tools/render/shader_toolchain.py"),
