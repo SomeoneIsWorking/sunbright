@@ -9,9 +9,9 @@
 //
 // A separate owner from the renderer because it is a file format, not a frame lifetime: it knows
 // nothing about GPUs, bridges or the guest, and the renderer knows nothing about pixel layouts on
-// disk. P6 is the format this repository's own comparison tools already read
-// (`tools/render/ab_diff.py`, `tools/render/sb_oracle_diff.py`), so a frame written here can be
-// diffed against a Dolphin capture without a converter in between.
+// disk. P6 is the format this repository's comparison tool already reads
+// (`tools/render/frame_diff.py`), so a frame written here can be diffed against a Dolphin capture
+// without a converter in between.
 
 namespace sunbright::gcnport_boot {
 

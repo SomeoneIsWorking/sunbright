@@ -70,7 +70,8 @@ tools/               Python verification, RE, oracle parsing, and diagnostics
   tools/interp/        presentation-analysis tooling
   tools/perf/          bounded performance probes
   tools/render/        renderer and GPU diagnostic tooling; boot_run.py owns the producer flag set a
-                       render run attaches, so the list is not retyped per run
+                       render run attaches, so the list is not retyped per run, and frame_diff.py
+                       owns comparing a rendered frame against an oracle one
   tools/gcnport_boot/  standalone maintainer diagnostic (gmse01_boot.cpp + boot_options.cpp and one
                        probe per guest seam: shape, material, lighting, model, projection,
                        framebuffer copy, viewport/scissor, J2D screen, picture, window, solid
