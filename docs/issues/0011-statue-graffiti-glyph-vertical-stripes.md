@@ -54,7 +54,7 @@ gameplay boots (S008) before being trusted:
   screen-texture copies (which recur every frame) exhaust it long before a rare graffiti-canvas
   copy gets a turn — the fix is a small per-destination-pointer budget, not a bigger global one; and
   (b) the graffiti canvas paint is an immediate-mode ortho pass (`TEfbCtrlTex::perform`,
-  `decomp/sms/src/JSystem/JDrama/JDREfbCtrl.cpp` + `initECTGft` in
+  `decomp/sms/libs/JSystem/src/JDrama/JDREfbCtrl.cpp` + `initECTGft` in
   `decomp/sms/src/System/MarDirectorInitECT.cpp`), never a named `J3DDrawBuffer` marker, so even a
   captured copy would need identifying by raw `dest=` pointer rather than by `mark=`.
 - **Reframing finding**: with copydbg fixed, `SB_EFBTEX_DBG=1` produced ZERO `[efbtex]` lines over a
@@ -68,7 +68,7 @@ gameplay boots (S008) before being trusted:
   registered/loaded), not chasing a copy-parameter bug — but this needs re-confirming on a
   legitimate harness first, since the run that found it should not have existed.
 - Also found and reverted (not landed, same reason): a genuine `sb_host_malloc` reentrant
-  magic-static hazard in `decomp/sms/src/JSystem/JKernel/JKRHeap.cpp` (`SB_LOG_ON` reentry through
+  magic-static hazard in `decomp/sms/libs/JSystem/src/JKernel/JKRHeap.cpp` (`SB_LOG_ON` reentry through
   Lucent's own first-use init aborts the process with `recursive_init_error` on a cold link). This
   is independent of the graffiti bug and will need re-fixing whenever `decomp/sms` next becomes
   reachable from a sanctioned build.

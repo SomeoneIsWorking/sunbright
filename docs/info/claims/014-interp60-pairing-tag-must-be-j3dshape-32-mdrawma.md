@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-04
 tags: interpolation,j3d,re
-depends: decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp#J3DShapePacket::draw
+depends: decomp/sms/libs/JSystem/src/J3D/J3DGraphBase/J3DShape.cpp#J3DShapePacket::draw
 ---
 
 ## Claim

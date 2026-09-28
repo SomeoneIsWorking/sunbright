@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: semantic-renderer,j2d,re
-depends: decomp/sms/src/JSystem/J2D/J2DPicture.cpp#J2DPicture::draw, native-render/src/picture.cpp#resolve_direct_picture_layout
+depends: decomp/sms/libs/JSystem/src/J2D/J2DPicture.cpp#J2DPicture::draw, native-render/src/picture.cpp#resolve_direct_picture_layout
 ---
 
 ## Claim

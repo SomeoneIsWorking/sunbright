@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-07-28
 tags: native-render,re
-depends: decomp/sms/src/dolphin/gx/GXTev.c#GXSetTevColorOp, decomp/sms/src/dolphin/gx/GXTev.c#GXSetTevAlphaOp
+depends: decomp/sms/libs/dolphin/src/gx/GXTev.c#GXSetTevColorOp, decomp/sms/libs/dolphin/src/gx/GXTev.c#GXSetTevAlphaOp
 ---
 
 ## Claim

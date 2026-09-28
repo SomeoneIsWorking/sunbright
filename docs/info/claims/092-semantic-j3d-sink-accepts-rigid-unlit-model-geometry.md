@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: renderer,j3d,semantic
-depends: native-render/src/model.cpp#transform_vertex, decomp/sms/src/JSystem/J3D/J3DGraphBase/J3DShape.cpp#J3DShape::draw
+depends: native-render/src/model.cpp#transform_vertex, decomp/sms/libs/JSystem/src/J3D/J3DGraphBase/J3DShape.cpp#J3DShape::draw
 ---
 
 ## Claim

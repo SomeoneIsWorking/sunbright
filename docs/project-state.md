@@ -101,7 +101,7 @@ Two of this item's three remaining gaps from the previous session are now closed
    disc boot's DOL entry (`CBoot::SetupGameCubeBS2Registers`, reusing Dolphin's own
    `SetupMSR`/`SetupHID`/`SetupBAT` — see `shared/gcnport/docs/dolphin-embedding-contract.md`).
    `gmse01_boot.cpp` now passes this flag and no longer manually guesses a stack pointer: decomp
-   evidence (`decomp/sms/src/dolphin/os/__start.c`'s `__init_registers`) shows GMSE01's own linked
+   evidence (`decomp/sms/libs/dolphin/src/os/__start.c`'s `__init_registers`) shows GMSE01's own linked
    `__start` sets `r1`/`r2`/`r13` itself from the DOL's own `_stack_addr`/`_SDA2_BASE_`/
    `_SDA_BASE_` immediates before any memory access, so a caller-guessed value was an unnecessary
    bandaid.
@@ -723,9 +723,9 @@ answer.
 **The frames can now be looked at.** `SdlSemanticFrameClient` takes an optional sample observer --
 it is handed the sampled frame's own pixels while the readback is still mapped, and answers whether
 it kept them; a refusal fails the encode rather than losing the frame quietly. The boot tool's
-`--dump-frame <path>` writes one frame as a P6 PPM, the format this repository's own comparison
-tools (`tools/render/ab_diff.py`, `tools/render/sb_oracle_diff.py`) already read, so a rendered
-frame can be diffed against a Dolphin capture with no converter in between. Without
+`--dump-frame <path>` writes one frame as a P6 PPM, the format this repository's comparison tool
+(`tools/render/frame_diff.py`) already reads, so a rendered frame can be diffed against a Dolphin
+capture with no converter in between. Without
 `--dump-frame-index`, the frame written is the first one whose pixels differ from the clear and only
 that one is ever downloaded; with it, a named sealed frame is written and every frame up to it is
 downloaded, because the client cannot know a frame is the one wanted without reading it back.
@@ -1513,6 +1513,55 @@ and behavior for camera, water, J2D, J3D, audio, effects, threading, and game sy
 Gap: upstream convergence debt, established-but-unnamed fields, and reachable incomplete bodies
 remain. Each pass must rebase, converge matching ownership units, then extend only from evidence.
 
+**2026-09-28: the 205-commit upstream sync landed, and the fork point finally moved.** `decomp/sms`
+is merged with `doldecomp/sms` at `6ae2aa86`: 205 upstream commits and the relocation of the
+middleware libraries into `libs/<lib>/`, 1,135 files touched. Diverging files fell from 1,194 to
+222, and `rebase_upstream.py status` now reports `0` behind and `already rebased onto upstream?
+YES` for the first time -- the three previous syncs were squash-style and left the fork point stuck
+at `40c2594b`, so the tool could never once report being up to date.
+
+It is a merge, not a rebase. Rebasing 440 already-pushed commits would rewrite published history,
+which the tool explicitly promises never to do, and `-X theirs` interleaves the two sides
+hunk-by-hunk into translation units that do not build.
+
+**The gate that used to arbitrate is gone, and that is the finding.** `sms-boot` left the parent
+build with the retired executor and `run.sh` refuses the decomp runtime by design, so
+`rebase_upstream.py converge` and `audit` cannot run at all; nothing in the tree compiles
+`decomp/sms`. A plain `-X theirs` merge reported no conflicts and would have silently deleted
+verified native work from 43 files -- including JKRHeap.cpp's entire `sb_host_alloc` gate
+(8 occurrences to 0), four `SUNBRIGHT-KEEP` and "Native port of" provenance notes, and the STOPGAP
+in MarNameRefGen_NPC. C044 is re-confirmed with the strongest evidence it has had, precisely
+because no build was left to vouch for the result.
+
+What replaced the gate is the weaker, honest check: no line this fork added may be silently
+dropped, which is verifiable from the diff alone. It reports what it scanned and matched, it
+separates "upstream reworded it" from "the fix is gone" by counting strong marker occurrences
+rather than by line equality, and it treats `uintptr_t`/`intptr_t` as one class because upstream
+independently made several of the same LP64 fixes with the sibling type. The 43 files the merge
+would have stripped are held at our side and named individually; holding a file costs that file's
+upstream improvements, which is the cheap direction, because the alternative is deleting verified
+work silently.
+
+Four audio files kept native code written against field names upstream has just renamed, sitting
+beside upstream's own renamed code in the same function. Two of them did not compile. Every rename
+is taken from a declaration in the tree at the offset the old name encoded -- `unk34` is
+`JAISound::mMainSoundPPointer` (0x34), `unk1` is `mState` (0x1), `unk1850`/`unk1754` are
+`mUpdateData`/`mAutoHeapPosition`, `unk4C`/`unk2C` are `mPlayerParams`/`mCmd`, `unk3C4` is
+`TTrack::mSeqState` -- and none is a guess. `TPortArgs::unk1C`/`unk20` are deliberately still
+unnamed: `docs/re_notes/audio_port_args.md` records what retail does with them and why it is not
+yet enough.
+
+Reading the retail image needed two local Ghidra tools. `tools/re/DolLoadLocal.py` exists because
+this DOL's header BSS range overlaps DATA6, which aborts the shared loader; and
+`tools/re/DecompDumpLocal.py` because this Ghidra 12.0.4 has no Jython extension, so the shared
+`#@runtime Jython` scripts cannot run at all.
+
+Gap (unchanged in kind, smaller in size): 43 files are knowingly behind upstream and need hand
+reconciliation, 4 need field-name reconciliation, `TPortArgs::unk1C`/`unk20` are unnamed, and the
+convergence scripts are still in `scratch/decomp-sync/` rather than promoted to `tools/` — they
+have only ever reported one outcome on a real tree, and a check that has shown one answer is not
+yet an instrument. Issue 38 tracks this.
+
 ### S008 — representative gameplay conformance
 
 The unattended half is measured. In one 4,000,000,558-block run (436.9 s wall, ~9.16M blocks/s,
@@ -1557,6 +1606,23 @@ frame-time behavior on every released host architecture.
 Evidence: the retired executor, its artifacts, selectors, tests, and launch scripts are deleted.
 `tools/migration_boundary.py` scans the first-party tree and has planted positive and negative
 controls that prove those surfaces cannot return. No replacement executor was fabricated.
+
+**2026-09-19: eleven renderer diagnostics were still reading its output.** The boundary scanner
+looks for the executor's own surfaces, and these were not that: they were tools that consumed the
+dumps it produced -- `SB_PARITY_DUMP`, `SB_BLEND_DRILL`, `SB_FRAME_DUMP`, the `SUNBRIGHT_PROBE`
+server, `build-native/sms-boot` frames. Every one of them could still be run, and every one would
+have refused or produced nothing, which is the failure this project spends most of its instrument
+discipline on: a tool that cannot say the other answer. Three of them -- `ab_diff.py`,
+`region_rgb.py`, `title_overbright.py` -- were also three implementations of the same per-region
+mean-RGB comparison.
+
+They are deleted, and the one capability worth keeping is now owned once by
+`tools/render/frame_diff.py`, which reads the P6 the boot tool writes or anything Pillow opens,
+refuses a size mismatch and a frame with no structure in it, and reports whether a delta is additive
+or multiplicative -- the distinction that says whether something is being added to every pixel or a
+gain is being applied to what was there. Its self-test measures zero against an identical frame,
+`+24.00` against a known offset it calls additive, and calls a known 1.6x gain multiplicative, so
+neither the measurement nor the classifier can pass by answering the same thing to everything.
 
 ### S010 — independent evidence infrastructure
 

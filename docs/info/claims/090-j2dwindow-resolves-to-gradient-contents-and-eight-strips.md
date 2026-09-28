@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: semantic-renderer,j2d-window,re
-depends: native-render/src/window.cpp#resolve_window_layout, decomp/sms/src/JSystem/J2D/J2DWindow.cpp#J2DWindow::draw_private
+depends: native-render/src/window.cpp#resolve_window_layout, decomp/sms/libs/JSystem/src/J2D/J2DWindow.cpp#J2DWindow::draw_private
 ---
 
 ## Claim

@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: semantic-renderer,j2d,rectangle,re
-depends: native-render/src/solid_rectangle.cpp#resolve_transformed_s16_rectangle, decomp/sms/src/JSystem/J2D/J2DGrafContext.cpp#J2DGrafContext::fillBox
+depends: native-render/src/solid_rectangle.cpp#resolve_transformed_s16_rectangle, decomp/sms/libs/JSystem/src/J2D/J2DGrafContext.cpp#J2DGrafContext::fillBox
 ---
 
 ## Claim

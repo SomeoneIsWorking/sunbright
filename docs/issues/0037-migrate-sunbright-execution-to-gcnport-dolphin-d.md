@@ -210,7 +210,7 @@ earlier sessions, bringing it to 22/21/19 tests on POSIX x64/Windows x64/POSIX a
 `tools/verify.py --runtime` passes.
 
 `gmse01_boot.cpp` now passes `apply_gamecube_os_init=true` and no longer manually guesses a stack
-pointer: `decomp/sms/src/dolphin/os/__start.c`'s `__init_registers` shows GMSE01's own linked
+pointer: `decomp/sms/libs/dolphin/src/os/__start.c`'s `__init_registers` shows GMSE01's own linked
 `__start` sets `r1`/`r2`/`r13` itself from the DOL's own linked `_stack_addr`/`_SDA2_BASE_`/
 `_SDA_BASE_` immediates before any memory access, so a caller-supplied guess was redundant.
 
@@ -364,7 +364,7 @@ one-block-at-a-time caller settled into `slice_length == 1`, the forced sentinel
 16,384 consecutive dispatches**, with the invariant `ticks + downcount == 30,888` holding throughout.
 No scheduled `CoreTiming` event could ever come due, so the ARAM DMA completion interrupt
 (`INT_ARAM`, `DSP_CONTROL` bit `0x20`) that `DSPManager::Do_ARAM_DMA` had scheduled just 246 ticks
-ahead was never raised, and `__OSInitAudioSystem`'s poll — `decomp/sms/src/dolphin/os/OSAudioSystem.c`
+ahead was never raised, and `__OSInitAudioSystem`'s poll — `decomp/sms/libs/dolphin/src/os/OSAudioSystem.c`
 spins on `while (!(__DSPRegs[5] & 0x20))` — could never exit. The sentinel never bounded anything
 either: `Advance()` reassigns `downcount` from the event queue before the first block runs.
 

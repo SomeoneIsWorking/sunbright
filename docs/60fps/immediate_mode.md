@@ -21,7 +21,7 @@ stepping while the old coverage report incorrectly appeared complete.
 
 ## Why tagging them would do nothing
 
-`JPADrawExecBillBoard::exec` (decomp `decomp/sms/src/JSystem/JParticle/JPADrawVisitor.cpp`):
+`JPADrawExecBillBoard::exec` (decomp `decomp/sms/libs/JSystem/src/JParticle/JPADrawVisitor.cpp`):
 
 ```cpp
 particle->getGlobalPosition(pt);

@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-07-28
 tags: gx,re
-depends: decomp/sms/src/dolphin/gx/GXGeometry.c, decomp/sms/src/dolphin/gx/GXTev.c
+depends: decomp/sms/libs/dolphin/src/gx/GXGeometry.c, decomp/sms/libs/dolphin/src/gx/GXTev.c
 ---
 
 ## Claim

@@ -4,7 +4,7 @@ kind: claim
 status: holds
 created: 2026-08-30
 tags: semantic-renderer,j2d,text,re
-depends: native-render/src/glyph.cpp#resolve_resource_glyph_layout, decomp/sms/src/JSystem/JUtility/JUTResFont.cpp#JUTResFont::drawChar_scale
+depends: native-render/src/glyph.cpp#resolve_resource_glyph_layout, decomp/sms/libs/JSystem/src/JUtility/JUTResFont.cpp#JUTResFont::drawChar_scale
 ---
 
 ## Claim
