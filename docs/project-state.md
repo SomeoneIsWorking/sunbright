@@ -1492,7 +1492,9 @@ lights, fog, and representative material families. Claims C079–C096 record exa
 
 Gap: `decomp/sms` still contains upstream divergence, unnamed fields, and reachable incomplete bodies;
 some live scene evidence is blocked by issue 30's retained-GX invalid wrap state. The decomp remains
-evidence and readable source rather than a second shipping runtime.
+evidence and readable source rather than a second shipping runtime. Its own source now parses in
+both build modes under a gate the canonical verifier runs (2026-10-01, below), so "the decomp does not
+compile" is no longer part of this item's gap.
 
 ### S006 — smooth presentation
 
@@ -1561,6 +1563,41 @@ reconciliation, 4 need field-name reconciliation, `TPortArgs::unk1C`/`unk20` are
 convergence scripts are still in `scratch/decomp-sync/` rather than promoted to `tools/` — they
 have only ever reported one outcome on a real tree, and a check that has shown one answer is not
 yet an instrument. Issue 38 tracks this.
+
+**2026-10-01: the decomp parses again, and the gate that proves it now runs in the verifier.**
+The 2026-09-28 merge left 238 of the 382 game translation units unparseable in the plain
+(C++98) mode and 204 in the native (C++17 + `SMS_NATIVE_PLATFORM`) mode — half-renamed members, an
+include spelled in the wrong case, a header deleted upstream, and, in two files, two definitions of
+the same function where a gutted fork version sat beside upstream's. Nothing noticed, because nothing
+compiled the decomp. That first scan also covered only `src/`; widening it to the middleware under
+`libs/` brings the corpus to 580 units, and `tools/decomp/hostcheck.py` now reports
+**580 clean / 0 broken in each mode**.
+
+Two properties make that number mean something. First, the checker proves it can fail: its
+`--selftest` requires a real TU to come back clean *and* a copy of it referencing a nonexistent
+member to come back naming that field, and it refuses to report a pass on a missing shim or an
+empty scan. Second, the check runs in the canonical gate — `tools/verification.py` has a "decomp
+host compile" step, so a translation unit cannot quietly stop parsing again.
+
+The fixes were convergence, not accommodation: every renamed member was bound to the name the class
+declares at the offset the code already used, every C++11 construct in a shared TU took its C++98
+spelling, the ten port shims that game TUs include *outside* `SMS_NATIVE_PLATFORM` were made
+C++98-parseable (the other eleven, which only native-guarded code reaches, keep their `constexpr`),
+and two bodies that sat under the wrong function name went to the function whose declaration they
+matched. Nothing was stubbed, `#if 0`'d or hidden behind a macro. Issue 39 carries the full
+measurement and the per-cause table.
+
+The known coupling is now stated rather than latent: eight game translation units include a
+`<sms_boot_*.h>` from `sms-boot/shims` outside the native guard (eleven headers across those eight),
+so the decomp depends on the retired executor's directory. Ten of them needed a C++98 spelling to
+stay parseable and got one; the decomp gate would fail if that coupling changed without a decision.
+Whether those headers belong in a retired tree's directory is a design question for the title owner,
+not something to paper over.
+
+Gap (narrower now, same kind): the compile-level breakage is closed, but 43 files are still
+knowingly behind upstream, `TPortArgs::unk1C`/`unk20` remain unnamed, and the convergence scripts
+are still unpromoted (issue 38). Parsing is not linking: a missing definition or a duplicate symbol
+is outside this check's reach, and header self-containment is not yet checked.
 
 ### S008 — representative gameplay conformance
 

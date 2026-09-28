@@ -11,7 +11,7 @@
 // validates the real function.
 
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 namespace sb {
 

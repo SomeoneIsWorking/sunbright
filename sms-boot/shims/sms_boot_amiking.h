@@ -4,12 +4,12 @@
 // silently miss the resource load and the boss would spawn without its effect.
 
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 namespace sb {
 
 // Ami King's boss-effect particle path and id (matches DOL @0x803920b4 / arg 0x184).
-constexpr const char*   kAmiKingParticlePath = "/scene/mapObj/amiking.jpa";
-constexpr std::uint16_t kAmiKingParticleId   = 0x184;
+const char*   kAmiKingParticlePath = "/scene/mapObj/amiking.jpa";
+const uint16_t kAmiKingParticleId   = 0x184;
 
 }  // namespace sb

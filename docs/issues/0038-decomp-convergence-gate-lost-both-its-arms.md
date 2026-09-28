@@ -6,7 +6,7 @@ symptom: `rebase_upstream.py converge` and `audit` cannot run at all any more, a
 state_items: S001
 tags: decomp,upstream,convergence,verification,instrument
 created: 2026-09-28
-updated: 2026-09-28
+updated: 2026-10-01
 ---
 
 ## Root cause
@@ -23,6 +23,17 @@ retired executor, and neither was replaced:
   only ever return "runtime RED, exit 2".
 - Nothing in the tree compiles `decomp/sms` at all: zero references in
   `build/compile_commands.json`.
+
+**2026-10-01: the compile arm has a real replacement; the runtime arm is still
+refused by design, and this issue stays open.** `tools/decomp/hostcheck.py` now
+parses all 580 decomp translation units in both build modes and runs in the
+canonical verifier (`tools/verification.py`, step "decomp host compile"), with a
+self-test that proves it can report both a clean unit and a broken one. That is
+the compile arm back, with a stated scope: it proves the decomp's source parses
+as this port and as upstream maintain it, and it deliberately does not link the
+game or run a guest instruction, so it cannot stand in for the gameplay smoke.
+See issue 39 for the measurement and the per-cause breakdown. The triage step
+below is still unpromoted, so `converge` and `audit` still cannot run.
 
 That left `classify()`'s marker screen as the only automated basis for adopting
 upstream's copy of a file, and C044 records it misclassifying six files that

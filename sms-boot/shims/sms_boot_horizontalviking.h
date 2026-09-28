@@ -9,14 +9,14 @@
 //   * `>` reversed to `<` — every swing starts the wrong way (game plays but is mirrored).
 
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 namespace sb {
 
 struct HorizontalVikingResetState {
 	float current;
 	float velocity;
-	std::uint16_t state;
+	uint16_t state;
 };
 
 // Faithful to the RE: `fcmpu; ble else-branch; state=1; else: state=2`.
@@ -25,7 +25,7 @@ inline HorizontalVikingResetState horizontal_viking_reset(float target)
 	HorizontalVikingResetState out;
 	out.current  = target;   // stfs f0(0x140) → 0x144
 	out.velocity = 0.0f;     // stfs 0.0    → 0x148
-	out.state    = (target > 0.0f) ? std::uint16_t(1) : std::uint16_t(2);
+	out.state    = (target > 0.0f) ? uint16_t(1) : uint16_t(2);
 	return out;
 }
 

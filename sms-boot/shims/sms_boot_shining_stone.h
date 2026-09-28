@@ -9,7 +9,7 @@
 //      Red/White) from the DOL string pool @0x80391b10 — used by load in the spoke loop.
 
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 namespace sb {
 

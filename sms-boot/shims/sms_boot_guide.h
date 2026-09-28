@@ -49,6 +49,16 @@ struct Transition {
 	WipeCommand wipe;
 	bool clear_selection;
 	bool return_to_gameplay;
+
+	// Aggregate-style construction, spelled with a constructor rather than a
+	// braced initialiser: this header is included by a decomp translation unit
+	// that must also parse as C++98, where `Transition r { a, b, c, d };` is
+	// not a language feature. Same four values in the same order.
+	Transition(int next, WipeCommand w, bool clear_sel, bool to_gameplay)
+	    : next_state(next), wipe(w), clear_selection(clear_sel),
+	      return_to_gameplay(to_gameplay)
+	{
+	}
 };
 
 // One invocation models exactly one pass through retail perform's switch at US 0x80179330.
@@ -56,26 +66,26 @@ struct Transition {
 inline Transition step_transition(int state, bool loaded, bool fully_faded_out,
                                   bool fully_faded_in, bool close_requested)
 {
-	Transition result { state, kWipeNone, false, false };
+	Transition result(state, kWipeNone, false, false);
 	switch (state) {
 	case 9:
 		if (loaded && fully_faded_out)
-			result = { 10, kWipeIn5, false, false };
+			result = Transition(10, kWipeIn5, false, false);
 		break;
 	case 10:
 		if (fully_faded_in)
-			result = { 0, kWipeNone, true, false };
+			result = Transition(0, kWipeNone, true, false);
 		break;
 	case 0:
 		if (close_requested)
 			result.next_state = 7;
 		break;
 	case 7:
-		result = { 11, kWipeOut6, false, false };
+		result = Transition(11, kWipeOut6, false, false);
 		break;
 	case 11:
 		if (fully_faded_out)
-			result = { 8, kWipeIn5, false, true };
+			result = Transition(8, kWipeIn5, false, true);
 		break;
 	default:
 		break;

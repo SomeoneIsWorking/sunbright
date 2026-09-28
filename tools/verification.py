@@ -49,6 +49,8 @@ def gate_steps() -> tuple[Step, ...]:
                 "tools/render/shader_manifest.py",
                 "tools/render/shader_pipeline.py",
                 "tools/render/shader_toolchain.py",
+                "tools/decomp/hostcheck.py",
+                "tools/decomp/stale_names.py",
             ),
         ),
         python_step("pinned shader toolchain", "tools/render/shader_toolchain.py"),
@@ -61,6 +63,14 @@ def gate_steps() -> tuple[Step, ...]:
         python_step("registry paths", "tools/info/registry_paths.py"),
         python_step("shader provenance", "tools/render/build_shaders.py", "--check"),
         python_step("decomp symbol tool", "decomp/sms/tools/symbol_demangle_test.py"),
+        # The decomp's own compile gate. Before it existed, the 2026-09-28 upstream
+        # merge left half-renamed game source that nothing in this project could
+        # see: 580 translation units, 145 of them unparseable, and the only
+        # symptom was a decomp that could not be built. The native product links
+        # the decomp, so "the decomp does not parse" is a product defect, not a
+        # curiosity about a submodule. Parse only, both build modes -- see the
+        # tool's header for why one mode is not a substitute for the other.
+        python_step("decomp host compile", "tools/decomp/hostcheck.py"),
         Step(
             "quality and runtime deployment formatting",
             (

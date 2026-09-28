@@ -9,22 +9,22 @@
 //   SDA2[-0x2674] = 600.0  → damage height (Y trigger extent)
 
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 namespace sb {
 
 // The specific actor-type bit-mask event points advertise so game code can enumerate
 // them from a THitActor list. `0x40000236` is the exact 32-bit word the RE encodes as
 // `lis r4, 0x4000; ori r4, r4, 0x236`.
-constexpr uint32_t kMareEventPointActorType     = 0x40000236u;
+const uint32_t kMareEventPointActorType     = 0x40000236u;
 
 // Trigger has no attack cylinder — designers wanted these to be passive detectors.
-constexpr float    kMareEventPointAttackRadius  = 0.0f;
-constexpr float    kMareEventPointAttackHeight  = 0.0f;
+const float    kMareEventPointAttackRadius  = 0.0f;
+const float    kMareEventPointAttackHeight  = 0.0f;
 
 // 300 × 600 cylinder is the docs-authoritative trigger extent; used by all TMareEventPoint
 // instances (per-instance placement is via mPosition, size is fixed here at load time).
-constexpr float    kMareEventPointDamageRadius  = 300.0f;
-constexpr float    kMareEventPointDamageHeight  = 600.0f;
+const float    kMareEventPointDamageRadius  = 300.0f;
+const float    kMareEventPointDamageHeight  = 600.0f;
 
 }  // namespace sb

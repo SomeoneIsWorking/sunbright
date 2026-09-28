@@ -10,16 +10,16 @@
 //   2. Wrong endianness (on our LE host a naive `*(s16*)buf` would sample the padding).
 
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 namespace sb {
 
 // Given the 4-byte record read from the stream as a numeric BE-interpreted u32 (i.e. the
 // value `JSUInputStream::readU32()` returns), return the collision-data id in the low
 // 16 bits, sign-extended per PPC `extsh`.
-inline std::int16_t jump_mushroom_collision_id_from_serialized(std::uint32_t raw)
+inline int16_t jump_mushroom_collision_id_from_serialized(uint32_t raw)
 {
-	return static_cast<std::int16_t>(raw & 0xFFFFu);
+	return static_cast<int16_t>(raw & 0xFFFFu);
 }
 
 }  // namespace sb

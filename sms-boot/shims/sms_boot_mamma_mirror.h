@@ -13,7 +13,7 @@
 //     (0.5), 0x80414358 (2000.0), 0x8041435c (3000.0).
 
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 namespace sb {
 
