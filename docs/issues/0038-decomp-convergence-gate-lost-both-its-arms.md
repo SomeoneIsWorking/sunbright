@@ -64,15 +64,51 @@ merge that reported no conflicts at all. See C044.
 
 The gate is now `tools/re/convergence_loss.py`, in the normal verifier. Its
 self-test is the merge itself, replayed from its own refs
-(`--fork 40c2594b --ours pre-upstream-merge-2026-09-28` against the merged index):
-that replay reports loss in 54 files, so the check is known to go red on a real
-loss rather than only ever having answered "clean". Against the current tree it
-reports 334 of 334 delta files intact.
+(`--fork 40c2594b --ours pre-upstream-merge-2026-09-28` against the merged
+result the sync produced): that replay reports loss in 56 files, so the check is
+known to go red on a real loss rather than only ever having answered "clean".
+Against the current tree it reports 355 of 355 delta files intact.
 
-The triage step that separates "upstream reworded it" from "the fix is gone" is
-not yet promoted; it is still in `scratch/decomp-sync/`. It is the part that
-needs a promoted form and its own control before it is trusted in the gate,
-because it is the step that reads a diff and applies judgement.
+**2026-10-01: the control's answer was depending on the working tree.** The
+replay read the merged side out of the live index (`:path`), so its number moved
+as the decomp converged — 54 files when issue 38 was written, 76 after the
+convergence commit — and, worse, a convergence that removed every last dropped
+line would have driven it to zero and made the self-test FAIL. An instrument
+that breaks when the thing it measures gets better is not an instrument. The
+merged side is now pinned to `d145df88`, the decomp commit the sync actually
+landed (`MERGED_CONTROL`), the tool refuses to guess if that commit is not in the
+clone, and `--merged` overrides it. The pinned answer is 56 files, reproducibly.
+The same run also fixed a bare `FileNotFoundError`: the real check printed its
+verdict and then crashed writing `scratch/decomp-sync/loss_review.txt` into a
+gitignored directory that gets wiped, which reads like the check itself failed.
+
+**And the check has a scope limit that cost a real removal, now stated in its own
+docstring.** "Anything this fork added" means added *since the fork point*
+(40c2594b, 2026-08-30). The empty stubs that replaced ~25 recovered
+`BathtubKiller` bodies in March 2026 (ab285a7e "BathtubKiller scaffolding") sit
+five months *before* that point, so replacing them with upstream's decompiled
+bodies reported "intact" instead of flagging a removal. The check answered its own
+question correctly and would still be the wrong instrument for "did we lose fork
+work here". Pre-fork-point drift is caught by measuring both trees directly, as
+the 2026-10-01 debt pass did.
+
+**2026-10-01: the triage claim in this issue was stale, and one of its two gaps closed.**
+This issue said the triage step "is not yet promoted; it is still in
+`scratch/decomp-sync/`". That was wrong: the triage is inside the promoted
+`convergence_loss.py`, which reports each absent line with the distinctive tokens
+it carried and separates "upstream reworded it" (`token still present in merged
+file: SMS_NATIVE_PLATFORM`, …) from "the fix is gone" (`NONE`) — see its module
+docstring's REVIEW clause. What `scratch/decomp-sync/` actually contains is
+`loss_review.txt`, the report that tool *writes*. The live tree confirms it: 355
+of 355 local-delta files intact, no REVIEW, no UNRESOLVED.
+
+What genuinely remains is the other arm and the marker screen: `converge` and
+`audit` still cannot run, because `build_dir()` refuses the retired `sms-boot`
+target and `run.sh` refuses the decomp runtime by design; and `classify()`'s
+marker text is still the only automated basis for adopting upstream's copy of a
+file, which is the falsified history C044 records. The compile arm now has a
+real replacement (issue 39, `tools/decomp/hostcheck.py`); the gameplay arm has
+none and this issue stays open for it.
 
 ## The 43 held files
 

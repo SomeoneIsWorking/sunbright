@@ -1558,11 +1558,33 @@ this DOL's header BSS range overlaps DATA6, which aborts the shared loader; and
 `tools/re/DecompDumpLocal.py` because this Ghidra 12.0.4 has no Jython extension, so the shared
 `#@runtime Jython` scripts cannot run at all.
 
-Gap (unchanged in kind, smaller in size): 43 files are knowingly behind upstream and need hand
-reconciliation, 4 need field-name reconciliation, `TPortArgs::unk1C`/`unk20` are unnamed, and the
-convergence scripts are still in `scratch/decomp-sync/` rather than promoted to `tools/` — they
-have only ever reported one outcome on a real tree, and a check that has shown one answer is not
-yet an instrument. Issue 38 tracks this.
+Gap (corrected 2026-10-01; unchanged in kind): 43 files were known to be behind upstream at the
+sync; measured per file against upstream's line counts, it is now **33 files, 2,085 lines** behind
+(vs 256 files and 11,540 lines where this fork is AHEAD of upstream, because the fork's recovered
+source and native ports predate or extend upstream's). Four files need field-name reconciliation
+and `TPortArgs::unk1C`/`unk20` are unnamed. The largest single debts are
+`MarioUtil/ShadowUtil.cpp` (579, the hand-merged native shadow implementation),
+`GC2D/SelectMenu.cpp` (305), `Enemy/BathtubKiller.cpp` (298) and
+`J3D/J3DGraphBase/J3DTransform.cpp` (275). Each needs a per-file decision about whether the native
+port owns that behavior before upstream's version is taken — a line count is a way to rank the
+work, not evidence that taking upstream's copy is right. (The first attempt to measure this
+inverted `git diff --numstat`'s columns and produced a "266 files behind" figure that was simply
+backwards; the numbers above compare the two trees' line counts directly.)
+
+`GC2D/GCConsole2.cpp` is the one that is now converged, and it is the shape of the rest. The fork
+held 3079 lines against upstream's 4026, but the difference was not drift: our `perform` was an
+8-line stage-1 hand port written because upstream shipped an empty stub and `sms-boot` drew no HUD
+at all, and upstream has since decompiled the whole method plus sixteen `process*`/`draw*` methods
+the fork never had — exactly the stage its own TODO listed. Taking upstream's file and re-applying
+the fork's region-tolerance null guards (a US archive lacks panes that the GC one has), the
+life-meter tag-arithmetic transcription note, and the retail addresses (perform @ 0x8014083c,
+gauges at 0x801492a4 / 0x801441e0 / 0x80144840) closed both stages at once and removed 947 lines
+of debt. The "convergence scripts are still in scratch/" claim in the earlier note was stale and is
+withdrawn: the loss check and its triage both live in the promoted `tools/re/convergence_loss.py`,
+and 355 of 355 local-delta files are intact. What is still missing is the gameplay arm
+(`converge`/`audit` refuse, by design, because the executor that provided them is retired) and any
+check better than marker text for deciding whether to adopt upstream's copy of a file. Issue 38
+tracks this.
 
 **2026-10-01: the decomp parses again, and the gate that proves it now runs in the verifier.**
 The 2026-09-28 merge left 238 of the 382 game translation units unparseable in the plain
@@ -1597,7 +1619,11 @@ not something to paper over.
 Gap (narrower now, same kind): the compile-level breakage is closed, but 43 files are still
 knowingly behind upstream, `TPortArgs::unk1C`/`unk20` remain unnamed, and the convergence scripts
 are still unpromoted (issue 38). Parsing is not linking: a missing definition or a duplicate symbol
-is outside this check's reach, and header self-containment is not yet checked.
+is outside this check's reach, and header self-containment is not yet checked. The check also
+reconciles its unit list against `configure.py`'s own object list in both directions, which on its
+first run found a declared source that does not exist (`uart_consolle_io.c`, upstream's typo, fixed
+at our side — issue 40); the 154 declared `.c` sources and the EABI/assembly objects are present and
+counted but not parsed.
 
 ### S008 — representative gameplay conformance
 

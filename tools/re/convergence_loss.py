@@ -3,6 +3,18 @@
 Answers one question with no compiler: did adopting upstream delete anything this
 fork added? Reads refs only, so it is valid mid-merge.
 
+SCOPE, stated because it is the limit that matters: "anything this fork added"
+means added SINCE THE FORK POINT (`FORK`, currently 40c2594b, 2026-08-30). Work
+older than that is invisible to this check. Concretely: the empty stubs
+`TBathtubKiller::perform(u32, JDrama::TGraphics*) { }` and its ~24 siblings were
+added in March 2026 by ab285a7e "BathtubKiller scaffolding", five months before
+the fork point, so replacing them with upstream's decompiled bodies reported
+"intact" rather than flagging a removal. That is correct for the question this
+tool asks -- those lines were not added by the merge era -- and wrong as an
+answer to "did we lose fork work here". The per-file convergence debt (which the
+2026-10-01 pass measured directly, both trees' line counts) is what catches
+pre-fork-point drift; this tool does not, and does not claim to.
+
 This is the check the retired build-and-run gate used to provide, reduced to the
 one property that is still checkable without a compiler. For every file our
 fork edited since the fork point, each line we added is looked for in the merged
@@ -146,6 +158,12 @@ def main() -> int:
     print(f"  UNRESOLVED (no merged content to check) : {len(unresolved)}")
 
     out = SCRATCH / "loss_review.txt"
+    # scratch/ is gitignored and gets wiped, and this tool is run by hand as often
+    # as by the gate. Writing into a directory that is not there raised a bare
+    # FileNotFoundError AFTER printing the verdict, which reads like the check
+    # itself failed. Create the directory; the verdict is the product, the report
+    # is a convenience.
+    out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as fh:
         for path, target, missing, merged in review:
             surviving = sorted({distinctive(l) for l in missing})
@@ -168,14 +186,31 @@ def main() -> int:
     return 1 if (review or unresolved) else 0
 
 
+# The control's "merged result" side, pinned to a commit rather than to the live
+# index. Reading `:path` made the control's answer depend on the working tree:
+# converging the decomp moved the number from 54 files to 76, and a future
+# convergence that removed every last dropped line would have made the control
+# report "no loss found" and FAIL -- an instrument that breaks when the thing it
+# measures gets better. d145df88 is the decomp commit the 2026-09-28 sync landed,
+# i.e. the merged result as it actually was, which is what the replay must be
+# compared against. It is a pushed commit and the tool refuses to guess if the
+# clone does not have it.
+MERGED_CONTROL = "d145df88473a76f1aca501c20eecbc126cd5ddc7"
+
+
 def selftest() -> int:
     """Prove the check can report a loss, not only that it currently reports none.
 
     A convergence gate that has only ever answered "clean" is an instrument that
     cannot say the other answer, which is the failure this project keeps paying
     for. The control is the 2026-09-28 merge itself, replayed from its own refs:
-    our pre-merge tip against the merged index, which really did strip 43 files.
-    If that stops producing REVIEW, the check has gone blind.
+    our pre-merge tip against the merged result that sync produced, which really
+    did strip 43 files. If that stops producing REVIEW, the check has gone blind.
+
+    The answer must be STABLE, or the control is measuring the wrong thing: an
+    earlier version read the merged side out of the live index, so the number
+    moved as the tree converged (54 files, then 76) and would have hit zero --
+    and failed -- on a successful convergence. Hence MERGED_CONTROL.
     """
     fork = arg("--fork", "")
     if not fork:
@@ -183,8 +218,9 @@ def selftest() -> int:
     ours = arg("--ours", "")
     if not ours:
         ours = "pre-upstream-merge-2026-09-28"
+    merged = arg("--merged", "") or MERGED_CONTROL
 
-    for ref in (fork, ours, "upstream/main"):
+    for ref in (fork, ours, merged, "upstream/main"):
         if git("rev-parse", "--verify", ref) is None:
             print(f"selftest: REFUSES — control ref {ref!r} is not in this clone, so the "
                   f"control cannot run and a pass would mean nothing")
@@ -206,7 +242,7 @@ def selftest() -> int:
         added = [l for l in side.splitlines() if l.strip() and norm(l) not in base_lines]
         if not added:
             continue
-        r = subprocess.run(["git", "show", f":{target_for(path)}"], cwd=SUB,
+        r = subprocess.run(["git", "show", f"{merged}:{target_for(path)}"], cwd=SUB,
                            capture_output=True, text=True, errors="replace", check=False)
         if r.returncode != 0:
             continue
@@ -219,8 +255,8 @@ def selftest() -> int:
               f"{len(files)} file(s), but that merge deleted native work from 43. "
               f"The check cannot see the other answer.")
         return 1
-    print(f"selftest: PASS — replaying the 2026-09-28 merge reports loss in {lost} "
-          f"file(s), so this check is known to go red on a real loss")
+    print(f"selftest: PASS — replaying the 2026-09-28 merge against pinned {merged[:8]} "
+          f"reports loss in {lost} file(s), so this check is known to go red on a real loss")
     return 0
 
 

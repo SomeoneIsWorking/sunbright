@@ -65,11 +65,17 @@ def gate_steps() -> tuple[Step, ...]:
         python_step("decomp symbol tool", "decomp/sms/tools/symbol_demangle_test.py"),
         # The decomp's own compile gate. Before it existed, the 2026-09-28 upstream
         # merge left half-renamed game source that nothing in this project could
-        # see: 580 translation units, 145 of them unparseable, and the only
-        # symptom was a decomp that could not be built. The native product links
-        # the decomp, so "the decomp does not parse" is a product defect, not a
-        # curiosity about a submodule. Parse only, both build modes -- see the
-        # tool's header for why one mode is not a substitute for the other.
+        # see: of the 382 game units the first scan could see, 238 did not parse
+        # in the mode upstream maintains, and nothing in the repository was
+        # compiling the decomp to notice. No current target links the decomp --
+        # sms-boot left the build when the executor was retired, and the root
+        # CMakeLists builds native-render, title-adapter and tools/gcnport_boot
+        # only -- so "the decomp does not parse" is a defect in the evidence base
+        # this port's own native-layout adapters and future builds depend on, not
+        # in a shipped binary. Parse only, both build modes -- see the tool's
+        # header for why one mode is not a substitute for the other. The step also
+        # reconciles the unit list against configure.py's own object list, which
+        # found a declared source that does not exist (issue 40).
         python_step("decomp host compile", "tools/decomp/hostcheck.py"),
         Step(
             "quality and runtime deployment formatting",

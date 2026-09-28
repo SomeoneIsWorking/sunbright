@@ -25,7 +25,9 @@ says which of the two dozen causes it is rather than dumping 8,000 lines.
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
+import dataclasses
 import json
 import os
 import re
@@ -104,19 +106,138 @@ DIAG = re.compile(
 NOISE = re.compile(r"^$")
 
 
-def units() -> list[Path]:
-    """Every translation unit configure.py declares, game code and middleware.
+def declared_objects(sms: Path = SMS) -> dict[str, str]:
+    """configure.py's own object list, as {repo-relative source path: library}.
 
-    The first version scanned only src/, which quietly covered 382 of the ~438
-    objects in configure.py: the 22 J3D middleware units under libs/ were never
-    checked at all. `configure.py` lists a middleware object as "JSystem/JKernel/
-    JKRHeap.cpp" and its source lives at libs/JSystem/src/JKernel/JKRHeap.cpp, so
-    scanning both roots is what matches the decomp's own object list.
+    This is the authority for what the decomp's real build compiles, so the
+    checker reads it instead of globbing. A glob can only ever report what it
+    happened to find: the first version of this tool scanned `src/` and missed
+    every middleware unit under `libs/` while still printing a confident pass,
+    which is the same blind spot one level up as the merge itself. Reconciling
+    against the declaration means a unit that is added, renamed or moved cannot
+    fall out of coverage without this tool saying so.
+
+    configure.py is parsed as an AST rather than imported: importing it runs its
+    argparse, writes build files and wants the CodeWarrior toolchain paths. The
+    two entry shapes are `DolphinLib(lib, [Object(flag, "path"), ...])` calls and
+    the plain dicts in `config.libs`.
+
+    The path rule is configure.py's own (configure.py:1296-1300): a middleware
+    object is named by the FIRST path component of the object name, not by the
+    library that lists it, because one library can compile another library's
+    sources -- `MSL_C.PPCEABI.bare.H` builds `PowerPC_EABI_Support/...`.
     """
-    found: set[Path] = set()
+    tree = ast.parse((sms / "configure.py").read_text(encoding="utf-8"))
+    middleware: list[str] = []
+    libs: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        target = node.targets[0]
+        if getattr(target, "id", "") == "middleware_libs":
+            middleware = [e.value for e in node.value.elts]
+        elif getattr(target, "attr", "") == "libs":
+            for libdef in node.value.elts:
+                if isinstance(libdef, ast.Call):
+                    fn = getattr(libdef.func, "id", "")
+                    if fn not in ("DolphinLib", "DolphinLibUnpatched"):
+                        raise ValueError(f"unrecognised config.libs entry: {fn}")
+                    libs[libdef.args[0].value] = [
+                        o.args[1].value for o in libdef.args[1].elts
+                    ]
+                else:
+                    fields = {k.value: v for k, v in zip(libdef.keys, libdef.values)}
+                    libs[fields["lib"].value] = [
+                        o.args[1].value
+                        for o in fields["objects"].elts
+                        if isinstance(o, ast.Call)
+                    ]
+    if not libs:
+        raise ValueError(
+            "configure.py declared no libraries; refusing to check a corpus "
+            "derived from a file that says nothing about it"
+        )
+    out: dict[str, str] = {}
+    for lib, objs in libs.items():
+        for name in objs:
+            top, _, rest = name.partition("/")
+            out[f"libs/{top}/src/{rest}" if top in middleware else f"src/{name}"] = lib
+    return out
+
+
+def source_files(sms: Path = SMS) -> dict[str, str]:
+    """Every source-ish file under src/ and libs/, as {path: extension}."""
+    out: dict[str, str] = {}
     for root in ("src", "libs"):
-        found.update((SMS / root).rglob("*.cpp"))
-    return sorted(found)
+        base = sms / root
+        if not base.is_dir():
+            continue
+        for p in base.rglob("*"):
+            if p.is_file() and p.suffix in (".c", ".cpp", ".s", ".cp"):
+                out[str(p.relative_to(sms))] = p.suffix
+    return out
+
+
+@dataclasses.dataclass
+class Corpus:
+    """The checker's own coverage, with denominators and nothing unaccounted for."""
+
+    declared: dict[str, str]
+    parsed: list[str]
+    not_parsed: dict[str, int]
+    declared_absent: list[str]
+    undeclared_on_disk: list[str]
+
+    def problems(self) -> list[str]:
+        """Everything that makes a 'clean' result smaller than it sounds.
+
+        Either direction is a defect, not a curiosity: a declared object with no
+        file is a source the real build cannot find, and an on-disk C++ file the
+        build never declares is source this tool would happily report as covered
+        while the build ignores it.
+        """
+        out = []
+        for path in self.declared_absent:
+            out.append(f"configure.py declares {path}, which does not exist")
+        for path in self.undeclared_on_disk:
+            out.append(f"{path} is in the tree but configure.py never declares it")
+        return out
+
+    def summary(self) -> str:
+        skipped = ", ".join(f"{n} {ext}" for ext, n in sorted(self.not_parsed.items()))
+        return (
+            f"corpus: configure.py declares {len(self.declared)} object(s); "
+            f"{len(self.parsed)} C++ unit(s) parsed; {skipped or 'no'} present but not "
+            f"parsed (not C++); {len(self.declared_absent)} declared-but-absent; "
+            f"{len(self.undeclared_on_disk)} on-disk-but-undeclared"
+        )
+
+
+def corpus(sms: Path = SMS) -> Corpus:
+    declared = declared_objects(sms)
+    disk = source_files(sms)
+    cpp = {p for p, ext in disk.items() if ext == ".cpp"}
+    not_parsed: collections.Counter[str] = collections.Counter(
+        ext for p, ext in disk.items() if ext != ".cpp" and p in declared
+    )
+    return Corpus(
+        declared=declared,
+        parsed=sorted(declared.keys() & cpp),
+        not_parsed=dict(not_parsed),
+        declared_absent=sorted(p for p in declared if p not in disk),
+        undeclared_on_disk=sorted(cpp - set(declared)),
+    )
+
+
+def units(sms: Path = SMS) -> list[Path]:
+    """Every C++ translation unit configure.py declares and the tree contains.
+
+    Derived from the declaration, not from a glob, and cross-checked by
+    `corpus()`: a declared unit with no file is reported rather than skipped
+    quietly, and a file the build never declares is reported rather than counted
+    as coverage.
+    """
+    return [SMS / rel for rel in corpus(sms).parsed]
 
 
 def compile_one(
@@ -175,6 +296,11 @@ def main() -> int:
         action="store_true",
         help="prove the checker reports both a clean TU and a broken one",
     )
+    ap.add_argument(
+        "--corpus-only",
+        action="store_true",
+        help="report coverage against configure.py's object list and stop",
+    )
     args = ap.parse_args()
 
     if args.selftest:
@@ -186,6 +312,19 @@ def main() -> int:
             f"a clean result would say nothing about the decomp"
         )
         return 1
+
+    try:
+        coverage = corpus()
+    except (OSError, SyntaxError, ValueError) as exc:
+        print(f"hostcheck: REFUSES: cannot read the decomp's object list: {exc}")
+        return 1
+    print(f"hostcheck: {coverage.summary()}")
+    corpus_problems = coverage.problems()
+    for problem in corpus_problems:
+        print(f"hostcheck: CORPUS: {problem}")
+    if args.corpus_only:
+        print(f"hostcheck: {'FAIL' if corpus_problems else 'PASS'}")
+        return 1 if corpus_problems else 0
 
     targets = [p for p in units() if args.only in str(p)]
     if not targets:
@@ -233,24 +372,36 @@ def main() -> int:
         }
 
     if args.json:
-        print(json.dumps(report, indent=2))
-    verdict = "FAIL" if failed_modes else "PASS"
-    print(
-        f"hostcheck: {verdict}"
-        + (f" (modes with errors: {', '.join(failed_modes)})" if failed_modes else "")
-    )
-    return 1 if failed_modes else 0
+        print(json.dumps({"corpus": coverage.summary(), "modes": report}, indent=2))
+    verdict = "FAIL" if (failed_modes or corpus_problems) else "PASS"
+    detail = []
+    if corpus_problems:
+        detail.append(f"{len(corpus_problems)} corpus problem(s)")
+    if failed_modes:
+        detail.append(f"modes with errors: {', '.join(failed_modes)}")
+    print(f"hostcheck: {verdict}" + (f" ({'; '.join(detail)})" if detail else ""))
+    return 1 if (failed_modes or corpus_problems) else 0
 
 
 def selftest() -> int:
     """A checker that has only ever passed is not a checker.
 
-    Two controls: a real translation unit from the tree must come back clean, and
-    a copy of it with one field reference broken must come back with an error
-    naming that field. If the first is not clean the tool is not measuring the
-    tree; if the second is not red it cannot detect the defect class this whole
-    tool exists for.
+    Three controls, and each needs both answers to mean anything:
+      * coverage: a declared object with no file, and a file nobody declares, must
+        both be reported, and a reconciled tree must be quiet;
+      * a real translation unit from the tree must come back clean, and
+      * a copy of it with one field reference broken must come back with an error
+        naming that field.
+    If the first is not clean the tool is not measuring the tree; if the second is
+    not red it cannot detect the defect class this whole tool exists for.
     """
+    corpus_failures = selftest_corpus()
+    if corpus_failures:
+        print("hostcheck selftest: FAIL — the coverage control did not discriminate:")
+        for f in corpus_failures:
+            print(f"  {f}")
+        return 1
+
     sample = pick_clean_unit()
     if sample is None:
         print(
@@ -321,9 +472,96 @@ def selftest() -> int:
     print(
         f"hostcheck selftest: PASS (baseline {sample.relative_to(SMS)} compiles clean in "
         f"both modes; adding a nonexistent member turns it red by name in both modes, "
-        f"and removing it turns it green again)"
+        f"and removing it turns it green again; the coverage control reports a "
+        f"declared-but-absent object and an undeclared on-disk file, and is quiet on a "
+        f"reconciled tree)"
     )
     return 0
+
+
+def selftest_corpus() -> list[str]:
+    """Prove the coverage check can go red in BOTH directions.
+
+    A coverage check that has only ever said "clean" is a rubber stamp. These
+    controls run on a synthetic tree rather than the real one, so they can
+    construct the two failures without deleting a file from the decomp:
+      1. a declared object with no file on disk   (the real `uart_consolle_io.c`
+         typo, which is how this check earned its place);
+      2. a C++ file in the tree the build never declares.
+    """
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        sms = Path(tmp)
+        (sms / "src").mkdir()
+        (sms / "libs" / "JSystem" / "src").mkdir(parents=True)
+        (sms / "configure.py").write_text(
+            "middleware_libs = ['JSystem']\n"
+            "config = None\n"
+            "config.libs = [\n"
+            "    {'lib': 'main', 'objects': [\n"
+            "        Object(Matching, 'Game/Present.cpp'),\n"
+            "        Object(NonMatching, 'Game/Gone.cpp'),\n"
+            "    ]},\n"
+            "    {'lib': 'JSystem', 'objects': [\n"
+            "        Object(Matching, 'JSystem/JKernel/JKRHeap.cpp'),\n"
+            "    ]},\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        present = "int present() { return 0; }\n"
+        (sms / "src" / "Game" / "Present.cpp").parent.mkdir(parents=True)
+        (sms / "src" / "Game" / "Present.cpp").write_text(present, encoding="utf-8")
+        heap = sms / "libs" / "JSystem" / "src" / "JKernel" / "JKRHeap.cpp"
+        heap.parent.mkdir(parents=True)
+        heap.write_text(present, encoding="utf-8")
+
+        c = corpus(sms)
+        if c.parsed != [
+            "libs/JSystem/src/JKernel/JKRHeap.cpp",
+            "src/Game/Present.cpp",
+        ]:
+            failures.append(f"expected the two present declared units, got {c.parsed}")
+        # Assert on problems(), not on the fields: problems() is what main() turns
+        # into a non-zero exit, so a control that only checks the data would keep
+        # passing if the reporting were removed. That was this control's first
+        # version's own bug, caught by deleting the reporting and re-running it.
+        if c.problems() != [
+            "configure.py declares src/Game/Gone.cpp, which does not exist"
+        ]:
+            failures.append(
+                f"a declared object with no file did not fail the check: {c.problems()}"
+            )
+
+        # Now the other direction: a C++ file nobody builds.
+        stray = sms / "src" / "Game" / "Stray.cpp"
+        stray.write_text(present, encoding="utf-8")
+        c2 = corpus(sms)
+        if c2.problems() != [
+            "configure.py declares src/Game/Gone.cpp, which does not exist",
+            "src/Game/Stray.cpp is in the tree but configure.py never declares it",
+        ]:
+            failures.append(
+                f"an on-disk C++ file the build never declares did not fail the check: "
+                f"{c2.problems()}"
+            )
+
+        # And a clean synthetic tree must actually be clean, or the controls
+        # above would be satisfied by a check that always complains.
+        (sms / "src" / "Game" / "Gone.cpp").write_text(present, encoding="utf-8")
+        stray.unlink()
+        c3 = corpus(sms)
+        if c3.problems():
+            failures.append(f"a fully reconciled tree still reported {c3.problems()}")
+
+        # A configure.py that says nothing about its objects is not a corpus.
+        (sms / "configure.py").write_text("config = None\n", encoding="utf-8")
+        try:
+            corpus(sms)
+        except ValueError:
+            pass
+        else:
+            failures.append("a configure.py with no object list was accepted silently")
+    return failures
 
 
 BROKEN_MEMBER = "mHostcheckSelftestNoSuchField"
