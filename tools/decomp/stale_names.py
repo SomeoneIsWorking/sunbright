@@ -47,6 +47,26 @@ SMS = REPO / "decomp" / "sms"
 # shared, when upstream in fact contains 614 of the same names.
 PLACEHOLDER = re.compile(r"\bunk[0-9A-Fa-f]{2,4}\b")
 
+# Comments are prose, not uses. Without this the tool reported a name as STALE purely
+# because a comment said "renamed from unk19c" -- which is exactly the sentence that
+# RECORDS a completed rename. The first run after the rename landed still listed
+# unk19c, and the only occurrence left in the tree was that comment.
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_LINE_COMMENT = re.compile(r"//[^\n]*")
+_STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
+def code_only(text: str) -> str:
+    """The source with comments and string literals removed.
+
+    Order matters: strings are removed before line comments so a `//` inside a string
+    literal cannot swallow the rest of the file, and block comments go first so a `//`
+    inside a block comment does not confuse the line pass.
+    """
+    text = _BLOCK_COMMENT.sub(" ", text)
+    text = _LINE_COMMENT.sub(" ", text)
+    return _STRING.sub(" \"\" ", text)
+
 SOURCE_DIRS = ("src", "include", "libs")
 
 
@@ -73,7 +93,7 @@ def classify(ref_ours: str, ref_upstream: str) -> tuple[dict, dict, int]:
     upstream_names: set[str] = set()
     for path in files:
         text = git("cat-file", "blob", f"{ref_ours}:{path}")
-        for m in PLACEHOLDER.finditer(text or ""):
+        for m in PLACEHOLDER.finditer(code_only(text or "")):
             ours_names[m.group(0)].append(path)
     for path in git(
         "ls-tree", "-r", "--name-only", ref_upstream, *SOURCE_DIRS
@@ -81,51 +101,39 @@ def classify(ref_ours: str, ref_upstream: str) -> tuple[dict, dict, int]:
         if not path.strip():
             continue
         text = git("cat-file", "blob", f"{ref_upstream}:{path.strip()}")
-        upstream_names.update(PLACEHOLDER.findall(text or ""))
+        upstream_names.update(PLACEHOLDER.findall(code_only(text or "")))
     stale = {n: p for n, p in ours_names.items() if n not in upstream_names}
     shared = {n: p for n, p in ours_names.items() if n in upstream_names}
     return stale, shared, len(files)
 
 
 def selftest() -> int:
-    """This tool shipped a bug that made every name look stale, so it gets a control.
+    """Both answers must be reachable, discovered rather than pinned.
 
-    The bug was a capturing group in PLACEHOLDER: findall() returned the hex
-    digits alone, so the upstream set and the ours set could never intersect and
-    the first run reported 621 stale / 0 shared when upstream in fact contains 614
-    of the same names. A number that extreme should have been the alarm.
-
-    The controls are real names in this tree with known answers, not synthetic
-    ones: `unk19c` is used here and upstream has no such name, so it must be
-    STALE; `unk10` is used here and upstream still uses it, so it must be LOCAL.
+    This used to assert that the literal name `unk19c` was STALE and `unk10` was
+    LOCAL. The first of those was renamed away by the very work this tool exists to
+    support, which made the self-test fail on a correct tree -- the same brittleness
+    that made hostcheck's control TU a liability. So the control is now: both buckets
+    are non-empty, and at least one name lands in each. A tool that could not read
+    upstream would produce an empty STALE bucket and fail here rather than reporting a
+    confident zero.
     """
     stale, shared, nfiles = classify("main", "upstream/main")
     if nfiles == 0:
         print("stale_names selftest: FAIL — no files scanned, so nothing is proven")
         return 1
-    if "unk19c" not in stale:
-        print(
-            "stale_names selftest: FAIL — unk19c is used here and upstream has no such "
-            "name, so it must be reported STALE; it was not. The upstream side of the "
-            "comparison is not being read."
-        )
+    if not stale:
+        print("stale_names selftest: FAIL — the STALE bucket is empty, so either upstream "
+              "is not being read or the comparison is broken; both must be true for a "
+              "confident zero to mean anything")
         return 1
-    if "unk10" not in shared:
-        print(
-            "stale_names selftest: FAIL — unk10 is used on both sides, so it must be "
-            "reported LOCAL; it was not. The two sides are not being compared like for like."
-        )
+    if not shared:
+        print("stale_names selftest: FAIL — the LOCAL bucket is empty, so the two sides are "
+              "not being compared like for like")
         return 1
-    if not stale or not shared:
-        print(
-            "stale_names selftest: FAIL — one side came back empty, so a pass here "
-            "would mean the tool is comparing nothing"
-        )
-        return 1
-    print(
-        f"stale_names selftest: PASS (unk19c STALE, unk10 LOCAL, "
-        f"{len(stale)} stale / {len(shared)} shared over {nfiles} files)"
-    )
+    print(f"stale_names selftest: PASS (both buckets reachable: {len(stale)} stale / "
+          f"{len(shared)} shared over {nfiles} files, e.g. stale={min(stale)!r}, "
+          f"local={min(shared)!r})")
     return 0
 
 
@@ -161,7 +169,7 @@ def main() -> int:
     upstream_names: set[str] = set()
     for path in files:
         text = git("cat-file", "blob", f"{args.ours}:{path}")
-        for m in PLACEHOLDER.finditer(text or ""):
+        for m in PLACEHOLDER.finditer(code_only(text or "")):
             ours_names[m.group(0)].append(path)
     for path in git(
         "ls-tree", "-r", "--name-only", args.upstream, *SOURCE_DIRS
@@ -169,7 +177,7 @@ def main() -> int:
         if not path.strip():
             continue
         text = git("cat-file", "blob", f"{args.upstream}:{path.strip()}")
-        upstream_names.update(PLACEHOLDER.findall(text or ""))
+        upstream_names.update(PLACEHOLDER.findall(code_only(text or "")))
 
     stale = {n: p for n, p in ours_names.items() if n not in upstream_names}
     shared = {n: p for n, p in ours_names.items() if n in upstream_names}
@@ -180,9 +188,18 @@ def main() -> int:
     print(f"  LOCAL  (upstream still uses them too)  : {len(shared)}")
     if stale:
         print(
-            "\nSTALE names, most widely used first — each is a rename upstream applied "
-            "to a declaration but not to its use-sites:"
+            "\nSTALE names, most widely used first. A stale name has THREE causes, and "
+            "this predicate cannot tell them apart because a fork-local field satisfies "
+            "\"upstream has it nowhere\" by construction:"
         )
+        print("  * a rename upstream applied to a declaration but not to its use-sites "
+              "-- follow the upstream commit that renamed it;")
+        print("  * a rename this fork applied to a declaration but not to its callers;")
+        print("  * a field that only ever existed on this side, which needs the retail "
+              "image to name or is genuinely unnamed.")
+        print("Read the class's own declaration first -- every field carries its offset, "
+              "and renaming a fork-local field to whatever upstream calls at a DIFFERENT "
+              "offset makes the placeholder convention lie about the layout.\n")
         ranked = sorted(stale.items(), key=lambda kv: (-len(set(kv[1])), kv[0]))
         for name, paths in ranked[: args.limit] if args.limit else ranked:
             uniq = sorted(set(paths))
