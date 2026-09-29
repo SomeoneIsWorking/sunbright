@@ -154,6 +154,34 @@ The first end-to-end gate run failed, on this change's own new shim file failing
 is recorded here rather than tidied away: the gate caught a defect introduced by the work that added
 it, which is the behavior being claimed.
 
+## Result, and the measurement that changed what the work queue is
+
+The C++ corpus now parses in both build modes: **580 of 580** units clean, from a
+baseline of 144 (plain) and 178 (native).
+
+`tools/decomp/decomp_gaps.py` then reports **0** hollow methods that upstream
+gives a body and we do not. That number is the one to read carefully, because the
+obvious reading of `hollow_methods.py` -- 1179 hollow methods -- looks like a
+mountain of un-decompiled game and is not one. Measured against upstream, which is
+a byte-matching decompilation, the hollowness is inherited rather than ours:
+
+- **207** are destructors with an empty body, and upstream has the byte-identical
+  `virtual ~TCoasterEnemy() { }`. An empty destructor body is what a destructor
+  body looks like; "filling" one would diverge from a matching decompilation.
+- **31** are `operator return` declarations with no definition, and upstream
+  declares them the same way and defines them nowhere either, because the original
+  compiler inlined them at their call sites and never emitted them. That is the
+  UNUSED-functions case the decomp's own guide describes.
+- **972** are methods upstream also leaves without a body.
+
+So "declared and not defined" is largely a property of decompilation, not a
+defect. Pointing work at those 1179 would have made the tree diverge from a
+matching decompilation while every gate stayed green, which is the specific failure
+this project keeps recording. `decomp_gaps.py` measures the distinction instead of
+assuming it, and its self-test refuses to pass unless the upstream-empty bucket is
+non-empty and a known empty destructor is excluded from the gap count -- otherwise
+a tool that could not see upstream would report a reassuring zero.
+
 ## Not claimed
 
 - Byte-identical matching is not verifiable in this environment and is not
