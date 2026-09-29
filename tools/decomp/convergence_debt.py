@@ -52,6 +52,55 @@ DEF_RE = re.compile(
     r"^[A-Za-z_][\w:<>*& ]*?(\w+)::(\w+)\s*\(|^static [\w:*& ]*?(\w+)\s*\("
 )
 
+# A NON-static free function definition at column 0. Missing this is not a cosmetic
+# gap: J3DTransform.cpp defines J3DPSCalcInverseTranspose, which upstream only DECLARES,
+# and which J3DModel.cpp and J3DCluster.cpp call. A classifier that cannot see a free
+# function reports that file CONVERGE, i.e. "take upstream's copy", which deletes the
+# only definition of a function two other translation units call.
+#
+# Shape: a return type and a name, a balanced parameter list, and either a trailing `{`
+# or a `{` opening the next line. Rejected: anything ending in `;` (a declaration or a
+# variable with initialisers), anything with `=` (a default argument or a member
+# initialiser list), statement keywords, and preprocessor lines. This errs toward
+# reporting a free function that is not there, which puts a file in DECIDE -- the class
+# a human looks at -- rather than in CONVERGE, which is the class that gets merged.
+FREEFN_RE = re.compile(
+    r"^[A-Za-z_][\w:<>*&\s]*?\b([A-Za-z_]\w*)\s*\(([^;]*)\)\s*(const)?\s*$"
+)
+NOT_A_FUNCTION = {
+    "if",
+    "for",
+    "while",
+    "switch",
+    "return",
+    "sizeof",
+    "else",
+    "do",
+    "case",
+    "catch",
+    "new",
+    "delete",
+    "typedef",
+    "namespace",
+    "template",
+    "operator",
+}
+
+
+def looks_like_free_function(line: str) -> str | None:
+    """The name, if this line is a non-static free function definition."""
+    stripped = line.rstrip()
+    if not stripped or stripped.endswith((";", "{")) or "=" in stripped:
+        return None
+    if stripped.startswith(("#", "//", "*", "}")):
+        return None
+    m = FREEFN_RE.match(stripped)
+    if not m:
+        return None
+    name = m.group(1)
+    return None if name in NOT_A_FUNCTION else name
+
+
 # Parameter lists, to tell a RENAME from fork work. A name only our side has can
 # be a method upstream renamed, and the only cheap evidence is the signature:
 # TSelectMenu::setup and ::initData take the same four parameters, so it is a
@@ -129,16 +178,35 @@ def definitions(text: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for i, line in enumerate(lines):
         m = DEF_RE.match(line)
-        if not m:
+        free = None if m else looks_like_free_function(line)
+        if not m and free is None:
             continue
-        name = f"{m.group(1)}::{m.group(2)}" if m.group(2) else m.group(3)
+        name = (
+            f"{m.group(1)}::{m.group(2)}"
+            if m and m.group(2)
+            else (m.group(3) if m else free)
+        )
         if not name:
             continue
+        # A signature is joined across wrapped lines first: the decomp wraps long
+        # parameter lists (`void TSelectMenu::setup(u8 stage, JKRArchive* archive,\n
+        # TSelectShineManager* shineMgr, TSelectDir* dir)`), and comparing one physical
+        # line at a time makes a renamed method look like two unrelated ones -- which
+        # puts a mechanical file into the DECIDE class, where nobody does it.
         sig = line
         j = i
         while sig.count("(") > sig.count(")") and j + 1 < len(lines):
             j += 1
             sig += " " + lines[j]
+        if free is not None:
+            # The body opens on the line after the signature ENDS. If the signature
+            # was joined from continuation lines that is line j; if it fit on one
+            # line then j is still i and the brace is on i+1. Checking lines[j] in
+            # both cases looks for a brace on the definition line itself, which
+            # silently rejects every one-line free function definition.
+            body = lines[j] if j > i else (lines[j + 1] if j + 1 < len(lines) else "")
+            if not body.lstrip().startswith("{"):
+                continue  # a free function with no opening brace is not a definition
         found[name] = param_key(sig)
     return found
 
@@ -306,6 +374,27 @@ def selftest() -> int:
         failures.append(f"a fork-only method was not extracted: {got}")
     if set(definitions("static inline void helper(u32) { }\n")) != {"helper"}:
         failures.append("a free function was not extracted")
+
+    # A NON-static free function must be extracted: J3DTransform.cpp defines
+    # J3DPSCalcInverseTranspose, upstream only DECLARES it, and J3DModel.cpp and
+    # J3DCluster.cpp call it. Missing this makes the file read as CONVERGE, i.e.
+    # "take upstream's copy", which deletes the only definition of a live symbol.
+    free_defs = definitions(
+        "bool J3DPSCalcInverseTranspose(MtxPtr src, ROMtxPtr dst)\n"
+        "{\n\treturn true;\n}\n"
+    )
+    if "J3DPSCalcInverseTranspose" not in free_defs:
+        failures.append(f"a non-static free function was not extracted: {free_defs}")
+    if looks_like_free_function("J3DColor c(0, 0, 0, 0);") is not None:
+        failures.append(
+            "a variable with initialisers was read as a function definition"
+        )
+    if looks_like_free_function("if (x) {") is not None:
+        failures.append("a control statement was read as a function definition")
+    if looks_like_free_function("void declared_only(int a);") is not None:
+        failures.append("a declaration was read as a function definition")
+    if "J3DPSCalcInverseTranspose" in renames(free_defs, {"other": "int"}):
+        failures.append("a free function was paired as a class rename")
 
     # a wrapped signature is still one signature: this is the real SelectMenu case
     wrapped_ours = definitions(

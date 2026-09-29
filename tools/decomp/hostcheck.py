@@ -80,6 +80,26 @@ INCLUDE_DIRS = (
 # written for; a native-only check hides that the tree still has not been
 # reconciled with upstream's C++98 target. Both are checked by default.
 #
+# WHAT IS NOT COVERED, measured rather than assumed: exactly ONE version macro is
+# defined, VERSION_GMSJ01, because that is what configure.py builds. Code inside a
+# `#ifdef VERSION_GMSP01` block is therefore never parsed by either mode, and a
+# broken member reference there passes this gate silently. Proven end to end on
+# the real tree on 2026-10-01: `return mNoSuchMemberAtAllXYZ;` appended to a
+# GMSP01-guarded function in src/System/MSoundMainSide.cpp reported PASS in both
+# modes. 19 files hold 60 such blocks.
+#
+# A third mode defining VERSION_GMSP01 was measured before being rejected, and the
+# measurement is why. Only 2 of 580 units fail under it, so the sweep is cheap and
+# it found one real defect (three `std::powf` calls in src/MSound/MSound.cpp, a
+# C++11 spelling that does not exist in this toolchain's C++98 mode -- now fixed).
+# The other failure is `SMSGetGameVideoHeight()` called with no argument in a
+# GMSP01 block of src/System/MarDirectorSetupObjects.cpp, where
+# include/System/Resolution.hpp declares the 0-argument overload only for
+# non-GMSP01 -- and UPSTREAM'S OWN FILE MAKES THE SAME CALL at the same place. The
+# GMSP01 configuration does not build in upstream either, so gating on it would
+# mean gating on a configuration nobody maintains. It stays unparsed, counted, and
+# named here rather than quietly claimed as covered.
+#
 # __MWERKS__ is deliberately NOT defined in either mode: it selects MWCC-only
 # source paths, including MSL inline `asm { }` blocks no host compiler parses,
 # which is a different target rather than a defect. GEKKO is not defined either,

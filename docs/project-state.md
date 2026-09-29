@@ -1948,3 +1948,45 @@ cache-flush or soft-divide leaf often enough that one run printed 204 "stalled" 
 full thread walk, while its retrace count climbed past 20,000. The repeated PC is still the cheap
 trigger for taking a sample; what the sample is called now comes from whether any VI retrace was
 delivered since the last one, and only the genuine no-retrace case pays for the state dump.
+
+**2026-10-01: the decomp declares methods it never defines, and nothing could see it.**
+`hostcheck.py` proves the decomp parses. It structurally cannot prove a method has a body: a
+declaration is a parse-clean construct, so a class can declare a method, nothing can define it, and
+every gate in this repository reports green. So can a `virtual` whose body is `{ }`, which is worse
+— it is reachable through the vtable and silently does nothing. The repair pass hit this shape three
+separate times in three separate files (`TGenerator::load`/`perform`, `JKRTask::~JKRTask`/`run`,
+`TRailBlock::control`, `MSSTageSimpleEnvironmentMonte::proc`) and each was found by reading, not by
+a tool.
+
+`tools/decomp/hollow_methods.py` (instrument I041, `measuring`) now reports it, with the two
+verdicts separated: **NO BODY** (declared, defined nowhere) and **EMPTY BODY** (defined with a body
+that does nothing). It is not a gate and does not claim to be: the decomp is a partial
+decompilation, so most of what it reports is upstream's own not-yet-decompiled work rather than a
+defect on our side, and a threshold that drifts as the decomp improves is not a gate. Its
+`--selftest` is wired into the canonical gate through `selftest_all.py`, and fourteen independent
+sabotages of its production rules are each caught by name.
+
+**Its first number was 1575 and a 40-item audit found 13 of those 40 were wrong.** That 33% is the
+honest figure, and it is more useful than the number would have been. Every class of error was a
+wrong report: 51 destructors keyed as the constructor of the same name, 9 wrapped in-class
+definitions read as declarations, 4 and 77 nested-class qualifier mismatches, 74 pure virtuals
+reported as holes, and — the worst — **2370 declarations missing from the scan entirely**, because
+the class stack popped on the closing brace of any method with a wrapped body. The denominator went
+from 6060 to 8252 when that was fixed. Current: **1193 findings**, and a 15-item random sample found
+**0 of 15** wrong.
+
+**The regression mechanism for lost definitions is our own fork, not the upstream merge.** A
+sample of the recoverable holes names the commits: `ab11c517` dropped `TAnimalBase`'s constructor and
+`execWalk`; `236a1424` and `7b65c8bf` dropped 7 `TLightWithDBSet` accessors; `eb2fd714` dropped
+`TMapObjTree::touchPlayer` and its constructor. The pattern is a native-RE port commit that replaced
+a whole upstream `.cpp` with a cold-RE version and did not re-derive the methods it had no evidence
+for. `eb2fd714`'s stated premise — "the upstream decomp ships an empty `MapObjTree.cpp`" — is
+**stale**: upstream ships 344 lines where we hold 210.
+
+Recovered and landed from that: `TGuide`'s constructor, which had three live call sites and no
+definition anywhere, plus `TAnimalBase`'s two. A subagent recovered the constructor and correctly
+**refused** 15 further `TGuide` methods: upstream's `{ }` there means "not decompiled", and the proof
+is inside upstream's own code — its `TGuide::perform` is `{ }` while our DOL evidence at US
+`0x801791d0` shows `perform` has a substantial body, and its `load` in the same file is fully
+decompiled. Pasting an upstream `{ }` converts a `NO BODY` finding into an `EMPTY BODY` one, which
+is worse.
