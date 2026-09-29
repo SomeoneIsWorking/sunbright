@@ -48,10 +48,16 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /* Gekko builtins. Real semantics, not stubs: a checker that compiled the wrong
- * expression would be able to hide a defect rather than find one. */
+ * expression would be able to hide a defect rather than find one.
+ *
+ * uint32_t rather than `u32` because this shim is force-included into C
+ * translation units as well, where <dolphin/types.h> -- and therefore `u32` -- is
+ * not in scope. Fixed-width rather than `unsigned int` so the cast width is
+ * stated instead of assumed. */
 #ifndef __frsqrte
 #define __frsqrte(x) (1.0f / sqrtf((float)(x)))
 #endif
@@ -63,7 +69,7 @@
 #define __fres(x) ((x) == 0.0f ? (x) : 1.0f / (x))
 #endif
 #ifndef __cntlzw
-#define __cntlzw(x) ((u32)__builtin_clz((u32)(x)))
+#define __cntlzw(x) ((uint32_t)__builtin_clz((uint32_t)(x)))
 #endif
 
 /* No MMIO window on a host, so the qualifier has nothing to place. */

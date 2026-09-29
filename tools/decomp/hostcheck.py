@@ -227,8 +227,9 @@ class Corpus:
         skipped = ", ".join(f"{n} {ext}" for ext, n in sorted(self.not_parsed.items()))
         return (
             f"corpus: configure.py declares {len(self.declared)} object(s); "
-            f"{len(self.parsed)} C++ unit(s) parsed; {skipped or 'no'} present but not "
-            f"parsed (not C++); {len(self.declared_absent)} declared-but-absent; "
+            f"{len(self.parsed)} unit(s) parsed (C and C++); "
+            f"{skipped or 'no'} present but not parsed (assembly); "
+            f"{len(self.declared_absent)} declared-but-absent; "
             f"{len(self.undeclared_on_disk)} on-disk-but-undeclared"
         )
 
@@ -236,16 +237,18 @@ class Corpus:
 def corpus(sms: Path = SMS) -> Corpus:
     declared = declared_objects(sms)
     disk = source_files(sms)
-    cpp = {p for p, ext in disk.items() if ext == ".cpp"}
+    # C is now parsed, so it is coverage rather than a skip. .s and .cp are
+    # assembly and are genuinely out of scope for a compiler front end.
+    compiled = {p for p, ext in disk.items() if ext in (".cpp", ".c")}
     not_parsed: collections.Counter[str] = collections.Counter(
-        ext for p, ext in disk.items() if ext != ".cpp" and p in declared
+        ext for p, ext in disk.items() if ext not in (".cpp", ".c") and p in declared
     )
     return Corpus(
         declared=declared,
-        parsed=sorted(declared.keys() & cpp),
+        parsed=sorted(declared.keys() & compiled),
         not_parsed=dict(not_parsed),
         declared_absent=sorted(p for p in declared if p not in disk),
-        undeclared_on_disk=sorted(cpp - set(declared)),
+        undeclared_on_disk=sorted(compiled - set(declared)),
     )
 
 
@@ -260,11 +263,55 @@ def units(sms: Path = SMS) -> list[Path]:
     return [SMS / rel for rel in corpus(sms).parsed]
 
 
+# C units are a different language and were entirely unchecked until a subagent
+# found a real defect in one by hand: libs/dolphin/src/ar/ar.c referenced
+# ARCallback, which the 2026-09-28 merge had removed along with the ar.h half of
+# upstream's ARQ split. 154 .c files is a third of the declared corpus, and a
+# checker that says "580 units clean" while never opening them is the same
+# confident-nothing failure the src/-only version had.
+C_MODES: dict[str, tuple[str, ...]] = {
+    "plain": ("-std=c99", "-Dnullptr=0"),
+    "native": ("-std=c11", "-DSMS_NATIVE_PLATFORM=1"),
+}
+
+# The C sources sit under libs/ and include their siblings with quotes, so the
+# same include roots serve. The MSL include directories are deliberately NOT
+# added: MSL_C/MSL_Common/stdint.h is a C++ shim that includes <cstdint> and
+# declares everything under #ifdef __cplusplus, so putting it on a C include path
+# makes all 154 C units fail on a header that is correct for the target. The
+# host's own <stdint.h> serves instead, and the decomp's C++ shim still serves
+# every C++ unit. fake_tgmath.h, which ar.c and the tgmath users include, is
+# under decomp/sms/include and is already on INCLUDE_DIRS.
+C_INCLUDE_DIRS = INCLUDE_DIRS
+
+# Subtrees whose C is Metrowerks CodeWarrior source by nature, not by accident:
+# the MSL C runtime and the MetroTRK debugger runtime use MSL inline asm,
+# __declspec, lvalue casts and MSL-internal headers that no other compiler has.
+# Excluding them is a statement about who owns the code, not a guess from error
+# text -- a pattern-matched "known uncheckable" list is exactly the sort of thing
+# that eventually swallows a real syntax error.
+MWCC_ONLY_C_SUBTREES = (
+    "libs/PowerPC_EABI_Support/",
+    "libs/TRK_MINNOW_DOLPHIN/",
+)
+
+
+def is_host_checkable_c(path: Path) -> bool:
+    rel = str(path.relative_to(SMS))
+    return not rel.startswith(MWCC_ONLY_C_SUBTREES)
+
+
 def compile_one(
     path: Path, mode: str = "plain"
 ) -> tuple[str, list[tuple[str, int, str]]]:
-    cmd = ["clang++", *BASE_FLAGS, *MODES[mode], "-include", str(SHIM)]
-    for rel in INCLUDE_DIRS:
+    c_unit = path.suffix == ".c"
+    if c_unit:
+        cmd = ["clang", *BASE_FLAGS, *C_MODES[mode], "-include", str(SHIM)]
+        roots = C_INCLUDE_DIRS
+    else:
+        cmd = ["clang++", *BASE_FLAGS, *MODES[mode], "-include", str(SHIM)]
+        roots = INCLUDE_DIRS
+    for rel in roots:
         cmd += ["-I", str(SMS / rel)]
     cmd.append(str(path))
     r = subprocess.run(
@@ -357,38 +404,76 @@ def main() -> int:
     modes = sorted(MODES) if args.mode == "both" else [args.mode]
     failed_modes = []
     report: dict[str, dict] = {}
+    # C is reported, not gated. Clang is not a substitute for CodeWarrior, and the
+    # only way to make the MSL and MetroTRK runtimes parse would be to stub the
+    # target compiler's language extensions -- the one thing this shim is built
+    # never to do, because a stubbed MWCC feature certifies code as compiling
+    # that nothing has actually compiled. A subagent found a real defect in a C
+    # unit (ar.c referencing an ARCallback the merge had deleted) by hand, so the
+    # C pass is worth running; it is just not a pass/fail gate.
+    c_checkable = [p for p in targets
+                   if p.suffix != ".c" or is_host_checkable_c(p)]
+    c_mwcc = [p for p in targets
+              if p.suffix == ".c" and not is_host_checkable_c(p)]
+    if c_mwcc:
+        print(f"hostcheck: C coverage: {len(c_checkable)} unit(s) host-checkable; "
+              f"{len(c_mwcc)} under {'/'.join(MWCC_ONLY_C_SUBTREES)} are Metrowerks "
+              f"runtime (MSL inline asm, __declspec, lvalue casts) -- reported, NOT gated")
     for mode in modes:
         results: list[tuple[str, list]] = []
         with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-            results = list(pool.map(lambda p, m=mode: compile_one(p, m), targets))
+            results = list(pool.map(lambda p, m=mode: compile_one(p, m), c_checkable))
 
-        clean = [n for n, e in results if not e]
-        broken = [(n, e) for n, e in results if e]
-        kinds: collections.Counter[str] = collections.Counter()
-        for _, errs in broken:
-            kinds.update({shape(m) for _, _, m in errs})
+        def tally(subset):
+            cl = [n for n, e in subset if not e]
+            br = [(n, e) for n, e in subset if e]
+            kd: collections.Counter[str] = collections.Counter()
+            for _, errs in br:
+                kd.update({shape(m) for _, _, m in errs})
+            return cl, br, kd
+
+        cpp = [(n, e) for n, e in results if not n.endswith(".c")]
+        c_res = [(n, e) for n, e in results if n.endswith(".c")]
+        c_clean, c_broken, c_kinds = tally(c_res)
+        cpp_broken = [(n, e) for n, e in cpp if e]
+        cpp_clean = len(cpp) - len(cpp_broken)
+        _, _, cpp_kinds = tally(cpp)
 
         print(
-            f"hostcheck[{mode}]: checked {len(results)} unit(s) "
-            f"({len(clean)} clean, {len(broken)} with errors)"
+            f"hostcheck[{mode}]: C++ checked {len(cpp)} unit(s) "
+            f"({cpp_clean} clean, {len(cpp_broken)} with errors)"
         )
-        if kinds:
-            print(f"hostcheck[{mode}]: {len(kinds)} distinct cause(s):")
-            for kind, n in kinds.most_common(40):
+        if cpp_kinds:
+            print(f"hostcheck[{mode}]: {len(cpp_kinds)} distinct C++ cause(s):")
+            for kind, n in cpp_kinds.most_common(40):
                 print(f"  {n:5}  {kind}")
-        if broken:
+        cpp_broken = [(n, e) for n, e in cpp if e]
+        if cpp_broken:
             failed_modes.append(mode)
             if not args.json:
-                print(f"hostcheck[{mode}]: first diagnostics:")
-                for name, errs in broken[:20]:
+                print(f"hostcheck[{mode}]: first C++ diagnostics:")
+                for name, errs in cpp_broken[:20]:
                     for f, line, msg in errs[:2]:
                         print(f"  {name}  {f}:{line}: {msg[:100]}")
+        if c_res:
+            note = "clean" if not c_broken else "not host-checkable (Metrowerks extensions)"
+            print(f"hostcheck[{mode}]: C   checked {len(c_res)} unit(s) "
+                  f"({len(c_clean)} clean, {len(c_broken)} {note}) -- NOT GATED")
+            if c_kinds and c_broken:
+                print(f"hostcheck[{mode}]: {len(c_kinds)} distinct C cause(s):")
+                for kind, n in c_kinds.most_common(8):
+                    print(f"  {n:5}  {kind}")
         report[mode] = {
             "checked": len(results),
-            "clean": len(clean),
-            "broken": len(broken),
-            "causes": dict(kinds),
-            "files": {n: [f"{f}:{l}: {m}" for f, l, m in e] for n, e in broken},
+            "cpp_checked": len(cpp),
+            "cpp_clean": cpp_clean,
+            "cpp_broken": len(cpp_broken),
+            "c_checked": len(c_res),
+            "c_clean": len(c_clean),
+            "c_broken": len(c_broken),
+            "causes": dict(cpp_kinds),
+            "c_causes": dict(c_kinds),
+            "files": {n: [f"{f}:{l}: {m}" for f, l, m in e] for n, e in cpp_broken},
         }
 
     if args.json:
@@ -398,8 +483,9 @@ def main() -> int:
     if corpus_problems:
         detail.append(f"{len(corpus_problems)} corpus problem(s)")
     if failed_modes:
-        detail.append(f"modes with errors: {', '.join(failed_modes)}")
-    print(f"hostcheck: {verdict}" + (f" ({'; '.join(detail)})" if detail else ""))
+        detail.append(f"C++ errors in mode(s): {', '.join(failed_modes)}")
+    print(f"hostcheck: {verdict}" + (f" ({'; '.join(detail)})" if detail else "")
+          + "  [gate = C++ in both modes; C is reported only]")
     return 1 if (failed_modes or corpus_problems) else 0
 
 
