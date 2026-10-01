@@ -122,7 +122,7 @@ Measured on a plaza run with the camera rotating:
 * Mispairing unchanged: the 100–1k bucket reads 54, against 98 for the shadow default and 4 for a
   no-tagging control.
 
-### Two instruments earned their keep
+### Two identity signals that had to be measured
 
 **`FLAG_JUST_BORN` is useless at the draw seam.** It was the obvious generation signal and measured
 **0 bumps over 517,119 draws across 268 addresses** — because the flag is set at creation and

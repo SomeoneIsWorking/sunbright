@@ -10,9 +10,9 @@ updated: 2026-08-27
 
 ## Current evidence
 
-The 2026-08-26 recurrence is the current root-cause investigation. C072 narrows that historical
-event to replay submit 1608 but does not identify a draw or packet. Issue 18 owns the missing
-hardware-progress instrument. The causal-window submit's pipeline topology matches a completed
+The 2026-08-26 recurrence is the current root-cause investigation: that historical event narrows to
+replay submit 1608 but does not identify a draw or packet. Issue 18 owns the missing
+hardware-progress capability. The causal-window submit's pipeline topology matches a completed
 control; only dynamic command hashes differ, leaving dynamic state, resource lifetime, or
 nondeterministic RADV behavior unresolved.
 

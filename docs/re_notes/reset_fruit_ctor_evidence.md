@@ -1,13 +1,13 @@
 # The three fork-local placeholder fields, and what the retail image says
 
-2026-09-29. After the upstream sync, `tools/decomp/stale_names.py` reported 19
-placeholder names this fork used that upstream no longer has anywhere. Sixteen were
-half-applied upstream renames and are fixed. The remaining three are **not** renames:
+2026-09-29. After the upstream sync, a scan found 19 placeholder names this fork used
+that upstream no longer has anywhere. Sixteen were half-applied upstream renames and are
+fixed. The remaining three are **not** renames:
 they are fields that exist only in this fork, and each needed the retail image to
 decide whether it could be named at all.
 
-The distinction matters. `stale_names.py` reports "used here, upstream has it
-nowhere", which cannot by itself tell a missed rename from a fork addition, because
+The distinction matters. "used here, upstream has it nowhere" cannot by itself tell a
+missed rename from a fork addition, because
 a fork addition satisfies that predicate by construction. Treating all three as
 missed renames would have meant renaming them to whatever upstream happened to call
 the field at a *different offset* — which makes the placeholder convention lie about

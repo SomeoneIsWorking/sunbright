@@ -14,7 +14,7 @@ Walk from plaza spawn toward the statue. The pollution-graffiti glyph on its fac
 regular vertical stripes up close; far away it is a smooth rainbow gradient (which matches retail's
 holographic look — the rainbow itself is correct).
 
-## Ruled out (2026-08-25, see debug_journal/2026-08-25_statue_emblem_stripes.md)
+## Ruled out (2026-08-25)
 
 - Indirect texturing: A/B with all indirect stages disabled reproduces identical stripes; aurora's
   ITM math verified line-by-line against Dolphin.

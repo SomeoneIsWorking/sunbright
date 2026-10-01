@@ -5,8 +5,7 @@
 // FIFO — a controlled same-input/two-renderers experiment. Diagnostic ONLY
 // (SB_FIFO_REPLAY env gate); consumes a static .dff, no Dolphin code.
 //
-// See debug_journal/2026-07-11_fifo_replay_no_calldl.md for the
-// resolution of the CALL_DL risk (SMS title GX stream has zero display-list
+// The CALL_DL risk was resolved: (SMS title GX stream has zero display-list
 // calls, so the command stream is flat and self-contained).
 //
 // Loader = faithful C++ port of the read side of tools/oracle/parse_fifo_dff.py

@@ -8,8 +8,7 @@ mPerformListGX's mirror-camera/mirror-scene entries precede its world-camera/Dra
 entries (they do: idx1 "鏡カメラ" vs idx23 "camera 1"/idx33+ "DrawBuf Sky Opa" etc). Note
 "Draw Buffer Group" itself is NOT an entry in any PerformLists.bin list -- it's a
 scene.bin-loaded TViewObjPtrListT container, manually push_back'd into TMarDirector::unk40
-at MarDirectorSetupObjects.cpp:427 (code, not data); see
-debug_journal/2026-07-10_performlists_disc_decode.md.
+at MarDirectorSetupObjects.cpp:427 (code, not data).
 
 Usage: extract /data/PerformLists.bin from an ISO first (uncompressed, found via the FST --
 see tools/oracle/ siblings for FST-walk helpers), then run this script against the extracted

@@ -185,8 +185,8 @@ void sb_frame_present(unsigned retraces) {
     // GAME to the wall clock; what it also did was remove the only limit on how fast this process
     // hands work to the GPU. Aurora replays the whole GX stream and presents once per call here, so
     // an unpaced run submitted thousands of frames a second back to back and left the graphics ring
-    // no gap for the compositor. On 2026-08-12 that helped make this machine unusable — see
-    // debug_journal/2026-08-12_gpu_hang_guards.md. Fast-forwarding does not need a frame per
+    // no gap for the compositor. On 2026-08-12 that helped make this machine unusable.
+    // Fast-forwarding does not need a frame per
     // CPU-microsecond; the guest still
     // runs unpaced between presents, only the submission rate is bounded. SB_MAX_PRESENT_HZ=0
     // disables it, and has to be typed to do so.

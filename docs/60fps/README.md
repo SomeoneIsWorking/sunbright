@@ -45,9 +45,8 @@ vertices. The retained evidence distinguishes these populations:
   interpolate decoded source attributes.
 - J2D, glyphs, HUD, and fades: remain authored 2D unless a named native policy owns their motion.
 
-Detailed population observations remain in `docs/graphics/graphics_db.tsv`. The current
-renderer-neutral model and shader contracts live in `native-render/`; they do not ingest guest
-pointers, GX state, or emulator renderer objects.
+Current renderer-neutral model and shader contracts live in `native-render/`; they do not ingest
+guest pointers, GX state, or emulator renderer objects.
 
 ## Measurement rules
 
@@ -55,12 +54,11 @@ A 60 Hz claim needs all of the following:
 
 1. Nonzero counts with denominators for every admitted, snapped, missing-history, stale, and
    topology-mismatch class.
-2. A forced opposite control that visibly or numerically changes the produced frame.
-3. Consecutive-present measurements from one deterministic run; indices from different cadences do
+2. Consecutive-present measurements from one deterministic run; indices from different cadences do
    not identify the same guest moment.
-4. Real gameplay reachability through the shipping JIT path. Diagnostic-only and fallback-heavy
+3. Real gameplay reachability through the shipping JIT path. Diagnostic-only and fallback-heavy
    runs do not qualify the feature.
-5. Frame-time percentiles and sustained behavior on x86_64, Apple Silicon macOS AArch64, and Android
+4. Frame-time percentiles and sustained behavior on x86_64, Apple Silicon macOS AArch64, and Android
    arm64-v8a independently.
 
 Useful retained analysis tools are `tools/interp/cadence.py`, `tools/interp/frame_regions.py`, and

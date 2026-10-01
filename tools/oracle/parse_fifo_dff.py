@@ -222,7 +222,7 @@ BP_KSEL_HI = 0xFD
 # only in a throwaway scratch script (scratch/oracle/fifo/extract_entry_paint_dome.py)
 # and was never validated against a full color-writing-draw census, which is
 # exactly how "dome color_update=0 + clear=black" got over-read as "screen is
-# black" (see debug_journal/2026-07-10_fifo_parser_colorupdate_validation.md).
+# black".
 BP_CLEAR_RA = 0x4F   # r: bits 0-7, a: bits 8-15
 BP_CLEAR_BG = 0x50   # b: bits 0-7, g: bits 8-15
 BP_CLEAR_Z = 0x51    # depth: bits 0-23
@@ -999,9 +999,7 @@ def main():
                           "(the region a full-screen sky/gradient draw must cover). Exits "
                           "nonzero and prints the reason if none is found -- guards against "
                           "silently re-concluding 'nothing paints the sky' from a single "
-                          "draw's color_update bit (see debug_journal/"
-                          "2026-07-10_fifo_parser_colorupdate_validation.md).")
-    ap.add_argument("--tev-tsv", metavar="OUT",
+                          "draw's color_update bit.")    ap.add_argument("--tev-tsv", metavar="OUT",
                      help="write a per-draw-per-stage TEV/material-state TSV (color_env/alpha_env/"
                           "tref/ksel decode) for EVERY draw of the chosen --frame to OUT, instead "
                           "of the normal timeline dump; the draw column is the same ordinal "

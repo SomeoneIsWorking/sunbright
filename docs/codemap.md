@@ -1,7 +1,7 @@
 # Codemap
 
 Sunbright's ownership and placement map. Capability state belongs in `docs/project-state.md`, work
-order in `docs/port/migration.md`, and evidence in `docs/info/` and focused RE notes.
+order in `docs/port/migration.md`, and binary evidence in focused RE notes.
 
 ```text
 application composition
@@ -19,11 +19,11 @@ application composition
 | Dolphin core | PowerPC decoder/JIT/cache, memory, and unemancipated devices | `extern/dolphin_fork/` | Dolphin Core/System and JIT dispatch | `docs/architecture.md` |
 | Title identity | Validate exact GMSE01 and provision the user image | Future configuration and title owners | Immutable application configuration | `docs/port/migration.md` |
 | Native overrides | Image-scoped guest-address hooks and one-call originals | Dispatch: `gcnport::DolphinRuntimeAdapter` (shared). Title overrides: future title owners; `tools/gcnport_boot/gmse01_boot.cpp` is the only current consumer and is diagnostic | `adapter.install_hook`, `GuestContext::call_original`, `adapter.arm_original_call`; first seam `J3DShape::draw` at `0x802e0390` | `docs/re_notes/j3d_shape_decode.md` |
-| JUTTexture decode policy | What a `JUTTexture`'s fields mean: owned formats, legal samplers, when a palette is required | `native-render/include/sunbright/native_render/jut_texture.h`, `native-render/src/jut_texture.cpp` | `plan_jut_texture`, `decode_jut_texture` | `docs/graphics/README.md` |
-| Material family selection | The one rule choosing which J3D material family a normalized state belongs to, for every runtime | `native-render/include/sunbright/native_render/j3d_material_family.h`, `native-render/src/j3d_material_family.cpp` | `classify_j3d_material`, `J3dTextureSource` | `docs/graphics/README.md` |
-| Renderer-neutral schema | Scene values, image/J3D/J2D decoding, bounded frame storage | `native-render/include/`, `native-render/src/` | `native-render/include/sunbright/native_render/frame.h` | `docs/graphics/README.md` |
-| Semantic GPU renderer | PC-native passes, shaders, resources, targets, presenter | `native-render/src/`, `native-render/shaders/` | `native-render/src/sdl_semantic_frame_client.cpp` | `docs/graphics/README.md` |
-| Renderer controls | Production-boundary CPU and watched GPU controls | `native-render/tests/` | Focused test executables | `docs/graphics/README.md` |
+| JUTTexture decode policy | What a `JUTTexture`'s fields mean: owned formats, legal samplers, when a palette is required | `native-render/include/sunbright/native_render/jut_texture.h`, `native-render/src/jut_texture.cpp` | `plan_jut_texture`, `decode_jut_texture` | `docs/re_notes/` |
+| Material family selection | The one rule choosing which J3D material family a normalized state belongs to, for every runtime | `native-render/include/sunbright/native_render/j3d_material_family.h`, `native-render/src/j3d_material_family.cpp` | `classify_j3d_material`, `J3dTextureSource` | `docs/re_notes/` |
+| Renderer-neutral schema | Scene values, image/J3D/J2D decoding, bounded frame storage | `native-render/include/`, `native-render/src/` | `native-render/include/sunbright/native_render/frame.h` | `docs/re_notes/` |
+| Semantic GPU renderer | PC-native passes, shaders, resources, targets, presenter | `native-render/src/`, `native-render/shaders/` | `native-render/src/sdl_semantic_frame_client.cpp` | `docs/re_notes/` |
+| Renderer controls | Production-boundary CPU and watched GPU controls | `native-render/tests/` | Focused test executables | `docs/re_notes/` |
 | Guest semantic adapters | Copy GMSE01 values through gcnport memory/state interfaces | `title-adapter/include/sunbright/title_adapter/`, `title-adapter/src/` | `guest_j3d_shape.h`: `read_guest_shape`, `read_guest_shape_element`, `guest_mesh_element_source`; `guest_j3d_pose.h`: `read_guest_shape_pose`, `GuestMatrixRegisters`; `guest_j3d_material.h`: `read_guest_material`; `guest_j3d_texture.h`: `read_guest_texture_table`, `decode_guest_texture`; `guest_stage_lighting.h`: `read_guest_stage_lighting`; `guest_projection.h`: `read_guest_projection`, `read_orthographic_screen`; `guest_shape_geometry.h`: `read_guest_shape_geometry`; `guest_j3d_display_list.h`: `read_guest_material_packet_textures` (what a material's baked display list binds, which outranks its packet's table); `guest_j2d_picture.h`: `read_guest_picture`; `guest_j2d_window.h`: `read_guest_window` (the framed panel the title's text is written onto, including retail's own four-corner test for whether it has a frame at all); `guest_jut_texture.h`: `read_guest_jut_texture` (one `JUTTexture` and the palette an indexed one samples through, held by both J2D readers); `guest_j2d_pane.h`: the `J2DPane` field offsets its subclasses share; `guest_j2d_graf_context.h`: `read_guest_ortho_graph`, `read_guest_graf_context_fill`; `guest_scrn_fader.h`: `wipe_box_inset`, `resolve_wipe_box_bands` (the quads `TSMSFader` draws, which are vertices and nothing else); `guest_res_font.h`: `read_guest_res_font_glyph` (the glyph `JUTResFont::loadFont` would select, performed from the font's own `WID1`/`GLY1`/`MAP1` blocks rather than read back after the fact); `guest_pad.h`: `encode_guest_pad_status`, `GuestPadTimeline` (one `PADStatus` as the guest reads it, and which one is held at a given frame); `guest_j2d_primitives.h`: `GuestRect`, `read_guest_rect`, `read_guest_matrix`; one reader per J3D block family in `guest_j3d_color.h`, `guest_j3d_texgen.h`, `guest_j3d_tev.h`, `guest_j3d_pixel_engine.h`; `guest_memory.h`: `GuestReader` | `docs/architecture.md` |
 | Native-layout evidence | Exercise semantic contracts from recovered source | `sms-boot/runtime/`, `sms-boot/shims/` | Focused evidence adapters only | `docs/decomp/` |
 | Native asset evidence | Decode and transform title assets into ordinary values | `sms-boot/assets/` | Focused asset decoders | `docs/decomp/` |
@@ -35,16 +35,13 @@ application composition
 | Input/UI/saves | Device actions, settings UI, persistent player state | Future focused input, UI, and save owners | Typed application policy | `docs/app/settings.md` |
 | Configuration | Sole CLI/environment/file ingestion and immutable validation | `tools/launch/config.py`; future product configuration owner | `parse_launch_config` | `docs/app/settings.md` |
 | Logging | Sole product sink/filter/format boundary through Lucent | Future logging owner | Injected logger interface | `docs/architecture.md` |
-| Verification policy | Asset-free build/quality checks, native compile-database identity and lint selection, checksum-pinned shader tools, explicit self-test requirements, and the separate game-image RE gate | `tools/verification.py`, `tools/cpp_quality.py`, `tools/cpp_quality_test.py`, `tools/render/shader_toolchain.py`, `tools/selftest_all.py`, `tools/verify_re.py` | `tools/verify.py`, `tools/verify_re.py` | `AGENTS.md` |
-| Native runtime deployment | Resolve Windows DLLs from CMake imported targets, stage beside executables, and reject missing or stale deployment | `cmake/SunbrightRuntimeDependencies.cmake`, `tools/runtime_dependencies.py`, `tools/runtime_dependencies_test.py`, `tools/fixtures/runtime-dependencies/` | `sunbright_deploy_runtime_dependencies` | `AGENTS.md` |
+| Verification policy | Asset-free build/quality checks, native compile-database identity and lint selection, checksum-pinned shader tools, and the decomp host compile | `tools/verification.py`, `tools/cpp_quality.py`, `tools/render/shader_toolchain.py`, `tools/decomp/hostcheck.py` | `tools/verify.py` | `AGENTS.md` |
+| Native runtime deployment | Resolve Windows DLLs from CMake imported targets, stage beside executables, and reject missing or stale deployment | `cmake/SunbrightRuntimeDependencies.cmake`, `tools/runtime_dependencies.py` | `sunbright_deploy_runtime_dependencies` | `AGENTS.md` |
 | Structure policy | Source caps, dependency edges, config/log ownership, deleted-path checks | `tools/structure_check.py`, `tools/migration_boundary.py` | Python verifier entry points | `AGENTS.md` |
 | Audio analysis | Parse and compare native audio evidence | `tools/audio/` | Focused Python tools | `docs/audio/` |
 | Document validation | Reject dead live-document paths | `tools/docs/` | `tools/docs/doc_paths.py` | `docs/README.md` |
-| Graphics census | Validate and query the graphics registry | `tools/gfx/` | `tools/gfx/graphics_db.py` | `docs/graphics/README.md` |
-| Ledger support | Validate project claims and registry paths | `tools/info/` | Focused Python tools | `docs/info/` |
 | Presentation analysis | Compare retained frame and motion evidence | `tools/interp/` | Focused Python tools | `docs/60fps/README.md` |
-| Performance probes | Measure bounded host/runtime behavior | `tools/perf/` | Focused Python probes | `tools/perf/README.md` |
-| Renderer diagnostics | Inspect renderer output and GPU incidents | `tools/render/` | Focused Python tools | `docs/graphics/README.md` |
+| Renderer diagnostics and run guard | Drive bounded render runs, diff frames against the oracle, and guard the GPU | `tools/render/` | Focused Python tools | `docs/re_notes/` |
 | Reverse engineering | Decompile/disassemble exact GMSE01 and preserve evidence | `tools/re/`, `tools/ghidra_scripts/` | Small focused queries | `docs/re_notes/` |
 
 ## Current source tree
@@ -62,13 +59,13 @@ extern/gcnport/      pinned shared gcnport framework (title-neutral Dolphin-JIT 
                      pinned extern/dolphin fork provides the Core/UICommon libraries
                      tools/gcnport_boot links against directly
 tools/               Python verification, RE, oracle parsing, and diagnostics
-  tools/fixtures/      redistributable build-metadata fixtures
   tools/audio/         audio analysis and comparison data
+  tools/disc/          retail-image extraction
   tools/docs/          living-document validation
-  tools/gfx/           graphics census tooling
-  tools/info/          project-ledger support
   tools/interp/        presentation-analysis tooling
-  tools/perf/          bounded performance probes
+  tools/launch/        the shipping launcher boundary
+  tools/oracle/        reference-emulator capture parsers and comparisons
+  tools/re/            RE queries over the exact GMSE01 image
   tools/render/        renderer and GPU diagnostic tooling; boot_run.py owns the producer flag set a
                        render run attaches, so the list is not retyped per run, and frame_diff.py
                        owns comparing a rendered frame against an oracle one
@@ -103,8 +100,7 @@ docs/                goals, state, ownership, issues, claims, and RE facts
 - Recovered behavior or names → `decomp/sms/` and one focused RE note when explanation is needed.
 - CLI/environment/persisted setting → configuration owner; consumers receive typed values.
 - Product diagnostics → Lucent logging owner; no direct product stderr/stdout.
-- Cross-platform self-test selection or game-image RE gate policy → `tools/selftest_all.py`,
-  `tools/verify.py`, and `tools/verify_re.py`.
+- Asset-free gate policy → `tools/verification.py` and `tools/verify.py`.
 - Shader compiler/validator source pins, safe provisioning, and installed-tool resolution →
   `tools/render/shader_toolchain.py`.
 - Windows executable DLL deployment and integrity → `cmake/SunbrightRuntimeDependencies.cmake`

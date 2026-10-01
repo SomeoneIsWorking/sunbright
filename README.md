@@ -52,14 +52,10 @@ implementation evidence, but they have not yet been integrated into the new game
 `./run.sh` is the stable product command. Until `gcnport` exists it exits with an explicit missing-
 executor error; it does not expose an alternate runtime selector.
 
-The redistributable native-component gate is `uv run --frozen python tools/verify.py`. It runs the
-portable self-tests on every supported desktop CI host and the Linux kernel/RADV diagnostics only
-on Linux. It provisions the exact shaderc v2026.1 toolchain from checksum-locked source archives
-under `build/deps/` and uses those binaries for mandatory shader compilation and SPIR-V validation;
-system `glslc`/`spirv-val` versions are never substituted. Game-image-dependent RE instrument checks
-are deliberately separate:
-`uv run --frozen python tools/verify_re.py` requires the user-supplied GMSE01 DOL and refuses rather
-than reporting an empty result when it is absent.
+The redistributable native-component gate is `uv run --frozen python tools/verify.py`. It runs on
+every supported desktop CI host. It provisions the exact shaderc v2026.1 toolchain from
+checksum-locked source archives under `build/deps/` and uses those binaries for mandatory shader
+compilation and SPIR-V validation; system `glslc`/`spirv-val` versions are never substituted.
 
 ## Game files and licensing
 

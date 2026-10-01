@@ -68,8 +68,7 @@ static void sort_bounds(uint32_t* b, int n) {
 // leaves entries idx>=count/3 in raw BE — produces NaN-ish joint matrices once the
 // skeleton recursion reaches those entries (verified at file-select with Mario's body
 // model, 29 joints: j9 reads entries 27/28/29 → entry 29 was unswapped → garbage scale,
-// NaN-translate propagation, fail-fast panic at the head joint). See debug_journal/
-// 2026-06-24_nan_joints_calc_data_divergence.md.
+// NaN-translate propagation, fail-fast panic at the head joint).
 static void swap_ANK1(uint8_t* out, const uint8_t* be, uint32_t size) {
 	if (size < 0x24) return;
 	uint16_t count     = be16(be + 0x0C);

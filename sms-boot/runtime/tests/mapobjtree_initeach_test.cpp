@@ -1,6 +1,6 @@
 // mapobjtree_initeach_test.cpp — unit test from RE for TMapObjTree::initEach
 // (decomp/sms/src/MoveBG/MapObjTree.cpp), cold-ported 2026-07-15 from US
-// GMSE01 0x801f6a64. See debug_journal/2026-07-15_mapobjtree_initmapobj_port_re.md.
+// GMSE01 0x801f6a64.
 //
 // initEach is a flat switch on THitActor::mActorType (0x4C) that stamps the
 // tree's leaf count + spread/growth constants. This is the most

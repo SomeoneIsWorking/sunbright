@@ -95,7 +95,7 @@ AArch64 OS is not evidence for another.
 The normal verifier must enforce the 1,200-line source cap and downward ratchets; native-render's
 dependency boundary; one typed configuration owner; Lucent as the sole product logging boundary;
 Python tooling except the slim `run.sh`; portable build/scratch paths; and absence of the deleted
-executor surfaces. Controlled negative selftests must prove every structural rule can fail.
+executor surfaces.
 
 When gameplay exists, `./run.sh` provisions and launches only the native/dynarec product and never
 runs tests. Packages contain no game files, provide a native picker, validate a direct image or one

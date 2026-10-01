@@ -1,7 +1,7 @@
 // mtx_lookat_test.cpp — verify-first unit test for the GC-convention sign of
 // aurora's C_MTXLookAt / C_MTXPerspective (extern/aurora/lib/dolphin/mtx).
 //
-// Context (debug_journal/2026-07-10_phase_provider_restore_and_behind_camera_finding.md):
+// Context:
 // at the stage-15 title every backdrop vertex (Sky/MapOpa/MapXlu) lands at
 // POSITIVE camera-space Z, so clip.w = -mv.z goes negative and every vertex is
 // discarded as "behind the camera". The GC convention is that the camera looks

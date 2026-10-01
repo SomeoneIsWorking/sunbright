@@ -597,10 +597,10 @@ bool JUTException::readPad(u32* buttons, u32* trigger) {
 extern "C" {
 bool sb_boot_drive_scene() {
     // Path-B relic: forced TSmJ3DScn::perform(8) because Path-B's MActor-perform dispatch
-    // never delivered bit 0x8 to the scene (see docs/DO_NOT_REVISIT_FLIP.md history).
+    // never delivered bit 0x8 to the scene.
     // Aurora (Path A) delivers scene draw through its own GX dispatch — the workaround
     // does not apply here (same reasoning as TSky::perform's Path-B-only MActor-bit
-    // drop, debug_journal 2026-07-03). Caller (MarDirectorDirect.cpp) discards the
+    // drop). Caller (MarDirectorDirect.cpp) discards the
     // return value, so `true` vs the old `void` was never observable; kept as a no-op.
     return true;
 }

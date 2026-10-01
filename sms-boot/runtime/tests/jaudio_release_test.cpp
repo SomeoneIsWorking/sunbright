@@ -1,6 +1,6 @@
 // jaudio_release_test.cpp — verify-first unit test locking the JAudio
 // handle-pool release / double-release invariants fixed in decomp/sms
-// fdce9d18 (debug_journal/2026-07-10_audio_double_release_retail_audit.md).
+// fdce9d18.
 //
 // This links the REAL JAIBasic/JAISound code (compiled into the sms-native
 // static library exactly as sms-boot uses it, SMS_NATIVE_PLATFORM=1) rather

@@ -12,7 +12,7 @@ Read these authorities before non-trivial work:
 3. `docs/architecture.md` — product boundaries and dependency direction.
 4. `docs/port/migration.md` — migration order and acceptance gates.
 5. `docs/codemap.md` — responsibility ownership and placement.
-6. `docs/issues/` and `docs/info/` — atomic work, claims, and instrument trust.
+6. `docs/issues/` — atomic open bugs and missing features.
 
 The portfolio-wide architecture and order live in the shared `jit-common` repository's
 `docs/migration.md`. Sunbright's authorities refine that contract for this title; they do not create
@@ -108,10 +108,8 @@ sample pixels to decide what extra world content exists.
 - `extern/dolphin_fork` is the maintained independent emulator/oracle fork. Its frame/FIFO hooks and
   bounded controls remain useful, but product execution enters Dolphin through `gcnport`, not through
   title-local JIT patches.
-- Every comparison instrument must prove a known-positive and known-negative answer, report
-  denominators, and state what it does not cover. Boot, a clean log, or a single frame is not parity.
-- Consult `docs/info/claims/` before citing prior measurements. A holding claim is unchallenged, not
-  automatically current. Fix or falsify stale evidence instead of appending a contradictory note.
+- Every comparison tool must state what it does not cover. Boot, a clean log, or a single frame is not
+  parity.
 
 ## C++ structure and ownership
 
@@ -171,13 +169,12 @@ validated selection in OS user data. Validate exact `GMSE01` identity before map
 
 ## Working discipline
 
-- Search `docs/issues/` and run the project-information brief before re-deriving a symptom.
+- Search `docs/issues/` before re-deriving a symptom.
 - Fix root causes at the owning layer. No magic offsets, failing-input special cases, swallowed
   errors, retry-until-pass, sleeps to hide races, silent fallbacks, or skipped checks.
 - Automated runs are headless, muted, bounded, and driven through the control channel. Kill only the
   exact owned PID with the shared safe-kill helper.
-- Write durable facts to the nearest authority once. Goals own intent, project state owns factual
-  coverage, issues own atomic work, the codemap owns placement, claims own falsifiable evidence, and
-  RE notes own binary behavior.
+- Write a durable fact to the nearest authority once. Goals own intent, project state owns factual
+  coverage, issues own atomic work, the codemap owns placement, and RE notes own binary behavior.
 - The active title is Sunbright/`GMSE01`. Do not start another GameCube title until Sunbright passes
   its complete representative-gameplay and host qualification gates.

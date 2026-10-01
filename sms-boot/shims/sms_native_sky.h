@@ -42,12 +42,10 @@ void sb_native_sky_backdrop(float rgba[4]);
 // SMS_NATIVE_PLATFORM zzz sleep bubbles pass (CLAUDE.md 2026-07-03 hard rule). Painted over the
 // final composite when gpMarioOriginal->mStatus == MARIO_STATUS_SLEEP — the visual intent of the
 // JPA `PARTICLE_MS_POI_ZZZ` particle above sleeping Mario's head, native-owned instead of chasing
-// the JPA NaN dispatch chain (see debug_journal/2026-07-03_zzz_particle_nan_diagnosis.md and
-// 2026-07-03_zzz_native_paint.md). Call between the last draw_tev_segment and frame_end.
+// the JPA NaN dispatch chain. Call between the last draw_tev_segment and frame_end.
 void sb_native_zzz_paint(void);
 
-// SMS_NATIVE_PLATFORM native water paint (CLAUDE.md 2026-07-03 hard rule; sea RE journal
-// debug_journal/2026-07-03_water_re_afterindirect_empty.md). Paints a turquoise gradient over
+// SMS_NATIVE_PLATFORM native water paint. Paints a turquoise gradient over
 // the water region of the frame with a smoothstep horizon fade, when the scene renders water.
 //
 // What we're rendering: at title (map==15) the water is drawn on native as scene batches with

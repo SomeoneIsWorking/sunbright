@@ -69,7 +69,7 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
      swbit bit19 (JAISeEntry::storeBuffer semantics); pending requests expire after ~2 s.
    - Stop signal = `writePortImport(0, 0)` (looping snippets poll port0) + note-off all 8
      worker channels (envelope release, not hard cut).
-   Verified (100 s headless boot→menus, `tools/audio/raw_profile.py` on the solo dump):
+   Verified (100 s headless boot→menus, per-window RMS/zero-crossing profile of the solo dump):
    jingle zcr 2476 (M1 unregressed), the game's own 30-frame jingle fade-on-skip is now
    audible, real category volumes captured (cat5=74 cat0=96…), 108 dispatches / 2163
    handle ops, zero unhandled BMS opcodes, zero missing waves, no voice/track leaks.
@@ -128,7 +128,7 @@ HardStream/THP audio: keep current path (it WORKS — it is what has been audibl
      (envelope states 4/5/6, lowest phase). 0 out-of-voices over 150 s incl. Delfino.
    Verified (150 s headless autostart): title → file-select → camera demo → Delfino
    Plaza, 831 noteOns across multi-track roots (bank 0 progs), sustained music RMS
-   5000–7000 / zcr 1500–3000 / d2e ≤0.21 (raw_profile.py), zero unhandled BMS opcodes,
+   5000–7000 / zcr 1500–3000 / d2e ≤0.21, zero unhandled BMS opcodes,
    no voice/track exhaustion, no crash.
    **M2.5 CORRECTION (2026-06-12): the "inner setters are the funnel" claim is FALSE for
    SMS distance code.** The compiler INLINED setSeInterVolume into

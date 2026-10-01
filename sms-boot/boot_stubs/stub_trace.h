@@ -1,6 +1,6 @@
 // stub_trace.h — shared FAIL-FAST instrumentation for SILENT LANDMINE stubs.
 //
-// Context (debug_journal/2026-07-10_stub_audit_fail_fast.md): sdk_stubs.cpp carried 20
+// Context: sdk_stubs.cpp carried 20
 // silent no-op bodies for JRenderer.cpp's exports because that file was wrongly excluded
 // from the build; JRNISetTevOrder as a no-op left every TEV stage on GX_TEXMAP_NULL,
 // rendering the whole 3D scene black for days before the excluded-file bug was found.

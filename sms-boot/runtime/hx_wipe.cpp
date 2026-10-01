@@ -8,9 +8,7 @@
 // Hx_RemoveResource — those 8 are the only externally-referenced symbols of the library;
 // see decomp/sms/src/GC2D/ScrnFader.cpp and decomp/sms/src/System/MovieDirector.cpp).
 //
-// Reverse-engineered byte-for-byte from the original DOL (GMSE01) — see
-// debug_journal/2026-06-21_session12_moviedir_crash_and_wipe_lib.md for the full RE and
-// every source address. Every state write / phase transition / timer here is transcribed
+// Reverse-engineered byte-for-byte from the original DOL (GMSE01). Every state write / phase transition / timer here is transcribed
 // directly from the disassembly (verified with tools/re/ppcdis.py over scratch/bin/sms.dol):
 //   Hx_StartWipe        0x80181fd8
 //   Hx_UpdateWipe       0x80181e80

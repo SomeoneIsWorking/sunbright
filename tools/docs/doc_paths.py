@@ -7,9 +7,8 @@ that contract separate from the migration vocabulary check.
 WHAT IT DELIBERATELY DOES NOT CHECK.
 
   * **Archive directories.** `docs/re_notes/` and `docs/port/` are historical RE notes describing a
-    past state; a dead path there is the note doing its job, exactly as a retired instrument should
-    still name the file it lived in. They are SKIPPED, and the skip is REPORTED — a check that
-    quietly narrows its own scope is how "clean" stops meaning anything.
+    past state; a dead path there is the note doing its job. They are SKIPPED, and the skip is
+    REPORTED — a check that quietly narrows its own scope is how "clean" stops meaning anything.
   * **Paths marked dead in place.** A living evidence record may name a removed file when that path
     is needed to interpret a surviving binary fact. Such a path is exempt only when the same line
     explicitly marks it dead.
@@ -29,8 +28,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 # Documents that describe the code as it IS. Everything else under docs/ is archive.
 LIVE_ROOTS = ("AGENTS.md", "CLAUDE.md", "docs/README.md", "docs/codemap.md", "docs/app",
-              "docs/60fps", "docs/graphics", "docs/audio", "docs/info")
-ARCHIVE = ("docs/re_notes", "docs/port", "debug_journal")
+              "docs/60fps", "docs/audio")
+ARCHIVE = ("docs/re_notes", "docs/port")
 
 PATH_RE = re.compile(r"`([A-Za-z0-9_][\w./-]*\.(?:cpp|h|hpp|py|sh|glsl|tsv))`")
 

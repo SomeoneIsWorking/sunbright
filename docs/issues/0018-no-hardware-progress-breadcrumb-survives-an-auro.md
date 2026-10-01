@@ -43,8 +43,8 @@ detail.
 ### Note (2026-08-27)
 Partial implementation 2026-08-27: guarded launchers accept only explicit
 `SBR_RADV_HANG_DIAG=1`, preserve the effective `RADV_DEBUG` across `.env`, and the watcher snapshots
-before launch then captures only a new exact-child-PID dump after stopping the process. I034
-validates positive/negative collection and trace parsing. A real guarded stage-1 launch subsequently
+before launch then captures only a new exact-child-PID dump after stopping the process. A real
+guarded stage-1 launch subsequently
 proved that Mesa RADV 26.1.8 consumed the flag: the driver itself printed its costly-mode warning
 and `Enabled debug options: syncshaders, hang`. That 30-present activation control completed cleanly,
 so it could not prove hang-only trace production. The issue remains open until a real fault produces
