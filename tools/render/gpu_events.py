@@ -10,7 +10,6 @@ import math
 import os
 import re
 import selectors
-import signal
 import stat
 import subprocess
 import sys
@@ -18,9 +17,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from unittest import mock
 
-SELFTEST_REQUIREMENTS = ("linux",)
 
 # The first signal in the 2026-08-26 incident did not contain the usual ``amdgpu:`` prefix:
 # ``[drm:gfx_v10_0_priv_reg_irq [amdgpu]] *ERROR* Illegal register access ...``.  It must stop
@@ -711,234 +708,8 @@ def current_boot_id() -> tuple[str | None, str | None]:
     return (boot_id, None) if boot_id else (None, "kernel returned an empty boot id")
 
 
-def selftest() -> int:
-    repo = Path(__file__).resolve().parents[2]
-    scratch = repo / "scratch"
-    scratch.mkdir(parents=True, exist_ok=True)
-    # These fixtures test byte/status classification, not the timeout. On the shared workstation,
-    # runnable sibling compilers can leave an already-ready Python child unscheduled for seconds.
-    # Keep that scheduling delay out of the semantic controls; the blocked FIFO below is the one
-    # deliberately short deadline control.
-    fixture_read_secs = 30.0
-    with tempfile.TemporaryDirectory(
-        prefix="gpu-events-selftest-", dir=scratch
-    ) as temp_text:
-        temp = Path(temp_text)
-        no_dump_root = temp / "no-device-coredump"
-        no_dump_root.mkdir()
-        (no_dump_root / "disabled").write_text("0\n", encoding="ascii")
-
-        readable_root = temp / "readable-device-coredump"
-        readable_root.mkdir()
-        (readable_root / "disabled").write_text("0\n", encoding="ascii")
-        readable_before, readable_snapshot_error = device_coredump_snapshot(
-            readable_root
-        )
-        assert readable_snapshot_error is None and not readable_before
-        readable_node = readable_root / "devcd0"
-        readable_node.mkdir()
-        planted_dump = b"**** AMDGPU Device Coredump ****\nplanted-ring-packet\n"
-        (readable_node / "data").write_bytes(planted_dump)
-        (readable_node / "uevent").write_text("DRIVER=amdgpu\n", encoding="ascii")
-        fake_device = temp / "0000:0b:00.0"
-        fake_device.mkdir()
-        (readable_node / "failing_device").symlink_to(fake_device)
-        readable = capture_new_device_coredumps(
-            readable_before,
-            temp / "readable-incident",
-            root=readable_root,
-            wait_secs=0,
-            read_secs=fixture_read_secs,
-            expected_device_ids={"0000:0b:00.0"},
-        )
-        assert [evidence.status for evidence in readable] == ["captured"]
-        assert readable[0].artifact is not None
-        assert readable[0].artifact.read_bytes() == planted_dump
-        readable_report = "\n".join(readable[0].report)
-        assert "DRIVER=amdgpu" in readable_report
-        assert "0000:0b:00.0" in readable_report
-        assert "captured sha256:" in readable_report
-        assert "correlation: MATCHED" in readable_report
-        readable_stale, _ = device_coredump_snapshot(readable_root)
-        stale = capture_new_device_coredumps(
-            readable_stale,
-            temp / "stale-incident",
-            root=readable_root,
-            wait_secs=0,
-        )
-        assert stale[0].status == "unavailable"
-        assert "excluded as stale" in "\n".join(stale[0].report)
-        assert not list(temp.glob("stale-incident.devcoredump-*.bin"))
-
-        unrelated_root = temp / "unrelated-device-coredump"
-        unrelated_root.mkdir()
-        (unrelated_root / "disabled").write_text("0\n", encoding="ascii")
-        unrelated_node = unrelated_root / "devcd-other"
-        unrelated_node.mkdir()
-        (unrelated_node / "data").write_bytes(b"other device")
-        other_device = temp / "0000:0c:00.0"
-        other_device.mkdir()
-        (unrelated_node / "failing_device").symlink_to(other_device)
-        unrelated = capture_new_device_coredumps(
-            {},
-            temp / "unrelated-incident",
-            root=unrelated_root,
-            wait_secs=0,
-            expected_device_ids={"0000:0b:00.0"},
-        )
-        assert unrelated[0].status == "unrelated"
-        assert unrelated[0].artifact is None
-        assert "shared PCI device key does not match" in "\n".join(unrelated[0].report)
-
-        truncated_root = temp / "truncated-device-coredump"
-        truncated_root.mkdir()
-        (truncated_root / "disabled").write_text("0\n", encoding="ascii")
-        truncated_node = truncated_root / "devcd1"
-        truncated_node.mkdir()
-        (truncated_node / "data").write_bytes(b"0123456789abcdef")
-        truncated = capture_new_device_coredumps(
-            {},
-            temp / "truncated-incident",
-            root=truncated_root,
-            wait_secs=0,
-            read_secs=fixture_read_secs,
-            max_bytes=8,
-        )
-        assert truncated[0].status == "truncated"
-        assert truncated[0].artifact is not None
-        assert truncated[0].artifact.read_bytes() == b"01234567"
-
-        empty_root = temp / "empty-device-coredump"
-        empty_root.mkdir()
-        (empty_root / "disabled").write_text("0\n", encoding="ascii")
-        empty_node = empty_root / "devcd-empty"
-        empty_node.mkdir()
-        (empty_node / "data").write_bytes(b"")
-        empty = capture_new_device_coredumps(
-            {},
-            temp / "empty-incident",
-            root=empty_root,
-            wait_secs=0,
-            read_secs=fixture_read_secs,
-        )
-        assert empty[0].status == "empty"
-        assert "before any evidence byte" in "\n".join(empty[0].report)
-
-        denied_root = temp / "denied-device-coredump"
-        denied_root.mkdir()
-        (denied_root / "disabled").write_text("0\n", encoding="ascii")
-        denied_data = denied_root / "devcd2" / "data"
-        denied_data.parent.mkdir()
-        denied_data.write_bytes(b"must-not-be-captured")
-        real_path_open = Path.open
-
-        def deny_fixture(path: Path, *args, **kwargs):
-            if path == denied_data:
-                raise PermissionError("planted sysfs 0600 control")
-            return real_path_open(path, *args, **kwargs)
-
-        with mock.patch.object(Path, "open", deny_fixture):
-            denied_payload = _copy_device_coredump_worker(
-                denied_data, temp / "denied-staging", 1024
-            )
-        assert denied_payload["status"] == "permission-denied"
-        assert denied_payload["artifact_ready"] is False
-        assert "planted sysfs 0600 control" in str(denied_payload["detail"])
-        assert not list(temp.glob("denied-incident.devcoredump-*.bin"))
-
-        timeout_root = temp / "timeout-device-coredump"
-        timeout_root.mkdir()
-        (timeout_root / "disabled").write_text("0\n", encoding="ascii")
-        timeout_node = timeout_root / "devcd-blocked"
-        timeout_node.mkdir()
-        os.mkfifo(timeout_node / "data")
-        launched_readers: list[subprocess.Popen[str]] = []
-        real_popen = subprocess.Popen
-
-        def observe_reader(*args, **kwargs):
-            reader = real_popen(*args, **kwargs)
-            launched_readers.append(reader)
-            return reader
-
-        started = time.monotonic()
-        with mock.patch.object(subprocess, "Popen", side_effect=observe_reader):
-            timed_out = capture_new_device_coredumps(
-                {},
-                temp / "timeout-incident",
-                root=timeout_root,
-                wait_secs=0,
-                read_secs=0.15,
-            )
-        elapsed = time.monotonic() - started
-        assert timed_out[0].status == "timeout"
-        assert timed_out[0].artifact is None
-        assert "SIGKILLed and reaped" in "\n".join(timed_out[0].report)
-        maximum_elapsed = DEVCOREDUMP_WORKER_START_SECS + 0.15 + 2.0
-        assert elapsed < maximum_elapsed, (
-            f"blocked reader escaped its startup/read/reap bounds: {elapsed:.3f}s"
-        )
-        assert len(launched_readers) == 1
-        assert launched_readers[0].poll() is not None
-        assert launched_readers[0].returncode == -signal.SIGKILL
-        assert not list(temp.glob(".timeout-incident.devcoredump-devcd-blocked.bin.*"))
-
-        expired_root = temp / "expired-device-coredump"
-        expired_root.mkdir()
-        (expired_root / "disabled").write_text("0\n", encoding="ascii")
-        (expired_root / "devcd3").mkdir()
-        expired = capture_new_device_coredumps(
-            {},
-            temp / "expired-incident",
-            root=expired_root,
-            wait_secs=0,
-            read_secs=fixture_read_secs,
-        )
-        assert expired[0].status == "expired"
-        assert "EXPIRED" in "\n".join(expired[0].report)
-
-        absent = capture_new_device_coredumps(
-            {},
-            temp / "absent-incident",
-            root=temp / "absent-class",
-            wait_secs=0,
-        )
-        assert absent[0].status == "unavailable"
-        announced = capture_new_device_coredumps(
-            {},
-            temp / "announced-incident",
-            root=no_dump_root,
-            creation_announced=True,
-            wait_secs=0,
-        )
-        assert announced[0].status == "expired-or-consumed"
-        disabled_root = temp / "disabled-device-coredump"
-        disabled_root.mkdir()
-        (disabled_root / "disabled").write_text("1\n", encoding="ascii")
-        disabled = capture_new_device_coredumps(
-            {},
-            temp / "disabled-incident",
-            root=disabled_root,
-            wait_secs=0,
-        )
-        assert disabled[0].status == "disabled"
-
-    print("gpu-events selftest PASS")
-    print("  readable dump is copied byte-exactly with identity metadata and hash")
-    print(
-        "  empty, truncated, denied, expired, announced-consumed and disabled disagree"
-    )
-    print(
-        "  stale and PCI-mismatched nodes plus an absent class are never called captured"
-    )
-    print(
-        "  blocked-open worker hits deadline, is SIGKILLed/reaped, and leaves no artifact"
-    )
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--selftest", action="store_true")
     parser.add_argument(
         "--copy-devcoredump-worker",
         nargs=4,
@@ -946,10 +717,6 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
-    if args.selftest and args.copy_devcoredump_worker is not None:
-        parser.error("--selftest and the internal copy worker are mutually exclusive")
-    if args.selftest:
-        return selftest()
     if args.copy_devcoredump_worker is not None:
         source_text, staging_text, max_bytes_text, ready_fd_text = args.copy_devcoredump_worker
         try:

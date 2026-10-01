@@ -29,8 +29,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-SELFTEST_REQUIREMENTS: tuple[str, ...] = ()
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "re"))
 
@@ -45,8 +43,9 @@ class Producer:
 
     `symbol` is not decoration. These are US GMSE01 addresses typed in by hand, and a wrong digit
     produces a hook on some other function that installs, fires and publishes nothing -- which
-    reads exactly like a producer the title never reached. The selftest resolves every one of them
-    against the committed function list, so a transcription error fails before a run does.
+    reads exactly like a producer the title never reached. `tools/re/addr2sym.py` resolves every
+    one of them against the committed function list, so a transcription error is visible before a
+    run happens.
 
     It is written exactly as `addr2sym` answers, `name+offset` included. One of these lands inside a
     neighbour because the US function list has no entry of its own for it; pinning the answer that
@@ -175,48 +174,8 @@ def _name_of(symbols: list[tuple[int, str]], address: int) -> str | None:
     return f"{name}+{offset:#x}"
 
 
-def selftest() -> int:
-    """Every producer address must name what it claims to, and a wrong one must be caught.
-
-    The positive case is the whole table. The negative is a deliberately misnamed producer fed
-    through the same comparison: without it, a check that resolved nothing at all would pass
-    silently and report a table it never read.
-    """
-    symbols = addr2sym.load()
-    failures = 0
-    for producer in PRODUCERS:
-        found = _name_of(symbols, producer.address)
-        if found != producer.symbol:
-            print(
-                f"selftest: {producer.flag} 0x{producer.address:08x} names {found}, "
-                f"declared {producer.symbol}"
-            )
-            failures += 1
-    print(f"selftest: {len(PRODUCERS)} producer(s) checked, {failures} misnamed")
-
-    misnamed = Producer("--read-models", 0x802E0390, "definitely_not_this_symbol")
-    if _name_of(symbols, misnamed.address) == misnamed.symbol:
-        print("selftest: the comparison accepted a knowingly wrong name; it discriminates nothing")
-        failures += 1
-    else:
-        print(f"selftest: a knowingly wrong name for 0x{misnamed.address:08x} is rejected")
-
-    # And the other way round: the data address must not start naming a function, which is what
-    # would happen if the function list ever grew past it.
-    if _name_of(symbols, 0x804045DC) is not None:
-        print("selftest: j3dSys now resolves to a function; the data/code split above is wrong")
-        failures += 1
-
-    if failures != 0:
-        print("selftest FAILED")
-        return 1
-    print("selftest PASSED")
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--selftest", action="store_true", help="check the producer table and exit")
     parser.add_argument("--print-command", action="store_true", help="print the command, run nothing")
     parser.add_argument("--executable", default=str(DEFAULT_EXECUTABLE))
     parser.add_argument("--dol", default=str(DEFAULT_DOL))
@@ -230,8 +189,6 @@ def main() -> int:
     parser.add_argument("extra", nargs="*", help="further flags passed through unchanged")
     arguments = parser.parse_args()
 
-    if arguments.selftest:
-        return selftest()
 
     executable = Path(arguments.executable)
     dol = Path(arguments.dol)

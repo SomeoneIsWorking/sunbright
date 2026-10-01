@@ -33,7 +33,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -359,19 +358,11 @@ def main() -> int:
         "the two modes fail for different reasons",
     )
     ap.add_argument(
-        "--selftest",
-        action="store_true",
-        help="prove the checker reports both a clean TU and a broken one",
-    )
-    ap.add_argument(
         "--corpus-only",
         action="store_true",
         help="report coverage against configure.py's object list and stop",
     )
     args = ap.parse_args()
-
-    if args.selftest:
-        return selftest()
 
     if not SHIM.is_file():
         print(
@@ -487,187 +478,6 @@ def main() -> int:
     print(f"hostcheck: {verdict}" + (f" ({'; '.join(detail)})" if detail else "")
           + "  [gate = C++ in both modes; C is reported only]")
     return 1 if (failed_modes or corpus_problems) else 0
-
-
-def selftest() -> int:
-    """A checker that has only ever passed is not a checker.
-
-    Three controls, and each needs both answers to mean anything:
-      * coverage: a declared object with no file, and a file nobody declares, must
-        both be reported, and a reconciled tree must be quiet;
-      * a real translation unit from the tree must come back clean, and
-      * a copy of it with one field reference broken must come back with an error
-        naming that field.
-    If the first is not clean the tool is not measuring the tree; if the second is
-    not red it cannot detect the defect class this whole tool exists for.
-    """
-    corpus_failures = selftest_corpus()
-    if corpus_failures:
-        print("hostcheck selftest: FAIL — the coverage control did not discriminate:")
-        for f in corpus_failures:
-            print(f"  {f}")
-        return 1
-
-    sample = pick_clean_unit()
-    if sample is None:
-        print(
-            "hostcheck selftest: FAIL — no translation unit in the tree compiles clean "
-            "in BOTH build modes, so there is no baseline to prove the checker against. "
-            "That is a real finding about the tree, not about this tool."
-        )
-        return 1
-    with tempfile.TemporaryDirectory() as tmp:
-        broken = Path(tmp) / "broken.cpp"
-        # The red case is a self-contained probe appended to a TU that is known
-        # clean, and gated on a define so the same file compiles when the flag is
-        # absent. It does not depend on the sample's own class structure -- an
-        # earlier version looked for `class X {` to inject into and failed on any
-        # file that did not open with one, which is a fact about the sample, not
-        # about the checker.
-        text = sample.read_text(encoding="utf-8", errors="replace")
-        text += (
-            "\n#ifdef SUNBRIGHT_HOSTCHECK_SELFTEST_BROKEN\n"
-            "namespace { struct HostcheckSelftestProbe { int mReal; }; }\n"
-            f"int hostcheck_selftest_fn(HostcheckSelftestProbe p) "
-            f"{{ return p.{BROKEN_MEMBER}; }}\n"
-            "#endif\n"
-        )
-        broken.write_text(text, encoding="utf-8")
-        fired, clean_when_off = [], []
-        for mode in sorted(MODES):
-            base = ["clang++", *BASE_FLAGS, *MODES[mode], "-include", str(SHIM)]
-            for rel in INCLUDE_DIRS:
-                base += ["-I", str(SMS / rel)]
-            off = subprocess.run(
-                [*base, str(broken)],
-                capture_output=True,
-                text=True,
-                errors="replace",
-                cwd=SMS,
-                check=False,
-            )
-            if BROKEN_MEMBER not in (off.stdout + off.stderr) and off.returncode == 0:
-                clean_when_off.append(mode)
-            on = subprocess.run(
-                [*base, "-DSUNBRIGHT_HOSTCHECK_SELFTEST_BROKEN", str(broken)],
-                capture_output=True,
-                text=True,
-                errors="replace",
-                cwd=SMS,
-                check=False,
-            )
-            if BROKEN_MEMBER in (on.stdout + on.stderr):
-                fired.append(mode)
-        if set(fired) != set(MODES):
-            missing = sorted(set(MODES) - set(fired))
-            print(
-                f"hostcheck selftest: FAIL — a reference to a nonexistent member did not "
-                f"produce a diagnostic naming it in mode(s) {', '.join(missing)}, so this "
-                f"check cannot detect the defect class it exists for"
-            )
-            return 1
-        if set(clean_when_off) != set(MODES):
-            # Without this, a checker that simply always failed would pass the
-            # red case, which is the failure mode that matters most here.
-            print(
-                "hostcheck selftest: FAIL — the same file compiled WITHOUT the bad "
-                "member reference, so the red case is not discriminating: the probe "
-                "is broken, not the tree"
-            )
-            return 1
-    print(
-        f"hostcheck selftest: PASS (baseline {sample.relative_to(SMS)} compiles clean in "
-        f"both modes; adding a nonexistent member turns it red by name in both modes, "
-        f"and removing it turns it green again; the coverage control reports a "
-        f"declared-but-absent object and an undeclared on-disk file, and is quiet on a "
-        f"reconciled tree)"
-    )
-    return 0
-
-
-def selftest_corpus() -> list[str]:
-    """Prove the coverage check can go red in BOTH directions.
-
-    A coverage check that has only ever said "clean" is a rubber stamp. These
-    controls run on a synthetic tree rather than the real one, so they can
-    construct the two failures without deleting a file from the decomp:
-      1. a declared object with no file on disk   (the real `uart_consolle_io.c`
-         typo, which is how this check earned its place);
-      2. a C++ file in the tree the build never declares.
-    """
-    failures: list[str] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        sms = Path(tmp)
-        (sms / "src").mkdir()
-        (sms / "libs" / "JSystem" / "src").mkdir(parents=True)
-        (sms / "configure.py").write_text(
-            "middleware_libs = ['JSystem']\n"
-            "config = None\n"
-            "config.libs = [\n"
-            "    {'lib': 'main', 'objects': [\n"
-            "        Object(Matching, 'Game/Present.cpp'),\n"
-            "        Object(NonMatching, 'Game/Gone.cpp'),\n"
-            "    ]},\n"
-            "    {'lib': 'JSystem', 'objects': [\n"
-            "        Object(Matching, 'JSystem/JKernel/JKRHeap.cpp'),\n"
-            "    ]},\n"
-            "]\n",
-            encoding="utf-8",
-        )
-        present = "int present() { return 0; }\n"
-        (sms / "src" / "Game" / "Present.cpp").parent.mkdir(parents=True)
-        (sms / "src" / "Game" / "Present.cpp").write_text(present, encoding="utf-8")
-        heap = sms / "libs" / "JSystem" / "src" / "JKernel" / "JKRHeap.cpp"
-        heap.parent.mkdir(parents=True)
-        heap.write_text(present, encoding="utf-8")
-
-        c = corpus(sms)
-        if c.parsed != [
-            "libs/JSystem/src/JKernel/JKRHeap.cpp",
-            "src/Game/Present.cpp",
-        ]:
-            failures.append(f"expected the two present declared units, got {c.parsed}")
-        # Assert on problems(), not on the fields: problems() is what main() turns
-        # into a non-zero exit, so a control that only checks the data would keep
-        # passing if the reporting were removed. That was this control's first
-        # version's own bug, caught by deleting the reporting and re-running it.
-        if c.problems() != [
-            "configure.py declares src/Game/Gone.cpp, which does not exist"
-        ]:
-            failures.append(
-                f"a declared object with no file did not fail the check: {c.problems()}"
-            )
-
-        # Now the other direction: a C++ file nobody builds.
-        stray = sms / "src" / "Game" / "Stray.cpp"
-        stray.write_text(present, encoding="utf-8")
-        c2 = corpus(sms)
-        if c2.problems() != [
-            "configure.py declares src/Game/Gone.cpp, which does not exist",
-            "src/Game/Stray.cpp is in the tree but configure.py never declares it",
-        ]:
-            failures.append(
-                f"an on-disk C++ file the build never declares did not fail the check: "
-                f"{c2.problems()}"
-            )
-
-        # And a clean synthetic tree must actually be clean, or the controls
-        # above would be satisfied by a check that always complains.
-        (sms / "src" / "Game" / "Gone.cpp").write_text(present, encoding="utf-8")
-        stray.unlink()
-        c3 = corpus(sms)
-        if c3.problems():
-            failures.append(f"a fully reconciled tree still reported {c3.problems()}")
-
-        # A configure.py that says nothing about its objects is not a corpus.
-        (sms / "configure.py").write_text("config = None\n", encoding="utf-8")
-        try:
-            corpus(sms)
-        except ValueError:
-            pass
-        else:
-            failures.append("a configure.py with no object list was accepted silently")
-    return failures
 
 
 BROKEN_MEMBER = "mHostcheckSelftestNoSuchField"

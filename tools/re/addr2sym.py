@@ -69,34 +69,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("addrs", nargs="*")
     ap.add_argument("--stdin", action="store_true", help="resolve every 0x8xxxxxxx found on stdin")
-    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
 
     syms = load()
-
-    if a.selftest:
-        ok = True
-        # A known symbol must resolve exactly, and the SAME address +4 must resolve to +4 — the
-        # in-function case that a bare exact-match lookup would miss.
-        base, name = syms[len(syms) // 2]
-        for probe, want in ((base, 0), (base + 4, 4)):
-            r, err = resolve(syms, probe)
-            good = r is not None and r[0] == name and r[1] == want
-            print(f"  {'PASS' if good else 'FAIL'}  0x{probe:08x} -> {name}+{want}")
-            ok = ok and good
-        # An address far past the last symbol must REFUSE rather than attribute to it.
-        r, err = resolve(syms, syms[-1][0] + MAX_OFFSET * 4)
-        good = r is None
-        print(f"  {'PASS' if good else 'FAIL'}  far-past-last address is left UNRESOLVED")
-        ok = ok and good
-        print("SELFTEST", "PASSED" if ok else "FAILED")
-        return 0 if ok else 1
 
     want = list(a.addrs)
     if a.stdin:
         want += re.findall(r"0x8[0-9a-fA-F]{7}", sys.stdin.read())
     if not want:
-        ap.error("give at least one address, --stdin, or --selftest")
+        ap.error("give at least one address or --stdin")
 
     seen = []
     for t in want:

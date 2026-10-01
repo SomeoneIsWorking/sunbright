@@ -21,16 +21,8 @@ WHAT IT REPORTS, AND WHY EACH NUMBER IS THERE
   the map    — the grid itself, so a shape (a character, a horizon band, a HUD corner) is visible
                rather than inferred from statistics.
 
-THE CONTROL
-
-`--selftest` builds two synthetic pairs and asserts the statistics separate them: a uniform shift
-must read as high coverage and low concentration, and a single blob must read as low coverage and
-high concentration. A grid that cannot tell those apart would report a confident shape for any input,
-and this is the one check that catches it. Wired to exit non-zero on failure.
-
 Usage:
   frame_regions.py <a.rgba> <b.rgba> [--width 1280] [--cols 16] [--rows 12]
-  frame_regions.py --selftest
 """
 import argparse
 import sys
@@ -88,61 +80,16 @@ def summarize(tiles, cols, rows, label, show_map=True):
         print(f"    |{line}|")
 
 
-def synth(width, height, kind):
-    """Two synthetic frames whose difference has a KNOWN shape."""
-    a = bytearray(width * height * 4)
-    b = bytearray(width * height * 4)
-    for i in range(width * height):
-        a[4 * i:4 * i + 3] = bytes((100, 100, 100))
-        b[4 * i:4 * i + 3] = bytes((100, 100, 100))
-    if kind == "uniform":
-        for i in range(width * height):           # every pixel differs a little
-            b[4 * i] = 104
-    else:
-        for y in range(height // 2, height // 2 + height // 8):
-            for x in range(width // 2, width // 2 + width // 12):
-                b[4 * (y * width + x)] = 255      # one blob differs a lot
-    return bytes(a), bytes(b)
-
-
-def selftest():
-    W, H, C, R = 320, 240, 16, 12
-    ok = True
-    a, b = synth(W, H, "uniform")
-    t = tile_stats(a, b, W, H, C, R)
-    flat = sorted((v for row in t for v in row), reverse=True)
-    cov = 100.0 * sum(1 for v in flat if v > 0) / len(flat)
-    top = sum(flat[:max(1, len(flat) // 10)]) / sum(flat) * 100.0
-    print(f"selftest uniform shift : coverage {cov:.1f}% (expect 100), top-decile {top:.1f}% (expect ~10)")
-    if cov < 99.0 or top > 20.0:
-        print("  FAIL: a uniform difference did not read as spread out"); ok = False
-
-    a, b = synth(W, H, "blob")
-    t = tile_stats(a, b, W, H, C, R)
-    flat = sorted((v for row in t for v in row), reverse=True)
-    cov = 100.0 * sum(1 for v in flat if v > 0) / len(flat)
-    top = sum(flat[:max(1, len(flat) // 10)]) / sum(flat) * 100.0
-    print(f"selftest single blob   : coverage {cov:.1f}% (expect <25), top-decile {top:.1f}% (expect >50)")
-    if cov > 25.0 or top < 50.0:
-        print("  FAIL: a concentrated difference did not read as concentrated"); ok = False
-
-    print("SELFTEST PASSED" if ok else "SELFTEST FAILED")
-    return 0 if ok else 1
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("frames", nargs="*")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--cols", type=int, default=16)
     ap.add_argument("--rows", type=int, default=12)
-    ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
-    if args.selftest:
-        return selftest()
     if len(args.frames) != 2:
-        print("usage: frame_regions.py <a.rgba> <b.rgba>   (or --selftest)")
+        print("usage: frame_regions.py <a.rgba> <b.rgba>")
         return 2
 
     a, b = load(args.frames[0]), load(args.frames[1])

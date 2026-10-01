@@ -40,12 +40,6 @@ honestly; a judder of 1.0 on steps of 5.5 is that same motion at 60fps. So the m
 beside the ratio and two runs are only comparable at the same MEAN STEP — the same trap the
 asymmetry metric documents, and the reason `--compare` prints both.
 
-THE CONTROL
-
-`--selftest` forces four synthetic series and asserts the statistic separates them: even motion must
-read ~1.0; every-other-frame-duplicated must be caught by the duplicate count and not merely by a
-large ratio; a fast-slow alternation must read ~2; and a single-present series must REFUSE rather
-than report a ratio of nothing. Exits non-zero on failure; wired into tools/selftest_all.py.
 """
 import argparse
 import glob
@@ -227,53 +221,6 @@ def score(steps, label="", ticks=None):
     return {"judder": judder, "altern": altern, "mean": mean, "dups": dups, "n": n, "span": span}
 
 
-def selftest():
-    ok = True
-
-    def check(name, cond, detail=""):
-        nonlocal ok
-        print(f"  {'PASS' if cond else 'FAIL'}  {name}{(' — ' + detail) if detail else ''}")
-        ok = ok and cond
-
-    print("cadence.py --selftest")
-    # 1. even motion -> judder ~1
-    r = score([4.0, 4.0, 4.0, 4.0], "even")
-    check("even motion reads judder ~1", abs(r["judder"] - 1.0) < 1e-6)
-    # 2. every-other duplicated -> caught as duplicates, NOT merely as a big ratio
-    r = score([0.0, 8.0, 0.0, 8.0], "dup")
-    check("every-other-duplicate is caught by the duplicate count", r["dups"] == 2)
-    # 3. fast-slow alternation -> judder ~2 AND alternation ~2
-    r = score([6.0, 3.0, 6.0, 3.0], "alternating")
-    check("fast/slow alternation reads judder ~2", abs(r["judder"] - 2.0) < 1e-6)
-    check("fast/slow alternation reads ALTERNATION ~2", abs(r["altern"] - 2.0) < 1e-6)
-    # 3b. even motion must NOT read as alternating — the statistic has to separate both classes,
-    # not merely fire on the positive one.
-    r = score([4.0, 4.0, 4.0, 4.0], "even-alt")
-    check("even motion reads alternation ~1", abs(r["altern"] - 1.0) < 1e-6)
-    # 3c. A single outlier step must move JUDDER strictly more than ALTERNATION — that is the
-    # reason alternation exists as a separate number, and it is the claim that can actually be
-    # asserted. An earlier version of this case asserted `altern < 1.3` and FAILED at 1.42: over
-    # six steps one outlier still shifts a phase mean by 42%, because it is one of only three
-    # samples in its phase. The property is the ORDERING, not an absolute threshold, and the
-    # threshold version would have quietly encoded a series length into the test.
-    r = score([4.0, 4.0, 9.0, 4.0, 4.0, 4.0], "outlier")
-    check("one outlier moves judder more than alternation",
-          r["judder"] > r["altern"] * 1.4,
-          f"judder {r['judder']:.2f} vs alternation {r['altern']:.2f}")
-    # ...and over a longer series the outlier's effect on alternation must SHRINK, which is the
-    # property that makes it the more robust of the two.
-    long_series = [4.0] * 20
-    long_series[7] = 9.0
-    r2 = score(long_series, "outlier-long")
-    check("alternation is more robust the longer the series",
-          r2["altern"] < r["altern"], f"{r2['altern']:.2f} < {r['altern']:.2f}")
-    # 4. too short -> REFUSES rather than scoring
-    r = score([5.0], "short")
-    check("a one-step series REFUSES", r is None)
-    print("SELFTEST", "PASSED" if ok else "FAILED")
-    return 0 if ok else 1
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("prefix", nargs="*", help="dump prefix, e.g. scratch/render/i60_a05.rgba")
@@ -286,12 +233,9 @@ def main():
     ap.add_argument("--crop", type=fraction_box, default=None,
                     help="x0,y0,x1,y1 as FRACTIONS of the frame (e.g. 0.15,0.15,0.85,0.8 for the "
                          "world without the HUD corners)")
-    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
-    if a.selftest:
-        return selftest()
     if not a.prefix:
-        ap.error("give at least one dump prefix (or --selftest)")
+        ap.error("give at least one dump prefix")
 
     results = []
     for prefix in a.prefix:

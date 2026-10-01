@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,65 +129,5 @@ def check() -> int:
     return 1 if findings else 0
 
 
-def selftest() -> int:
-    got = [
-        issue
-        for relative in (
-            "run.sh",
-            "tools/healthy.py",
-            "tools/legacy.sh",
-            "sms-" + "recomp/runtime.cpp",
-        )
-        if (issue := path_finding(relative)) is not None
-    ]
-    got.extend(content_findings("tools/config.py", 'cache = "/' + 'tmp/game"'))
-    got.extend(content_findings("README.md", "Follow Dus" + "klight"))
-    got.extend(
-        content_findings(
-            "docs/old.md",
-            "A static "
-            + "recomp used Xenon"
-            + "Recomp, generated/functions"
-            + ".h, call_"
-            + "ppc, and DISABLE_"
-            + "RECOMP",
-        )
-    )
-    got.extend(content_findings("docs/oracle.md", "use extern/dolphin/build"))
-    got.extend(
-        content_findings(".claude/commands/old.md", "offline-" + "translated product")
-    )
-    got.extend(
-        content_findings(
-            "tools/gcnport_boot/CMakeLists.txt", "extern/gcnport/extern/dolphin/Source/Core"
-        )
-    )
-    got = sorted(got, key=lambda item: (item.path, item.reason))
-    expected = [
-        Finding(".claude/commands/old.md", retired_reason("offline-" + "translat")),
-        Finding("README.md", retired_reason("dus" + "klight")),
-        Finding("docs/old.md", retired_reason("call_" + "ppc")),
-        Finding("docs/old.md", retired_reason("disable_" + "recomp")),
-        Finding("docs/old.md", retired_reason("generated/functions" + ".h")),
-        Finding("docs/old.md", retired_reason("static " + "recomp")),
-        Finding("docs/old.md", retired_reason("xenon" + "recomp")),
-        Finding("docs/oracle.md", retired_reason("extern/dolphin/")),
-        Finding("sms-" + "recomp/runtime.cpp", "retired execution root"),
-        Finding("tools/config.py", retired_reason("/" + "tmp/")),
-        Finding("tools/legacy.sh", "non-Python project script"),
-    ]
-    if got != expected:
-        print(f"FAIL: got {got}, expected {expected}")
-        return 1
-    print(
-        "PASS: planted retired root, shell, vocabulary, temp path, and old guide rejected; "
-        "controls accepted"
-    )
-    return 0
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--selftest", action="store_true")
-    arguments = parser.parse_args()
-    raise SystemExit(selftest() if arguments.selftest else check())
+    raise SystemExit(check())

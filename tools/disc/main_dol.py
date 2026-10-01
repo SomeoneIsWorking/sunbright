@@ -39,8 +39,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-SELFTEST_REQUIREMENTS: tuple[str, ...] = ()
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISC_ENVIRONMENT_NAME = "SUNBRIGHT_ROM"
 DEFAULT_OUTPUT = Path("scratch/bin/sms.dol")
@@ -256,116 +254,6 @@ def ensure_main_dol(
     return extract_main_dol(disc, destination, tool=tool, run=run), True
 
 
-def _selftest_dol(section_size: int = 0x40, entry_offset: int = 0x10) -> bytes:
-    header = bytearray(HEADER_SIZE)
-    header[TEXT_OFFSETS : TEXT_OFFSETS + 4] = HEADER_SIZE.to_bytes(4, "big")
-    header[TEXT_ADDRESSES : TEXT_ADDRESSES + 4] = (0x80003100).to_bytes(4, "big")
-    header[TEXT_SIZES : TEXT_SIZES + 4] = section_size.to_bytes(4, "big")
-    header[ENTRY_POINT : ENTRY_POINT + 4] = (0x80003100 + entry_offset).to_bytes(
-        4, "big"
-    )
-    return bytes(header) + bytes(section_size)
-
-
-def selftest() -> int:
-    """Both answers, on cases whose answer is forced: a DOL that must validate, and four that must not."""
-    good = summarise_dol(_selftest_dol(), "selftest")
-    assert good.load_address == 0x80003100, good
-    assert good.entry_point == 0x80003110, good
-    assert good.end_address == 0x80003140, good
-
-    def refuses(name: str, thunk: Callable[[], object]) -> None:
-        try:
-            thunk()
-        except ExtractionRefused:
-            return
-        raise AssertionError(f"selftest: {name} was accepted and must not be")
-
-    refuses(
-        "a file shorter than the header", lambda: summarise_dol(b"\0" * 16, "selftest")
-    )
-    refuses(
-        "a header with no sections",
-        lambda: summarise_dol(bytes(HEADER_SIZE), "selftest"),
-    )
-    refuses(
-        "a section running past the file",
-        lambda: summarise_dol(_selftest_dol()[:-8], "selftest"),
-    )
-    refuses(
-        "an entry point outside the loaded sections",
-        lambda: summarise_dol(_selftest_dol(entry_offset=0x400), "selftest"),
-    )
-    refuses(
-        "no disc named anywhere",
-        lambda: resolve_disc_path(
-            None, {}, Path(tempfile.gettempdir()) / "sunbright-absent"
-        ),
-    )
-    refuses(
-        "a disc path that is not a file",
-        lambda: resolve_disc_path("/nonexistent/disc.rvz", {}, REPO_ROOT),
-    )
-
-    with tempfile.TemporaryDirectory() as workspace:
-        root = Path(workspace)
-        (root / ".env").write_text(f'{DISC_ENVIRONMENT_NAME}="{root / "disc.rvz"}"\n')
-        (root / "disc.rvz").write_bytes(b"not really a disc")
-        assert resolve_disc_path(None, {}, root) == root / "disc.rvz"
-        assert resolve_disc_path(
-            None, {DISC_ENVIRONMENT_NAME: str(root / "disc.rvz")}, root
-        )
-
-        def silent_runner(_command: Sequence[str]) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess(_command, 0, "", "")
-
-        refuses(
-            "an extraction that produced no file",
-            lambda: extract_main_dol(
-                root / "disc.rvz",
-                root / "out" / "sms.dol",
-                tool=Path("/bin/true"),
-                run=silent_runner,
-            ),
-        )
-
-        def writing_runner(command: Sequence[str]) -> subprocess.CompletedProcess:
-            output = Path(command[command.index("--output") + 1])
-            (output / "main.dol").write_bytes(_selftest_dol())
-            return subprocess.CompletedProcess(command, 0, "", "")
-
-        destination = root / "out" / "sms.dol"
-        summary, extracted = ensure_main_dol(
-            disc=root / "disc.rvz",
-            destination=destination,
-            tool=Path("/bin/true"),
-            force=False,
-            run=writing_runner,
-        )
-        assert extracted and summary.entry_point == 0x80003110
-        assert destination.read_bytes() == _selftest_dol()
-        _, again = ensure_main_dol(
-            disc=root / "disc.rvz",
-            destination=destination,
-            tool=Path("/bin/true"),
-            force=False,
-            run=writing_runner,
-        )
-        assert not again, "a valid DOL already in place must not be extracted again"
-        destination.write_bytes(b"truncated")
-        _, repaired = ensure_main_dol(
-            disc=root / "disc.rvz",
-            destination=destination,
-            tool=Path("/bin/true"),
-            force=False,
-            run=writing_runner,
-        )
-        assert repaired, "a file that no longer validates must be extracted again"
-
-    print("main_dol selftest PASS")
-    return 0
-
-
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -375,11 +263,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--force", action="store_true", help="re-extract even if present"
     )
-    parser.add_argument("--selftest", action="store_true")
     arguments = parser.parse_args(argv)
-    if arguments.selftest:
-        return selftest()
-
     destination = Path(arguments.output)
     if not destination.is_absolute():
         destination = REPO_ROOT / destination

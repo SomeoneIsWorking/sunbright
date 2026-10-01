@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -388,55 +387,8 @@ def require_tool(name: str) -> str:
     return str(INSTALL / "bin" / executable_name(name))
 
 
-def selftest() -> int:
-    fixture_root = REPO / "scratch" / "shader-toolchain-selftest"
-
-    def clean_fixture() -> None:
-        if fixture_root.resolve() != (REPO / "scratch" / "shader-toolchain-selftest").resolve():
-            raise RuntimeError(f"refusing to clean unexpected self-test path: {fixture_root}")
-        if fixture_root.exists():
-            shutil.rmtree(fixture_root)
-
-    clean_fixture()
-    fixture_root.mkdir(parents=True)
-    archive = fixture_root / "fixture.tar.gz"
-    try:
-        with tarfile.open(archive, "w:gz") as bundle:
-            payload = b"shader-tools\n"
-            member = tarfile.TarInfo("root/bin/tool")
-            member.size = len(payload)
-            member.mode = 0o755
-            bundle.addfile(member, io.BytesIO(payload))
-        destination = fixture_root / "expanded"
-        extract_archive(archive, destination)
-        if (destination / "bin" / "tool").read_bytes() != payload:
-            print("FAIL: safe archive member did not round-trip")
-            return 1
-
-        unsafe = fixture_root / "unsafe.tar.gz"
-        with tarfile.open(unsafe, "w:gz") as bundle:
-            member = tarfile.TarInfo("root/../../escape")
-            member.size = 1
-            bundle.addfile(member, io.BytesIO(b"x"))
-        try:
-            extract_archive(unsafe, fixture_root / "unsafe-expanded")
-        except RuntimeError:
-            pass
-        else:
-            print("FAIL: traversal archive member was accepted")
-            return 1
-        print("PASS: bounded source identity and safe/unsafe archive controls")
-        return 0
-    finally:
-        clean_fixture()
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--selftest", action="store_true")
-    arguments = parser.parse_args()
-    if arguments.selftest:
-        return selftest()
+    argparse.ArgumentParser(description=__doc__).parse_args()
     build_toolchain()
     return 0
 

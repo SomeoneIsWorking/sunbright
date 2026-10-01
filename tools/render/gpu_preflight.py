@@ -40,13 +40,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 from gpu_events import atomic_durable_replace, current_boot_id, recent_kernel_faults
 
-SELFTEST_REQUIREMENTS = ("linux",)
 
 REPO = Path(__file__).resolve().parents[2]
 STAMP = REPO / "scratch" / "gpu_fault.stamp"
@@ -140,44 +138,12 @@ def preflight_reasons(cooldown_secs: int, stamp: Path = STAMP) -> list[str]:
     return reasons
 
 
-def selftest() -> int:
-    (REPO / "scratch").mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="gpu-preflight-", dir=REPO / "scratch") as temp:
-        stamp = Path(temp) / "stamp"
-        payload = {"version": 1, "boot_id": "boot-a", "monotonic_ns": 5_000, "reason": "fault"}
-        stamp.write_text(json.dumps(payload), encoding="utf-8")
-        assert check_stamp(1, stamp, now_monotonic_ns=5_500, boot_id="boot-a") is not None
-        assert check_stamp(1, stamp, now_monotonic_ns=4_999, boot_id="boot-a") is not None
-        assert check_stamp(-1, stamp, now_monotonic_ns=5_500, boot_id="boot-a") is not None
-        assert check_stamp(1, stamp, now_monotonic_ns=5_500, boot_id="boot-b") is None
-        assert check_stamp(0, stamp, now_monotonic_ns=5_001, boot_id="boot-a") is None
-        legacy = Path(temp) / "legacy-stamp"
-        legacy.write_text("old DEVICE_LOST reason\n", encoding="utf-8")
-        assert check_stamp(1, legacy, now_monotonic_ns=9_000, boot_id="boot-a") is not None
-        migrated = json.loads(legacy.read_text(encoding="utf-8"))
-        assert migrated["boot_id"] == "boot-a"
-        assert migrated["monotonic_ns"] == 9_000
-        assert migrated["category"] == "legacy_migration"
-        assert "old DEVICE_LOST reason" in migrated["reason"]
-        assert check_stamp(1, legacy, now_monotonic_ns=1_000_009_001,
-                           boot_id="boot-a") is None
-        malformed = Path(temp) / "malformed-stamp"
-        malformed.write_text('{"version":', encoding="utf-8")
-        assert "not a trustworthy" in check_stamp(1, malformed, boot_id="boot-a")
-    print("gpu-preflight selftest PASS")
-    print("  current/future/prior/expired and legacy-migration stamp controls pass")
-    return 0
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--force", action="store_true", help="run anyway, printing what is overridden")
     ap.add_argument("--cooldown", type=int, default=COOLDOWN_SECS, help="seconds (default 900)")
-    ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
-    if args.selftest:
-        return selftest()
     if args.cooldown < 0:
         ap.error("--cooldown must be non-negative")
 

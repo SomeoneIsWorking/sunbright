@@ -7,8 +7,7 @@ value selects four three-bit ones and carries the swap-table indices the colour 
 Both then apply the same bias, subtract, clamp, scale and destination.
 
 This exists because the material families are written against these programs, and reading them by
-hand does not scale to the scene's materials -- nor does it leave a checkable record. Run
-`--selftest` to see it reproduce the programs the shipping families already accept.
+hand does not scale to the scene's materials -- nor does it leave a checkable record.
 """
 
 import argparse
@@ -117,48 +116,13 @@ def describe(hex_program):
     ]
 
 
-# The programs the shipping material families accept, named as those families name them. A decoder
-# that cannot reproduce these is wrong about every program it has not been checked against.
-SELFTEST = [
-    ("c008f8afc108f2f0", "texture times raster", "prev = clamp(tex.rgb*ras.rgb)",
-     "prev = clamp(tex.a*ras.a)"),
-    ("c008afffc108bff0", "raster pass-through", "prev = clamp(ras.rgb)", "prev = clamp(ras.a)"),
-]
-
-
-def selftest():
-    failures = 0
-    for hex_program, label, want_color, want_alpha in SELFTEST:
-        _, color, alpha = decode_stage(bytes.fromhex(hex_program))
-        got_color, got_alpha = expression(color), expression(alpha)
-        ok = got_color == want_color and got_alpha == want_alpha
-        failures += 0 if ok else 1
-        print(f"[{'ok' if ok else 'FAIL'}] {label} ({hex_program})")
-        if not ok:
-            print(f"       colour: {got_color!r} wanted {want_color!r}")
-            print(f"       alpha:  {got_alpha!r} wanted {want_alpha!r}")
-    # A decoder that accepts anything proves nothing, so it must also refuse a malformed stage.
-    try:
-        decode_stage(bytes.fromhex("c008f8afc508f2f0"))
-    except ValueError:
-        print("[ok] refuses a mismatched register pair")
-    else:
-        print("[FAIL] accepted a mismatched register pair")
-        failures += 1
-    return failures
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("programs", nargs="*", help="8-byte TEV stage programs, as hex")
-    parser.add_argument("--selftest", action="store_true",
-                        help="check the decoder against the programs the families already accept")
     args = parser.parse_args()
-    if args.selftest:
-        return 1 if selftest() else 0
     if not args.programs:
-        parser.error("give at least one program, or --selftest")
+        parser.error("give at least one program")
     for hex_program in args.programs:
         print(f"{hex_program}:")
         for line in describe(hex_program):

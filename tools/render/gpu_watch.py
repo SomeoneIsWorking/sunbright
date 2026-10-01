@@ -50,7 +50,6 @@ from radv_hang_trace import (
     snapshot_radv_dumps,
 )
 
-SELFTEST_REQUIREMENTS = ("linux",)
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_INCIDENT_DIR = REPO / "scratch" / "gpu_crash"
@@ -1133,13 +1132,8 @@ def main() -> int:
     parser.add_argument(
         "--output-log", type=Path, help="tee guarded process output to this file"
     )
-    parser.add_argument("--selftest", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if args.selftest:
-        from gpu_watch_selftest import selftest
-
-        return selftest()
     command = args.command
     if command and command[0] == "--":
         command = command[1:]

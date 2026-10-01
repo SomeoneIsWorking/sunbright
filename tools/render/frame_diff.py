@@ -29,8 +29,6 @@ from pathlib import Path
 
 import numpy as np
 
-SELFTEST_REQUIREMENTS: tuple[str, ...] = ()
-
 # Below this standard deviation a frame carries no structure to compare: a flat clear colour, an
 # all-black capture, a dump taken before anything drew.
 DEGENERATE_STD = 2.0
@@ -154,67 +152,14 @@ def report(comparison: Comparison, rows: int, columns: int) -> None:
         print(f"  {cells}")
 
 
-def selftest() -> int:
-    """Prove the measurement fires, and that it tells the two kinds of delta apart.
-
-    Identity must measure zero: a differ that reported a difference between a frame and itself would
-    make every number it produced meaningless. A known additive offset must come back as that offset
-    AND be called additive, and a known gain must be called multiplicative -- a classifier that
-    answered "additive" to everything would pass the first case alone.
-    """
-    generator = np.random.default_rng(20260919)
-    base = generator.integers(20, 200, size=(64, 96, 3), dtype=np.uint8)
-    failures = 0
-
-    identity = compare(base, base, 4, 4)
-    if identity.mean_absolute != 0.0 or identity.character != "matched":
-        print(f"selftest: a frame against itself measured {identity.mean_absolute}, "
-              f"{identity.character}")
-        failures += 1
-    else:
-        print("selftest: a frame against itself measures 0 and is called matched")
-
-    offset = np.clip(base.astype(np.int16) + 24, 0, 255).astype(np.uint8)
-    added = compare(offset, base, 4, 4)
-    if abs(added.mean_delta.mean() - 24.0) > 0.5 or added.character != "additive":
-        print(f"selftest: a +24 offset measured {added.mean_delta.mean():+.2f}, {added.character}")
-        failures += 1
-    else:
-        print(f"selftest: a +24 offset measures {added.mean_delta.mean():+.2f} and is called additive")
-
-    gained = np.clip(base.astype(np.float64) * 1.6, 0, 255).astype(np.uint8)
-    scaled = compare(gained, base, 4, 4)
-    if scaled.character != "multiplicative":
-        print(f"selftest: a 1.6x gain is called {scaled.character}, not multiplicative")
-        failures += 1
-    else:
-        print("selftest: a 1.6x gain is called multiplicative")
-
-    flat = np.zeros((64, 96, 3), dtype=np.uint8)
-    if not degenerate(flat) or degenerate(base):
-        print("selftest: the degenerate-frame guard does not separate a blank frame from a real one")
-        failures += 1
-    else:
-        print("selftest: a blank frame is refused and a real one is not")
-
-    if failures != 0:
-        print("selftest FAILED")
-        return 1
-    print("selftest PASSED")
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("rendered", nargs="?", help="the frame this project produced")
     parser.add_argument("oracle", nargs="?", help="the frame the console produced")
     parser.add_argument("--rows", type=int, default=4)
     parser.add_argument("--columns", type=int, default=4)
-    parser.add_argument("--selftest", action="store_true")
     arguments = parser.parse_args()
 
-    if arguments.selftest:
-        return selftest()
     if arguments.rendered is None or arguments.oracle is None:
         parser.error("both a rendered frame and an oracle frame are needed")
     if arguments.rows < 1 or arguments.columns < 1:

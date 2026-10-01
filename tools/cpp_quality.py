@@ -13,8 +13,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
-import unittest
 from pathlib import Path
 from types import ModuleType
 
@@ -38,15 +36,10 @@ GENERATED_SUFFIXES = ("_spv.h",)
 # decisions to make, not a side effect of adding a module. This tuple only shrinks.
 UNFORMATTED_LEGACY_PREFIXES = ("sms-boot/",)
 # Maintainer programs with no CMake target, named exactly rather than by prefix so a new unbuilt
-# translation unit under tools/ still fails the compile-database check below. count_getenv.c is an
-# LD_PRELOAD interposer and is built by the `gcc -shared -fPIC` line in tools/perf/README.md;
-# dol_extract.c is built on demand as tools/re/port_dossier.py documents. Both are still formatted;
-# only the requirement to appear in a compile database is waived, because neither is ever compiled
-# by this project's build.
-STANDALONE_TOOL_SOURCES = (
-    "tools/perf/count_getenv.c",
-    "tools/re/dol_extract.c",
-)
+# translation unit under tools/ still fails the compile-database check below. dol_extract.c is built
+# on demand as tools/re/port_dossier.py documents. It is still formatted; only the requirement to
+# appear in a compile database is waived, because it is never compiled by this project's build.
+STANDALONE_TOOL_SOURCES = ("tools/re/dol_extract.c",)
 CLANG_FORMAT = os.environ.get("CLANG_FORMAT", "clang-format")
 CLANG_TIDY = os.environ.get("CLANG_TIDY", "clang-tidy")
 
@@ -204,72 +197,11 @@ def check(paths: list[str]) -> int:
     return 0
 
 
-def selftest() -> int:
-    from cpp_quality_test import CompileDatabasePathsTest
-
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(CompileDatabasePathsTest)
-    if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
-        return 1
-    if is_first_party_cpp("native-render/shaders/example_spv.h"):
-        print("FAIL: generated SPIR-V header was classified as first-party source")
-        return 1
-    if not is_first_party_cpp("native-render/include/example.h"):
-        print(
-            "FAIL: ordinary first-party header was excluded with generated SPIR-V headers"
-        )
-        return 1
-
-    scratch = REPO / "scratch"
-    scratch.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix="cpp-quality-selftest-", dir=scratch
-    ) as directory:
-        bad = Path(directory) / "bad.cpp"
-        good = Path(directory) / "good.cpp"
-        bad.write_text("int  main(){return 0;}\n")
-        formatted_source = subprocess.run(
-            [CLANG_FORMAT, str(bad)],
-            cwd=REPO,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        good.write_text(formatted_source)
-        bad_result = subprocess.run(
-            [CLANG_FORMAT, "--dry-run", "--Werror", str(bad)],
-            cwd=REPO,
-            capture_output=True,
-            check=False,
-        )
-        good_result = subprocess.run(
-            [CLANG_FORMAT, "--dry-run", "--Werror", str(good)],
-            cwd=REPO,
-            capture_output=True,
-            check=False,
-        )
-    if bad_result.returncode == 0 or good_result.returncode != 0:
-        print(
-            "FAIL: clang-format control did not distinguish malformed and formatted source "
-            f"(bad={bad_result.returncode}, good={good_result.returncode})"
-        )
-        return 1
-    print(
-        "PASS: generated SPIR-V headers are excluded without excluding ordinary headers"
-    )
-    print(
-        "PASS: clang-format rejects malformed source and accepts its formatted control"
-    )
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*")
-    parser.add_argument("--selftest", action="store_true")
     parser.add_argument("--all-built", action="store_true")
     args = parser.parse_args()
-    if args.selftest:
-        return selftest()
     if args.all_built:
         paths = built_first_party_files()
     elif args.paths:

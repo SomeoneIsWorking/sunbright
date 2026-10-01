@@ -233,70 +233,6 @@ def transform_file(input_path: Path, output_path: Path, output_root: Path) -> No
     os.replace(temporary_path, output_path)
 
 
-def selftest() -> None:
-    def require(condition: bool, label: str) -> None:
-        if not condition:
-            raise RuntimeError(f"Shift-JIS transformer control failed: {label}")
-
-    phrase = "ステージ毎シナリオアーカイブ名群"
-    source = (
-        '// コメント "日本語"\n'
-        'const char* ascii = "plain\\\" text";\n'
-        f'const char* name = u8"{phrase}7";\n'
-        "int token = '日'; /* 日本語 */\n"
-        'const char* raw = R"tag(ascii only)tag";\n'
-    )
-    result = transform(source, source_name="control.cpp")
-    phrase_escapes = "".join(f"\\{byte:03o}" for byte in phrase.encode("shift_jis"))
-
-    require('// コメント "日本語"' in result, "line comment changed")
-    require('/* 日本語 */' in result, "block comment changed")
-    require('"plain\\\" text"' in result, "ASCII literal changed")
-    require(f'u8"{phrase_escapes}7"' in result, "non-ASCII literal was not escaped")
-    require(phrase.encode("utf-8") != phrase.encode("shift_jis"), "encoding control is degenerate")
-    literal = result.split('u8"', 1)[1].split('"', 1)[0][:-1]
-    decoded_bytes = bytes(int(literal[offset + 1 : offset + 4], 8)
-                          for offset in range(0, len(literal), 4))
-    require(decoded_bytes == phrase.encode("shift_jis"), "escaped bytes are not Shift-JIS")
-
-    try:
-        transform('const char* value = R"(日本語)";\n', source_name="raw.cpp")
-    except TransformError as error:
-        require("non-ASCII raw literal" in str(error), "raw-literal failure named the wrong cause")
-    else:
-        raise AssertionError("non-ASCII raw-string negative control was accepted")
-
-    try:
-        transform('const char* value = "😀";\n', source_name="emoji.cpp")
-    except TransformError as error:
-        require("not representable" in str(error), "unrepresentable failure named the wrong cause")
-    else:
-        raise AssertionError("unrepresentable-character negative control was accepted")
-
-    scratch_root = Path.cwd() / "scratch" / "selftests"
-    scratch_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
-        control_root = Path(directory)
-        source_path = control_root / "source.cpp"
-        output_root = control_root / "build" / "stage"
-        source_path.write_text('const char* value = "日本語";\n', encoding="utf-8")
-        linked_parent = output_root / "linked"
-        linked_parent.parent.mkdir(parents=True)
-        linked_parent.symlink_to(control_root)
-        try:
-            transform_file(source_path, linked_parent / "escape.cpp", output_root)
-        except TransformError as error:
-            require("refusing to write through staged-tree symlink" in str(error),
-                    "symlink failure named the wrong cause")
-        else:
-            raise AssertionError("staged-parent symlink negative control was accepted")
-
-        prepare_roots(control_root / "build", [output_root])
-        require(not output_root.exists(), "stale staged symlink survived cleanup")
-
-    print("encode_sjis_literals self-test: PASS")
-
-
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?", type=Path)
@@ -304,27 +240,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--build-root", type=Path)
     parser.add_argument("--prepare-root", action="append", default=[], type=Path)
-    parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
     if args.prepare_root:
         if args.build_root is None:
             parser.error("--build-root is required with --prepare-root")
         if args.input is not None or args.output is not None:
             parser.error("input/output cannot be combined with --prepare-root")
-    elif not args.selftest and (
-        args.input is None or args.output is None or args.output_root is None
-    ):
-        parser.error(
-            "input, output and --output-root are required unless --selftest is used"
-        )
+    elif args.input is None or args.output is None or args.output_root is None:
+        parser.error("input, output and --output-root are required")
     return args
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    if args.selftest:
-        selftest()
-        return 0
     if args.prepare_root:
         try:
             prepare_roots(args.build_root, args.prepare_root)

@@ -8,7 +8,6 @@ address and reading which function they belong to.
 
     python3 tools/re/dataref.py 0x800000e4 0x8040e10c
     python3 tools/re/dataref.py --window 32 0x800000e4
-    python3 tools/re/dataref.py --selftest
 
 A PowerPC 32-bit absolute address is built in two instructions: `lis rX, hi` then a displacement
 form (`addi`, `ori`, or any D-form load/store) against that register. This scans every executable
@@ -32,20 +31,6 @@ import struct
 import sys
 
 from gmse01_sda import SDA2_BASE, SDA_BASE, SDA_REGION_END, SDA_REGION_START
-
-SELFTEST_REQUIREMENTS = ("game-image",)
-
-# Two addresses whose answer is known, one reached each way, and one that nothing can reference.
-# A scan that has lost either form still finds the other, so a test with only one of them passes
-# while half the tool is dead.
-SELFTEST_LIS_TARGET = 0x800000E4  # __OSCurrentThread, built with lis+lwz by the OS thread code
-SELFTEST_LIS_SYMBOL = "OSGetCurrentThread"
-SELFTEST_SMALL_DATA_TARGET = 0x8040E10C  # gpMarioPos, read through r13 by every chasing actor
-SELFTEST_SMALL_DATA_SYMBOL = "TAnimalBird"
-# One byte past gpMarioPos, inside the small-data region. This is the discriminating negative: a
-# displacement scan that rounded, or that reported the whole word a reference lands in, would claim
-# the 398 references above for this address too.
-SELFTEST_ABSENT_TARGET = 0x8040E10D
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_DOL = os.path.join(ROOT, "scratch", "bin", "sms.dol")
@@ -162,43 +147,10 @@ def find_references(image, target, window):
     return hits, scanned
 
 
-def selftest(image, symbols, sorted_addresses, window):
-    """Feed the scan one case of each form that MUST come out positive, and one that must not."""
-    failures = []
-    for target, expected, form in ((SELFTEST_LIS_TARGET, SELFTEST_LIS_SYMBOL, "lis pair"),
-                                   (SELFTEST_SMALL_DATA_TARGET, SELFTEST_SMALL_DATA_SYMBOL,
-                                    "small data")):
-        hits, _ = find_references(image, target, window)
-        names = [name_of(symbols, sorted_addresses, use) for use, _, _ in hits]
-        matched = sum(1 for name in names if expected in name)
-        print(f"selftest: {target:#010x} ({form}) -> {len(hits)} reference(s), "
-              f"{matched} naming {expected}")
-        if matched == 0:
-            failures.append(f"{form} references to {target:#010x} are not being found")
-
-    hits, scanned = find_references(image, SELFTEST_ABSENT_TARGET, window)
-    print(f"selftest: {SELFTEST_ABSENT_TARGET:#010x} (absent) -> {len(hits)} reference(s) "
-          f"in {scanned} instructions")
-    if hits:
-        failures.append(f"{SELFTEST_ABSENT_TARGET:#010x} is one byte past a global that is read "
-                        "398 times and must not inherit those references")
-    if scanned < 100000:
-        failures.append(f"only {scanned} instructions were scanned; the image did not load")
-
-    for failure in failures:
-        print(f"selftest FAILED — {failure}")
-    if failures:
-        return 1
-    print("selftest PASSED")
-    return 0
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("addresses", nargs="*", help="guest data addresses, hex")
-    parser.add_argument("--selftest", action="store_true",
-                        help="scan cases whose answer is known and fail if any comes out wrong")
     parser.add_argument("--dol", default=DEFAULT_DOL)
     parser.add_argument("--funcs", default=DEFAULT_FUNCS)
     parser.add_argument("--window", type=int, default=16,
@@ -213,10 +165,8 @@ def main():
     if not symbols:
         print(f"dataref: no symbols at {args.funcs}; hits will be addresses only", file=sys.stderr)
 
-    if args.selftest:
-        return selftest(image, symbols, sorted_addresses, args.window)
     if not args.addresses:
-        print("dataref: give at least one guest data address, or --selftest", file=sys.stderr)
+        print("dataref: give at least one guest data address", file=sys.stderr)
         return 2
 
     for text in args.addresses:

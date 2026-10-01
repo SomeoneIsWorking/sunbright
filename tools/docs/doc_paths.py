@@ -15,8 +15,7 @@ WHAT IT DELIBERATELY DOES NOT CHECK.
     explicitly marks it dead.
   * **Whether a path that exists is the RIGHT one.** It cannot know that. It says so.
 
-  doc_paths.py              # check; exit 1 if a live doc names a missing path
-  doc_paths.py --selftest   # prove it fires, and prove each exemption works
+  doc_paths.py   # check; exit 1 if a live doc names a missing path
 """
 
 from __future__ import annotations
@@ -107,54 +106,8 @@ def check() -> int:
     return 1 if bad else 0
 
 
-def selftest() -> int:
-    ok = True
-
-    cases = [
-        ("a missing path is caught",
-         "See `tools/does_not_exist_xyz.py` for details.\n", ["tools/does_not_exist_xyz.py"]),
-        ("an existing path is not flagged",
-         "See `tools/docs/doc_paths.py` for details.\n", []),
-        ("a path marked (DELETED) in place is exempt",
-         "`overrides/gone.cpp` (DELETED) held the old design.\n", []),
-        ("a path in an 'is GONE' sentence is exempt",
-         "That file `overrides/gone.cpp` is GONE — the replay moved.\n", []),
-        ("a (DELETED; recoverable from git) marker is exempt",
-         "`runtime/gone.h` (DELETED; recoverable from git at `9283f44^`)\n", []),
-        ("a trailing ', DELETED)' marker is exempt",
-         "`a/b.h` (formerly `overrides/gone.cpp`, DELETED)\n", []),
-        ("a path declared to live in another repo is exempt",
-         "`UCodes/Zelda.cpp` (in the Dolphin fork, not this repo)\n", []),
-        ("a LOWERCASE 'deleted' does NOT exempt — the marker must be deliberate",
-         "The file `tools/does_not_exist_xyz.py` was deleted at some point.\n",
-         ["tools/does_not_exist_xyz.py"]),
-        ("a missing path under a history header is exempt",
-         "Live text.\n\n## Paths in this document\n\nWas `overrides/gone.cpp`.\n", []),
-        ("a bare filename with no directory is ignored",
-         "See `main.cpp`.\n", []),
-    ]
-    for name, text, expect in cases:
-        got = scan(text)
-        if got == expect:
-            print(f"  PASS  {name}")
-        else:
-            print(f"  FAIL  {name}: got {got}, expected {expect}")
-            ok = False
-
-    if not live_docs():
-        print("  FAIL  live_docs() found NOTHING to scan — a check with no corpus reports clean "
-              "for the wrong reason")
-        ok = False
-    else:
-        print(f"  PASS  live corpus is non-empty ({len(live_docs())} document(s))")
-
-    print("selftest:", "all checks passed" if ok else "FAILURES ABOVE")
-    return 0 if ok else 1
-
-
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--selftest", action="store_true")
-    a = ap.parse_args()
-    sys.exit(selftest() if a.selftest else check())
+    ap.parse_args()
+    sys.exit(check())

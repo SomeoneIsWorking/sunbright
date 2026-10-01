@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import shutil
-import unittest
 from pathlib import Path
 
 
@@ -63,17 +62,7 @@ def main() -> int:
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--required", type=Path, action="append", default=[])
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
-    if args.selftest:
-        from runtime_dependencies_test import RuntimeDependenciesTest
-
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(
-            RuntimeDependenciesTest
-        )
-        return (
-            0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
-        )
     if args.manifest is None or args.destination is None:
         parser.error("--manifest and --destination are required")
     try:

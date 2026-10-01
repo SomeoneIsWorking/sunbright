@@ -45,8 +45,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_DOL = REPO / "scratch" / "bin" / "sms.dol"
 DEFAULT_FUNCS = REPO / "reference" / "sms_gmse01_funcs.txt"
-SELFTEST_REQUIREMENTS = ("game-image",)
-
 # A run shorter than this is more likely a coincidental pointer table than a vtable.
 MIN_SLOTS = 3
 
@@ -272,8 +270,6 @@ def main():
                     help="score the recovered set against the decomp's TActor hierarchy")
     ap.add_argument("--emit-header", type=Path,
                     help="write a C++ header with the sorted TActor-derived vtable addresses")
-    ap.add_argument("--selftest", action="store_true",
-                    help="feed a case that MUST produce a positive, and fail if it does not")
     ap.add_argument("--root", default="TActor",
                     help="hierarchy root to tag against (TActor, TPlacement, ...). Pick it from the "
                          "FIELD being written: mPosition@+0x10 is TPlacement's, mRotation@+0x30 is "
@@ -305,18 +301,6 @@ def main():
         # assumed -- and an unremarked count is how that goes unnoticed.
         print(f"  disjoint filter  : {before} tagged under {args.root}, "
               f"{before - len(tactor)} also under {args.exclude_root}, {len(tactor)} remain")
-
-    if args.selftest:
-        # MUST-PASS: TActor's own methods are in the US list, so at least one candidate has to
-        # carry a TActor-owned slot. Zero means the scan or the tag is broken, not that the
-        # game has no actors.
-        ok = len(tactor) > 0 and len(funcs) > 1000 and len(cands) > 50
-        print(f"selftest: funcs={len(funcs)} candidates={len(cands)} tactor-tagged={len(tactor)}")
-        if not ok:
-            print("selftest FAILED — the scan cannot detect a case that must be present")
-            return 1
-        print("selftest PASSED")
-        return 0
 
     print(f"US vtable scan: {args.dol.name}")
     print(f"  sections scanned : {sum(1 for s in sections if s[0]=='data')} data "

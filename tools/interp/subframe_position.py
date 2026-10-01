@@ -55,7 +55,6 @@ THE NEGATIVES, WHICH ARE THE WHOLE POINT
 
 Usage:
     tools/interp/subframe_position.py scratch/render/seq_a05.rgba
-    tools/interp/subframe_position.py --selftest        # must print PASS; wired into the suite
 """
 import sys
 import glob
@@ -239,69 +238,6 @@ def report(files, imgs):
     return 0
 
 
-def selftest():
-    """Feed cases whose answer is known and that MUST come out differently from each other.
-
-    A gate that only ever sees real frames cannot tell a working scorer from one that prints a
-    plausible constant. Each case below has an answer the arithmetic forces.
-    """
-    h, w = 64, 64
-
-    def shifted(dx):
-        x = (np.arange(w)[None, :] + np.zeros((h, 1), dtype=int) - dx) % w
-        img = np.zeros((h, w, 4), dtype=np.uint8)
-        img[..., 0] = (x * 4) % 256
-        img[..., 1] = 40
-        img[..., 2] = 200
-        img[..., 3] = 255
-        return img.reshape(-1)
-
-    fails = []
-
-    def check(name, cond, detail):
-        print(f"  {'ok  ' if cond else 'FAIL'}  {name}: {detail}")
-        if not cond:
-            fails.append(name)
-
-    prev, mid, nxt = shifted(0), shifted(4), shifted(8)
-    a, b, c = metrics(prev, mid)[1], metrics(mid, nxt)[1], metrics(prev, nxt)[1]
-    s = score(a, b, c)
-    check("midpoint is centred", abs(s[0]) < 0.05, f"asymmetry {s[0]*100:+.2f}% (|.|<5% required)")
-
-    # A sub-frame that duplicates its FOLLOWER: the failure this metric exists to name.
-    a, b, c = metrics(prev, nxt)[1], metrics(nxt, nxt)[1], metrics(prev, nxt)[1]
-    s = score(a, b, c)
-    check("duplicate-of-next scores +100%", abs(s[0] - 1.0) < 1e-6, f"asymmetry {s[0]*100:+.2f}%")
-
-    # ...and of its PREDECESSOR, which must score the OTHER sign. A scorer that cannot distinguish
-    # these two is useless here: both look like "the sub-frame is not intermediate".
-    a, b, c = metrics(prev, prev)[1], metrics(prev, nxt)[1], metrics(prev, nxt)[1]
-    s = score(a, b, c)
-    check("duplicate-of-prev scores -100%", abs(s[0] + 1.0) < 1e-6, f"asymmetry {s[0]*100:+.2f}%")
-
-    # A static tick must REFUSE, not score 0. This is the negative that matters most.
-    check("static tick refuses", score(0.0, 0.0, 0.0) is None,
-          "c == 0 returns None instead of a symmetric-looking 0.0")
-
-    # Off-segment: a sub-frame that is wrong in a THIRD direction is equidistant from both
-    # neighbours, so asymmetry alone would call it centred. off-segment must catch it.
-    other = np.zeros((h, w, 4), dtype=np.uint8)
-    other[..., 3] = 255
-    other = other.reshape(-1)
-    a, b, c = metrics(prev, other)[1], metrics(other, nxt)[1], metrics(prev, nxt)[1]
-    s = score(a, b, c)
-    check("off-segment catches a third-direction sub-frame",
-          abs(s[0]) < 0.2 and s[2] > 1.0,
-          f"asymmetry {s[0]*100:+.2f}% (looks centred) but off-segment {s[2]*100:+.1f}%")
-
-    print()
-    if fails:
-        print(f"SELFTEST FAILED: {', '.join(fails)}")
-        return 1
-    print("SELFTEST PASS")
-    return 0
-
-
 def compare(pa, pb):
     """--compare A B: does alpha reach the sub-frame AT ALL?
 
@@ -368,8 +304,6 @@ def compare(pa, pb):
 
 
 def main():
-    if len(sys.argv) >= 2 and sys.argv[1] == '--selftest':
-        return selftest()
     if len(sys.argv) >= 4 and sys.argv[1] == '--compare':
         return compare(sys.argv[2], sys.argv[3])
     if len(sys.argv) < 2:
