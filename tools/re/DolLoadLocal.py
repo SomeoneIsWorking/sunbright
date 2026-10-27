@@ -1,14 +1,10 @@
 """Ghidra preScript — DOL section blocks for the US GMSE01 image, BSS clipped.
 
-DolLoad.py in the shared decomp-port skill rebuilds a DOL's sections after
-BinaryLoader's flat import, which is what makes guest addresses resolve. It
-aborts on this image: the header's BSS range (0x803E9700..0x8040EB98) overlaps
-DATA6 (0x8040C1C0..0x8040CF00), so createUninitializedBlock raises
-MemoryConflictException and the whole load fails.
-
-That overlap is a fact about this DOL, not about the loader, so the fix belongs
-here rather than in the shared script: create BSS only over the sub-ranges that
-no data section already claims, and report what was skipped. Clipping silently
+Rebuilds the DOL's sections after BinaryLoader's flat import, which is what
+makes guest addresses resolve. The header's BSS range (0x803E9700..0x8040EB98)
+overlaps DATA6 (0x8040C1C0..0x8040CF00), so a plain section rebuild raises
+MemoryConflictException; this script creates BSS only over the sub-ranges that
+no data section already claims, and reports what was skipped. Clipping silently
 would be worse — the gap in coverage would read as "the loader covered
 everything".
 

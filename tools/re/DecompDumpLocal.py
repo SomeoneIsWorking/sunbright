@@ -1,4 +1,4 @@
-# Project-local copy of the shared decomp-port DecompDump.py, run under PyGhidra (Python 3).
+# Project-local copy of the shared ghidra-re DecompDump.py, run under PyGhidra (Python 3).
 # -*- coding: utf-8 -*-
 # Ghidra headless GhidraScript (Jython) — decompile functions to C. Game-agnostic.
 #
